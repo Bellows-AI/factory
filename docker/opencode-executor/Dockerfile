@@ -57,13 +57,23 @@ ENV OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 # The predefined configuration. Permissions live here, NOT in a CLI flag — unlike claude-code,
 # opencode takes `edit`/`bash`/`webfetch` policy from this file, and "ask" is unusable in a headless
 # `run` (there is nobody to ask; the run would hang to its deadline). The baked policy is the
-# executor spec's acceptEdits mapping: edit and bash allowed, webfetch denied. To run another
-# policy, mount your own over /home/node/.config/opencode/opencode.json.
+# executor spec's acceptEdits mapping: edit and bash allowed, webfetch denied. Bash touching paths
+# outside the project asks separately (external_directory), and an unanswered ask auto-rejects
+# headless — so the runner's own scratch space, /tmp and HOME, is allowed there. Everything else
+# outside the checkout, the rest of the shared workspaces volume included, stays fenced. To run
+# another policy, mount your own over /home/node/.config/opencode/opencode.json.
 COPY --chown=node:node opencode-home/ /home/node/.config/opencode/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 RUN mkdir -p /workspace && chown node:node /workspace
 WORKDIR /workspace
+
+# The install above runs as root, and both opencode and node create scratch directories in /tmp
+# while it runs — /tmp/opencode and /tmp/node-compile-cache. Those survive into the image, root-
+# owned, and the CLI running as node below cannot write them: its own temp state and node's
+# compile cache silently degrade to per-process temp files. Recreate them node-owned, last, so
+# nothing re-creates them as root afterwards.
+RUN mkdir -p /tmp/opencode /tmp/node-compile-cache && chown node:node /tmp/opencode /tmp/node-compile-cache
 
 COPY entrypoint.sh /usr/local/bin/opencode-executor
 RUN chmod 0755 /usr/local/bin/opencode-executor

@@ -156,15 +156,13 @@ services:
             # answers. 10s would mark that unhealthy and hold up everything with a depends_on.
             start_period: 180s
 
-    # Claims jobs from the board and spawns a claude-executor per job.
+    # Claims jobs from the board and spawns a runner per job (claude-executor, or opencode-executor
+    # under RUNNER_CLI=opencode). Part of the default `docker compose up` by operator decision:
+    # it mounts the docker socket, which is root on the host — see docs/security.md for what that
+    # means before running this file anywhere shared. The runner image is built once:
     #
-    # BEHIND A PROFILE, and that is not tidiness: this service mounts the docker socket, which is
-    # root on the host. `docker compose up` must not start it by surprise. Start it deliberately:
-    #
-    #   docker build -t claude-executor docker/claude-executor   # the runner image, once
-    #   docker compose --profile driver up -d driver
+    #   docker build -t claude-executor docker/claude-executor   # or opencode-executor
     driver:
-        profiles: ['driver']
         build:
             context: .
             dockerfile: docker/driver.Dockerfile

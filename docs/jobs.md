@@ -43,7 +43,7 @@ docker build -t claude-executor docker/claude-executor     # the claude-code run
 docker build -t opencode-executor docker/opencode-executor # the opencode runner image, once
 npm run driver                                             # against a board on 127.0.0.1:8080
 
-docker compose --profile driver up -d driver             # or in the stack
+docker compose up -d driver                              # or in the stack, with everything else
 ```
 
 Everything below describes the docker runner. `EXECUTOR=kubernetes` swaps the platform under it —
@@ -108,7 +108,20 @@ off by default so that turning it on is something somebody typed.
 **A run that never started is not a failed job.** If `docker` is missing or the daemon refuses, the
 driver logs and says nothing to the board: reporting `failed` would blame the command for the
 driver's problem and burn an attempt. The lease expires and the job is offered again, which is
-visible in `attempts`.
+visible in `attempts`. What a refused start looks like is platform knowledge, and it is stamped by
+the runner as `RunOutcome.started: false`. The docker runner does not guess from stderr — the
+daemon's errors and the command's own output share one stream, and a command that prints
+`docker: ` before exiting 125 is a verdict, not a refusal — so it asks the daemon instead: a 125
+close is classified by `docker inspect`, where a container that exists ran and `State.ExitCode` is
+the verdict, and no container means nothing was ever accepted. The shared loop interprets no exit
+codes, so a kubernetes pod that genuinely exits 125 is reported as the failure it is.
+
+**Every spawn is fenced.** The runner container's name is the job id, and the kubernetes runner has
+always deleted a previous attempt's Job before creating its own; the docker runner now does the
+same with `docker rm -f`. Anything holding the name is a leftover of an attempt whose lease is
+gone — a driver that died before it could kill its runner, which is what a compose restart does.
+Without the fence the next attempt dies on the name conflict, docker exit 125, and the job
+terminal-fails blaming a command that never ran.
 
 **The heartbeat is raced against the run finishing, not simply slept.** The beat period is a third
 of the lease — 100s by default — and awaiting it before reporting left every finished job sitting

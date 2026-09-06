@@ -100,6 +100,7 @@ const ok = (over: Partial<RunOutcome> = {}): RunOutcome => ({
     output: 'done',
     timedOut: false,
     idled: false,
+    started: true,
     ...over,
 });
 
@@ -212,6 +213,33 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([]);
+    });
+
+    // The daemon can refuse to create the container while `docker run` itself succeeds as a
+    // process — a leftover name, a volume or network a stack rebuild removed. The runner asks
+    // its platform whether the container ever ran and stamps `started: false`; the loop
+    // interprets no exit codes itself.
+    it('leaves a job to its lease when the runner reports the container never started', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({ exitCode: 125, output: 'docker: Error response from daemon: Conflict. The container name is already in use', started: false }),
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // The mirror case, and why classification lives in the runner rather than in an exit code
+    // here: a run that started and exited 125 — a shell or an agent CLI can — is a genuine
+    // verdict, and swallowing it would rerun the job to death instead of reporting the failure.
+    it('reports a started run that exited 125 as the failure it is', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ exitCode: 125, output: 'the command failed' }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 125, output: 'the command failed' });
     });
 
     // Found by running the driver for real, not by this suite: the beat period is a third of the

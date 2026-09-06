@@ -14,6 +14,16 @@ export interface RunOutcome {
     output: string;
     timedOut: boolean;
     idled: boolean;
+    /**
+     * False only when the runner knows the container never ran — the daemon refused to accept
+     * it. The docker runner does not guess from the shared stderr stream, where the CLI's errors
+     * and the command's own output are indistinguishable: on an exit 125 it asks the daemon
+     * whether the container exists, and a container that exists ran, whatever it printed. A
+     * kubernetes runner always reports started, because a resolved outcome there means the pod
+     * was created, ran and exited. The shared loop interprets no exit codes: a run that started
+     * and exited 125 is a verdict, reported like any other.
+     */
+    started: boolean;
 }
 
 /**
@@ -171,7 +181,6 @@ function workspacePath(job: BoardJob): string {
 export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
     const args = [
         'run',
-        '--rm',
         '--name',
         containerName(job),
         // Lets `docker ps --filter label=factory.job` find a runner that outlived its driver.
@@ -249,7 +258,14 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
 
 type Spawn = typeof spawn;
 
-export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn): Runner {
+/**
+ * Everything the runner does through the daemon other than the `docker run` itself — the fence,
+ * the post-run inspect and the cleanup — goes through this one seam, so a test can stand in for
+ * the daemon instead of shelling out to it.
+ */
+type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
+
+export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn, execDocker: ExecDocker = (args) => run('docker', args)): Runner {
     const kill = async (job: BoardJob): Promise<void> => {
         // Killing the `docker run` process would only detach the CLI; the container keeps running
         // and the workspace keeps being written to. The daemon has to be told.
@@ -266,8 +282,43 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
             return read ? parseRemoteSessionId(read.stdout) : null;
         },
 
-        run(job, session) {
+        async run(job, session) {
+            // The re-claim fence, the docker twin of the kubernetes runner's delete-before-create:
+            // the container name is derived from the job id, so anything already holding it is a
+            // leftover of a previous attempt — a driver that died before it could kill its runner,
+            // which is what a compose restart does. This claim exists only because that attempt's
+            // lease is gone, so removing the leftover delivers the same verdict its heartbeat would
+            // have, had the driver survived to receive it. Without this the next attempt dies on
+            // the name conflict (docker exit 125) and the job terminal-fails blaming a command
+            // that never ran.
+            await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
             return new Promise<RunOutcome>((resolve, reject) => {
+                // The verdict for a close, decided after the process is gone. An exit 125 is
+                // ambiguous on the shared stderr — the daemon's refusal and a command that
+                // genuinely exited 125 are printed onto the same stream — so the daemon is asked
+                // instead: a container that exists ran, and its State is the truth; "no such
+                // container" means `docker run` never got one accepted, and nothing ran. Any
+                // other exit code unambiguously belongs to the attached container.
+                const verdict = async (code: number | null): Promise<RunOutcome> => {
+                    let started = true;
+                    if (code === 125) {
+                        try {
+                            const state = JSON.parse(
+                                (await execDocker(['inspect', '--format', '{{json .State}}', containerName(job)])).stdout,
+                            ) as { Status?: string };
+                            started = state.Status === 'exited';
+                        } catch {
+                            started = false;
+                        }
+                    }
+                    // Cleanup is explicit (--rm is gone, precisely so the inspect above can see
+                    // the container): the fence on the next claim would catch it anyway, but
+                    // leaving one daemon round-trip of litter behind is not tidiness worth
+                    // keeping. Failed removals are the fence's business.
+                    await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+                    return { exitCode: code, output, timedOut, idled, started };
+                };
+
                 const child = spawnFn('docker', dockerArgs(config, job, session), {
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
@@ -301,7 +352,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
                 child.stdout?.on('data', collect);
                 child.stderr?.on('data', collect);
 
-                // Not armed under Remote Control: with both running the shorter one always wins, so
+                // Armed only under Remote Control: with both running the shorter one always wins, so
                 // a drivable job would be killed and reported failed before it could ever be
                 // parked. There, silence is the bound.
                 const timer = config.remoteControl
@@ -322,7 +373,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
                 });
                 child.on('close', (code) => {
                     done();
-                    resolve({ exitCode: code, output, timedOut, idled });
+                    void verdict(code).then(resolve, reject);
                 });
             });
         },

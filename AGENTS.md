@@ -84,9 +84,9 @@ docker compose up
 # What deploys, and what compose does NOT run: the baked `runtime` stage, SPA and API on one port.
 docker build -f docker/Dockerfile --target runtime -t factory-ai .
 
-# The driver is behind a profile, so the line above never starts it: it mounts the docker socket,
-# which is root on the host. See docs/security.md.
-docker compose --profile driver up -d driver
+# The driver mounts the docker socket, which is root on the host — see docs/security.md before
+# running this file anywhere shared. `docker compose up` starts it with the stack.
+docker compose up -d driver
 
 # factory_dev holds real data; *_test, *_seed, *_synthetic, *_demo and *_e2e are disposable. The db
 # suite TRUNCATES its tables, so it refuses any database not named *_test — pointing it at
