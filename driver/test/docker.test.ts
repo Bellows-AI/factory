@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { containerName, dockerArgs, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
+import { containerName, createDockerRunner, dockerArgs, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -301,5 +303,45 @@ describe('the report tail', () => {
             output: reportTail(worst),
         });
         expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(128 * 1024);
+    });
+});
+
+/**
+ * A child that streams the given text and exits, the way `spawn`'s product behaves — enough of
+ * one for the runner, which reads two streams and a close event and nothing else.
+ */
+function fakeChild(stdout: string, stderr: string, code: number | null): ChildProcess {
+    const child = new EventEmitter() as ChildProcess;
+    const stream = (text: string) => {
+        const s = new EventEmitter();
+        if (text) process.nextTick(() => s.emit('data', Buffer.from(text)));
+        return s;
+    };
+    child.stdout = stream(stdout);
+    child.stderr = stream(stderr);
+    process.nextTick(() => child.emit('close', code));
+    return child;
+}
+
+describe('the docker runner', () => {
+    // The fence ahead of every run shells out for real; it removes a container that is not
+    // there, and a failed removal is swallowed — so the suite passes with or without a daemon.
+    const runner = createDockerRunner(
+        loadDriverConfig({}),
+        (() => fakeChild('', 'docker: Error response from daemon: Conflict. The container name is already in use\n', 125)) as unknown as typeof spawn,
+    );
+
+    it('reads a daemon refusal as a container that never started', async () => {
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 125, started: false });
+    });
+
+    it('reads a container that ran and exited 125 as a verdict, not an infrastructure refusal', async () => {
+        const genuine = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('work done\n', 'sh: 1: gitleaks: not found\n', 125)) as unknown as typeof spawn,
+        );
+        const outcome = await genuine.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 125, started: true });
     });
 });

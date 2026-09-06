@@ -108,8 +108,11 @@ off by default so that turning it on is something somebody typed.
 **A run that never started is not a failed job.** If `docker` is missing or the daemon refuses, the
 driver logs and says nothing to the board: reporting `failed` would blame the command for the
 driver's problem and burn an attempt. The lease expires and the job is offered again, which is
-visible in `attempts`. The daemon's refusals reach the loop as docker CLI exit 125 — a container
-that never existed — and take the same road rather than being reported as a verdict.
+visible in `attempts`. What a refused start looks like is platform knowledge, and it is stamped by
+the runner as `RunOutcome.started: false` — docker from its own signature, exit 125 with a
+`docker:` line on stderr, since 125 alone is an ordinary exit status for a shell or an agent CLI.
+The shared loop interprets no exit codes, so a kubernetes pod that genuinely exits 125 is reported
+as the failure it is.
 
 **Every spawn is fenced.** The runner container's name is the job id, and the kubernetes runner has
 always deleted a previous attempt's Job before creating its own; the docker runner now does the

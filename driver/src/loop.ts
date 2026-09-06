@@ -167,16 +167,16 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
             if (state.lost) return;
 
             /*
-             * docker's own exit code, not the command's: 125 is the daemon refusing to create the
-             * container at all — a leftover name the fence could not clear, a volume or network a
-             * stack rebuild removed, a daemon that is down. The same rule the catch below applies
-             * to a spawn that never happened: reporting `failed` would blame the command for the
-             * driver's problem and burn the job to a terminal state over infrastructure. The lease
-             * expires and the job is offered again; the board retires it once attempts reach
-             * max_attempts.
+             * The runner, not this loop, knows what a refused start looks like on its platform,
+             * and stamps `started: false` for it — docker from its daemon-error signature, a
+             * container that never existed. This loop interprets no exit codes: a pod that
+             * genuinely exited 125 started and finished, and that is a verdict to report. Saying
+             * nothing here would rerun the job until attempts run out and retire it dead, blaming
+             * the command for infrastructure — the same rule the catch below applies to a spawn
+             * that never happened. The lease expires and the job is offered again.
              */
-            if (outcome.exitCode === 125 && !outcome.timedOut) {
-                log(`job ${job.id}: docker could not start the container, leaving it to the lease`);
+            if (!outcome.started) {
+                log(`job ${job.id}: the runner reports the container never started, leaving it to the lease`);
                 return;
             }
 

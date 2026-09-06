@@ -14,6 +14,14 @@ export interface RunOutcome {
     output: string;
     timedOut: boolean;
     idled: boolean;
+    /**
+     * False only when the runner knows the container never ran — its platform refused to start
+     * it. What that looks like is platform knowledge (docker's daemon errors are exit 125 with a
+     * `docker:` line on stderr; a kubernetes pod that was created and exited always started), so
+     * the stamping belongs to the runner and the shared loop interprets no exit codes: a run that
+     * started and exited 125 is a verdict, reported like any other.
+     */
+    started: boolean;
 }
 
 /**
@@ -310,6 +318,14 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
                 child.stdout?.on('data', collect);
                 child.stderr?.on('data', collect);
 
+                // Kept apart from `output`, which the agent's transcript dominates: telling the
+                // daemon's refusal from the command's own exit needs the CLI's stderr, and a small
+                // tail of it is all that classifying on close can use.
+                let errText = '';
+                child.stderr?.on('data', (chunk) => {
+                    errText = tailBytes(errText + String(chunk), 4096);
+                });
+
                 // Not armed under Remote Control: with both running the shorter one always wins, so
                 // a drivable job would be killed and reported failed before it could ever be
                 // parked. There, silence is the bound.
@@ -331,7 +347,12 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
                 });
                 child.on('close', (code) => {
                     done();
-                    resolve({ exitCode: code, output, timedOut, idled });
+                    // Exit 125 on its own is not enough: docker prints its daemon errors as a
+                    // `docker:` line on stderr, and that signature — not the code alone — is what
+                    // separates a container that never existed from a command that genuinely
+                    // exited 125.
+                    const daemonRefusal = code === 125 && /(^|\n)docker: /.test(errText);
+                    resolve({ exitCode: code, output, timedOut, idled, started: !daemonRefusal });
                 });
             });
         },
