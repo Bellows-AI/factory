@@ -536,7 +536,11 @@ export function createKubernetesRunner(
                 if (log.status < 300) output = reportTail(log.body);
             }
 
-            return { exitCode, output, timedOut, idled: false };
+            // A resolved outcome here always means the pod was created, ran and exited: Job and
+            // pod creation failures throw on their way to the loop's catch, so this is a verdict,
+            // whatever the code — started is true even at 125, which is a perfectly ordinary exit
+            // status for a shell or an agent CLI.
+            return { exitCode, output, timedOut, idled: false, started: true };
         },
     };
 }

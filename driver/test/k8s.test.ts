@@ -253,7 +253,7 @@ describe('the kubernetes runner', () => {
 
         expect(calls[0]).toEqual({ method: 'POST', path: jobsPath(namespace), body: expect.anything() });
         expect(calls.some((call) => call.path === jobPath(namespace, containerName(job)))).toBe(true);
-        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false });
+        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
     });
 
     it('reports a non-zero exit with the pod exit code and the tail of the log', async () => {

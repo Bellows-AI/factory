@@ -166,6 +166,20 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
 
             if (state.lost) return;
 
+            /*
+             * The runner, not this loop, knows what a refused start looks like on its platform,
+             * and stamps `started: false` for it — docker from its daemon-error signature, a
+             * container that never existed. This loop interprets no exit codes: a pod that
+             * genuinely exited 125 started and finished, and that is a verdict to report. Saying
+             * nothing here would rerun the job until attempts run out and retire it dead, blaming
+             * the command for infrastructure — the same rule the catch below applies to a spawn
+             * that never happened. The lease expires and the job is offered again.
+             */
+            if (!outcome.started) {
+                log(`job ${job.id}: the runner reports the container never started, leaving it to the lease`);
+                return;
+            }
+
             // Parked, not finished: the container is gone, the session is kept, and the job goes
             // back on the board for somebody to pick up from the Claude UI. Reporting an exit code
             // here would make an idle session indistinguishable from a run that ended.
