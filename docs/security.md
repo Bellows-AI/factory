@@ -57,8 +57,9 @@ path the container can see.
 
 **The driver mounts `/var/run/docker.sock`, which is root on the host.** A process holding that
 socket can start a container with the host filesystem mounted, so it is not "docker access", it is
-uid 0. That is why the driver is a separate service behind a compose profile — `docker compose up`
-must not start it by accident — and why the socket is never given to the dashboard, whose port is
+uid 0. It once sat behind a compose profile so `docker compose up` could not start it by surprise;
+it now starts with the stack by operator decision, which makes running this file on a shared host a
+deliberate act — and the socket is still never given to the dashboard, whose port is
 unauthenticated. Anything that can queue a job can already ask an agent to run commands; keeping
 the socket one process away is what stops that from being trivially root.
 
