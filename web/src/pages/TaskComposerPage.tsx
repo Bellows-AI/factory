@@ -21,7 +21,10 @@ export function TaskComposerPage() {
         setSending(true);
         try {
             const result = await tasks.queue(command, repo, executor);
-            if (result.error !== null) return result.error;
+            if (result.error !== null) {
+                setActionError(result.error);
+                return result.error;
+            }
             await navigate(`/tasks/${result.id}`);
             return null;
         } finally {
