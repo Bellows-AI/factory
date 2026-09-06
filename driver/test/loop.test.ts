@@ -214,6 +214,21 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // The daemon can refuse to create the container while `docker run` itself succeeds as a
+    // process — a leftover name, a volume or network a stack rebuild removed. That refusal is
+    // docker's exit code 125, and it resolves rather than throws, so the catch above it never
+    // fires: the same never-started rule has to hold here too.
+    it('leaves a job to its lease when docker refuses to create the container', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({ exitCode: 125, output: 'docker: Error response from daemon: Conflict. The container name is already in use' }),
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toEqual([]);
+    });
+
     // Found by running the driver for real, not by this suite: the beat period is a third of the
     // lease, 100s at the default, and waiting it out before reporting left every finished job
     // sitting in `running` for a minute and a half. A fake sleep that resolves instantly cannot see

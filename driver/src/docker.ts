@@ -266,7 +266,16 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
             return read ? parseRemoteSessionId(read.stdout) : null;
         },
 
-        run(job, session) {
+        async run(job, session) {
+            // The re-claim fence, the docker twin of the kubernetes runner's delete-before-create:
+            // the container name is derived from the job id, so anything already holding it is a
+            // leftover of a previous attempt — a driver that died before it could kill its runner,
+            // which is what a compose restart does. This claim exists only because that attempt's
+            // lease is gone, so removing the leftover delivers the same verdict its heartbeat would
+            // have, had the driver survived to receive it. Without this the next attempt dies on
+            // the name conflict (docker exit 125) and the job terminal-fails blaming a command
+            // that never ran.
+            await run('docker', ['rm', '-f', containerName(job)]).catch(() => undefined);
             return new Promise<RunOutcome>((resolve, reject) => {
                 const child = spawnFn('docker', dockerArgs(config, job, session), {
                     stdio: ['ignore', 'pipe', 'pipe'],

@@ -166,6 +166,20 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
 
             if (state.lost) return;
 
+            /*
+             * docker's own exit code, not the command's: 125 is the daemon refusing to create the
+             * container at all — a leftover name the fence could not clear, a volume or network a
+             * stack rebuild removed, a daemon that is down. The same rule the catch below applies
+             * to a spawn that never happened: reporting `failed` would blame the command for the
+             * driver's problem and burn the job to a terminal state over infrastructure. The lease
+             * expires and the job is offered again; the board retires it once attempts reach
+             * max_attempts.
+             */
+            if (outcome.exitCode === 125 && !outcome.timedOut) {
+                log(`job ${job.id}: docker could not start the container, leaving it to the lease`);
+                return;
+            }
+
             // Parked, not finished: the container is gone, the session is kept, and the job goes
             // back on the board for somebody to pick up from the Claude UI. Reporting an exit code
             // here would make an idle session indistinguishable from a run that ended.
