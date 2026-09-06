@@ -1,0 +1,90 @@
+{{/*
+The in-chart database — the same plain TimescaleDB container compose runs, not the upstream Helm
+chart: one deployment, one claim, no subchart dependency. TimescaleDB rather than plain Postgres
+for the same reason compose names it: metric_point is a hypertable. For anything real, disable
+this and point `database.url` at a managed instance.
+*/}}
+{{- if .Values.timescale.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+    name: {{ include "factory.fullname" . }}-timescale
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: timescale
+spec:
+    type: ClusterIP
+    ports:
+        - name: postgres
+          port: 5432
+          targetPort: postgres
+    selector:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: timescale
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: {{ include "factory.fullname" . }}-timescale
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: timescale
+spec:
+    accessModes:
+        - ReadWriteOnce
+    resources:
+        requests:
+            storage: {{ .Values.timescale.storageSize }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ include "factory.fullname" . }}-timescale
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: timescale
+spec:
+    replicas: 1
+    strategy:
+        # One replica holding one claim: a rolling update would try to run two writers on it.
+        type: Recreate
+    selector:
+        matchLabels:
+            {{- include "factory.labels" . | nindent 12 }}
+            app.kubernetes.io/component: timescale
+    template:
+        metadata:
+            labels:
+                {{- include "factory.labels" . | nindent 16 }}
+                app.kubernetes.io/component: timescale
+        spec:
+            containers:
+                - name: timescale
+                  image: {{ .Values.timescale.image }}
+                  ports:
+                      - name: postgres
+                        containerPort: 5432
+                  env:
+                      - name: POSTGRES_USER
+                        value: {{ .Values.timescale.user | quote }}
+                      - name: POSTGRES_PASSWORD
+                        value: {{ .Values.timescale.password | quote }}
+                      - name: POSTGRES_DB
+                        value: {{ .Values.timescale.database | quote }}
+                      {{- with .Values.timescale.resources }}
+                      resources:
+                          {{- toYaml . | nindent 26 }}
+                      {{- end }}
+                  readinessProbe:
+                      exec:
+                          command: ['pg_isready', '-U', {{ .Values.timescale.user | quote }}, '-d', {{ .Values.timescale.database | quote }}]
+                      initialDelaySeconds: 5
+                      periodSeconds: 5
+                  volumeMounts:
+                      - name: data
+                        mountPath: /var/lib/postgresql/data
+            volumes:
+                - name: data
+                  persistentVolumeClaim:
+                      claimName: {{ include "factory.fullname" . }}-timescale
+{{- end }}

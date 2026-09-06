@@ -57,4 +57,17 @@ describe('RUNNER_CLI', () => {
         );
         expect(() => loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '1' })).not.toThrow();
     });
+
+    // The kubernetes runner speaks claude-code only: its Job spec is `--session-id`/`--resume`
+    // argv, and an opencode job arrives with no session at all. Left runnable, every claim would
+    // burn an attempt on the runner's own refusal — discovered mid-job what the loader exists to
+    // catch at startup.
+    it('refuses the kubernetes executor under opencode', () => {
+        expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', EXECUTOR: 'kubernetes' })).toThrow(
+            /RUNNER_CLI=opencode.*EXECUTOR=kubernetes|EXECUTOR=kubernetes.*RUNNER_CLI=opencode/s,
+        );
+        // And each alone is fine — the refusal is about the pair, not either half.
+        expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode' })).not.toThrow();
+        expect(() => loadDriverConfig({ EXECUTOR: 'kubernetes' })).not.toThrow();
+    });
 });

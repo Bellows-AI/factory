@@ -62,4 +62,62 @@ describe('the driver config', () => {
     it('reads RUNNER_ENV as a list of names', () => {
         expect(loadDriverConfig({ RUNNER_ENV: 'A, B ,,C' }).passEnv).toEqual(['A', 'B', 'C']);
     });
+
+    // The executor choice is a runner selection, not a tuning knob: docker on the host, kubernetes
+    // against the API server the driver's own pod talks to. A typo in it must not read as "docker
+    // is fine" and silently spawn nothing — hence a fatal, explicit enum.
+    it('defaults EXECUTOR to docker', () => {
+        expect(loadDriverConfig({}).executor).toBe('docker');
+        expect(loadDriverConfig({ EXECUTOR: 'kubernetes' }).executor).toBe('kubernetes');
+    });
+
+    it('refuses an unknown EXECUTOR rather than falling back to docker', () => {
+        for (const executor of ['k8s', 'KUBERNETES', 'kube']) {
+            expect(() => loadDriverConfig({ EXECUTOR: executor }), `"${executor}"`).toThrow(/EXECUTOR/);
+        }
+        // Empty means unset, as it does for every other variable here — the default, not a refusal.
+        expect(loadDriverConfig({ EXECUTOR: '' }).executor).toBe('docker');
+    });
+
+    it('defaults K8S_NAMESPACE to default', () => {
+        expect(loadDriverConfig({}).k8sNamespace).toBe('default');
+        expect(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' }).k8sNamespace).toBe('factory');
+    });
+
+    // The kubernetes executor forwards runner credentials the way the docker one forwards `-e NAME`:
+    // the NAMES travel, the values live in a Secret the cluster already holds. Off unless named.
+    it('leaves RUNNER_CREDENTIALS_SECRET off unless set', () => {
+        expect(loadDriverConfig({}).credentialsSecret).toBeNull();
+        expect(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CREDENTIALS_SECRET: 'claude-credentials' })
+                .credentialsSecret,
+        ).toBe('claude-credentials');
+    });
+
+    // An explicit enum, like EXECUTOR: the API server would reject a bad policy only at
+    // job-create time, which is attempt-burning — this loader exists to move failures to startup.
+    it('accepts only a real image pull policy', () => {
+        expect(loadDriverConfig({}).imagePullPolicy).toBe('IfNotPresent');
+        expect(loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'Always' }).imagePullPolicy).toBe('Always');
+        expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'ifnotpresent' })).toThrow(
+            /RUNNER_IMAGE_PULL_POLICY/,
+        );
+        expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'sometimes' })).toThrow(
+            /RUNNER_IMAGE_PULL_POLICY/,
+        );
+    });
+
+    /**
+     * Remote Control needs a tty held open, a login volume and an idle-parking loop — three things
+     * that are decided in docker terms inside the docker runner and have no k8s counterpart yet.
+     * A config that half-works is worse than one that refuses to start: the session would run and
+     * simply never appear at claude.ai/code.
+     */
+    it('refuses Remote Control under the kubernetes executor', () => {
+        expect(() => loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_REMOTE_CONTROL: '1' })).toThrow(
+            /RUNNER_REMOTE_CONTROL.*EXECUTOR|EXECUTOR.*RUNNER_REMOTE_CONTROL/s,
+        );
+        // And the same combination is fine under docker, which is the only executor that has it.
+        expect(() => loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' })).not.toThrow();
+    });
 });

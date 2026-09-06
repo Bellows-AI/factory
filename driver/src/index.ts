@@ -1,6 +1,7 @@
 import { createBoard } from './board.js';
 import { loadDriverConfig } from './config.js';
 import { createDockerRunner } from './docker.js';
+import { createKubernetesRunner, inClusterRequest } from './k8s.js';
 import { createLoop } from './loop.js';
 
 const config = loadDriverConfig(process.env);
@@ -18,7 +19,12 @@ const board = createBoard({
     leaseSeconds: config.leaseSeconds,
     token: config.boardToken,
 });
-const runner = createDockerRunner(config);
+// EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on the
+// first claim: a driver asked for kubernetes outside a cluster should say so at startup.
+const runner =
+    config.executor === 'kubernetes'
+        ? createKubernetesRunner(config, inClusterRequest())
+        : createDockerRunner(config);
 const loop = createLoop({ board, runner, config, log: (m) => console.log(`[driver] ${m}`) });
 
 // Stop claiming, then drain. A second signal is the escape hatch, since a drain waits for a job

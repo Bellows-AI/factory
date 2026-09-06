@@ -1,0 +1,125 @@
+# The Factory stack on Kubernetes: the dashboard (API + SPA on one port), an in-chart TimescaleDB,
+# the workspaces volume the checkouts live on, and the driver running its runners as Jobs in this
+# namespace.
+#
+# Every knob is an environment variable on the container it belongs to — configuration in this
+# repository is environment-only (docs/configuration.md), and the chart is a way to set that
+# environment, not a second config system.
+
+# The dashboard image, built from the `runtime` stage:
+#   docker build -f docker/Dockerfile --target runtime -t factory-ai .
+dashboard:
+    image: factory-ai
+    # IfNotPresent so side-loaded images (minikube image load) resolve without a registry.
+    imagePullPolicy: IfNotPresent
+    replicas: 1
+    port: 8080
+    # Where the checkouts are written. The runners mount the same claim at the same path — the
+    # board owns the layout and the driver owns the mount point, and the two agree because the
+    # chart sets both.
+    workspaceRoot: /workspaces
+    resources: {}
+
+auth:
+    # `github` is the chart default, exactly as compose pins it: this deployment holds checkouts and
+    # serves POST /api/jobs, which runs shell commands. `none` needs AUTH_ALLOW_PUBLIC_BIND on a
+    # 0.0.0.0 bind — see loadConfig, which refuses an unauthenticated non-loopback port without it.
+    mode: github
+    # REQUIRED under mode=github: the origin GitHub redirects back to. loadConfig makes it fatal to
+    # boot github auth without one on a non-loopback host.
+    publicUrl: ''
+    bootstrapAdmin: ''
+    # Members of this GitHub organization admit themselves on first sign-in; empty keeps it
+    # invite-only.
+    autoJoinGithubOrg: ''
+    cookieSecure: ''
+    allowPublicBind: ''
+    # Not a secret: GitHub's OAuth App client id is public by design.
+    oauthClientId: ''
+
+github:
+    # `app` is the default and is fatal without an id and a private key; `none` serves whatever the
+    # database already holds and fetches nothing.
+    mode: app
+    appId: ''
+    installationId: ''
+    # The PEM (or its base64) lands in the chart's Secret, never in the pod spec or a command line.
+    appPrivateKey: ''
+
+# Identifiers, not credentials: empty defers to the server's own defaults.
+org:
+    id: ''
+    name: ''
+    baseBranch: dev
+
+telemetry:
+    source: postgres
+    ttlSeconds: '30'
+    syncTtlSeconds: '60'
+    ingestToken: ''
+
+database:
+    # Overridden to the in-chart service when `timescale.enabled` is true.
+    url: ''
+
+timescale:
+    # The in-chart database, for a stack that is self-contained — the same plain TimescaleDB
+    # container compose runs. For anything real, set enabled=false and point `database.url` at a
+    # managed instance.
+    enabled: true
+    image: timescale/timescaledb:latest-pg17
+    user: factory
+    password: factory
+    database: factory_dev
+    storageSize: 10Gi
+    resources: {}
+
+# The checkouts. Default ReadWriteMany because the dashboard pod and every runner pod share one
+# claim across nodes; minikube overrides ReadWriteOnce (single node). A default StorageClass that
+# cannot serve the mode fails scheduling loudly, not silently.
+workspaces:
+    storageSize: 20Gi
+    accessModes:
+        - ReadWriteMany
+    storageClass: ''
+    existingClaim: ''
+
+secret:
+    # Creates the dashboard Secret from the values below. With existingSecret set, the chart
+    # creates nothing and references that one — for a Secret managed by external-secrets or
+    # sealed-secrets.
+    create: true
+    existingSecret: ''
+    oauthClientSecret: ''
+    sessionSecret: ''
+    # The driver's credential, minted by `npm run worker-token -- --name <worker>` — printed once,
+    # only its hash stored. Empty against a board running AUTH_MODE=none.
+    jobBoardToken: ''
+
+driver:
+    # Built from docker/driver.Dockerfile:
+    #   docker build -f docker/driver.Dockerfile -t factory-driver .
+    image: factory-driver
+    imagePullPolicy: IfNotPresent
+    replicas: 1
+    executorImage: claude-executor
+    # Every number below is an environment variable, quoted so helm cannot stringify one of them
+    # into scientific notation (`1.8e+06` parses as an integer nowhere).
+    concurrency: '2'
+    pollMs: '5000'
+    leaseSeconds: '300'
+    jobTimeoutMs: '1800000'
+    # Off by default and a real decision, here as everywhere: on, the agent edits and runs whatever
+    # it likes inside the runner without asking. Read docs/jobs.md first.
+    skipPermissions: ''
+    resources: {}
+
+runner:
+    # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
+    env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
+    # Created by this chart from the two values beneath it when secret.create is true. Referencing
+    # the Secret by name is the whole point: the credential never appears in the pod spec, which
+    # anyone who can `get pods` can read.
+    credentialsExistingSecret: ''
+    claudeCodeOauthToken: ''
+    anthropicApiKey: ''

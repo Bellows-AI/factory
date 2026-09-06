@@ -1,0 +1,123 @@
+{{/*
+The dashboard: API and SPA on one port, the same `runtime` stage compose does NOT run and the
+Dockerfile calls "what deploys". Its environment block mirrors docker-compose.yml's dashboard
+service line for line — the chart sets the same environment the compose file sets, which is the
+repo's only configuration mechanism.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ include "factory.fullname" . }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    replicas: {{ .Values.dashboard.replicas }}
+    selector:
+        matchLabels:
+            app.kubernetes.io/name: factory
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: dashboard
+    template:
+        metadata:
+            labels:
+                {{- include "factory.labels" . | nindent 16 }}
+                app.kubernetes.io/component: dashboard
+        spec:
+            containers:
+                - name: dashboard
+                  image: {{ .Values.dashboard.image }}
+                  imagePullPolicy: {{ .Values.dashboard.imagePullPolicy }}
+                  ports:
+                      - name: http
+                        containerPort: {{ .Values.dashboard.port }}
+                  env:
+                      # The repo-read credential AND the repo list, both from one GitHub App
+                      # installation. `app` is fatal without an id and a key — deliberately.
+                      - name: GITHUB_MODE
+                        value: {{ .Values.github.mode | quote }}
+                      - name: GITHUB_APP_ID
+                        value: {{ .Values.github.appId | quote }}
+                      - name: GITHUB_APP_INSTALLATION_ID
+                        value: {{ .Values.github.installationId | quote }}
+                      - name: GITHUB_APP_PRIVATE_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: github-app-private-key
+                      - name: ORG_ID
+                        value: {{ .Values.org.id | quote }}
+                      - name: ORG_NAME
+                        value: {{ .Values.org.name | quote }}
+                      # The checkouts. Same path the runners mount the claim at: the board writes
+                      # there, and `workspacePath` on a claim is relative to this root.
+                      - name: ORG_WORKSPACE_ROOT
+                        value: {{ .Values.dashboard.workspaceRoot | quote }}
+                      - name: BASE_BRANCH
+                        value: {{ .Values.org.baseBranch | quote }}
+                      - name: SYNC_TTL_SECONDS
+                        value: {{ .Values.telemetry.syncTtlSeconds | quote }}
+                      - name: TELEMETRY_SOURCE
+                        value: {{ .Values.telemetry.source | quote }}
+                      - name: TELEMETRY_TTL_SECONDS
+                        value: {{ .Values.telemetry.ttlSeconds | quote }}
+                      - name: DATABASE_URL
+                        value: {{ include "factory.databaseUrl" . | quote }}
+                      # The wall. Chart default `github`, as compose pins it — this deployment holds
+                      # checkouts and serves a route that runs shell commands.
+                      - name: AUTH_MODE
+                        value: {{ .Values.auth.mode | quote }}
+                      {{- if .Values.auth.allowPublicBind }}
+                      # Only set when asked for: it excepts an open AUTH_MODE from the loopback rule.
+                      - name: AUTH_ALLOW_PUBLIC_BIND
+                        value: {{ .Values.auth.allowPublicBind | quote }}
+                      {{- end }}
+                      - name: GITHUB_OAUTH_CLIENT_ID
+                        value: {{ .Values.auth.oauthClientId | quote }}
+                      - name: GITHUB_OAUTH_CLIENT_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: github-oauth-client-secret
+                      - name: SESSION_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: session-secret
+                      # Under mode=github this is required — loadConfig refuses to boot without an
+                      # origin GitHub can redirect back to.
+                      - name: PUBLIC_URL
+                        value: {{ .Values.auth.publicUrl | quote }}
+                      - name: COOKIE_SECURE
+                        value: {{ .Values.auth.cookieSecure | quote }}
+                      - name: AUTH_BOOTSTRAP_ADMIN
+                        value: {{ .Values.auth.bootstrapAdmin | quote }}
+                      - name: AUTH_AUTO_JOIN_GITHUB_ORG
+                        value: {{ .Values.auth.autoJoinGithubOrg | quote }}
+                      - name: INGEST_TOKEN
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: ingest-token
+                  {{- with .Values.dashboard.resources }}
+                  resources:
+                      {{- toYaml . | nindent 20 }}
+                  {{- end }}
+                  readinessProbe:
+                      httpGet:
+                          path: /api/health
+                          port: http
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                  livenessProbe:
+                      httpGet:
+                          path: /api/health
+                          port: http
+                      initialDelaySeconds: 15
+                      periodSeconds: 30
+                  volumeMounts:
+                      - name: workspaces
+                        mountPath: {{ .Values.dashboard.workspaceRoot }}
+            volumes:
+                - name: workspaces
+                  persistentVolumeClaim:
+                      claimName: {{ include "factory.workspaceClaim" . }}

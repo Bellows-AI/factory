@@ -97,9 +97,41 @@ export function parseRemoteSessionId(line: string): string | null {
 }
 
 /**
- * The board truncates too; this is about not holding an unbounded string in memory first.
+ * The most of a runner's output this process will hold in memory — the board truncates too; this
+ * is about not holding an unbounded string in the first place. Exported because the kubernetes
+ * runner's transport uses it as its sliding-window bound.
  */
-const OUTPUT_LIMIT = 64 * 1024;
+export const OUTPUT_LIMIT = 64 * 1024;
+
+/**
+ * The tail of a runner's output that is safe to put on a complete POST. The board refuses a body
+ * over its 128 KiB limit, and JSON escaping can inflate text up to six bytes per byte of log — a
+ * control character becomes `\u0001` — so the bound is 16 KiB of UTF-8: 96 KiB fully escaped, plus
+ * the rest of the report, still fits. Capping by CHARACTERS instead — 64 KiB of them, the naive
+ * reading of OUTPUT_LIMIT — could triple that with CJK text and sextuple it with control
+ * characters, and the refused report would leave the job to its lease and re-run finished work:
+ * the one outcome worse than a short log.
+ */
+const REPORT_BYTE_LIMIT = 16 * 1024;
+
+const ENCODER = new TextEncoder();
+const DECODER = new TextDecoder('utf-8');
+
+/**
+ * The last `limit` UTF-8 bytes of `text`, as a string. A multibyte character cut at the boundary
+ * decodes to one U+FFFD — at most three extra bytes, once — which is why the bound is stated in
+ * bytes and not approximated by a character count.
+ */
+export function tailBytes(text: string, limit: number): string {
+    const bytes = ENCODER.encode(text);
+    if (bytes.length <= limit) return text;
+    return DECODER.decode(bytes.subarray(bytes.length - limit));
+}
+
+/** The tail of a runner's log that fits a complete POST, whatever the log contained. */
+export function reportTail(logText: string): string {
+    return tailBytes(logText, REPORT_BYTE_LIMIT);
+}
 
 export const containerName = (job: BoardJob): string => `factory-job-${job.id}`;
 
@@ -261,7 +293,9 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
                 const collect = (chunk: Buffer | string) => {
                     output += String(chunk);
                     // Keep the tail: a run that fails says why at the end, and the head is banner.
-                    if (output.length > OUTPUT_LIMIT) output = output.slice(-OUTPUT_LIMIT);
+                    // Byte-true, because the report has to fit the board's body limit whatever the
+                    // log contained — see reportTail.
+                    output = reportTail(output);
                     idle();
                 };
                 child.stdout?.on('data', collect);

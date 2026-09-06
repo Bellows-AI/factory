@@ -1,0 +1,44 @@
+{{/*
+The driver's identity and permissions, in the namespace it runs in — a Role and never a
+ClusterRole, because its reach is exactly the runner Jobs it creates, in the namespace the chart
+installed it to. The verbs are the calls the kubernetes runner makes and nothing more: create a
+Job, read its status, delete it (kill and the re-claim fence), list its pods, read a pod's log.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+    name: {{ include "factory.fullname" . }}-driver
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ include "factory.fullname" . }}-driver
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+rules:
+    - apiGroups: ['batch']
+      resources: ['jobs']
+      verbs: ['create', 'get', 'delete']
+    - apiGroups: ['']
+      resources: ['pods']
+      verbs: ['list']
+    - apiGroups: ['']
+      resources: ['pods/log']
+      verbs: ['get']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ include "factory.fullname" . }}-driver
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ include "factory.fullname" . }}-driver
+subjects:
+    - kind: ServiceAccount
+      name: {{ include "factory.fullname" . }}-driver
+      namespace: {{ .Release.Namespace }}

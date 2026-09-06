@@ -1,0 +1,23 @@
+{{/*
+The organization's checkouts. The dashboard writes them here and every runner mounts the same
+claim — the kubernetes form of the named docker volume the compose services share. Default
+ReadWriteMany because the dashboard and runners share it across nodes; minikube overrides
+ReadWriteOnce in values-minikube.yaml.
+*/}}
+{{- if not .Values.workspaces.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: {{ include "factory.workspaceClaim" . }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    accessModes:
+        {{- toYaml .Values.workspaces.accessModes | nindent 8 }}
+    {{- with .Values.workspaces.storageClass }}
+    storageClassName: {{ . | quote }}
+    {{- end }}
+    resources:
+        requests:
+            storage: {{ .Values.workspaces.storageSize }}
+{{- end }}

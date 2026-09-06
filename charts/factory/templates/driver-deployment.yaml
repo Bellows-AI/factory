@@ -1,0 +1,87 @@
+{{/*
+The driver — this is the "operator for runners": a process that watches the job board and
+reconciles a runner Job per claimed job, in this namespace, with no CRD and no second control
+loop. Its ServiceAccount carries exactly the Role above.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ include "factory.fullname" . }}-driver
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: driver
+spec:
+    replicas: {{ .Values.driver.replicas }}
+    selector:
+        matchLabels:
+            {{- include "factory.labels" . | nindent 12 }}
+            app.kubernetes.io/component: driver
+    template:
+        metadata:
+            labels:
+                {{- include "factory.labels" . | nindent 16 }}
+                app.kubernetes.io/component: driver
+        spec:
+            serviceAccountName: {{ include "factory.fullname" . }}-driver
+            containers:
+                - name: driver
+                  image: {{ .Values.driver.image }}
+                  imagePullPolicy: {{ .Values.driver.imagePullPolicy }}
+                  env:
+                      # The board, by its in-cluster service name. The driver is a client of the HTTP
+                      # board, never of the database — which is the whole reason it can run here
+                      # with nothing but this URL and its namespace.
+                      - name: JOB_BOARD_URL
+                        value: http://{{ include "factory.fullname" . }}:{{ .Values.dashboard.port }}
+                      - name: JOB_BOARD_TOKEN
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: job-board-token
+                                {{- if not .Values.secret.jobBoardToken }}
+                                # The key exists but is empty against an open board — the driver
+                                # omits the header rather than sending it blank. Optional so a
+                                # bring-your-own Secret without this key still boots.
+                                optional: true
+                                {{- end }}
+                      # Runners are Jobs in THIS namespace, discovered from the pod's own identity
+                      # rather than pinned in values — the chart cannot know where the release lands.
+                      - name: K8S_NAMESPACE
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.namespace
+                      - name: EXECUTOR
+                        value: kubernetes
+                      - name: EXECUTOR_IMAGE
+                        value: {{ .Values.driver.executorImage | quote }}
+                      # Runner pods pull like the driver's own: IfNotPresent, so a side-loaded
+                      # executor image is used rather than reached for.
+                      - name: RUNNER_IMAGE_PULL_POLICY
+                        value: {{ .Values.driver.imagePullPolicy | quote }}
+                      # The claim the checkouts live on — the same one the dashboard writes to.
+                      - name: WORKSPACE_VOLUME
+                        value: {{ include "factory.workspaceClaim" . | quote }}
+                      - name: WORKSPACE_MOUNT
+                        value: {{ .Values.dashboard.workspaceRoot | quote }}
+                      - name: DRIVER_CONCURRENCY
+                        value: {{ .Values.driver.concurrency | quote }}
+                      - name: DRIVER_POLL_MS
+                        value: {{ .Values.driver.pollMs | quote }}
+                      - name: DRIVER_LEASE_SECONDS
+                        value: {{ .Values.driver.leaseSeconds | quote }}
+                      - name: DRIVER_JOB_TIMEOUT_MS
+                        value: {{ .Values.driver.jobTimeoutMs | quote }}
+                      {{- if .Values.driver.skipPermissions }}
+                      - name: RUNNER_SKIP_PERMISSIONS
+                        value: {{ .Values.driver.skipPermissions | quote }}
+                      {{- end }}
+                      {{- if or .Values.runner.credentialsExistingSecret .Values.secret.create }}
+                      - name: RUNNER_CREDENTIALS_SECRET
+                        value: {{ include "factory.runnerSecretName" . | quote }}
+                      - name: RUNNER_ENV
+                        value: {{ .Values.runner.env | quote }}
+                      {{- end }}
+                  {{- with .Values.driver.resources }}
+                  resources:
+                      {{- toYaml . | nindent 20 }}
+                  {{- end }}

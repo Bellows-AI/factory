@@ -21,6 +21,7 @@
         "test": "vitest run",
         "test:db": "vitest run --config vitest.db.config.ts",
         "test:jobs": "bash scripts/test-jobs.sh",
+        "test:k8s": "bash scripts/test-k8s.sh",
         "verify:ui": "playwright test",
         "typecheck": "tsc -b",
         "backfill": "npm run build -w core && npm run build -w server && node server/dist/backfill/cli.js",
