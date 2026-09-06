@@ -108,122 +108,116 @@ export function TasksPanel({
                 <h2>Tasks</h2>
             </div>
 
-            {repos.length === 0 ? (
-                <p className="muted">
-                    Select repositories first — each repository workspace keeps its own task chat.
-                </p>
-            ) : (
-                <>
-                    <div className="tabs" aria-label="Repositories">
-                        <button
-                            type="button"
-                            className={repo === null ? 'tab is-active' : 'tab'}
-                            onClick={() => onRepo(null)}
-                        >
-                            All
-                        </button>
-                        {repos.map(({ owner, name }) => {
-                            const full = `${owner}/${name}`;
-                            return (
-                                <button
-                                    key={full}
-                                    type="button"
-                                    className={repo === full ? 'tab is-active' : 'tab'}
-                                    onClick={() => onRepo(full)}
-                                >
-                                    {full}
-                                </button>
-                            );
-                        })}
-                    </div>
+            <>
+                <div className="tabs" aria-label="Repositories">
+                    <button
+                        type="button"
+                        className={repo === null ? 'tab is-active' : 'tab'}
+                        onClick={() => onRepo(null)}
+                    >
+                        All
+                    </button>
+                    {repos.map(({ owner, name }) => {
+                        const full = `${owner}/${name}`;
+                        return (
+                            <button
+                                key={full}
+                                type="button"
+                                className={repo === full ? 'tab is-active' : 'tab'}
+                                onClick={() => onRepo(full)}
+                            >
+                                {full}
+                            </button>
+                        );
+                    })}
+                </div>
 
-                    <div className="chat">
-                        {jobs === null ? (
-                            <p className="status">Loading tasks…</p>
-                        ) : jobs.length === 0 ? (
-                            <p className="muted">No tasks here yet. Type one below and it is queued for an executor.</p>
-                        ) : (
-                            [...jobs].reverse().map((task) => (
-                                <article key={task.id} className="chat-exchange">
-                                    <p className="msg-user">{task.command}</p>
-                                    <p className="msg-meta">
-                                        <span className="pill">{task.status}</span>
-                                        {task.executor !== null ? <span className="pill">{task.executor}</span> : null}
-                                        {task.exitCode !== null ? <span className="chat-exit">exit {task.exitCode}</span> : null}
-                                        <span className="muted">{taskTime(task.createdAt)}</span>
-                                        {task.status === 'standby' ? (
-                                            <button
-                                                type="button"
-                                                className="chat-resume"
-                                                disabled={resumingId === task.id}
-                                                onClick={() => void resume(task.id)}
-                                            >
-                                                Resume
-                                            </button>
-                                        ) : null}
+                <div className="chat">
+                    {jobs === null ? (
+                        <p className="status">Loading tasks…</p>
+                    ) : jobs.length === 0 ? (
+                        <p className="muted">No tasks here yet. Type one below and it is queued for an executor.</p>
+                    ) : (
+                        [...jobs].reverse().map((task) => (
+                            <article key={task.id} className="chat-exchange">
+                                <p className="msg-user">{task.command}</p>
+                                <p className="msg-meta">
+                                    <span className="pill">{task.status}</span>
+                                    {task.executor !== null ? <span className="pill">{task.executor}</span> : null}
+                                    {task.exitCode !== null ? <span className="chat-exit">exit {task.exitCode}</span> : null}
+                                    <span className="muted">{taskTime(task.createdAt)}</span>
+                                    {task.status === 'standby' ? (
                                         <button
                                             type="button"
-                                            className="chat-toggle"
-                                            onClick={() => onSelect(selectedId === task.id ? null : task.id)}
+                                            className="chat-resume"
+                                            disabled={resumingId === task.id}
+                                            onClick={() => void resume(task.id)}
                                         >
-                                            {selectedId === task.id ? 'Hide output' : 'Output'}
+                                            Resume
                                         </button>
-                                    </p>
-                                    {selectedId === task.id ? (
-                                        <div className="chat-detail">
-                                            {detailError !== null ? (
-                                                <p className="muted">{detailError}</p>
-                                            ) : detail === null || detail.id !== task.id ? (
-                                                // Nothing is known yet, so nothing is claimed: a
-                                                // finished task's output may simply not have loaded.
-                                                <p className="muted">Loading output…</p>
-                                            ) : detail.output !== null ? (
-                                                <pre className="chat-output">{detail.output}</pre>
-                                            ) : (
-                                                <p className="muted">
-                                                    {isTerminal(detail.status) ? 'No output recorded.' : 'Waiting for the executor…'}
-                                                </p>
-                                            )}
-                                        </div>
                                     ) : null}
-                                </article>
-                            ))
-                        )}
-                    </div>
+                                    <button
+                                        type="button"
+                                        className="chat-toggle"
+                                        onClick={() => onSelect(selectedId === task.id ? null : task.id)}
+                                    >
+                                        {selectedId === task.id ? 'Hide output' : 'Output'}
+                                    </button>
+                                </p>
+                                {selectedId === task.id ? (
+                                    <div className="chat-detail">
+                                        {detailError !== null ? (
+                                            <p className="muted">{detailError}</p>
+                                        ) : detail === null || detail.id !== task.id ? (
+                                            // Nothing is known yet, so nothing is claimed: a
+                                            // finished task's output may simply not have loaded.
+                                            <p className="muted">Loading output…</p>
+                                        ) : detail.output !== null ? (
+                                            <pre className="chat-output">{detail.output}</pre>
+                                        ) : (
+                                            <p className="muted">
+                                                {isTerminal(detail.status) ? 'No output recorded.' : 'Waiting for the executor…'}
+                                            </p>
+                                        )}
+                                    </div>
+                                ) : null}
+                            </article>
+                        ))
+                    )}
+                </div>
 
-                    <div className="composer">
-                        <textarea
-                            className="composer-input"
-                            placeholder="Describe the task…"
-                            value={draft}
-                            onChange={(e) => setDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
-                            }}
-                        />
-                        <div className="composer-row">
-                            <label className="composer-label">
-                                Executor{' '}
-                                <select
-                                    className="composer-select"
-                                    value={executor}
-                                    onChange={(e) => setExecutor(e.target.value)}
-                                >
-                                    <option value="">none</option>
-                                    {executors.map((candidate) => (
-                                        <option key={candidate.name} value={candidate.name}>
-                                            {candidate.name}
-                                        </option>
-                                    ))}
-                                </select>
-                            </label>
-                            <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
-                                Send
-                            </button>
-                        </div>
+                <div className="composer">
+                    <textarea
+                        className="composer-input"
+                        placeholder="Describe the task…"
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
+                        }}
+                    />
+                    <div className="composer-row">
+                        <label className="composer-label">
+                            Executor{' '}
+                            <select
+                                className="composer-select"
+                                value={executor}
+                                onChange={(e) => setExecutor(e.target.value)}
+                            >
+                                <option value="">none</option>
+                                {executors.map((candidate) => (
+                                    <option key={candidate.name} value={candidate.name}>
+                                        {candidate.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+                            Send
+                        </button>
                     </div>
-                </>
-            )}
+                </div>
+            </>
         </section>
     );
 }

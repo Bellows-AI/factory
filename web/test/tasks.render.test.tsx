@@ -165,9 +165,15 @@ describe('TasksPanel', () => {
         expect(html).toMatch(/No tasks/);
     });
 
-    it('says to select repositories first when the workspace has none', () => {
-        const html = render({ repos: [] });
-        expect(html).toMatch(/Select repositories/);
+    it('keeps the All thread and composer reachable when no repository is selected', () => {
+        // A deselected repository must not take its jobs with it: repo-less tasks stay on All.
+        const html = render({ repos: [], jobs: [job({ status: 'standby', command: 'resume me without a repo' })] });
+        expect(html).toContain('>All</button>');
+        expect(html).toContain('<textarea');
+        expect(html).toContain('>Send<');
+        expect(html).toContain('resume me without a repo');
+        expect(html).toContain('Resume');
+        expect(html).not.toMatch(/Select repositories/);
     });
 
     it('does not blame the selection for a workspace that has not answered', () => {
