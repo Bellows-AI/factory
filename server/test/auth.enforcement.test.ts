@@ -43,6 +43,7 @@ const jobStub = (): JobStore =>
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 userId: null,
                 resumeSessionId: null,
+                followUp: false,
             } satisfies Claim;
         },
         async heartbeat() {
@@ -121,6 +122,10 @@ describe('the route table', () => {
         [`/api/jobs/${JOB_ID}`, 'user'],
         // Nobody holds a parked job, which is exactly what makes resuming one a person's action.
         [`/api/jobs/${JOB_ID}/resume`, 'user'],
+        // Both are person's actions on a finished task — a follow-up asks for adjustments, done
+        // declares the task finished by hand — and both fall through to `user` like resume does.
+        [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
+        [`/api/jobs/${JOB_ID}/done`, 'user'],
         ['/api/jobs/claim', 'worker'],
         [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
         [`/api/jobs/${JOB_ID}/session`, 'worker'],

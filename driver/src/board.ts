@@ -11,6 +11,13 @@ export interface BoardJob {
      */
     resumeSessionId: string | null;
     /**
+     * True when this claim resumes a session AND should still deliver the command into it — a
+     * follow-up on a finished task, whose restored transcript is the parent conversation and whose
+     * command is the new adjustment. False on a parked resume, where the delivered-once rule holds.
+     * Read defensively like everything else here: a board that predates follow-ups omits it.
+     */
+    followUp: boolean;
+    /**
      * The account that queued the job, or null for an unattributed one.
      *
      * Still not read here — the per-user Claude credential is what will read it. `workspacePath`
@@ -102,6 +109,7 @@ export function createBoard({
             return {
                 ...(claimed as BoardJob),
                 resumeSessionId: claimed.resumeSessionId ?? null,
+                followUp: claimed.followUp ?? false,
                 userId: claimed.userId ?? null,
                 workspacePath: claimed.workspacePath ?? null,
             };

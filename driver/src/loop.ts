@@ -274,23 +274,24 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
                 }
 
                 /*
-                 * A parked job's session cannot follow it across a RUNNER_CLI flip.
+                 * A job's session cannot follow it across a RUNNER_CLI flip.
                  *
                  * Standby is a Remote Control feature and opencode refuses Remote Control at
                  * startup, so a claim carrying resumeSessionId under opencode means the operator
-                 * changed the CLI while a job was parked. Restoring it is impossible — opencode
-                 * cannot adopt a session id — and re-running the command would re-enter a
-                 * transcript somebody may have been driving by hand. Failed with a reason, so the
-                 * job reaches a terminal state somebody can act on.
+                 * changed the CLI while a job was parked — or while a follow-up was waiting.
+                 * Restoring it is impossible — opencode cannot adopt a session id — and re-running
+                 * the command would re-enter a transcript somebody may have been driving by hand.
+                 * Failed with a reason, so the job reaches a terminal state somebody can act on.
                  */
                 if (config.cli === 'opencode' && job.resumeSessionId) {
-                    log(`job ${job.id}: parked with a session this opencode driver cannot restore, failing`);
+                    log(`job ${job.id}: carries a session this opencode driver cannot restore, failing`);
                     await board
                         .complete(job, {
                             status: 'failed',
                             exitCode: null,
-                            output:
-                                'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
+                            output: job.followUp
+                                ? 'This job continues an agent session, and this driver runs opencode, whose runner cannot restore a session it did not start. Follow up on the task again once a claude-code driver is serving this queue.'
+                                : 'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
                         })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;

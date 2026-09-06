@@ -28,6 +28,10 @@ export function TasksPanel({
     onResume,
     onSend,
     sending,
+    followUpTarget,
+    onFollowUp,
+    onCancelFollowUp,
+    onDone,
 }: {
     /**
      * The member's selected repositories, one tab each. Null while the workspace poll has not
@@ -53,10 +57,20 @@ export function TasksPanel({
     onResume: (id: string) => Promise<void>;
     onSend: (command: string, executor: string | null) => Promise<string | null>;
     sending: boolean;
+    /** The finished task the next Send follows up on, while one is armed. */
+    followUpTarget: string | null;
+    onFollowUp: (id: string) => void;
+    onCancelFollowUp: () => void;
+    onDone: (id: string) => Promise<void>;
 }) {
     const [draft, setDraft] = useState('');
     const [executor, setExecutor] = useState('');
     const [resumingId, setResumingId] = useState<string | null>(null);
+    const [doneId, setDoneId] = useState<string | null>(null);
+
+    // The armed target names itself by its command, or is simply absent when the task is not in
+    // the list this panel was handed.
+    const target = followUpTarget !== null ? jobs?.find((task) => task.id === followUpTarget) ?? null : null;
 
     // A configured executor can be deleted on the Workspace page while a draft sits here; the
     // select would go blank while `send` still submitted the stale name. Clamp to what exists.
@@ -65,6 +79,14 @@ export function TasksPanel({
             setExecutor('');
         }
     }, [executors, executor]);
+
+    // An armed target the current list no longer carries — a tab switch, or a task that fell out
+    // of the served window — cannot be replied to from here, and the composer has already gone
+    // back to reading as a fresh one. Disarm rather than let the next Send continue a
+    // conversation the member can no longer see.
+    useEffect(() => {
+        if (followUpTarget !== null && target === null) onCancelFollowUp();
+    }, [followUpTarget, target, onCancelFollowUp]);
 
     const send = async () => {
         if (!draft.trim() || sending) return;
@@ -79,6 +101,18 @@ export function TasksPanel({
             await onResume(id);
         } finally {
             setResumingId(null);
+        }
+    };
+
+    // One in-flight mark at a time, like resume: the button says nothing while the request runs,
+    // and the pill arrives with the next poll.
+    const done = async (id: string) => {
+        if (doneId !== null) return;
+        setDoneId(id);
+        try {
+            await onDone(id);
+        } finally {
+            setDoneId(null);
         }
     };
 
@@ -139,11 +173,15 @@ export function TasksPanel({
                         <p className="muted">No tasks here yet. Type one below and it is queued for an executor.</p>
                     ) : (
                         [...jobs].reverse().map((task) => (
-                            <article key={task.id} className="chat-exchange">
+                            <article
+                                key={task.id}
+                                className={task.followUpTo !== null ? 'chat-exchange chat-follow-up' : 'chat-exchange'}
+                            >
                                 <p className="msg-user">{task.command}</p>
                                 <p className="msg-meta">
                                     <span className="pill">{task.status}</span>
                                     {task.executor !== null ? <span className="pill">{task.executor}</span> : null}
+                                    {task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
                                     {task.exitCode !== null ? <span className="chat-exit">exit {task.exitCode}</span> : null}
                                     <span className="muted">{taskTime(task.createdAt)}</span>
                                     {task.status === 'standby' ? (
@@ -155,6 +193,28 @@ export function TasksPanel({
                                         >
                                             Resume
                                         </button>
+                                    ) : null}
+                                    {isTerminal(task.status) && task.doneAt === null ? (
+                                        // The run ending is not the task ending: the user can ask
+                                        // for an adjustment (the composer arms itself) or close the
+                                        // task by hand. Neither exists once they have said done.
+                                        <>
+                                            <button
+                                                type="button"
+                                                className="chat-resume"
+                                                disabled={doneId === task.id}
+                                                onClick={() => void done(task.id)}
+                                            >
+                                                Done
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="chat-resume"
+                                                onClick={() => onFollowUp(task.id)}
+                                            >
+                                                Follow up
+                                            </button>
+                                        </>
                                     ) : null}
                                     <button
                                         type="button"
@@ -187,9 +247,20 @@ export function TasksPanel({
                 </div>
 
                 <div className="composer">
+                    {target !== null ? (
+                        // The composer says which task the next Send continues, with a way out —
+                        // an armed follow-up that reads as a fresh task would queue work nobody
+                        // asked for.
+                        <p className="composer-target">
+                            Replying to “{target.command}”{' '}
+                            <button type="button" className="chat-resume" onClick={onCancelFollowUp}>
+                                Cancel
+                            </button>
+                        </p>
+                    ) : null}
                     <textarea
                         className="composer-input"
-                        placeholder="Describe the task…"
+                        placeholder={target !== null ? 'Describe the adjustment…' : 'Describe the task…'}
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
                         onKeyDown={(e) => {

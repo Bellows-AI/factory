@@ -36,6 +36,18 @@ export interface Job {
      */
     repo: string | null;
     executor: string | null;
+    /**
+     * The finished task this job asks for adjustments on, when it is a follow-up. The tasks chat's
+     * conversation thread; null on every job queued before the mechanic and on every first task.
+     * A follow-up carries a copy of the parent's session ids from insert, which is what makes the
+     * run a continuation of that conversation rather than a fresh start.
+     */
+    followUpTo: string | null;
+    /**
+     * When the user declared the task done — the verdict no run can make. Null until they say so,
+     * and only settable on a finished task; it never replaces the run's own outcome.
+     */
+    doneAt: string | null;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -77,6 +89,15 @@ export interface Claim {
      * re-delivered — it was delivered on the first run and is in the transcript.
      */
     resumeSessionId: string | null;
+    /**
+     * True only when `resumeSessionId` is set AND this claim should still deliver the command into
+     * it — a follow-up's first (or crashed) attempt, where the restored transcript is the parent
+     * conversation and the command is the new adjustment. False on every parked resume, where the
+     * command is already in the transcript and re-delivering it would re-run work somebody may
+     * have been driving by hand. Absent on a board that predates follow-ups, so it is read as
+     * `?? false` on the driver side.
+     */
+    followUp: boolean;
 }
 
 /**
@@ -88,6 +109,21 @@ export interface Claim {
  */
 export type LeaseResult = 'ok' | 'lost' | 'missing';
 
+/**
+ * Why a follow-up was refused.
+ *
+ * - `missing`      no such job in this organization.
+ * - `not_finished` the parent is still queued, running or parked — its run is not over.
+ * - `task_done`    the user has declared the task done; the conversation is closed.
+ * - `no_session`   the parent has no agent session to continue — every opencode run, and a
+ *                  claude-code run that died before its driver reported the session. Starting a
+ *                  fresh run would look like a continuation while carrying nothing over.
+ * - `forbidden`    the parent was queued by a different account. The child would inherit the
+ *                  parent's session, and a session resumes only in the checkout tree it ran in —
+ *                  the author's; a member's command may only ever run in their own tree.
+ */
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden';
+
 export interface JobStore {
     /**
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
@@ -97,6 +133,28 @@ export interface JobStore {
      * `target` carries the optional repo/executor labels the tasks chat groups and displays by.
      */
     create(command: string, createdBy: string | null, target: { repo: string | null; executor: string | null }): Promise<{ id: string }>;
+    /**
+     * Queues a follow-up on a finished task: a new job that inherits the parent's repo and session
+     * ids, linked through `followUpTo`. Atomic and conditional — the insert only lands when the
+     * parent is finished, not done, carries a session, and is the caller's own task — so the
+     * refusals above are decided in the same statement that would have created the row, never by
+     * a read that could race a claim or a completion in between.
+     *
+     * `executor` is the new label for the new command; everything else the thread shares is the
+     * parent's.
+     */
+    createFollowUp(
+        parentId: string,
+        command: string,
+        createdBy: string | null,
+        executor: string | null,
+    ): Promise<{ id: string } | FollowUpRefusal>;
+    /**
+     * The user's verdict that the task is done. Terminal tasks only — a moving run is not the
+     * user's to finish. Idempotent: marking a done task done again answers the same instant, and
+     * the status rides along so the route can echo the task's state without a second read.
+     */
+    markDone(id: string): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
     heartbeat(id: string, leaseToken: string, leaseSeconds: number): Promise<{ result: LeaseResult; leaseExpiresAt: string | null }>;
@@ -148,6 +206,9 @@ interface JobRow {
     output?: string | null;
     repo: string | null;
     executor: string | null;
+    parent_job_id: string | null;
+    done_at: Date | null;
+    command_delivered_at: Date | null;
     created_at: Date;
     started_at: Date | null;
     finished_at: Date | null;
@@ -169,6 +230,8 @@ const toJob = (row: JobRow): Job => ({
     output: row.output ?? null,
     repo: row.repo,
     executor: row.executor,
+    followUpTo: row.parent_job_id,
+    doneAt: iso(row.done_at),
     createdAt: row.created_at.toISOString(),
     startedAt: iso(row.started_at),
     finishedAt: iso(row.finished_at),
@@ -210,6 +273,71 @@ export function createJobStore({
             return { id: rows[0]!.id };
         },
 
+        async createFollowUp(parentId, command, createdBy, executor) {
+            await gate();
+            // One conditional insert: the select carries every precondition (finished, not done,
+            // has a session, same org), so a follow-up can never land on a parent that fails one.
+            // The select also takes the parent row's lock, which is what makes a racing markDone
+            // impossible to answer from a stale snapshot: under READ COMMITTED, whichever statement
+            // gets the lock second re-checks the qualifications against the row's newest committed
+            // version — a done parent yields no row and the read below answers task_done, never a
+            // done task with queued follow-up work. The author predicate is null-safe (`is not
+            // distinct from`): a null caller may only follow up a parent with no author — the
+            // state every pre-accounts task is in — and an authored parent refuses a caller with
+            // no account, which is the read below's forbidden answer. The session ids are copied
+            // at insert, which is what makes the claim resume the parent conversation without any
+            // new claim-side rule.
+            const rows = await sql<{ id: string }[]>`
+                with parent as (
+                    select id, repo, session_id, remote_session_id
+                    from job
+                    where org_id = ${orgId} and id = ${parentId}
+                      and status in ('succeeded','failed','dead')
+                      and done_at is null
+                      and session_id is not null
+                      and created_by is not distinct from ${createdBy}
+                    for update
+                )
+                insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id)
+                select ${orgId}, ${command}, ${createdBy}, repo, ${executor}, id, session_id, remote_session_id
+                from parent
+                returning id
+            `;
+            if (rows[0]) return { id: rows[0]!.id };
+            // Nothing inserted — one of the five preconditions failed, and which one decides the
+            // answer the route turns into a status code. Forbidden is last: a sessionless parent
+            // answers the truer no_session whoever asks, and a parent with no author falls through
+            // the author check rather than refusing.
+            if (!(await exists(sql, orgId, parentId))) return 'missing';
+            const [parent] = await sql<
+                { status: JobStatus; done_at: Date | null; session_id: string | null; created_by: string | null }[]
+            >`
+                select status, done_at, session_id, created_by from job where org_id = ${orgId} and id = ${parentId}
+            `;
+            if (parent!.done_at !== null) return 'task_done';
+            if (parent!.status !== 'succeeded' && parent!.status !== 'failed' && parent!.status !== 'dead') {
+                return 'not_finished';
+            }
+            if (parent!.session_id === null) return 'no_session';
+            if (parent!.created_by !== createdBy) return 'forbidden';
+            return 'no_session';
+        },
+
+        async markDone(id) {
+            await gate();
+            // coalesce, not assignment: the second "done" answers the first one's instant, which
+            // is what makes the route idempotent rather than silently rewriting history.
+            const rows = await sql<{ status: JobStatus; done_at: Date }[]>`
+                update job set done_at = coalesce(done_at, now())
+                where org_id = ${orgId} and id = ${id}
+                  and status in ('succeeded','failed','dead')
+                returning status, done_at
+            `;
+            const row = rows[0];
+            if (row) return { status: row.status, doneAt: row.done_at.toISOString() };
+            return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
+        },
+
         async claim(worker, leaseSeconds) {
             await gate();
 
@@ -230,6 +358,8 @@ export function createJobStore({
                     lease_expires_at: Date;
                     created_by: string | null;
                     session_id: string | null;
+                    parent_job_id: string | null;
+                    follow_up: boolean;
                 }[]
             >`
                 update job set
@@ -240,14 +370,21 @@ export function createJobStore({
                     -- Unconditional, not coalesce(started_at, now()): this must describe the
                     -- attempt that is about to run, or every duration is measured from attempt 1.
                     started_at       = now(),
-                    -- Kept only when the job was parked and put back in the queue, which is the one
-                    -- case where the previous session IS this attempt. The status read here is the
-                    -- row's value BEFORE this update, so 'running' means a lease that expired:
-                    -- that attempt's session is not this one, and leaving it would show a link to a
-                    -- run whose output was thrown away.
-                    session_id       = case when status = 'queued' then session_id else null end,
-                    remote_session_id =
-                        case when status = 'queued' then remote_session_id else null end,
+                    -- Kept when the job was parked and put back in the queue, and on a follow-up,
+                    -- whose session IS the parent conversation it continues. The status read here
+                    -- is the row's value BEFORE this update, so 'running' means a lease that
+                    -- expired: for an ordinary job that attempt's session is not this one, and
+                    -- leaving it would show a link to a run whose output was thrown away. A
+                    -- follow-up keeps its copied session through a crash, because the session
+                    -- carries the whole conversation, not just the dead attempt's work.
+                    session_id       = case
+                        when status = 'queued' or parent_job_id is not null then session_id
+                        else null
+                    end,
+                    remote_session_id = case
+                        when status = 'queued' or parent_job_id is not null then remote_session_id
+                        else null
+                    end,
                     lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
                 where org_id = ${orgId} and id = (
                     select id from job
@@ -262,7 +399,14 @@ export function createJobStore({
                     -- because this subquery is holding the row lock.
                     for update skip locked
                 )
-                returning id, command, attempts, lease_token, lease_expires_at, created_by, session_id
+                -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
+                -- their pre-update values: delivered-so-far is exactly "this row was suspended at
+                -- least once with its command in the transcript". A fresh or crashed follow-up has
+                -- never been parked, so its command still has to go out; a resumed parked one has,
+                -- so it must not.
+                returning id, command, attempts, lease_token, lease_expires_at, created_by,
+                          session_id,
+                          (parent_job_id is not null and command_delivered_at is null) as follow_up
             `;
 
             const row = rows[0];
@@ -280,6 +424,7 @@ export function createJobStore({
                 workspacePath: hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null,
                 // Survived the case above, so this claim is a resume.
                 resumeSessionId: row.session_id,
+                followUp: row.follow_up,
             };
         },
 
@@ -324,6 +469,10 @@ export function createJobStore({
                     -- difference between the next poll picking it up and it sitting in 'queued'
                     -- until the lease the parked worker was holding finally runs out.
                     lease_expires_at = now(),
+                    -- The command is in the transcript now, and this is the moment that becomes
+                    -- true: the claim reads this column to keep a resumed follow-up from
+                    -- re-delivering it (see claim). coalesce, so parking twice stamps once.
+                    command_delivered_at = coalesce(command_delivered_at, now()),
                     -- Hands back the attempt the claim took. A suspend is not a failed try, so
                     -- parking a job a hundred times must never exhaust max_attempts — while a run
                     -- that keeps killing its worker still does.
@@ -373,7 +522,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, repo, executor,
-                       created_at, started_at, finished_at
+                       parent_job_id, done_at, created_at, started_at, finished_at
                 from job where org_id = ${orgId} and id = ${id}
             `;
             const row = rows[0];
@@ -385,7 +534,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, repo, executor,
-                       created_at, started_at, finished_at
+                       parent_job_id, done_at, created_at, started_at, finished_at
                 from job
                 where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}
                   ${repo ? sql`and repo = ${repo}` : sql``}

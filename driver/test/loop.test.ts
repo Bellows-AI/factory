@@ -13,6 +13,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     resumeSessionId,
+    followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 });

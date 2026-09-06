@@ -20,6 +20,10 @@ export interface Job {
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */
     executor: string | null;
+    /** The finished task this one asks for adjustments on, when it is a follow-up. */
+    followUpTo: string | null;
+    /** When the user declared the task done, or null while they have not. */
+    doneAt: string | null;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -51,6 +55,8 @@ export function useJobs(repo: string | null): {
     error: string | null;
     queue: (command: string, executor: string | null) => Promise<string | null>;
     resume: (id: string) => Promise<string | null>;
+    followUp: (id: string, command: string, executor: string | null) => Promise<string | null>;
+    markDone: (id: string) => Promise<string | null>;
 } {
     const [jobs, setJobs] = useState<Job[] | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -176,7 +182,56 @@ export function useJobs(repo: string | null): {
         [start],
     );
 
-    return { jobs, loading, error, queue, resume };
+    // Both of these are a person's verdict on a finished task — an adjustment to ask for, or the
+    // declaration that it is done — so both re-arm the poll exactly as queue and resume do: the
+    // member sees the follow-up appear, or the done state land, on the next tick.
+    const followUp = useCallback(
+        async (id: string, command: string, executor: string | null): Promise<string | null> => {
+            try {
+                const response = await fetch(`/api/jobs/${id}/follow-up`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ command, executor }),
+                });
+                if (response.status === 401) {
+                    reportUnauthenticated();
+                    return 'Your session expired';
+                }
+                if (!response.ok) {
+                    const body = (await response.json().catch(() => ({}))) as { error?: string };
+                    return body.error ?? `Could not queue the follow-up (${response.status})`;
+                }
+                start();
+                return null;
+            } catch (e) {
+                return (e as Error).message;
+            }
+        },
+        [start],
+    );
+
+    const markDone = useCallback(
+        async (id: string): Promise<string | null> => {
+            try {
+                const response = await fetch(`/api/jobs/${id}/done`, { method: 'POST' });
+                if (response.status === 401) {
+                    reportUnauthenticated();
+                    return 'Your session expired';
+                }
+                if (!response.ok) {
+                    const body = (await response.json().catch(() => ({}))) as { error?: string };
+                    return body.error ?? `Could not mark the task done (${response.status})`;
+                }
+                start();
+                return null;
+            } catch (e) {
+                return (e as Error).message;
+            }
+        },
+        [start],
+    );
+
+    return { jobs, loading, error, queue, resume, followUp, markDone };
 }
 
 /**

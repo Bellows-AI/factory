@@ -16,9 +16,10 @@ unauthenticated, and a socket on that process would make it root on the host.
 
 ```
 POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
-                                        userId, workspacePath, resumeSessionId} | 204
+                                        userId, workspacePath, resumeSessionId, followUp} | 204
   every request carries `authorization: Bearer $JOB_BOARD_TOKEN`, when the board requires one
   resumeSessionId ? restore that session : mint one, POST /api/jobs/:id/session
+  followUp ? deliver the command into the restored session : a park resume delivers nothing
   spawn the runner with the command, as that session
   (claude-code mints and reports a session uuid; opencode does neither — see below)
   POST /api/jobs/:id/heartbeat {leaseToken}     every leaseSeconds/3, while it runs
@@ -141,7 +142,9 @@ refused at startup with `RUNNER_REMOTE_CONTROL` (that is claude-code's bridge) a
 A parked job claimed by an opencode driver is failed with a reason rather than restored: standby
 is a Remote Control feature, so a claim carrying `resumeSessionId` under opencode means the
 operator flipped `RUNNER_CLI` while something was parked, and re-running that command would
-re-enter a transcript somebody may have been driving by hand.
+re-enter a transcript somebody may have been driving by hand. The same asymmetry is why an
+**opencode task can never be followed up** (`409 NO_SESSION` at the board): there is no session id
+to continue, and the refusal lives at follow-up time rather than as a silent fresh run.
 
 ## The session ids, and driving a job from the Claude UI
 
@@ -241,7 +244,9 @@ new one resumes it with `--resume <sessionId>` — which keeps the original id, 
 separate flag. The link the UI shows does not move when a job is parked.
 
 The command is delivered **once**. On a resume it is already in the transcript, and sending it again
-would re-run the work somebody has been driving by hand.
+would re-run the work somebody has been driving by hand. The follow-up is the one exception, decided
+by the board and not the driver: its command is new, so the claim says `followUp` and it goes into
+the restored transcript — see the section above.
 
 **Silence is the idle signal because it is the one the driver already has.** It reads every chunk
 the container writes, so a timer reset on each one costs nothing and keeps this process a client of
@@ -267,6 +272,56 @@ resumable by a request from outside rather than only by the worker that parked i
 `409 NOT_STANDBY` for a job that exists but is not parked, which has to read differently from a
 `404`: resuming a finished job is a caller mistake, not a missing row.
 
+## Follow-ups and done: a task is over when the user says so
+
+A run finishing is not a task finishing. `POST /api/jobs/:id/follow-up {command, executor?}` queues
+an adjustment on a **finished** task as a continuation of what it just did, and `POST
+/api/jobs/:id/done` records the user closing the task by hand. Between "the executor stopped
+talking" and "I am satisfied" sit as many rounds of "again, but tighter" as the human wants.
+
+**A follow-up is a NEW job row, never an edit of the parent.** `job` is an audit record of what ran
+(the `created_by` precedent), and overwriting the parent's command or output would erase the very
+run the user is following up on. The new row carries `parent_job_id` — the chat renders it as a
+reply — and copies of the parent's `repo`, `session_id` and `remote_session_id` from insert. The
+repo copy keeps the thread in its tab; the session copies are what make the claim resume the parent
+conversation without any new claim-side rule.
+
+**A follow-up is the author's, because of where the resumed session would run.** The child inherits
+the parent's `session_id`, and a session resumes only coherently in the checkout tree it ran in —
+the AUTHOR's. The workspace invariant already settles that a member's command only ever runs in
+their own tree, and running the follower's command in the author's tree is not an option either, so
+the insert-select also requires the parent's `created_by` to be the caller, and a mismatch answers
+`403 FORBIDDEN`. It is the last refusal checked: a sessionless parent answers the truer `NO_SESSION`
+whoever asks, and a caller with no account can only follow up a task with no author — the state
+every task queued before accounts existed is in.
+
+**Every refusal is decided atomically with the insert.** One conditional insert-select requires the
+parent to be finished, not done, to carry a session, and to be the caller's own task — and it takes
+the parent row's lock, so it cannot race a completion, a second follow-up, or another request's
+`done` from a stale snapshot. The read that names which precondition failed runs only when nothing
+inserted, and a parent that moves on between the two can make a refusal name the newer state; the
+retry succeeds. `409 NO_SESSION` is the interesting one: **an opencode task can never be followed
+up**, because opencode mints its own session ids and the board never sees one — there is nothing
+honest to continue, and starting a fresh run would look like a continuation while carrying nothing
+over. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
+retried click answers the first verdict's instant rather than rewriting it.
+
+**Delivering the command into a restored session is the follow-up's exception to delivered-once, and
+`command_delivered_at` is what keeps it an exception.** A follow-up's command is the NEW adjustment
+and the restored transcript is the conversation it continues, so it goes out even though the claim
+resumes (`followUp: true` → `--resume <id> -p <command>`). But a follow-up that was PARKED has its
+command in the transcript already, and its resume is an ordinary resume delivering nothing. `suspend`
+stamps `command_delivered_at` — parking is the moment "the command sits in a transcript somebody may
+have been driving" becomes true — and the claim returns `followUp` from the pre-update value, so a
+fresh or crashed follow-up delivers and a parked one does not.
+
+**A crashed follow-up attempt keeps the session through the re-claim, where an ordinary job's is
+cleared.** The claim's keep predicate ("kept when parked", below) extends to rows carrying
+`parent_job_id`: the session holds the whole conversation, not just the dead attempt's work, and
+clearing it would throw the thread away with the attempt. The command re-delivers on that re-claim,
+which is the ordinary retry semantics for a headless run — and unreachable for Remote Control in
+practice, since a drivable job parks on silence before its lease can expire.
+
 ## Decisions
 
 **Leases, not a status flag.** A worker that dies mid-job cannot tell anyone, so a claim expires.
@@ -289,10 +344,12 @@ opposite of parking it. As a status it falls outside `job_claimable`'s partial p
 Adding it did cost the constraint rewrite that 006's header warns about; that was cheaper than a
 second predicate on the hot path.
 
-**A claim resumes a session only when the job was parked.** The claim keeps `session_id` when the
-row's previous status was `queued` and clears it otherwise, so a lease that expired mid-run starts
-fresh. That attempt's session is not this one, and replaying its transcript would resume work whose
-output was thrown away.
+**A claim resumes a session only when the job was parked or is a follow-up.** The claim keeps
+`session_id` when the row's previous status was `queued` or the row carries `parent_job_id`, and
+clears it otherwise, so a lease that expired mid-run starts fresh for an ordinary job. That attempt's
+session is not this one, and replaying its transcript would resume work whose output was thrown away
+— which is why the follow-up is the carved-out exception rather than the rule: its session holds the
+parent conversation, and clearing it would throw the thread away with the attempt.
 
 **`max_attempts` and `dead` exist from the first migration.** A command that kills its worker is
 otherwise reclaimed the moment its lease expires, forever, and one poison job permanently occupies
@@ -336,11 +393,15 @@ claim. "Nothing runs an executor yet" stays true.
   `.claude.json` in the same directory. Fine for one drivable job at a time and unexamined beyond
   that; a volume per job would make the login a template to copy rather than a mount.
 - **No per-job authorization.** There is authentication now — see [auth.md](auth.md) — and the two
-  credentials are disjoint: a session cookie queues, resumes and reads, a `Bearer fwt_…` worker token
-  claims, heartbeats, suspends and completes. A session on `/claim` would let any member take work
-  away from the driver running it; a worker token on `POST /api/jobs` would produce a job with no
-  author. But **membership is not a sandbox**: every member can queue a command that runs against the
-  their own checkouts, and `job.created_by` records who did rather than limiting what they may do.
+  credentials are disjoint: a session cookie queues, follows up, marks done, resumes and reads, a
+  `Bearer fwt_…` worker token claims, heartbeats, suspends and completes. A session on `/claim`
+  would let any member take work away from the driver running it; a worker token on `POST /api/jobs`
+  would produce a job with no author. But **membership is not a sandbox**: every member can queue a
+  command that runs against their own checkouts, follow up on their own tasks, and close any task —
+  and `job.created_by` records who did rather than limiting what they may do. Follow-ups are the one
+  exception, and not an authorization regime: the child resumes the parent's session, and a session
+  only resumes in the tree it ran in — the author's (see the follow-ups section above). Done has no
+  such coupling, so it stays open to every member.
   Under `AUTH_MODE=none` all of it is open, including the worker routes — see [security.md](security.md),
   which is where the consequence is written down.
 

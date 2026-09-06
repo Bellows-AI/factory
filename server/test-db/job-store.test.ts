@@ -32,6 +32,8 @@ const OTHER_ORG = 'other-org';
 /** A well-formed uuid, only ever used where the job or the lease is expected not to exist. */
 const ABSENT = '00000000-0000-4000-8000-000000000000';
 const SESSION = '33333333-3333-4333-8333-333333333333';
+/** A second session, for proving a follow-up chains the NEWEST session and not the root's. */
+const CHAIN = '55555555-5555-4555-8555-555555555555';
 /** Shaped like a real one: opaque, prefixed, and not a uuid. */
 const REMOTE = 'cse_015tb2nHhHNrBuL7ZDhn9Wx5';
 
@@ -85,7 +87,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('echo hi');
 
         const first = await store.claim('w1', 300);
-        expect(first).toMatchObject({ id, command: 'echo hi', attempts: 1 });
+        expect(first).toMatchObject({ id, command: 'echo hi', attempts: 1, followUp: false });
 
         expect(await store.claim('w2', 300)).toBeNull();
         expect((await row(id))[0]).toMatchObject({ status: 'running', claimed_by: 'w1' });
@@ -287,7 +289,7 @@ describe.skipIf(!enabled)('job store', () => {
         expect(await store.resume(id)).toBe('ok');
         const second = await store.claim('w2', 300);
 
-        expect(second).toMatchObject({ id, resumeSessionId: SESSION });
+        expect(second).toMatchObject({ id, resumeSessionId: SESSION, followUp: false });
         // Kept across the park too, so the link works while the job is waiting to be picked up.
         expect((await store.get(id))?.remoteSessionId).toBe(REMOTE);
     });
@@ -403,6 +405,230 @@ describe.skipIf(!enabled)('job store', () => {
             // fail — which is itself the signal.
             expect((await store.claim('w1', 300))?.id).toBe(next);
         });
+    });
+});
+
+describe.skipIf(!enabled)('follow-ups and done', () => {
+    /**
+     * Takes a job the whole way to a finished run, reporting a session on the way — the state a
+     * task is in when its executor has stopped talking and a human is looking at the output. The
+     * follow-up mechanic and the done button both start from exactly here.
+     */
+    const finishWithSession = async (
+        command: string,
+        target: { repo: string | null; executor: string | null } = { repo: null, executor: null },
+        remote = false,
+    ): Promise<string> => {
+        const { id } = await store.create(command, null, target);
+        const claim = await store.claim('w1', 300);
+        await store.session(id, claim!.leaseToken, SESSION, remote ? REMOTE : null);
+        await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        return id;
+    };
+
+    // The follow-up must arrive at the worker as a continuation of the conversation so far: the
+    // parent's session is what makes "ask for an adjustment" mean anything to the agent.
+    it('creates a follow-up that continues the parent session and links to it', async () => {
+        const parent = await finishWithSession('drive me', { repo: null, executor: null }, true);
+
+        const followUp = await store.createFollowUp(parent, 'now adjust the tone', null, null);
+
+        expect(await store.get(followUp.id)).toMatchObject({
+            command: 'now adjust the tone',
+            status: 'queued',
+            followUpTo: parent,
+            sessionId: SESSION,
+            remoteSessionId: REMOTE,
+            doneAt: null,
+        });
+    });
+
+    // The thread keeps its tab: the follow-up renders in the parent's repository view.
+    it('inherits the parent repo but takes the new executor label', async () => {
+        const parent = await finishWithSession('drive me', { repo: 'acme/web', executor: 'main' });
+
+        const followUp = await store.createFollowUp(parent, 'again, tighter', null, 'other');
+
+        expect(await store.get(followUp.id)).toMatchObject({ repo: 'acme/web', executor: 'other' });
+    });
+
+    // A moving job belongs to its worker and its run is not over; a follow-up on one would race it.
+    it('refuses a follow-up on a job that is still moving', async () => {
+        const { id } = await queue('echo hi');
+        await store.claim('w1', 300);
+
+        expect(await store.createFollowUp(id, 'again', null, null)).toBe('not_finished');
+    });
+
+    it('refuses a follow-up on a task the user has marked done', async () => {
+        const parent = await finishWithSession('echo hi');
+        await store.markDone(parent);
+
+        expect(await store.createFollowUp(parent, 'again', null, null)).toBe('task_done');
+    });
+
+    // The done button and a follow-up can overlap on the same finished task, and both statements
+    // touch the parent row. Unless the follow-up's insert takes that row's lock, both succeed —
+    // a done parent left with queued follow-up work instead of a `task_done` answer. Holding the
+    // lock the way a racing markDone would must hold the insert up too; whoever commits first
+    // wins, and the loser decides against the row's newest committed version.
+    it('blocks a follow-up while another request holds the parent row', async () => {
+        const parent = await finishWithSession('drive me');
+
+        let lockTaken: (() => void) | null = null;
+        const locked = new Promise<void>((resolve) => {
+            lockTaken = resolve;
+        });
+        let release: (() => void) | null = null;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const blocker = sql.begin(async (tx) => {
+            await tx`select id from job where id = ${parent} for update`;
+            lockTaken!();
+            await held;
+        });
+        blocker.catch(() => {});
+        await locked;
+
+        // The timer is the assertion device: the follow-up must still be waiting when it fires,
+        // not deciding against a snapshot taken before the lock was even taken.
+        const followUp = store.createFollowUp(parent, 'again', null, null);
+        const outcome = await Promise.race([
+            followUp,
+            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), 450)),
+        ]);
+        expect(outcome).toBe('still_locked');
+
+        release!();
+        await blocker;
+        // The held-up insert lands once the lock frees, and a done after it still works — the
+        // sequential follow-up-then-done outcome the lock makes the only possible ordering.
+        expect(await followUp).toMatchObject({ id: expect.any(String) });
+        expect(await store.markDone(parent)).toMatchObject({ status: 'succeeded' });
+    });
+
+    // Without a session on the parent there is nothing to continue — an opencode run, for one, or a
+    // claude-code run that died before its driver could report. Running the follow-up fresh would
+    // look like a continuation while starting from nothing.
+    it('refuses a follow-up on a run the board never saw a session for', async () => {
+        const { id } = await queue('echo hi');
+        const claim = await store.claim('w1', 300);
+        await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+
+        expect(await store.createFollowUp(id, 'again', null, null)).toBe('no_session');
+    });
+
+    // The child inherits the parent's session, and a session resumes only in the checkout tree it
+    // ran in — the author's. A member's command may only ever run in their own tree, so a
+    // follow-up by anyone else would either run their command in the author's tree or resume the
+    // conversation in their own; both are refused, and only the author may follow their task up.
+    it('refuses a follow-up by anyone but the account that queued the task', async () => {
+        const account = async (githubUserId: number, login: string): Promise<string> => {
+            const [row] = await sql<{ id: string }[]>`
+                insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
+                on conflict (github_user_id) do update set github_login = excluded.github_login
+                returning id
+            `;
+            return row!.id;
+        };
+        const authorA = await account(6001, 'author-a');
+        const authorB = await account(6002, 'author-b');
+        const { id: parent } = await store.create('drive me', authorA, { repo: null, executor: null });
+        const claim = await store.claim('w1', 300);
+        await store.session(parent, claim!.leaseToken, SESSION, null);
+        await store.complete(parent, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+
+        expect(await store.createFollowUp(parent, 'again', authorB, null)).toBe('forbidden');
+        // A caller with no account — the route tests' no-auth-store shape — cannot claim a task
+        // that has one. The author's own follow-up still lands.
+        expect(await store.createFollowUp(parent, 'again', null, null)).toBe('forbidden');
+        expect(await store.createFollowUp(parent, 'again', authorA, null)).toMatchObject({ id: expect.any(String) });
+    });
+
+    it('separates a missing parent from a refused follow-up', async () => {
+        const id = await finishWithSession('echo hi');
+
+        expect(await store.createFollowUp(ABSENT, 'again', null, null)).toBe('missing');
+        expect(await otherOrgStore.createFollowUp(id, 'again', null, null)).toBe('missing');
+    });
+
+    // The whole point: the worker gets the parent session back AND the new command to deliver
+    // into it — restore and continue, not just restore.
+    it('hands a follow-up claim the parent session and the command to deliver', async () => {
+        const parent = await finishWithSession('drive me');
+        const { id } = await store.createFollowUp(parent, 'again', null, null);
+
+        const claim = await store.claim('w1', 300);
+
+        expect(claim).toMatchObject({ id, resumeSessionId: SESSION, followUp: true });
+    });
+
+    // A crashed follow-up attempt re-claims with the session kept and the command re-delivered:
+    // the conversation survives the crash, and the adjustment still reaches the agent.
+    it('re-delivers the command when a follow-up attempt is reclaimed', async () => {
+        const parent = await finishWithSession('drive me');
+        const { id } = await store.createFollowUp(parent, 'again', null, null);
+        await store.claim('w1', 300);
+        await expireLease(id);
+
+        const second = await store.claim('w2', 300);
+
+        expect(second).toMatchObject({ id, attempts: 2, resumeSessionId: SESSION, followUp: true });
+    });
+
+    // "Delivered once" survives follow-ups: a parked follow-up has its command in the transcript
+    // already, so its resume restores the session and delivers nothing — the same rule a parked
+    // ordinary job has always had.
+    it('does not re-deliver the command when a parked follow-up is resumed', async () => {
+        const parent = await finishWithSession('drive me');
+        const { id } = await store.createFollowUp(parent, 'drive me too', null, null);
+        const first = await store.claim('w1', 300);
+        await store.session(id, first!.leaseToken, SESSION, null);
+        await store.suspend(id, first!.leaseToken);
+        await store.resume(id);
+
+        const second = await store.claim('w2', 300);
+
+        expect(second).toMatchObject({ id, resumeSessionId: SESSION, followUp: false });
+    });
+
+    // The task is done when the user says so — a verdict no run can make and nobody can take back
+    // by saying it twice.
+    // The repeat half of "rinse and repeat": a follow-up is itself a finished task with a session
+    // once its run ends, so the conversation chains — and it chains through the follow-up's OWN
+    // session (whatever its run reported), never by reaching back to the root's.
+    it('follows up on a follow-up, chaining the newest session', async () => {
+        const parent = await finishWithSession('drive me');
+        const first = await store.createFollowUp(parent, 'first adjustment', null, null);
+        const claim = await store.claim('w1', 300);
+        await store.session(first.id, claim!.leaseToken, CHAIN, null);
+        await store.complete(first.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+
+        const second = await store.createFollowUp(first.id, 'second adjustment', null, null);
+
+        expect(await store.get(second.id)).toMatchObject({
+            followUpTo: first.id,
+            sessionId: CHAIN,
+            status: 'queued',
+        });
+    });
+
+    it('marks a finished task done and answers the same moment twice', async () => {
+        const parent = await finishWithSession('echo hi');
+
+        const first = await store.markDone(parent);
+        const second = await store.markDone(parent);
+
+        expect(second.doneAt).toBe(first.doneAt);
+        expect((await store.get(parent))?.doneAt).toBe(first.doneAt);
+    });
+
+    it('refuses to mark a moving task done, and to mark an absent one', async () => {
+        const { id: queued } = await queue('echo hi');
+
+        expect(await store.markDone(queued)).toBe('conflict');
+        expect(await store.markDone(ABSENT)).toBe('missing');
     });
 });
 

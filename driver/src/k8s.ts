@@ -149,10 +149,12 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // The argv the docker runner puts after the image name, unchanged: the executor image's
     // ENTRYPOINT is the same claude wrapper, so the platform below the container is the only
     // difference. `--resume` keeps the original session id, and the command is NOT re-delivered —
-    // it is already in the transcript.
+    // it is already in the transcript. A follow-up is the exception, on this platform exactly as
+    // on docker: its command is the new adjustment, and it goes into the restored transcript.
+    const deliver = !session.resume || job.followUp;
     const args: string[] = [session.resume ? '--resume' : '--session-id', session.id];
     if (config.skipPermissions) args.push('--dangerously-skip-permissions');
-    if (!session.resume) args.push('-p', job.command);
+    if (deliver) args.push('-p', job.command);
 
     return {
         apiVersion: 'batch/v1',

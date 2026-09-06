@@ -760,6 +760,27 @@ button.primary {
     padding: 1px 8px;
 }
 
+/* A follow-up indents under the thread it continues, the way a reply sits under its message. The
+   rest of the exchange is untouched — it IS an ordinary task, only connected to its parent. */
+.chat-follow-up {
+    border-left: 2px solid var(--border);
+    margin-left: 12px;
+    padding-left: 12px;
+}
+
+/* The user's verdict on a finished task. Same greens as a ready checkout: it is a good state, and
+   it is one no run can reach by itself. */
+.chat-done {
+    border-color: #1c4523;
+    color: var(--ok);
+}
+
+.composer-target {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 0 0 8px;
+}
+
 .composer {
     border-top: 1px solid var(--border);
     margin-top: 16px;
