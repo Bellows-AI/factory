@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import type { RunSession } from '../src/docker.js';
-import { containerName, dockerArgs, parseRemoteSessionId, remoteSessionArgs } from '../src/docker.js';
+import { containerName, dockerArgs, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -256,5 +255,51 @@ describe('an opencode runner', () => {
     // than a throw.
     it('refuses to hand a session to a runner that cannot adopt one', () => {
         expect(() => resumed({ RUNNER_CLI: 'opencode' })).toThrow(/session/);
+    });
+});
+
+/*
+ * The report has to fit the board's 128 KiB body limit whatever the log contained — a refused
+ * report leaves the job to its lease and re-runs finished work, which is worse than a short log.
+ * A character count cannot state that bound: 64 Ki of CJK text is 192 KiB of UTF-8, and a control
+ * character expands six-fold under JSON escaping. Hence bytes.
+ */
+describe('the report tail', () => {
+    it('answers nothing for a log that already fits', () => {
+        expect(tailBytes('hello', 64)).toBe('hello');
+        // Multibyte text, well under the limit, comes back exactly as it went in.
+        expect(tailBytes('café ☕', 64)).toBe('café ☕');
+    });
+
+    it('caps by UTF-8 bytes, not by characters', () => {
+        // Each ☕ is three bytes: 10_000 of them are 30_000 bytes in only 10_000 characters.
+        const log = '☕'.repeat(10_000);
+        const tail = tailBytes(log, 16 * 1024);
+
+        expect(tail.length).toBeLessThan(log.length);
+        expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(16 * 1024 + 3);
+    });
+
+    it('keeps the tail, not the head', () => {
+        expect(tailBytes('head-head-head-tail', 4)).toBe('tail');
+    });
+
+    it('still answers a string when the limit cuts a multibyte character', () => {
+        const tail = tailBytes('☕'.repeat(100), 4);
+        // One replaced character at most: the cut lands inside a three-byte one.
+        expect(tail.length).toBeLessThanOrEqual(2);
+    });
+
+    it('reportTail fits a JSON-escaped complete POST under the board body limit', () => {
+        // The worst log: three-byte characters, then control characters that JSON escaping
+        // expands six-fold.
+        const worst = 'あ\u0001'.repeat(64 * 1024);
+        const body = JSON.stringify({
+            leaseToken: '22222222-2222-4222-8222-222222222222',
+            status: 'succeeded',
+            exitCode: 0,
+            output: reportTail(worst),
+        });
+        expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(128 * 1024);
     });
 });

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { containerName, OUTPUT_LIMIT, workspacePathOf } from './docker.js';
+import { containerName, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
 import type { RunOutcome, RunSession, Runner } from './docker.js';
 
 /**
@@ -445,6 +445,7 @@ export function createKubernetesRunner(
              * problem and burn an attempt.
              */
             let timedOut = false;
+            let jobSucceeded = false;
             let failures = 0;
             for (;;) {
                 let response: K8sResponse;
@@ -475,6 +476,7 @@ export function createKubernetesRunner(
                 failures = 0;
                 const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
                 if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) {
+                    jobSucceeded = (status.succeeded ?? 0) >= 1;
                     timedOut = (status.conditions ?? []).some(
                         (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded',
                     );
@@ -502,13 +504,21 @@ export function createKubernetesRunner(
             const pod = parse<K8sPodList>(podsResponse.body).items?.find(
                 (item) => !item.metadata?.deletionTimestamp,
             );
+            /*
+             * When the Job succeeded but its pod is already gone — garbage-collected before the
+             * list above — the Job status IS the exit code: this Job runs one pod
+             * (completions: 1) and never retries it (backoffLimit: 0), so the controller can only
+             * have counted success on an exit-0 termination. Reporting null here would map to
+             * `failed` in the loop and record finished work as failed.
+             */
             const exitCode =
-                pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? null;
+                pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ??
+                (jobSucceeded ? 0 : null);
 
             let output = '';
             if (pod?.metadata?.name) {
                 // The tail, not the transcript: a run that fails says why at the end, and the head
-                // is banner — bounded in lines by tailLines and in bytes by OUTPUT_LIMIT, because
+                // is banner — bounded in lines by tailLines and in bytes by reportTail, because
                 // the board refuses a complete POST that does not fit. A log read that fails —
                 // status or transport — does not change the verdict: the exit code already carries
                 // it, and reporting empty output beats re-running finished work over one missing
@@ -523,7 +533,7 @@ export function createKubernetesRunner(
                 } catch {
                     log = { status: 0, body: '' };
                 }
-                if (log.status < 300) output = log.body.slice(-OUTPUT_LIMIT);
+                if (log.status < 300) output = reportTail(log.body);
             }
 
             return { exitCode, output, timedOut, idled: false };

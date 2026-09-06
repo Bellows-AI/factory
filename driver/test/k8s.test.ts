@@ -352,15 +352,25 @@ describe('the kubernetes runner', () => {
 
     // The board refuses a complete POST that does not fit its body limit — an oversized report
     // would fail to report, leave the job to its lease, and re-run finished work until the job
-    // went dead. The docker runner keeps its last 64 KiB; this runner is bound by the same board.
-    it('keeps the output under the byte cap the board accepts', async () => {
-        const oversized = 'x'.repeat(200 * 1024);
+    // went dead. The cap has to hold for the WORST log, not the average one: a character cap
+    // counts UTF-16 units, and 64 Ki of CJK text is 192 KiB of UTF-8, while control characters
+    // expand six-fold under JSON escaping.
+    it('keeps the report under the board body limit even fully escaped', async () => {
+        // CJK: three bytes per character in UTF-8. Control characters: up to six bytes once
+        // JSON.stringify escapes them. Together, the worst case the report can face.
+        const oversized = 'あ'.repeat(100 * 1024) + '\u0001'.repeat(100 * 1024);
         const { request } = fakeRequest({ log: { status: 200, body: oversized } });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
-        expect(outcome.output.length).toBeLessThanOrEqual(64 * 1024);
+        const body = JSON.stringify({
+            leaseToken: job.leaseToken,
+            status: 'succeeded',
+            exitCode: 0,
+            output: outcome.output,
+        });
+        expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(128 * 1024);
         // The tail, not the head: a run that fails says why at the end.
-        expect(outcome.output.endsWith('x')).toBe(true);
+        expect(outcome.output.endsWith('\u0001')).toBe(true);
     });
 
     // A 503 during an apiserver upgrade, or a dropped connection, is not the run's verdict — the
@@ -442,11 +452,29 @@ describe('the kubernetes runner', () => {
         expect(served).toBe(22);
     });
 
-    it('answers a null exit code when the pod list comes back empty', async () => {
+    /*
+     * A completed pod can be garbage-collected before the list that reads its exit code. The Job
+     * status is then the verdict: this Job runs one pod and never retries it, so the controller
+     * can only have counted success on an exit-0 termination — and a null exit code would map to
+     * `failed` in the loop, recording finished work as failed.
+     */
+    it('treats the Job status as the verdict when its pod is already gone', async () => {
         const { request } = fakeRequest({ pods: { status: 200, body: JSON.stringify({ items: [] }) } });
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome.output).toBe('');
+    });
+
+    it('still reports a failed job when its pod is gone', async () => {
+        const { request } = fakeRequest({
+            job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) },
+            pods: { status: 200, body: JSON.stringify({ items: [] }) },
+        });
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+
         expect(outcome.exitCode).toBeNull();
+        expect(outcome.timedOut).toBe(false);
         expect(outcome.output).toBe('');
     });
 
