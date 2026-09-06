@@ -118,8 +118,11 @@ export type LeaseResult = 'ok' | 'lost' | 'missing';
  * - `no_session`   the parent has no agent session to continue — every opencode run, and a
  *                  claude-code run that died before its driver reported the session. Starting a
  *                  fresh run would look like a continuation while carrying nothing over.
+ * - `forbidden`    the parent was queued by a different account. The child would inherit the
+ *                  parent's session, and a session resumes only in the checkout tree it ran in —
+ *                  the author's; a member's command may only ever run in their own tree.
  */
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden';
 
 export interface JobStore {
     /**
@@ -133,9 +136,9 @@ export interface JobStore {
     /**
      * Queues a follow-up on a finished task: a new job that inherits the parent's repo and session
      * ids, linked through `followUpTo`. Atomic and conditional — the insert only lands when the
-     * parent is finished, not done, and carries a session — so the refusals above are decided in
-     * the same statement that would have created the row, never by a read that could race a claim
-     * or a completion in between.
+     * parent is finished, not done, carries a session, and is the caller's own task — so the
+     * refusals above are decided in the same statement that would have created the row, never by
+     * a read that could race a claim or a completion in between.
      *
      * `executor` is the new label for the new command; everything else the thread shares is the
      * parent's.
@@ -273,31 +276,50 @@ export function createJobStore({
         async createFollowUp(parentId, command, createdBy, executor) {
             await gate();
             // One conditional insert: the select carries every precondition (finished, not done,
-            // has a session, same org), so a follow-up can never land on a parent that fails one —
-            // and two racing requests cannot disagree with a read they ran a moment earlier. The
-            // session ids are copied at insert, which is what makes the claim resume the parent
-            // conversation without any new claim-side rule.
+            // has a session, same org), so a follow-up can never land on a parent that fails one.
+            // The select also takes the parent row's lock, which is what makes a racing markDone
+            // impossible to answer from a stale snapshot: under READ COMMITTED, whichever statement
+            // gets the lock second re-checks the qualifications against the row's newest committed
+            // version — a done parent yields no row and the read below answers task_done, never a
+            // done task with queued follow-up work. The author predicate is null-safe (`is not
+            // distinct from`): a null caller may only follow up a parent with no author — the
+            // state every pre-accounts task is in — and an authored parent refuses a caller with
+            // no account, which is the read below's forbidden answer. The session ids are copied
+            // at insert, which is what makes the claim resume the parent conversation without any
+            // new claim-side rule.
             const rows = await sql<{ id: string }[]>`
+                with parent as (
+                    select id, repo, session_id, remote_session_id
+                    from job
+                    where org_id = ${orgId} and id = ${parentId}
+                      and status in ('succeeded','failed','dead')
+                      and done_at is null
+                      and session_id is not null
+                      and created_by is not distinct from ${createdBy}
+                    for update
+                )
                 insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id)
                 select ${orgId}, ${command}, ${createdBy}, repo, ${executor}, id, session_id, remote_session_id
-                from job
-                where org_id = ${orgId} and id = ${parentId}
-                  and status in ('succeeded','failed','dead')
-                  and done_at is null
-                  and session_id is not null
+                from parent
                 returning id
             `;
             if (rows[0]) return { id: rows[0]!.id };
-            // Nothing inserted — one of the four preconditions failed, and which one decides the
-            // answer the route turns into a status code.
+            // Nothing inserted — one of the five preconditions failed, and which one decides the
+            // answer the route turns into a status code. Forbidden is last: a sessionless parent
+            // answers the truer no_session whoever asks, and a parent with no author falls through
+            // the author check rather than refusing.
             if (!(await exists(sql, orgId, parentId))) return 'missing';
-            const [parent] = await sql<{ status: JobStatus; done_at: Date | null }[]>`
-                select status, done_at from job where org_id = ${orgId} and id = ${parentId}
+            const [parent] = await sql<
+                { status: JobStatus; done_at: Date | null; session_id: string | null; created_by: string | null }[]
+            >`
+                select status, done_at, session_id, created_by from job where org_id = ${orgId} and id = ${parentId}
             `;
             if (parent!.done_at !== null) return 'task_done';
             if (parent!.status !== 'succeeded' && parent!.status !== 'failed' && parent!.status !== 'dead') {
                 return 'not_finished';
             }
+            if (parent!.session_id === null) return 'no_session';
+            if (parent!.created_by !== createdBy) return 'forbidden';
             return 'no_session';
         },
 

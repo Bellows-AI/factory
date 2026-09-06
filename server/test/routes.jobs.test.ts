@@ -492,6 +492,15 @@ describe('POST /api/jobs/:id/follow-up', () => {
         expect(response.statusCode).toBe(404);
     });
 
+    // Author-scoped, because the follow-up would resume the parent's session — and a session only
+    // resumes coherently in the checkout tree it ran in.
+    it('answers 403 for a task queued by another account', async () => {
+        const instance = await harnessWith(stubStore({ followUp: 'forbidden' }));
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
+        expect(response.statusCode).toBe(403);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
     it.each([
         ['a parent that is still moving', 'not_finished', 'NOT_FINISHED'],
         ['a task the user has marked done', 'task_done', 'TASK_DONE'],

@@ -284,6 +284,8 @@ export const jobRoutes =
                         return reply
                             .code(409)
                             .send({ error: 'The finished run has no agent session to continue', code: 'NO_SESSION' });
+                    case 'forbidden':
+                        return bad(reply, 'FORBIDDEN', 'Only the account that queued the task can follow it up', 403);
                 }
             }
             return reply.code(201).send({ id: created.value.id, status: 'queued' });

@@ -467,6 +467,47 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(await store.createFollowUp(parent, 'again', null, null)).toBe('task_done');
     });
 
+    // The done button and a follow-up can overlap on the same finished task, and both statements
+    // touch the parent row. Unless the follow-up's insert takes that row's lock, both succeed —
+    // a done parent left with queued follow-up work instead of a `task_done` answer. Holding the
+    // lock the way a racing markDone would must hold the insert up too; whoever commits first
+    // wins, and the loser decides against the row's newest committed version.
+    it('blocks a follow-up while another request holds the parent row', async () => {
+        const parent = await finishWithSession('drive me');
+
+        let lockTaken: (() => void) | null = null;
+        const locked = new Promise<void>((resolve) => {
+            lockTaken = resolve;
+        });
+        let release: (() => void) | null = null;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const blocker = sql.begin(async (tx) => {
+            await tx`select id from job where id = ${parent} for update`;
+            lockTaken!();
+            await held;
+        });
+        blocker.catch(() => {});
+        await locked;
+
+        // The timer is the assertion device: the follow-up must still be waiting when it fires,
+        // not deciding against a snapshot taken before the lock was even taken.
+        const followUp = store.createFollowUp(parent, 'again', null, null);
+        const outcome = await Promise.race([
+            followUp,
+            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), 450)),
+        ]);
+        expect(outcome).toBe('still_locked');
+
+        release!();
+        await blocker;
+        // The held-up insert lands once the lock frees, and a done after it still works — the
+        // sequential follow-up-then-done outcome the lock makes the only possible ordering.
+        expect(await followUp).toMatchObject({ id: expect.any(String) });
+        expect(await store.markDone(parent)).toMatchObject({ status: 'succeeded' });
+    });
+
     // Without a session on the parent there is nothing to continue — an opencode run, for one, or a
     // claude-code run that died before its driver could report. Running the follow-up fresh would
     // look like a continuation while starting from nothing.
@@ -476,6 +517,33 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
 
         expect(await store.createFollowUp(id, 'again', null, null)).toBe('no_session');
+    });
+
+    // The child inherits the parent's session, and a session resumes only in the checkout tree it
+    // ran in — the author's. A member's command may only ever run in their own tree, so a
+    // follow-up by anyone else would either run their command in the author's tree or resume the
+    // conversation in their own; both are refused, and only the author may follow their task up.
+    it('refuses a follow-up by anyone but the account that queued the task', async () => {
+        const account = async (githubUserId: number, login: string): Promise<string> => {
+            const [row] = await sql<{ id: string }[]>`
+                insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
+                on conflict (github_user_id) do update set github_login = excluded.github_login
+                returning id
+            `;
+            return row!.id;
+        };
+        const authorA = await account(6001, 'author-a');
+        const authorB = await account(6002, 'author-b');
+        const { id: parent } = await store.create('drive me', authorA, { repo: null, executor: null });
+        const claim = await store.claim('w1', 300);
+        await store.session(parent, claim!.leaseToken, SESSION, null);
+        await store.complete(parent, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+
+        expect(await store.createFollowUp(parent, 'again', authorB, null)).toBe('forbidden');
+        // A caller with no account — the route tests' no-auth-store shape — cannot claim a task
+        // that has one. The author's own follow-up still lands.
+        expect(await store.createFollowUp(parent, 'again', null, null)).toBe('forbidden');
+        expect(await store.createFollowUp(parent, 'again', authorA, null)).toMatchObject({ id: expect.any(String) });
     });
 
     it('separates a missing parent from a refused follow-up', async () => {

@@ -286,9 +286,19 @@ reply — and copies of the parent's `repo`, `session_id` and `remote_session_id
 repo copy keeps the thread in its tab; the session copies are what make the claim resume the parent
 conversation without any new claim-side rule.
 
+**A follow-up is the author's, because of where the resumed session would run.** The child inherits
+the parent's `session_id`, and a session resumes only coherently in the checkout tree it ran in —
+the AUTHOR's. The workspace invariant already settles that a member's command only ever runs in
+their own tree, and running the follower's command in the author's tree is not an option either, so
+the insert-select also requires the parent's `created_by` to be the caller, and a mismatch answers
+`403 FORBIDDEN`. It is the last refusal checked: a sessionless parent answers the truer `NO_SESSION`
+whoever asks, and a caller with no account can only follow up a task with no author — the state
+every task queued before accounts existed is in.
+
 **Every refusal is decided atomically with the insert.** One conditional insert-select requires the
-parent to be finished, not done, and to carry a session — the insert itself cannot race a completion
-or a second follow-up. The read that names which precondition failed runs only when nothing
+parent to be finished, not done, to carry a session, and to be the caller's own task — and it takes
+the parent row's lock, so it cannot race a completion, a second follow-up, or another request's
+`done` from a stale snapshot. The read that names which precondition failed runs only when nothing
 inserted, and a parent that moves on between the two can make a refusal name the newer state; the
 retry succeeds. `409 NO_SESSION` is the interesting one: **an opencode task can never be followed
 up**, because opencode mints its own session ids and the board never sees one — there is nothing
@@ -387,8 +397,11 @@ claim. "Nothing runs an executor yet" stays true.
   `Bearer fwt_…` worker token claims, heartbeats, suspends and completes. A session on `/claim`
   would let any member take work away from the driver running it; a worker token on `POST /api/jobs`
   would produce a job with no author. But **membership is not a sandbox**: every member can queue a
-  command that runs against the their own checkouts — and follow up on, or close, any task — and
-  `job.created_by` records who did rather than limiting what they may do.
+  command that runs against their own checkouts, follow up on their own tasks, and close any task —
+  and `job.created_by` records who did rather than limiting what they may do. Follow-ups are the one
+  exception, and not an authorization regime: the child resumes the parent's session, and a session
+  only resumes in the tree it ran in — the author's (see the follow-ups section above). Done has no
+  such coupling, so it stays open to every member.
   Under `AUTH_MODE=none` all of it is open, including the worker routes — see [security.md](security.md),
   which is where the consequence is written down.
 
