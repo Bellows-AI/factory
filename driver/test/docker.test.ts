@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vitest } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
@@ -108,8 +108,10 @@ describe('the docker run arguments', () => {
         expect(args({ RUNNER_SKIP_PERMISSIONS: '1' })).toContain('--dangerously-skip-permissions');
     });
 
-    it('leaves nothing behind', () => {
-        expect(args()).toContain('--rm');
+    // --rm is gone deliberately: cleanup is explicit (a `docker rm` after close), so the runner
+    // can ask the daemon whether a 125 run left a container behind before removing it.
+    it('leaves nothing behind, by explicit cleanup rather than --rm', () => {
+        expect(args()).not.toContain('--rm');
     });
 });
 
@@ -232,12 +234,11 @@ describe('an opencode runner', () => {
     });
 
     // The claude pins hold unchanged, because nothing about the docker-level posture depends on
-    // which CLI is behind the image: workspace, label, name, rm, and credentials by name only.
+    // which CLI is behind the image: workspace, label, name, and credentials by name only.
     it('keeps every docker-level invariant', () => {
         const line = oc({ RUNNER_ENV: 'ANTHROPIC_API_KEY' });
         expect(line).toEqual(
             expect.arrayContaining([
-                '--rm',
                 '--name',
                 containerName(job),
                 '--label',
@@ -324,24 +325,69 @@ function fakeChild(stdout: string, stderr: string, code: number | null): ChildPr
 }
 
 describe('the docker runner', () => {
-    // The fence ahead of every run shells out for real; it removes a container that is not
-    // there, and a failed removal is swallowed — so the suite passes with or without a daemon.
-    const runner = createDockerRunner(
-        loadDriverConfig({}),
-        (() => fakeChild('', 'docker: Error response from daemon: Conflict. The container name is already in use\n', 125)) as unknown as typeof spawn,
-    );
+    // The daemon is stood in by `execDocker`, so the suite never shells out: the fence and the
+    // cleanup `rm` answer empty, and the `inspect` that classifies a 125 close is scripted per
+    // test. The fake child carries whatever the run itself printed.
+    const noContainer = (args: string[]) => {
+        if (args[0] === 'inspect') throw new Error('Error: No such object');
+        return Promise.resolve({ stdout: '' });
+    };
+    const child = (stdout: string, stderr: string, code: number | null) =>
+        (() => {
+            const c = new EventEmitter() as ChildProcess;
+            const stream = (text: string) => {
+                const s = new EventEmitter();
+                if (text) process.nextTick(() => s.emit('data', Buffer.from(text)));
+                return s;
+            };
+            c.stdout = stream(stdout);
+            c.stderr = stream(stderr);
+            process.nextTick(() => c.emit('close', code));
+            return c;
+        }) as unknown as typeof spawn;
 
     it('reads a daemon refusal as a container that never started', async () => {
+        // The run printed the daemon's error — and so would a command that echoed it. The
+        // classifier does not read this stream at all: the daemon says no container exists.
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            child('', 'docker: Error response from daemon: Conflict. The container name is already in use\n', 125),
+            noContainer,
+        );
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
     });
 
     it('reads a container that ran and exited 125 as a verdict, not an infrastructure refusal', async () => {
-        const genuine = createDockerRunner(
-            loadDriverConfig({}),
-            (() => fakeChild('work done\n', 'sh: 1: gitleaks: not found\n', 125)) as unknown as typeof spawn,
+        // The exact case a stderr signature gets wrong: the command prints `docker: ` itself —
+        // an agent reproducing an error, say — and exits 125. The daemon saw the container run
+        // and exit, so `started` is true and the code is reported as the command's verdict.
+        const inspect = vitest.fn((args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.resolve({ stdout: '{"Status":"exited","ExitCode":125}\n' })
+                : Promise.resolve({ stdout: '' }),
         );
-        const outcome = await genuine.run(job, { id: SESSION, resume: false });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            child('work done\n', 'reproduced: docker: Error response from daemon: Conflict\n', 125),
+            inspect as unknown as (args: string[]) => Promise<{ stdout: string }>,
+        );
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: true });
+        expect(inspect).toHaveBeenCalled();
+    });
+
+    it('never asks the daemon about a run whose exit code is unambiguous', async () => {
+        const inspect = vitest.fn((args: string[]) => Promise.resolve({ stdout: '' }));
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            child('done\n', '', 0),
+            inspect as unknown as (args: string[]) => Promise<{ stdout: string }>,
+        );
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 0, started: true });
+        // The fence and the cleanup `rm` go through the same seam; only the inspect is the
+        // classifier, and an unambiguous exit code must not pay for one.
+        expect(inspect.mock.calls.filter((call) => call[0][0] === 'inspect')).toHaveLength(0);
     });
 });

@@ -15,11 +15,13 @@ export interface RunOutcome {
     timedOut: boolean;
     idled: boolean;
     /**
-     * False only when the runner knows the container never ran — its platform refused to start
-     * it. What that looks like is platform knowledge (docker's daemon errors are exit 125 with a
-     * `docker:` line on stderr; a kubernetes pod that was created and exited always started), so
-     * the stamping belongs to the runner and the shared loop interprets no exit codes: a run that
-     * started and exited 125 is a verdict, reported like any other.
+     * False only when the runner knows the container never ran — the daemon refused to accept
+     * it. The docker runner does not guess from the shared stderr stream, where the CLI's errors
+     * and the command's own output are indistinguishable: on an exit 125 it asks the daemon
+     * whether the container exists, and a container that exists ran, whatever it printed. A
+     * kubernetes runner always reports started, because a resolved outcome there means the pod
+     * was created, ran and exited. The shared loop interprets no exit codes: a run that started
+     * and exited 125 is a verdict, reported like any other.
      */
     started: boolean;
 }
@@ -179,7 +181,6 @@ function workspacePath(job: BoardJob): string {
 export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
     const args = [
         'run',
-        '--rm',
         '--name',
         containerName(job),
         // Lets `docker ps --filter label=factory.job` find a runner that outlived its driver.
@@ -257,7 +258,14 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
 
 type Spawn = typeof spawn;
 
-export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn): Runner {
+/**
+ * Everything the runner does through the daemon other than the `docker run` itself — the fence,
+ * the post-run inspect and the cleanup — goes through this one seam, so a test can stand in for
+ * the daemon instead of shelling out to it.
+ */
+type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
+
+export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn, execDocker: ExecDocker = (args) => run('docker', args)): Runner {
     const kill = async (job: BoardJob): Promise<void> => {
         // Killing the `docker run` process would only detach the CLI; the container keeps running
         // and the workspace keeps being written to. The daemon has to be told.
@@ -283,8 +291,34 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
             // have, had the driver survived to receive it. Without this the next attempt dies on
             // the name conflict (docker exit 125) and the job terminal-fails blaming a command
             // that never ran.
-            await run('docker', ['rm', '-f', containerName(job)]).catch(() => undefined);
+            await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
             return new Promise<RunOutcome>((resolve, reject) => {
+                // The verdict for a close, decided after the process is gone. An exit 125 is
+                // ambiguous on the shared stderr — the daemon's refusal and a command that
+                // genuinely exited 125 are printed onto the same stream — so the daemon is asked
+                // instead: a container that exists ran, and its State is the truth; "no such
+                // container" means `docker run` never got one accepted, and nothing ran. Any
+                // other exit code unambiguously belongs to the attached container.
+                const verdict = async (code: number | null): Promise<RunOutcome> => {
+                    let started = true;
+                    if (code === 125) {
+                        try {
+                            const state = JSON.parse(
+                                (await execDocker(['inspect', '--format', '{{json .State}}', containerName(job)])).stdout,
+                            ) as { Status?: string };
+                            started = state.Status === 'exited';
+                        } catch {
+                            started = false;
+                        }
+                    }
+                    // Cleanup is explicit (--rm is gone, precisely so the inspect above can see
+                    // the container): the fence on the next claim would catch it anyway, but
+                    // leaving one daemon round-trip of litter behind is not tidiness worth
+                    // keeping. Failed removals are the fence's business.
+                    await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+                    return { exitCode: code, output, timedOut, idled, started };
+                };
+
                 const child = spawnFn('docker', dockerArgs(config, job, session), {
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
@@ -318,15 +352,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
                 child.stdout?.on('data', collect);
                 child.stderr?.on('data', collect);
 
-                // Kept apart from `output`, which the agent's transcript dominates: telling the
-                // daemon's refusal from the command's own exit needs the CLI's stderr, and a small
-                // tail of it is all that classifying on close can use.
-                let errText = '';
-                child.stderr?.on('data', (chunk) => {
-                    errText = tailBytes(errText + String(chunk), 4096);
-                });
-
-                // Not armed under Remote Control: with both running the shorter one always wins, so
+                // Armed only under Remote Control: with both running the shorter one always wins, so
                 // a drivable job would be killed and reported failed before it could ever be
                 // parked. There, silence is the bound.
                 const timer = config.remoteControl
@@ -347,12 +373,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn)
                 });
                 child.on('close', (code) => {
                     done();
-                    // Exit 125 on its own is not enough: docker prints its daemon errors as a
-                    // `docker:` line on stderr, and that signature — not the code alone — is what
-                    // separates a container that never existed from a command that genuinely
-                    // exited 125.
-                    const daemonRefusal = code === 125 && /(^|\n)docker: /.test(errText);
-                    resolve({ exitCode: code, output, timedOut, idled, started: !daemonRefusal });
+                    void verdict(code).then(resolve, reject);
                 });
             });
         },

@@ -216,9 +216,9 @@ describe('the poll loop', () => {
     });
 
     // The daemon can refuse to create the container while `docker run` itself succeeds as a
-    // process — a leftover name, a volume or network a stack rebuild removed. The runner knows
-    // its platform's refusal signature and stamps `started: false`; the loop interprets no exit
-    // codes itself.
+    // process — a leftover name, a volume or network a stack rebuild removed. The runner asks
+    // its platform whether the container ever ran and stamps `started: false`; the loop
+    // interprets no exit codes itself.
     it('leaves a job to its lease when the runner reports the container never started', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () =>
