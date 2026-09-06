@@ -18,6 +18,27 @@ export const bad = (reply: FastifyReply, code: string, error: string, status = 4
     reply.code(status).send({ error, code });
 
 /**
+ * The path-segment rules, applied where a name actually becomes a directory.
+ *
+ * These used to be `checkWorkspaceNames` in config.ts, run at boot against ORG_REPOS. That worked
+ * while an operator typed the list; it cannot now, because the list comes from a GitHub App
+ * installation and a name this rejects is one nobody here can rename. So the answer moved from "the
+ * deployment will not boot" to "this one repository is refused, by name" — and `user_repo_name_ck`
+ * says the same thing a third time, at the row.
+ *
+ * Shared with the jobs route, which applies the same rules to the repo/executor labels a task is
+ * queued with — display metadata, but a name that cannot be a directory cannot be a checkout or an
+ * executor either.
+ */
+export function badSegment(label: string, value: string): string | null {
+    if (!value) return `${label} is empty`;
+    if (/[/\\]/.test(value)) return `${label} contains a path separator`;
+    // A leading '-' is read by git as an option rather than a path; '.' and '..' are not names.
+    if (/^[-.]/.test(value)) return `${label} starts with "-" or "."`;
+    return null;
+}
+
+/**
  * Every store call funnels through here: a failure is a 503, matching the ingest routes.
  *
  * The result is wrapped rather than nullable because several store methods return null for a

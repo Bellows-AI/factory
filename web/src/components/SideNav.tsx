@@ -18,6 +18,7 @@ interface Item {
 const ITEMS: readonly Item[] = [
     { to: '/', label: 'Dashboard', end: true },
     { to: '/workspace', label: 'Workspace' },
+    { to: '/tasks', label: 'Tasks' },
 ];
 
 /*

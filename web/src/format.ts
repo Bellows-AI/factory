@@ -54,6 +54,19 @@ export function commitDate(iso: string | null | undefined): string {
 }
 
 /**
+ * A task's stamp in the chat: the time of day is the useful part there, unlike a commit table, so
+ * the date stays only to disambiguate older threads. UTC, like every formatter here — a constant
+ * offset the whole team reads the same way beats a local one nobody can compare.
+ */
+export function taskTime(iso: string | null | undefined): string {
+    if (!iso) return '—';
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '—';
+    const utc = at.toISOString();
+    return `${utc.slice(0, 10)} ${utc.slice(11, 16)}`;
+}
+
+/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */

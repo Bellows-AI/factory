@@ -61,7 +61,7 @@ beforeEach(async () => {
  * the authenticated caller rather than defaulting quietly; these cases are about leases, not
  * attribution, so they pass null explicitly. The attribution cases below pass a real account.
  */
-const queue = (command: string) => store.create(command, null);
+const queue = (command: string) => store.create(command, null, { repo: null, executor: null });
 
 /** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
 const expireLease = (id: string) =>
@@ -341,6 +341,36 @@ describe.skipIf(!enabled)('job store', () => {
         expect((await store.list({ status: 'queued', limit: 10 }))[0]?.id).toBe(id);
     });
 
+    it('stores the repo and executor a job was queued with', async () => {
+        const labelled = await store.create('drive me', null, { repo: 'acme/web', executor: 'main' });
+        const unlabelled = await queue('echo hi');
+
+        expect(await store.get(labelled.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
+        // Jobs queued before the chat, and tasks sent without either label, read as null — the
+        // state every pre-migration row is in.
+        expect(await store.get(unlabelled.id)).toMatchObject({ repo: null, executor: null });
+    });
+
+    it('lists only the requested repository, newest first', async () => {
+        await store.create('older web task', null, { repo: 'acme/web', executor: null });
+        await store.create('other repo', null, { repo: 'acme/api', executor: null });
+        await store.create('newer web task', null, { repo: 'acme/web', executor: null });
+        await queue('no repo at all');
+
+        const listed = await store.list({ repo: 'acme/web', limit: 50 });
+
+        // Newest first, and the repo-less job stays in the unfiltered view only.
+        expect(listed.map((job) => job.command)).toEqual(['newer web task', 'older web task']);
+    });
+
+    it('keeps another organization out of a repository filter', async () => {
+        const { id } = await store.create('echo hi', null, { repo: 'acme/web', executor: null });
+        await otherOrgStore.create('echo hi', null, { repo: 'acme/web', executor: null });
+
+        const listed = await store.list({ repo: 'acme/web', limit: 50 });
+        expect(listed.map((job) => job.id)).toEqual([id]);
+    });
+
     it('keeps one organization out of another organization queue', async () => {
         const { id } = await queue('echo hi');
 
@@ -394,14 +424,14 @@ describe.runIf(enabled)('attribution', () => {
     it('records who queued a job and reports it back on read', async () => {
         const userId = await account(5001, 'octocat');
 
-        const { id } = await store.create('echo hi', userId);
+        const { id } = await store.create('echo hi', userId, { repo: null, executor: null });
 
         expect((await store.get(id))?.createdBy).toBe(userId);
     });
 
     it('reports the author and their workspace to the worker that claims it', async () => {
         const userId = await account(5002, 'octodog');
-        await store.create('echo hi', userId);
+        await store.create('echo hi', userId, { repo: null, executor: null });
 
         const claim = await store.claim('driver-1', 300);
         // `userId` is still the seam the per-user credential work will read; `workspacePath` is
@@ -428,7 +458,7 @@ describe.runIf(enabled)('attribution', () => {
          */
         const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
         const userId = await account(5004, 'nowhere');
-        await rootless.create('echo hi', userId);
+        await rootless.create('echo hi', userId, { repo: null, executor: null });
 
         const claim = await rootless.claim('driver-1', 300);
         expect(claim?.userId).toBe(userId);
@@ -439,7 +469,7 @@ describe.runIf(enabled)('attribution', () => {
         // `on delete set null`, never cascade: removing a person must not erase the record of what
         // they ran, on the one route that runs shell commands.
         const userId = await account(5003, 'departing');
-        const { id } = await store.create('echo hi', userId);
+        const { id } = await store.create('echo hi', userId, { repo: null, executor: null });
 
         await sql`delete from app_user where id = ${userId}`;
 

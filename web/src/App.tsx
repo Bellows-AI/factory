@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell.js';
 import { DashboardPage } from './pages/DashboardPage.js';
+import { TasksPage } from './pages/TasksPage.js';
 import { WorkspacePage } from './pages/WorkspacePage.js';
 
 /**
@@ -20,6 +21,7 @@ export function App() {
             <Route element={<AppShell />}>
                 <Route index element={<DashboardPage />} />
                 <Route path="workspace" element={<WorkspacePage />} />
+                <Route path="tasks" element={<TasksPage />} />
                 {/* A mistyped path lands on the dashboard rather than on nothing. `replace` so the
                     back button does not walk back into the 404. */}
                 <Route path="*" element={<Navigate to="/" replace />} />

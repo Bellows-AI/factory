@@ -28,6 +28,14 @@ export interface Job {
     remoteSessionId: string | null;
     exitCode: number | null;
     output: string | null;
+    /**
+     * The repository (`owner/name`) the task was queued against, and the member's executor name it
+     * was stamped with. Grouping metadata for the tasks chat, nullable for every job that predates
+     * it; neither is validated against the member's configured rows and neither changes what a
+     * worker runs. See docs/jobs.md.
+     */
+    repo: string | null;
+    executor: string | null;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -85,8 +93,10 @@ export interface JobStore {
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
      * authenticated caller's id. A client-supplied one would be impersonation on the audit trail of
      * a route that runs shell commands.
+     *
+     * `target` carries the optional repo/executor labels the tasks chat groups and displays by.
      */
-    create(command: string, createdBy: string | null): Promise<{ id: string }>;
+    create(command: string, createdBy: string | null, target: { repo: string | null; executor: string | null }): Promise<{ id: string }>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
     heartbeat(id: string, leaseToken: string, leaseSeconds: number): Promise<{ result: LeaseResult; leaseExpiresAt: string | null }>;
@@ -121,7 +131,7 @@ export interface JobStore {
     ): Promise<LeaseResult>;
     get(id: string): Promise<Job | null>;
     /** Newest first. `output` is not selected — it is unbounded and no list view shows it. */
-    list(filter: { status?: JobStatus | undefined; limit: number }): Promise<Job[]>;
+    list(filter: { status?: JobStatus | undefined; repo?: string | undefined; limit: number }): Promise<Job[]>;
 }
 
 interface JobRow {
@@ -136,6 +146,8 @@ interface JobRow {
     remote_session_id: string | null;
     exit_code: number | null;
     output?: string | null;
+    repo: string | null;
+    executor: string | null;
     created_at: Date;
     started_at: Date | null;
     finished_at: Date | null;
@@ -155,6 +167,8 @@ const toJob = (row: JobRow): Job => ({
     remoteSessionId: row.remote_session_id,
     exitCode: row.exit_code,
     output: row.output ?? null,
+    repo: row.repo,
+    executor: row.executor,
     createdAt: row.created_at.toISOString(),
     startedAt: iso(row.started_at),
     finishedAt: iso(row.finished_at),
@@ -186,11 +200,11 @@ export function createJobStore({
     };
 
     return {
-        async create(command, createdBy) {
+        async create(command, createdBy, target) {
             await gate();
             const rows = await sql<{ id: string }[]>`
-                insert into job (org_id, command, created_by)
-                values (${orgId}, ${command}, ${createdBy})
+                insert into job (org_id, command, created_by, repo, executor)
+                values (${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor})
                 returning id
             `;
             return { id: rows[0]!.id };
@@ -358,21 +372,23 @@ export function createJobStore({
             await gate();
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
-                       session_id, remote_session_id, exit_code, output, created_at, started_at,
-                       finished_at
+                       session_id, remote_session_id, exit_code, output, repo, executor,
+                       created_at, started_at, finished_at
                 from job where org_id = ${orgId} and id = ${id}
             `;
             const row = rows[0];
             return row ? toJob(row) : null;
         },
 
-        async list({ status, limit }) {
+        async list({ status, repo, limit }) {
             await gate();
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
-                       session_id, remote_session_id, exit_code, created_at, started_at, finished_at
+                       session_id, remote_session_id, exit_code, repo, executor,
+                       created_at, started_at, finished_at
                 from job
                 where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}
+                  ${repo ? sql`and repo = ${repo}` : sql``}
                 order by created_at desc, id
                 limit ${limit}
             `;

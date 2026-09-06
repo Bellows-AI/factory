@@ -147,7 +147,9 @@ The page also shows the member's configured executors, below the repositories. T
 **configuration storage only**: a row is the JSON a member pasted into the add dialog, and nothing
 runs an executor yet — wiring one into the driver is future work. The known types are
 `claude-code` and `opencode` (013 added the second; see [persistence.md](persistence.md) for the
-constraint-rewrite move adding the next one costs).
+constraint-rewrite move adding the next one costs). The Tasks page lets a member
+stamp one of these names onto a job they queue — metadata the tasks chat displays, never checked
+against this list — and still nothing runs.
 
 - **The dialog is add-only, and validation is structural.** The contract is "raw JSON the member
   pastes"; the server checks it is an object with a known type, unique path-segment-safe names, at

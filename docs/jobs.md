@@ -55,8 +55,8 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | --- | --- | --- |
 | `JOB_BOARD_URL` | `http://127.0.0.1:8080` | Must be http(s); the scheme is checked, because `new URL('dashboard:8080')` parses. |
 | `JOB_BOARD_TOKEN` | unset | The worker token, from `npm run worker-token -- --name <worker>`. Required against a board running `AUTH_MODE=github`; unset against an open one, where the header is **omitted rather than sent empty** — an empty Bearer is a credential that failed, not one that was never offered. It is also how the board knows which organization this driver works for. |
-| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: `claude-code` or `opencode`. Fatal on anything else. `opencode` is headless only — `RUNNER_REMOTE_CONTROL` and `RUNNER_SKIP_PERMISSIONS` are refused under it at startup. |
-| `EXECUTOR_IMAGE` | `claude-executor`, or `opencode-executor` under `RUNNER_CLI=opencode` | An explicit value always wins. |
+| `EXECUTOR_IMAGE` | `claude-executor` | The runner image. `opencode-executor` under `RUNNER_CLI=opencode`, unless set explicitly. |
+| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run <prompt>`. Explicit enum. Under `opencode` no session is minted or reported, and Remote Control, skip-permissions and the kubernetes executor are refused at startup. |
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
 | `DRIVER_CONCURRENCY` | `2` | |
@@ -310,6 +310,19 @@ flatten it.
 
 **`order by created_at, id`.** `now()` is transaction-constant, so a batch insert shares a
 timestamp and FIFO without the id tiebreaker is arbitrary.
+
+**`repo` and `executor` are grouping metadata for the tasks chat, not execution inputs.** The chat
+gives each repository workspace its own thread and names the executor a task was queued with, so a
+job carries both labels — nullable, because every job queued before the chat has neither, and 014
+adds them as plain text for the same reason `remote_session_id` is. No foreign keys: `job` is an
+audit record (the `created_by` precedent — "records who did rather than limiting what they may do"),
+while `user_repo` and `user_executor` rows are member state that comes and goes with a PUT, and a
+deselected repository must not take its history with it. Shape-validated only, under the same
+path-segment rules a checkout's name obeys, because nothing consumes either label: the claim payload
+is unchanged, and a wrong-but-well-formed label in a hand-written API call is as harmless as a
+typo'd command. Wiring an executor into the driver remains future work — that change will decide
+what an executor name means to a worker, and whether existence is then checked at create or at
+claim. "Nothing runs an executor yet" stays true.
 
 ## Deliberately absent
 

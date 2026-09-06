@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
 import { EXECUTOR_TYPES } from '@factory-ai/core';
 import { callerOf } from '../auth/plugin.js';
-import { bad, body as jsonBody, guard } from './helpers.js';
+import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import type { UserExecutor, UserExecutorStore } from '../db/user-executor-store.js';
 import { fullName, type AppConfig, type Repo } from '../config.js';
 import type { UserRepo, UserRepoStore } from '../db/user-repo-store.js';
@@ -38,21 +38,9 @@ export const MAX_EXECUTORS_PER_USER = 10;
 const BODY_LIMIT = 64 * 1024;
 
 /**
- * The path-segment rules, applied where a name actually becomes a directory.
- *
- * These used to be `checkWorkspaceNames` in config.ts, run at boot against ORG_REPOS. That worked
- * while an operator typed the list; it cannot now, because the list comes from a GitHub App
- * installation and a name this rejects is one nobody here can rename. So the answer moved from "the
- * deployment will not boot" to "this one repository is refused, by name" — and `user_repo_name_ck`
- * says the same thing a third time, at the row.
+ * The path-segment rules live in `routes/helpers.ts`, shared with the jobs route, which validates
+ * the repo label of a queued task the same way this file validates a checkout's name.
  */
-function badSegment(label: string, value: string): string | null {
-    if (!value) return `${label} is empty`;
-    if (/[/\\]/.test(value)) return `${label} contains a path separator`;
-    // A leading '-' is read by git as an option rather than a path; '.' and '..' are not names.
-    if (/^[-.]/.test(value)) return `${label} starts with "-" or "."`;
-    return null;
-}
 
 function badName(repo: Repo): string | null {
     for (const [label, value] of [

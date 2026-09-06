@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { JobOutcome, JobStatus, JobStore } from '../db/job-store.js';
-import { UUID, bad, body, guard } from './helpers.js';
+import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
 /**
  * A command is a shell line, not a payload. 16 KiB is far past anything a human writes, and past
@@ -10,6 +10,36 @@ import { UUID, bad, body, guard } from './helpers.js';
  */
 const COMMAND_LIMIT = 16_384;
 const BODY_LIMIT = 128 * 1024;
+
+/**
+ * The repo and executor labels a task may carry. Both are display metadata for the tasks chat —
+ * the chat groups by repository and names the executor — and nothing consumes them at claim time:
+ * the claim payload is unchanged, and wiring an executor into the driver remains future work. They
+ * are validated by shape only, under the same path-segment rules a checkout's directory name obeys,
+ * never against the member's configured rows: `job` is an audit record, and the rows it would be
+ * validated against come and go with a PUT. A length cap would dead-end an executor name the
+ * selection route accepted, so neither field has one here either — the body limit bounds them the
+ * way it bounds the command. See docs/jobs.md.
+ */
+const REPO_SEGMENT_LIMIT = 100;
+
+function repoReason(value: string): string | null {
+    const parts = value.split('/');
+    if (parts.length !== 2) return 'repo must be owner/name';
+    for (const [label, part] of [
+        ['owner', parts[0]!],
+        ['name', parts[1]!],
+    ] as const) {
+        if (part.length > REPO_SEGMENT_LIMIT) return `${label} exceeds ${REPO_SEGMENT_LIMIT} characters`;
+        const reason = badSegment(label, part);
+        if (reason) return reason;
+    }
+    return null;
+}
+
+function executorReason(value: string): string | null {
+    return badSegment('executor', value);
+}
 
 /**
  * Output is truncated here, not trusted from the worker. The body limit lets 128 KiB through and a
@@ -38,12 +68,26 @@ export const jobRoutes =
     (store: JobStore): FastifyPluginAsync =>
     async (app) => {
         app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            const command = body(request.body).command;
+            const fields = body(request.body);
+            const command = fields.command;
             if (typeof command !== 'string' || !command.trim()) {
                 return bad(reply, 'BAD_COMMAND', 'command must be a non-empty string');
             }
             if (command.length > COMMAND_LIMIT) {
                 return bad(reply, 'BAD_COMMAND', `command exceeds ${COMMAND_LIMIT} characters`);
+            }
+
+            // Absent and explicit null both mean "not given" — what every job queued before the
+            // chat carries.
+            const repo = fields.repo === undefined || fields.repo === null ? null : fields.repo;
+            const executor = fields.executor === undefined || fields.executor === null ? null : fields.executor;
+            if (repo !== null) {
+                const reason = typeof repo !== 'string' ? 'repo must be a string' : repoReason(repo);
+                if (reason) return bad(reply, 'BAD_REPO', reason);
+            }
+            if (executor !== null) {
+                const reason = typeof executor !== 'string' ? 'executor must be a string' : executorReason(executor);
+                if (reason) return bad(reply, 'BAD_EXECUTOR', reason);
             }
 
             // Read off the authenticated request, never off the body: a client-supplied author is
@@ -52,7 +96,10 @@ export const jobRoutes =
             const createdBy = callerOf(request)?.user.id ?? null;
 
             const created = await guard(reply, (e) => request.log.error({ err: e }, 'job create failed'), () =>
-                store.create(command, createdBy),
+                store.create(command, createdBy, {
+                    repo: typeof repo === 'string' ? repo : null,
+                    executor: typeof executor === 'string' ? executor : null,
+                }),
             );
             if (!created.ok) return reply;
             return reply.code(201).send({ id: created.value.id, status: 'queued' });
@@ -243,7 +290,7 @@ export const jobRoutes =
         });
 
         app.get('/api/jobs', async (request, reply) => {
-            const query = request.query as { status?: string; limit?: string };
+            const query = request.query as { status?: string; limit?: string; repo?: string };
             if (query.status !== undefined && !STATUSES.includes(query.status as JobStatus)) {
                 return bad(reply, 'BAD_STATUS', `status must be one of ${STATUSES.join(', ')}`);
             }
@@ -251,9 +298,16 @@ export const jobRoutes =
             if (!Number.isInteger(limit) || limit < 1 || limit > LIST_LIMIT_MAX) {
                 return bad(reply, 'BAD_LIMIT', `limit must be an integer 1..${LIST_LIMIT_MAX}`);
             }
+            const repo = query.repo;
+            // Fastify's query parser hands repeated keys over as an array, so the shape is checked
+            // before use — a malformed filter is a 400, never a TypeError.
+            if (repo !== undefined && (typeof repo !== 'string' || repoReason(repo) !== null)) {
+                const reason = typeof repo === 'string' ? repoReason(repo) : 'repo must be a string';
+                return bad(reply, 'BAD_REPO', reason ?? 'repo must be owner/name');
+            }
 
             const jobs = await guard(reply, (e) => request.log.error({ err: e }, 'job list failed'), () =>
-                store.list({ status: query.status as JobStatus | undefined, limit }),
+                store.list({ status: query.status as JobStatus | undefined, repo, limit }),
             );
             if (!jobs.ok) return reply;
             return reply.code(200).send({ jobs: jobs.value });

@@ -672,3 +672,133 @@ button.primary {
     border-color: var(--primary);
     color: #06121f;
 }
+
+/* The tasks chat. */
+
+.tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 8px 0 12px;
+}
+
+.tab {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 12px;
+}
+
+.tab.is-active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #06121f;
+}
+
+.chat {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.chat-exchange {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+}
+
+.msg-user {
+    font-family: var(--mono);
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.msg-meta {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 6px 0 0;
+}
+
+.chat-exit {
+    color: var(--bad);
+    font-family: var(--mono);
+    font-size: 12px;
+}
+
+.chat-detail {
+    margin-top: 8px;
+}
+
+.chat-output {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    margin: 0;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.chat-resume,
+.chat-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 1px 8px;
+}
+
+.composer {
+    border-top: 1px solid var(--border);
+    margin-top: 16px;
+    padding-top: 12px;
+}
+
+.composer-input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    min-height: 64px;
+    padding: 8px 10px;
+    resize: vertical;
+    width: 100%;
+}
+
+.composer-row {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.composer-label {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.composer-select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font: inherit;
+    padding: 2px 6px;
+}
+
+.composer-row button.primary {
+    margin-left: auto;
+}

@@ -17,12 +17,14 @@ const render = (path: string) =>
     );
 
 describe('SideNav', () => {
-    it('links to both sections', () => {
+    it('links to every section', () => {
         const html = render('/');
         expect(html).toContain('href="/"');
         expect(html).toContain('href="/workspace"');
+        expect(html).toContain('href="/tasks"');
         expect(html).toContain('Dashboard');
         expect(html).toContain('Workspace');
+        expect(html).toContain('Tasks');
     });
 
     it('marks the current section for assistive technology, not only visually', () => {

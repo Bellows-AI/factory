@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { Claim, Job, JobStore, LeaseResult } from '../src/db/job-store.js';
+import type { Claim, Job, JobStatus, JobStore, LeaseResult } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import { stubClient, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -15,7 +15,8 @@ const ID = '11111111-1111-4111-8111-111111111111';
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 
 interface StoreStub extends JobStore {
-    commands: string[];
+    created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
+    listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
     completed: { id: string; output: string | null }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
     suspended: string[];
@@ -40,6 +41,8 @@ function stubStore(
         if (options.fail) throw new Error('database is down');
     };
     const stub: StoreStub = {
+        created: [],
+        listed: [],
         commands: [],
         completed: [],
         sessions: [],
@@ -53,8 +56,14 @@ function stubStore(
             boom();
             return options.resume ?? 'ok';
         },
-        async create(command) {
+        async create(command, createdBy, target) {
             boom();
+            stub.created.push({
+                command,
+                createdBy: createdBy ?? null,
+                repo: target?.repo ?? null,
+                executor: target?.executor ?? null,
+            });
             stub.commands.push(command);
             return { id: ID };
         },
@@ -81,8 +90,9 @@ function stubStore(
             boom();
             return options.job ?? null;
         },
-        async list() {
+        async list(filter) {
             boom();
+            stub.listed.push(filter);
             return options.job ? [options.job] : [];
         },
     };
@@ -128,6 +138,76 @@ describe('POST /api/jobs', () => {
         const response = await post(instance, '/api/jobs', payload);
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_COMMAND');
+    });
+
+    it('queues a command with a repository and an executor', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', {
+            command: 'claude -p "fix the build"',
+            repo: 'acme/web',
+            executor: 'main',
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json()).toEqual({ id: ID, status: 'queued' });
+        expect(store.created).toEqual([
+            { command: 'claude -p "fix the build"', createdBy: null, repo: 'acme/web', executor: 'main' },
+        ]);
+    });
+
+    it('records no repository and no executor when the body has none', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi' });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.created).toEqual([{ command: 'echo hi', createdBy: null, repo: null, executor: null }]);
+    });
+
+    // Absent and explicit null are the same "not given" — JSON null is what a client that clears
+    // a dropdown sends.
+    it('takes an explicit null as not given', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', {
+            command: 'echo hi',
+            repo: null,
+            executor: null,
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.created).toEqual([{ command: 'echo hi', createdBy: null, repo: null, executor: null }]);
+    });
+
+    it.each([
+        ['a repo without an owner', 'web'],
+        ['a repo with three segments', 'acme/web/extra'],
+        ['a repo with an empty name', 'acme/'],
+        ['a repo whose owner starts with "-"', '-weird/web'],
+        ['a repo whose name is ".."', 'acme/..'],
+        ['an oversized repo owner', `${'x'.repeat(101)}/web`],
+        ['a non-string repo', 42],
+    ])('refuses %s', async (_label, repo) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_REPO');
+    });
+
+    it.each([
+        ['an empty executor', ''],
+        ['an executor with a path separator', 'a/b'],
+        ['an executor starting with "."', '.hidden'],
+        ['a non-string executor', 7],
+    ])('refuses %s', async (_label, executor) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', executor });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_EXECUTOR');
     });
 
     it('answers 503 when the store is down, so the caller retries', async () => {
@@ -389,6 +469,8 @@ describe('GET /api/jobs', () => {
         remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
         exitCode: 0,
         output: 'hello',
+        repo: 'acme/web',
+        executor: 'main',
         createdAt: '2026-08-21T12:00:00.000Z',
         startedAt: '2026-08-21T12:00:01.000Z',
         finishedAt: '2026-08-21T12:00:09.000Z',
@@ -412,6 +494,24 @@ describe('GET /api/jobs', () => {
         const response = await instance.inject({ method: 'GET', url: '/api/jobs?status=succeeded' });
         expect(response.statusCode).toBe(200);
         expect(response.json().jobs).toHaveLength(1);
+    });
+
+    it('passes a repository filter to the store', async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: '/api/jobs?repo=acme/web' });
+        expect(response.statusCode).toBe(200);
+        expect(store.listed).toEqual([{ status: undefined, repo: 'acme/web', limit: 50 }]);
+    });
+
+    it.each([
+        ['a repo without an owner', '/api/jobs?repo=web'],
+        ['a repeated repo filter', '/api/jobs?repo=acme/web&repo=acme/api'],
+    ])('refuses %s', async (_label, url) => {
+        const instance = await harnessWith(stubStore({ job }));
+        const response = await instance.inject({ method: 'GET', url });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_REPO');
     });
 
     it.each([
