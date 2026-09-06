@@ -93,4 +93,20 @@ describe('the claimed job', () => {
 
         expect((await board.claim('driver-1'))?.userId).toBeNull();
     });
+
+    it('reads a missing followUp flag as false rather than undefined', async () => {
+        const { fetch } = recorder(() => claimed());
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        expect((await board.claim('driver-1'))?.followUp).toBe(false);
+    });
+
+    it('carries the follow-up flag when the board sets it', async () => {
+        const { fetch } = recorder(() => claimed({ followUp: true, resumeSessionId: 'session-1' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        const job = await board.claim('driver-1');
+        expect(job?.followUp).toBe(true);
+        expect(job?.resumeSessionId).toBe('session-1');
+    });
 });

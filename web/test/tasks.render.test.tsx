@@ -21,6 +21,8 @@ function job(overrides: Partial<Job> = {}): Job {
         output: null,
         repo: null,
         executor: null,
+        followUpTo: null,
+        doneAt: null,
         createdAt: '2026-09-01T12:00:00.000Z',
         startedAt: '2026-09-01T12:00:01.000Z',
         finishedAt: '2026-09-01T12:04:00.000Z',
@@ -39,6 +41,7 @@ interface RenderArgs {
     detail?: Job | null;
     detailError?: string | null;
     selectedId?: string | null;
+    followUpTarget?: string | null;
 }
 
 const render = ({
@@ -50,6 +53,7 @@ const render = ({
     detail = null,
     detailError = null,
     selectedId = null,
+    followUpTarget = null,
 }: RenderArgs = {}) =>
     renderToStaticMarkup(
         <TasksPanel
@@ -67,6 +71,10 @@ const render = ({
             onResume={async () => {}}
             onSend={async () => null}
             sending={false}
+            followUpTarget={followUpTarget}
+            onFollowUp={() => {}}
+            onCancelFollowUp={() => {}}
+            onDone={async () => {}}
         />,
     );
 
@@ -194,6 +202,56 @@ describe('TasksPanel', () => {
         const html = render({});
         const send = html.slice(html.indexOf('>Send<') - 200, html.indexOf('>Send<'));
         expect(send).toContain('disabled');
+    });
+
+    describe('done and follow-ups', () => {
+        // The run ending is not the task ending: these two actions exist exactly for the gap
+        // between "the executor stopped" and "I am satisfied".
+        it('offers Done and Follow up on a finished task, and neither on a moving one', () => {
+            const finished = render({ jobs: [job()] });
+            expect(finished).toContain('>Done<');
+            expect(finished).toContain('Follow up');
+            for (const status of ['queued', 'running', 'standby'] as const) {
+                const moving = render({ jobs: [job({ status })] });
+                expect(moving, status).not.toContain('>Done<');
+                expect(moving, status).not.toContain('Follow up');
+            }
+        });
+
+        it('never offers them on a task the user has already marked done', () => {
+            const html = render({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
+            expect(html).not.toContain('>Done<');
+            expect(html).not.toContain('Follow up');
+            // The verdict is visible, not silently implied by the buttons' absence.
+            expect(html).toContain('chat-done');
+        });
+
+        it('connects a follow-up exchange to the task it follows, in order', () => {
+            const parent = job({
+                id: '22222222-2222-4222-8222-222222222222',
+                command: 'parent task',
+                createdAt: '2026-09-01T12:00:00.000Z',
+            });
+            const child = job({
+                id: '33333333-3333-4333-8333-333333333333',
+                command: 'the adjustment',
+                followUpTo: parent.id,
+                createdAt: '2026-09-01T12:30:00.000Z',
+            });
+            // As served: newest first.
+            const html = render({ jobs: [child, parent] });
+            expect(html).toContain('chat-follow-up');
+            expect(html.indexOf('parent task')).toBeLessThan(html.indexOf('the adjustment'));
+        });
+
+        it('names the task a follow-up is aimed at, with a way out, while composing one', () => {
+            const armed = render({ jobs: [job()], followUpTarget: '11111111-1111-4111-8111-111111111111' });
+            expect(armed).toMatch(/Replying to/);
+            expect(armed).toContain('Cancel');
+            const idle = render({ jobs: [job()] });
+            expect(idle).not.toMatch(/Replying to/);
+            expect(idle).not.toContain('>Cancel<');
+        });
     });
 });
 

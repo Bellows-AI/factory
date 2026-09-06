@@ -248,11 +248,14 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
 
     // Interactive versus headless. The command is the session's opening prompt and is delivered
     // once: on a resume it is already in the transcript, and sending it again would re-run the job
-    // the human has been driving. It goes last, so a command that looks like a flag is still read
-    // as a prompt.
+    // the human has been driving. The exception is a follow-up — its command is the NEW
+    // adjustment, and the restored transcript is the conversation it continues, so it goes out
+    // even though the session is being resumed. It goes last, so a command that looks like a flag
+    // is still read as a prompt.
+    const deliver = !session.resume || job.followUp;
     if (config.remoteControl) args.push('--remote-control', containerName(job));
-    else if (!session.resume) args.push('-p');
-    if (!session.resume) args.push(job.command);
+    else if (deliver) args.push('-p');
+    if (deliver) args.push(job.command);
     return args;
 }
 

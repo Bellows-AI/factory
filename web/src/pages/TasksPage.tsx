@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useJob, useJobs } from '../api/useJobs.js';
 import { useWorkspace } from '../api/useWorkspace.js';
 import { TasksPanel } from '../panels/TasksPanel.js';
@@ -14,8 +14,9 @@ import { TasksPanel } from '../panels/TasksPanel.js';
 export function TasksPage() {
     const workspace = useWorkspace();
     const [repo, setRepo] = useState<string | null>(null);
-    const { jobs, loading, error, queue, resume } = useJobs(repo);
+    const { jobs, loading, error, queue, resume, followUp, markDone } = useJobs(repo);
     const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [followUpTarget, setFollowUpTarget] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
     const detail = useJob(selectedId);
@@ -28,12 +29,24 @@ export function TasksPage() {
         if (!repos.some(({ owner, name }) => `${owner}/${name}` === repo)) setRepo(null);
     }, [workspace.data, repo]);
 
+    // A tab switch is a different conversation: an adjustment armed for one repository's task must
+    // not fire from another tab. (The panel also disarms when the armed task is simply absent
+    // from the list it is handed — this covers the tab switch before the next poll lands.)
+    useEffect(() => {
+        setFollowUpTarget(null);
+    }, [repo]);
+
+    // When a target is armed, the next Send continues that task instead of starting a new one;
+    // clearing only on success keeps the armed state honest if the board refuses.
     const send = async (command: string, executor: string | null): Promise<string | null> => {
         setActionError(null);
         setSending(true);
         try {
-            const message = await queue(command, executor);
+            const target = followUpTarget;
+            const message =
+                target !== null ? await followUp(target, command, executor) : await queue(command, executor);
             if (message !== null) setActionError(message);
+            else if (target !== null) setFollowUpTarget(null);
             return message;
         } finally {
             setSending(false);
@@ -45,6 +58,15 @@ export function TasksPage() {
         const message = await resume(id);
         if (message !== null) setActionError(message);
     };
+
+    const doneTask = async (id: string) => {
+        setActionError(null);
+        const message = await markDone(id);
+        if (message !== null) setActionError(message);
+    };
+
+    // Stable, because the panel's disarm effect names it in its dependencies.
+    const cancelFollowUp = useCallback(() => setFollowUpTarget(null), []);
 
     return (
         <main>
@@ -65,6 +87,10 @@ export function TasksPage() {
                 onResume={resumeTask}
                 onSend={send}
                 sending={sending}
+                followUpTarget={followUpTarget}
+                onFollowUp={setFollowUpTarget}
+                onCancelFollowUp={cancelFollowUp}
+                onDone={doneTask}
             />
         </main>
     );

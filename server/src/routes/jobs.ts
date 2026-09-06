@@ -242,6 +242,72 @@ export const jobRoutes =
             return reply.code(200).send({ id, status: 'queued' });
         });
 
+        // A person's action on a finished task: queue an adjustment as a continuation of the run
+        // it just did. The store decides every refusal atomically with the insert, so a follow-up
+        // can never land on a parent that turns out to be running or done. No lease token — the
+        // task is finished, nobody holds it, and this is a person's action for exactly that reason.
+        app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const fields = body(request.body);
+            const command = fields.command;
+            if (typeof command !== 'string' || !command.trim()) {
+                return bad(reply, 'BAD_COMMAND', 'command must be a non-empty string');
+            }
+            if (command.length > COMMAND_LIMIT) {
+                return bad(reply, 'BAD_COMMAND', `command exceeds ${COMMAND_LIMIT} characters`);
+            }
+            const executor = fields.executor === undefined || fields.executor === null ? null : fields.executor;
+            if (executor !== null) {
+                const reason = typeof executor !== 'string' ? 'executor must be a string' : executorReason(executor);
+                if (reason) return bad(reply, 'BAD_EXECUTOR', reason);
+            }
+
+            // Read off the authenticated request, never off the body — the create route's rule
+            // about impersonation applies word for word here.
+            const createdBy = callerOf(request)?.user.id ?? null;
+
+            const created = await guard(reply, (e) => request.log.error({ err: e }, 'job follow-up failed'), () =>
+                store.createFollowUp(id, command, createdBy, typeof executor === 'string' ? executor : null),
+            );
+            if (!created.ok) return reply;
+            if (typeof created.value === 'string') {
+                switch (created.value) {
+                    case 'missing':
+                        return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+                    case 'not_finished':
+                        return reply.code(409).send({ error: 'Task is not finished', code: 'NOT_FINISHED' });
+                    case 'task_done':
+                        return reply.code(409).send({ error: 'Task is done', code: 'TASK_DONE' });
+                    case 'no_session':
+                        return reply
+                            .code(409)
+                            .send({ error: 'The finished run has no agent session to continue', code: 'NO_SESSION' });
+                }
+            }
+            return reply.code(201).send({ id: created.value.id, status: 'queued' });
+        });
+
+        // The user's verdict that the task is done — the one no run can make. Idempotent in the
+        // store, so a retried click answers the same instant rather than rewriting it.
+        app.post('/api/jobs/:id/done', { bodyLimit: 4096 }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job done failed'), () =>
+                store.markDone(id),
+            );
+            if (!result.ok) return reply;
+            if (result.value === 'missing') {
+                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+            }
+            if (result.value === 'conflict') {
+                return reply.code(409).send({ error: 'Task is not finished', code: 'NOT_FINISHED' });
+            }
+            return reply.code(200).send({ id, status: result.value.status, doneAt: result.value.doneAt });
+        });
+
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');

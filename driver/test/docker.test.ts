@@ -14,6 +14,7 @@ const job: BoardJob = {
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     resumeSessionId: null,
+    followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 };
@@ -112,6 +113,51 @@ describe('the docker run arguments', () => {
     // can ask the daemon whether a 125 run left a container behind before removing it.
     it('leaves nothing behind, by explicit cleanup rather than --rm', () => {
         expect(args()).not.toContain('--rm');
+    });
+});
+
+describe('a follow-up run', () => {
+    const followUp = { ...job, followUp: true };
+
+    /**
+     * The one new thing a follow-up asks of the runner: restore the parent conversation AND
+     * deliver the new command into it. A plain resume restores only, because its command is
+     * already in the transcript — a follow-up's command is not, and without the `-p` the
+     * adjustment would never reach the agent.
+     */
+    it('delivers the command into the restored session', () => {
+        const line = dockerArgs(loadDriverConfig({}), followUp, { id: SESSION, resume: true });
+        expect(line.slice(-5)).toEqual([
+            'claude-executor',
+            '--resume',
+            SESSION,
+            '-p',
+            'fix the failing build',
+        ]);
+        expect(line).not.toContain('--session-id');
+    });
+
+    it('delivers it under Remote Control as the opening prompt of the restored session', () => {
+        const line = dockerArgs(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), followUp, {
+            id: SESSION,
+            resume: true,
+        });
+        expect(line.slice(-5)).toEqual([
+            '--resume',
+            SESSION,
+            '--remote-control',
+            containerName(job),
+            'fix the failing build',
+        ]);
+    });
+
+    // The delivered-once rule is not suspended for follow-ups: a PARKED one has its command in
+    // the transcript already, and its resume is an ordinary resume. Only the board knows which
+    // kind of resume a claim is — hence the flag rather than a local guess.
+    it('still omits the command when a parked job is resumed', () => {
+        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: true });
+        expect(line.slice(-3)).toEqual(['claude-executor', '--resume', SESSION]);
+        expect(line).not.toContain('fix the failing build');
     });
 });
 

@@ -201,15 +201,16 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 | `GET /api/health` | **open** — must answer while migrations retry, and the compose healthcheck carries none. Authenticating it restarts the container that was about to succeed. |
 | `/api/auth/*` | open. `/me` 401s on its own; being what *tells* the SPA it is unauthenticated is its purpose. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
-| `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id]`, `/api/jobs/:id/resume` | session cookie |
+| `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id]`, `/api/jobs/:id/resume`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done` | session cookie |
 | `/api/jobs/claim`, `/heartbeat`, `/session`, `/suspend`, `/complete` | `Bearer fwt_…` worker token |
 | OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
 
 - **The two sets are disjoint, and that is the point.** A session accepted on `/claim` would let any
   member steal another worker's lease; a worker token accepted on `POST /api/jobs` would produce a
   job with no author, silently breaking the audit trail on the route that runs shell commands.
-  `/api/jobs/:id/resume` is a *human* route: nobody holds a parked job, which is exactly what makes
-  resuming one a person's action.
+  `/api/jobs/:id/resume`, `/follow-up` and `/done` are *human* routes: nobody holds a parked job, and
+  a finished task is over — which is exactly what makes resuming, adjusting and closing one a
+  person's action.
 - **The worker token is minted by CLI only.** `npm run worker-token -- --name driver-1`, printed
   once, hash stored. No HTTP route mints a credential: everything else a member can do is bounded by
   the organization, whereas this issues something that claims work and reports results with no human

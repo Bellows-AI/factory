@@ -20,6 +20,7 @@ const job: BoardJob = {
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     resumeSessionId: null,
+    followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
 };
@@ -54,6 +55,22 @@ describe('the runner job spec', () => {
     // again would re-run the work somebody has been driving by hand.
     it('restores a resumed session without re-sending the command', () => {
         expect(resumedSpec().spec.template.spec.containers[0].args).toEqual(['--resume', SESSION]);
+    });
+
+    // The docker runner's follow-up rule, unchanged on this platform: a follow-up restores the
+    // parent conversation AND delivers the adjustment into it.
+    it('delivers the command into the restored session on a follow-up', () => {
+        const followUpSpec = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, followUp: true },
+            { id: SESSION, resume: true },
+        );
+        expect(followUpSpec.spec.template.spec.containers[0].args).toEqual([
+            '--resume',
+            SESSION,
+            '-p',
+            'fix the failing build',
+        ]);
     });
 
     it("mounts the workspaces PVC and starts at the AUTHOR's workspace root", () => {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { Claim, Job, JobStatus, JobStore, LeaseResult } from '../src/db/job-store.js';
+import type { Claim, FollowUpRefusal, Job, JobStatus, JobStore, LeaseResult } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import { stubClient, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -13,6 +13,7 @@ afterEach(async () => {
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const TOKEN = '22222222-2222-4222-8222-222222222222';
+const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
@@ -20,6 +21,8 @@ interface StoreStub extends JobStore {
     completed: { id: string; output: string | null }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
     suspended: string[];
+    followUps: { parentId: string; command: string; createdBy: string | null; executor: string | null }[];
+    markedDone: string[];
 }
 
 /**
@@ -35,6 +38,8 @@ function stubStore(
         verdict?: LeaseResult;
         job?: Job | null;
         resume?: 'ok' | 'missing' | 'conflict';
+        followUp?: FollowUpRefusal;
+        done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
     } = {},
 ): StoreStub {
     const boom = () => {
@@ -47,6 +52,8 @@ function stubStore(
         completed: [],
         sessions: [],
         suspended: [],
+        followUps: [],
+        markedDone: [],
         async suspend(id) {
             boom();
             stub.suspended.push(id);
@@ -66,6 +73,16 @@ function stubStore(
             });
             stub.commands.push(command);
             return { id: ID };
+        },
+        async createFollowUp(parentId, command, createdBy, executor) {
+            boom();
+            stub.followUps.push({ parentId, command, createdBy: createdBy ?? null, executor: executor ?? null });
+            return options.followUp ?? { id: FOLLOW_UP_ID };
+        },
+        async markDone(id) {
+            boom();
+            stub.markedDone.push(id);
+            return options.done ?? { status: 'succeeded', doneAt: '2026-08-21T12:10:00.000Z' };
         },
         async claim() {
             boom();
@@ -226,6 +243,7 @@ describe('POST /api/jobs/claim', () => {
         leaseToken: TOKEN,
         leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         resumeSessionId: null,
+        followUp: false,
     };
 
     it('hands out the job with its lease token', async () => {
@@ -418,6 +436,130 @@ describe('parking and resuming', () => {
     });
 });
 
+describe('POST /api/jobs/:id/follow-up', () => {
+    it('queues a follow-up on a finished task', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, {
+            command: 'now adjust the tone',
+            executor: 'main',
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json()).toEqual({ id: FOLLOW_UP_ID, status: 'queued' });
+        // `createdBy` comes from the caller, never the body — the same rule as create.
+        expect(store.followUps).toEqual([
+            { parentId: ID, command: 'now adjust the tone', createdBy: null, executor: 'main' },
+        ]);
+    });
+
+    it.each([
+        ['a missing command', {}],
+        ['an empty command', { command: '' }],
+        ['whitespace only', { command: '   ' }],
+        ['a non-string command', { command: 42 }],
+        ['an oversized command', { command: 'x'.repeat(16_385) }],
+    ])('refuses %s', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_COMMAND');
+    });
+
+    it.each([
+        ['an empty executor', ''],
+        ['an executor with a path separator', 'a/b'],
+        ['a non-string executor', 7],
+    ])('refuses %s', async (_label, executor) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again', executor });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_EXECUTOR');
+    });
+
+    // A follow-up is a person's action on a finished run: there is no lease token to present and
+    // none would mean anything.
+    it('takes no lease token', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
+        expect(response.statusCode).toBe(201);
+    });
+
+    it('answers 404 for a parent that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ followUp: 'missing' }));
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
+        expect(response.statusCode).toBe(404);
+    });
+
+    it.each([
+        ['a parent that is still moving', 'not_finished', 'NOT_FINISHED'],
+        ['a task the user has marked done', 'task_done', 'TASK_DONE'],
+        ['a parent with no session to continue', 'no_session', 'NO_SESSION'],
+    ])('answers 409 for %s', async (_label, verdict, code) => {
+        const instance = await harnessWith(stubStore({ followUp: verdict as FollowUpRefusal }));
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id before touching the store', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs/nope/follow-up', { command: 'again' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+});
+
+describe('POST /api/jobs/:id/done', () => {
+    it('marks a finished task done and is idempotent about it', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const first = await post(instance, `/api/jobs/${ID}/done`, {});
+        const second = await post(instance, `/api/jobs/${ID}/done`, {});
+
+        expect(first.statusCode).toBe(200);
+        expect(first.json()).toEqual({ id: ID, status: 'succeeded', doneAt: '2026-08-21T12:10:00.000Z' });
+        expect(second.statusCode).toBe(200);
+        expect(store.markedDone).toEqual([ID, ID]);
+    });
+
+    it('answers 409 for a task that is still moving', async () => {
+        const instance = await harnessWith(stubStore({ done: 'conflict' }));
+        const response = await post(instance, `/api/jobs/${ID}/done`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('NOT_FINISHED');
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ done: 'missing' }));
+        const response = await post(instance, `/api/jobs/${ID}/done`, {});
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/done`, {});
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id before touching the store', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs/nope/done', {});
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+});
+
 describe('POST /api/jobs/:id/complete', () => {
     const done = { leaseToken: TOKEN, status: 'succeeded', exitCode: 0, output: 'hello' };
 
@@ -471,6 +613,8 @@ describe('GET /api/jobs', () => {
         output: 'hello',
         repo: 'acme/web',
         executor: 'main',
+        followUpTo: null,
+        doneAt: null,
         createdAt: '2026-08-21T12:00:00.000Z',
         startedAt: '2026-08-21T12:00:01.000Z',
         finishedAt: '2026-08-21T12:00:09.000Z',
