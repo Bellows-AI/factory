@@ -81,10 +81,13 @@ RUN cp -a /home/node/.claude/. /opt/claude-home/
 
 # The installs above run as root, and node creates /tmp/node-compile-cache while they run. It
 # survives into the image root-owned, and node running as `node` below cannot write it — the
-# compile cache silently disables itself. Recreate it node-owned, as root, last, so nothing
-# re-creates it as root afterwards.
+# compile cache silently disables itself. Recreate it node-owned, as root, then drop straight
+# back: this is the end of the file, so the USER here is the user every runner container gets,
+# and a runner left as root would write root-owned files into the mounted checkout — the
+# permission failure this whole arrangement exists to prevent.
 USER root
 RUN mkdir -p /tmp/node-compile-cache && chown node:node /tmp/node-compile-cache
+USER node
 
 # The wrapper cds into $WORKDIR (default /workspace) before exec'ing claude with every argument
 # given after the image name, so a caller can point one image at a subdirectory or at a second
