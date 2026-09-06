@@ -524,6 +524,42 @@ footer {
     color: var(--primary);
 }
 
+/* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
+   text rides the title attribute. */
+.sidenav-subitems {
+    list-style: none;
+    margin: 2px 0 6px;
+    padding: 0;
+}
+
+.sidenav-task {
+    border-radius: 6px;
+    color: var(--muted);
+    display: block;
+    font-size: 12px;
+    overflow: hidden;
+    padding: 4px 10px 4px 24px;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidenav-task:hover {
+    background: var(--panel);
+    color: var(--text);
+}
+
+.sidenav-task.is-active {
+    color: var(--primary);
+}
+
+.sidenav-empty {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 2px 0 6px;
+    padding: 0 10px 0 24px;
+}
+
 /* Below this the two columns stop fitting side by side: 220 of nav leaves under 700 for a grid
    whose track floor is 440, so the panels would already be one-up and the nav is just tax. */
 @media (max-width: 900px) {
@@ -673,37 +709,7 @@ button.primary {
     color: #06121f;
 }
 
-/* The tasks chat. */
-
-.tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin: 8px 0 12px;
-}
-
-.tab {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    padding: 3px 12px;
-}
-
-.tab.is-active {
-    background: var(--primary);
-    border-color: var(--primary);
-    color: #06121f;
-}
-
-.chat {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
+/* The tasks pages. */
 
 .chat-exchange {
     border-top: 1px solid var(--border);
@@ -760,25 +766,11 @@ button.primary {
     padding: 1px 8px;
 }
 
-/* A follow-up indents under the thread it continues, the way a reply sits under its message. The
-   rest of the exchange is untouched — it IS an ordinary task, only connected to its parent. */
-.chat-follow-up {
-    border-left: 2px solid var(--border);
-    margin-left: 12px;
-    padding-left: 12px;
-}
-
 /* The user's verdict on a finished task. Same greens as a ready checkout: it is a good state, and
    it is one no run can reach by itself. */
 .chat-done {
     border-color: #1c4523;
     color: var(--ok);
-}
-
-.composer-target {
-    color: var(--muted);
-    font-size: 12px;
-    margin: 0 0 8px;
 }
 
 .composer {
@@ -822,4 +814,18 @@ button.primary {
 
 .composer-row button.primary {
     margin-left: auto;
+}
+
+/* On the composer page the textarea IS the pane — the issue asks for a big input, open by default —
+   so it gets the room a chat footer's one-liner does not need, and a bound so a wide window does
+   not stretch it into a banner. The detail view keeps the footer shape. */
+.task-compose .composer {
+    border-top: none;
+    margin-top: 12px;
+    max-width: 760px;
+    padding-top: 0;
+}
+
+.task-compose .composer-input {
+    min-height: 160px;
 }

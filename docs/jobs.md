@@ -283,7 +283,7 @@ talking" and "I am satisfied" sit as many rounds of "again, but tighter" as the 
 (the `created_by` precedent), and overwriting the parent's command or output would erase the very
 run the user is following up on. The new row carries `parent_job_id` — the chat renders it as a
 reply — and copies of the parent's `repo`, `session_id` and `remote_session_id` from insert. The
-repo copy keeps the thread in its tab; the session copies are what make the claim resume the parent
+repo copy keeps the thread under its repository's name in the task list; the session copies are what make the claim resume the parent
 conversation without any new claim-side rule.
 
 **A follow-up is the author's, because of where the resumed session would run.** The child inherits
@@ -368,9 +368,9 @@ flatten it.
 **`order by created_at, id`.** `now()` is transaction-constant, so a batch insert shares a
 timestamp and FIFO without the id tiebreaker is arbitrary.
 
-**`repo` and `executor` are grouping metadata for the tasks chat, not execution inputs.** The chat
-gives each repository workspace its own thread and names the executor a task was queued with, so a
-job carries both labels — nullable, because every job queued before the chat has neither, and 014
+**`repo` and `executor` are grouping metadata for the tasks UI, not execution inputs.** The task
+list names the repository workspace a task belongs to and the executor it was queued with, so a
+job carries both labels — nullable, because every job queued before the tasks UI has neither, and 014
 adds them as plain text for the same reason `remote_session_id` is. No foreign keys: `job` is an
 audit record (the `created_by` precedent — "records who did rather than limiting what they may do"),
 while `user_repo` and `user_executor` rows are member state that comes and goes with a PUT, and a

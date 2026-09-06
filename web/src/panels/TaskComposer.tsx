@@ -1,0 +1,137 @@
+import { useEffect, useState } from 'react';
+
+/**
+ * The new-task composer, the default right pane of the tasks area.
+ *
+ * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`,
+ * `useJobs`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
+ * effects, the page hands it finished props and the suite asserts markup.
+ *
+ * The repository is a stamp the member chooses per task — the old repo tabs collapsed into this
+ * select, with `none` (null) carrying the same meaning the All tab had.
+ */
+export function TaskComposer({
+    repos,
+    workspaceError,
+    onRetryWorkspace,
+    executors,
+    actionError,
+    sending,
+    onSend,
+}: {
+    /**
+     * The member's selected repositories, one option each. Null while the workspace poll has not
+     * answered yet — "not known" is a different sentence from "known empty", and merging them
+     * would blame the member's selection for a request that never landed.
+     */
+    repos: readonly { owner: string; name: string }[] | null;
+    /** Why `repos` is null, when it is. */
+    workspaceError: string | null;
+    onRetryWorkspace: () => void;
+    executors: readonly { name: string; type: string }[];
+    /** Why the last Send did not queue anything. Said in place, never silently. */
+    actionError: string | null;
+    sending: boolean;
+    onSend: (command: string, repo: string | null, executor: string | null) => Promise<string | null>;
+}) {
+    const [draft, setDraft] = useState('');
+    const [executor, setExecutor] = useState('');
+    const [repo, setRepo] = useState('');
+
+    // A configured executor can be deleted on the Workspace page while a draft sits here; the
+    // select would go blank while `send` still submitted the stale name. Clamp to what exists.
+    useEffect(() => {
+        if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
+            setExecutor('');
+        }
+    }, [executors, executor]);
+
+    // Same for the repository: a deselection must not survive invisibly in the draft and stamp a
+    // task with a repository the member no longer works in.
+    useEffect(() => {
+        if (repos !== null && repo !== '' && !repos.some(({ owner, name }) => `${owner}/${name}` === repo)) {
+            setRepo('');
+        }
+    }, [repos, repo]);
+
+    const send = async () => {
+        if (!draft.trim() || sending) return;
+        const chosenExecutor = executor === '' ? null : executor;
+        const chosenRepo = repo === '' ? null : repo;
+        if ((await onSend(draft, chosenRepo, chosenExecutor)) === null) setDraft('');
+    };
+
+    if (repos === null) {
+        return (
+            <section className="panel">
+                <div className="panel-head">
+                    <h2>Tasks</h2>
+                </div>
+                {workspaceError !== null ? (
+                    <p className="muted">
+                        {workspaceError}{' '}
+                        <button type="button" className="chat-resume" onClick={onRetryWorkspace}>
+                            Retry
+                        </button>
+                    </p>
+                ) : (
+                    <p className="muted">Loading your workspace…</p>
+                )}
+            </section>
+        );
+    }
+
+    return (
+        <section className="panel task-compose">
+            <div className="panel-head">
+                <h2>Tasks</h2>
+            </div>
+            {actionError !== null ? <p className="status">{actionError}</p> : null}
+            <div className="composer">
+                <textarea
+                    className="composer-input"
+                    placeholder="Describe the task…"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
+                    }}
+                />
+                <div className="composer-row">
+                    <label className="composer-label">
+                        Repository{' '}
+                        <select className="composer-select" value={repo} onChange={(e) => setRepo(e.target.value)}>
+                            <option value="">none</option>
+                            {repos.map(({ owner, name }) => {
+                                const full = `${owner}/${name}`;
+                                return (
+                                    <option key={full} value={full}>
+                                        {full}
+                                    </option>
+                                );
+                            })}
+                        </select>
+                    </label>
+                    <label className="composer-label">
+                        Executor{' '}
+                        <select
+                            className="composer-select"
+                            value={executor}
+                            onChange={(e) => setExecutor(e.target.value)}
+                        >
+                            <option value="">none</option>
+                            {executors.map((candidate) => (
+                                <option key={candidate.name} value={candidate.name}>
+                                    {candidate.name}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+                        Send
+                    </button>
+                </div>
+            </div>
+        </section>
+    );
+}
