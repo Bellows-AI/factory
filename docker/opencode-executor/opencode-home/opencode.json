@@ -3,6 +3,10 @@
     "permission": {
         "edit": "allow",
         "bash": "allow",
-        "webfetch": "deny"
+        "webfetch": "deny",
+        "external_directory": {
+            "/tmp/*": "allow",
+            "/home/node/*": "allow"
+        }
     }
 }

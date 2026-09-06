@@ -79,6 +79,13 @@ RUN node -e "const f=process.env.CLAUDE_CONFIG_DIR+'/.claude.json',fs=require('f
 # everything above it. The entrypoint seeds the volume from here on first run.
 RUN cp -a /home/node/.claude/. /opt/claude-home/
 
+# The installs above run as root, and node creates /tmp/node-compile-cache while they run. It
+# survives into the image root-owned, and node running as `node` below cannot write it — the
+# compile cache silently disables itself. Recreate it node-owned, as root, last, so nothing
+# re-creates it as root afterwards.
+USER root
+RUN mkdir -p /tmp/node-compile-cache && chown node:node /tmp/node-compile-cache
+
 # The wrapper cds into $WORKDIR (default /workspace) before exec'ing claude with every argument
 # given after the image name, so a caller can point one image at a subdirectory or at a second
 # mounted checkout without rebuilding.
