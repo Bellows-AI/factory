@@ -740,6 +740,54 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(seen).toHaveLength(0);
     });
 
+    // The two-attempt race: A loses its lease mid-setup and B claims the same job id before A
+    // aborts — the loop dedups by nothing. A kill names ATTEMPT A; B carries a fresh lease
+    // token that was never killed, so B must proceed, and A must stay aborted. Keyed by job
+    // id, one marker serves both attempts: B's claim would either be aborted by a kill meant
+    // for A, or wipe the marker and revive A to compete for the same network and containers.
+    it('aborts only the killed attempt when a sibling attempt of the same id claims the job', async () => {
+        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
+        const attemptB = { ...job, id: job.id, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+        const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
+        let killedA = false;
+        let releaseA: (() => void) | null = null;
+        const killRecorded = new Promise<void>((resolve) => {
+            releaseA = resolve;
+        });
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                if (!killedA) {
+                    // A's lease is lost while its readout is in flight; the loop's kill()
+                    // must be on record before the read resolves.
+                    killedA = true;
+                    await handle.kill!(attemptA);
+                    releaseA!();
+                }
+                return { stdout: READOUT };
+            }
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            return { stdout: '' };
+        });
+        const { fn, seen } = spawnRecording('ran\n', 0);
+        const runner = servicesRunner(exec, fn);
+        handle.kill = runner.kill;
+
+        const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        await killRecorded;
+        // B's claim lands while A is still between awaited steps — nothing stops it.
+        const runB = runner.run(attemptB, { id: SESSION, resume: false });
+
+        // A was the attempt the loop killed: it aborts.
+        await expect(runA).rejects.toThrow(/killed while setting up services/);
+        // B was never killed, whatever happened to A: network, service, spawn all happen.
+        await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
+        // Exactly one attempt got as far as creating the network and spawning the runner.
+        const creates = exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'network' && a[1] === 'create');
+        expect(creates).toEqual([['network', 'create', networkName(job)]]);
+        expect(seen).toHaveLength(1);
+    });
+
     // Ordering, not just outcome: the rejection must not be observable while the teardown is
     // still in flight, or the caller sees shutdown and the next lifecycle step race the
     // removals. The LAST teardown step is held in flight on a gate the test controls — armed

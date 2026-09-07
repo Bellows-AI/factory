@@ -110,10 +110,12 @@ function stripComment(line: string): string {
 }
 
 /**
- * The backslash escapes a double-quoted scalar decodes (YAML 1.2 §7.3.2) — the common safe set,
- * nothing more. Anything outside the map is refused rather than passed through with its
- * backslash: the service runs on what this returns, and a forwarded escape speaks for a value
- * the author did not write.
+ * The single-character backslash escapes a double-quoted scalar decodes (YAML 1.2 §7.3.2) — the
+ * full one-character set, plus the escaped space. The variable-length hex forms (`\x` of exactly
+ * two hex digits, `\u` of four, `\U` of eight) are not single characters, so they live in
+ * HEX_ESCAPE_LENGTHS beside this map. Anything outside both is refused rather than passed
+ * through with its backslash: the service runs on what this returns, and a forwarded escape
+ * speaks for a value the author did not write.
  */
 const DOUBLE_QUOTED_ESCAPES = new Map<string, string>([
     ['\\', '\\'],
@@ -125,15 +127,37 @@ const DOUBLE_QUOTED_ESCAPES = new Map<string, string>([
     ['/', '/'],
     ['b', '\b'],
     ['f', '\f'],
+    ['a', '\u0007'],
+    ['v', '\u000B'],
+    ['e', '\u001B'],
+    [' ', ' '],
+    ['N', '\u0085'],
+    ['_', '\u00A0'],
+    ['L', '\u2028'],
+    ['P', '\u2029'],
+]);
+
+/**
+ * The hex escapes of §7.3.2, each with the exact digit count the spec fixes for its letter.
+ * Decoded with String.fromCodePoint, so the 8-digit form delivers an astral plane character as
+ * the surrogate pair the container process expects. Fewer digits than the letter takes, a
+ * non-hex digit where one is required, or a value past Unicode's 0x10FFFF cap (which would also
+ * crash fromCodePoint as an infrastructure-looking error) is refused: all three would otherwise
+ * decode a code point the author did not write.
+ */
+const HEX_ESCAPE_LENGTHS = new Map<string, number>([
+    ['x', 2],
+    ['u', 4],
+    ['U', 8],
 ]);
 
 /**
  * A scalar. Unquoted values are kept as written (numbers included). A quoted value is decoded by
  * the rules its quoting promises — that is what makes `PASSWORD: "pa\"ss"` start the service
  * with `pa"ss` rather than the escape syntax. Single quotes (§7.3.1) know exactly one escape,
- * the doubled `''`, and a backslash is the character it is; double quotes (§7.3.2) process the
- * map above and refuse an escape outside it, under this file's standing posture that a
- * construct the parser does not understand is an error a human reads.
+ * the doubled `''`, and a backslash is the character it is; double quotes (§7.3.2) decode the
+ * full escape set above and refuse an escape outside it, under this file's standing posture that
+ * a construct the parser does not understand is an error a human reads.
  */
 function scalar(raw: string): string {
     const value = raw.trim();
@@ -151,6 +175,23 @@ function scalar(raw: string): string {
                 continue;
             }
             const next = body[i + 1] ?? '';
+            const hexLength = HEX_ESCAPE_LENGTHS.get(next);
+            if (hexLength !== undefined) {
+                // slice() returns less than asked near the end of the string, so the length
+                // check is what makes "\u12" malformed rather than a silent short decode.
+                const digits = body.slice(i + 2, i + 2 + hexLength);
+                const point =
+                    digits.length === hexLength && /^[0-9a-fA-F]+$/.test(digits) ? parseInt(digits, 16) : NaN;
+                if (Number.isNaN(point) || point > 0x10ffff) {
+                    throw new Error(
+                        `.bellows.yaml: malformed escape "\\${next}${digits}" in a double-quoted value — ` +
+                            `"\\${next}" takes exactly ${hexLength} hex digits within Unicode`,
+                    );
+                }
+                out += String.fromCodePoint(point);
+                i += 1 + hexLength;
+                continue;
+            }
             const decoded = DOUBLE_QUOTED_ESCAPES.get(next);
             if (decoded === undefined) {
                 throw new Error(`.bellows.yaml: unknown escape "\\${next}" in a double-quoted value`);

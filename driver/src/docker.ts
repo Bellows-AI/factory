@@ -375,11 +375,16 @@ type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
 
 export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn, execDocker: ExecDocker = (args) => run('docker', args)): Runner {
     /*
-     * Job ids whose kill() fired while a run of the same id may still be awaiting the daemon in
-     * its services setup. Keyed by id, not a per-run boolean, because kill() names a job and
-     * under concurrency the job it names need not be the one whose setup is in flight.
+     * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
+     * services setup. Keyed by LEASE TOKEN, not job id: the token is the per-attempt identity —
+     * one driver process can hold two attempts of the same id at once (the poll loop re-claims an
+     * expired-lease job while the first attempt's setup is still in flight), and the loop's kill
+     * names the one attempt it killed. Keyed by id, the two attempts would share one marker: the
+     * sibling claim would either be aborted by a kill meant for the other, or — wiping the marker
+     * on entry, as this once did — revive the killed attempt to compete for the same network and
+     * containers. Tokens never repeat, so the set only ever grows, by one entry per lost lease.
      */
-    const killed = new Set<BoardJob['id']>();
+    const killed = new Set<BoardJob['leaseToken']>();
     /**
      * Removes every service container this job labeled and the job's network. It runs twice with
      * the same body: as the re-claim FENCE before anything is created (a dead previous attempt
@@ -398,10 +403,12 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
     };
 
     const kill = async (job: BoardJob): Promise<void> => {
-        // Recorded before anything is torn down: a run of this id sitting in its services setup
+        // Recorded before anything is torn down: this attempt, sitting in its services setup,
         // reads this between awaited steps and aborts instead of creating more resources or
-        // spawning the runner over a lease that is already gone.
-        killed.add(job.id);
+        // spawning the runner over a lease that is already gone. The token, not the id, is what
+        // is recorded — a sibling attempt of the same job carries a different token and must
+        // not read this one's cancellation.
+        killed.add(job.leaseToken);
         // Killing the `docker run` process would only detach the CLI; the container keeps running
         // and the workspace keeps being written to. The daemon has to be told. The declared
         // services go with it: a killed job's database has no reason to outlive the job, and the
@@ -422,9 +429,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         },
 
         async run(job, session, onOutput) {
-            // A fresh claim is a fresh lease: drop any kill recorded against an earlier attempt
-            // of this id, or the setup abort below would tear down a run nobody killed.
-            killed.delete(job.id);
+            // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
+            // token that was never recorded, so nothing recorded for an earlier attempt can
+            // reach this one — and clearing by id would revive exactly the dead attempt the
+            // token keying exists to keep down. See the killed set above.
+
             // The re-claim fence, the docker twin of the kubernetes runner's delete-before-create:
             // the container name is derived from the job id, so anything already holding it is a
             // leftover of a previous attempt — a driver that died before it could kill its runner,
@@ -462,7 +471,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
              * unobserved.
              */
             const assertNotKilled = async (): Promise<void> => {
-                if (!killed.has(job.id)) return;
+                if (!killed.has(job.leaseToken)) return;
                 await serviceTeardown(job);
                 throw new Error(`job ${job.id}: killed while setting up services`);
             };

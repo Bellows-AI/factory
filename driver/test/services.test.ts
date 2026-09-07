@@ -122,6 +122,54 @@ describe('parseBellows', () => {
         ).toThrow(/escape/);
     });
 
+    it('decodes every valid YAML 1.2 double-quoted escape, including the variable-length hex forms', () => {
+        // §7.3.2 in full: the one-character escapes beyond the common set, the escaped space, and
+        // the hex forms — `\x` of exactly 2 digits, `\u` of 4, `\U` of 8, decoded through
+        // String.fromCodePoint so an astral plane character survives as the surrogate pair the
+        // container process expects. A valid file must parse.
+        const text = [
+            'services:',
+            '  - name: db',
+            '    image: postgres',
+            '    environment:',
+            '      BELL: "\\a"',
+            '      VTAB: "\\v"',
+            '      ESC: "\\e"',
+            '      SPACED: "a\\ b"',
+            '      NEL: "\\N"',
+            '      NBSP: "\\_"',
+            '      LS: "\\L"',
+            '      PS: "\\P"',
+            '      HEX8: "\\x41"',
+            '      HEX16: "\\u0041"',
+            '      ASTRAL: "\\U0001F600"',
+        ].join('\n');
+        expect(parseBellows(text)[0]?.environment).toEqual([
+            { key: 'BELL', value: '\u0007' },
+            { key: 'VTAB', value: '\u000B' },
+            { key: 'ESC', value: '\u001B' },
+            { key: 'SPACED', value: 'a b' },
+            { key: 'NEL', value: '\u0085' },
+            { key: 'NBSP', value: '\u00A0' },
+            { key: 'LS', value: '\u2028' },
+            { key: 'PS', value: '\u2029' },
+            { key: 'HEX8', value: 'A' },
+            { key: 'HEX16', value: 'A' },
+            { key: 'ASTRAL', value: '\u{1F600}' },
+        ]);
+    });
+
+    it('refuses a malformed hex escape — wrong digit count, non-hex digits, or outside Unicode', () => {
+        // §7.3.2 fixes the digit count per escape letter, and Unicode caps code points at
+        // 0x10FFFF — a shorter run would silently decode a code point the author did not write,
+        // and an oversize one is an error the spec itself names.
+        for (const bad of ['\\u12', '\\xZZ', '\\U001F600', '\\UFFFFFFFF']) {
+            expect(() =>
+                parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      BAD: "${bad}"\n`),
+            ).toThrow(/escape/);
+        }
+    });
+
     it('cuts a comment after an escaped quote inside a double-quoted value', () => {
         // `\"` must not toggle the quote tracker: the comment after the scalar is still a
         // comment, and the scalar still closes where it closes.
