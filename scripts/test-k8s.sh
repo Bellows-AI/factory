@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# The Kubernetes stack, end to end on minikube.
+# The Kubernetes stack, end to end on a local kind cluster.
 #
 #   scripts/test-k8s.sh              # lint + template only (needs helm)
-#   scripts/test-k8s.sh --cluster    # then the real thing (needs minikube running)
+#   scripts/test-k8s.sh --cluster    # then the real thing (needs a kind cluster running)
 #
 # Phase one is offline: helm lint, and helm template assertions that the rendered manifests carry
 # the security-relevant decisions — credentials by secretKeyRef and never by value, a
 # namespace-scoped Role, a runner pod with no service account. Phase two installs the chart into
-# minikube with the stub executor image, queues a job, and watches it come back succeeded — real
-# pods, no Claude, no credential.
+# the local cluster with the stub executor image, queues a job, and watches it come back succeeded
+# — real pods, no Claude, no credential.
 #
 # Everything it creates it removes: one helm release, its claims, and the images it loaded.
 set -uo pipefail
@@ -79,9 +79,9 @@ echo '# chart'
 
 helm lint charts/factory >/dev/null 2>&1 && ok 'helm lint passes' || bad 'helm lint passes' 'lint failed'
 
-# Rendered with the minikube profile, which is the shape the cluster phase installs: offline auth,
+# Rendered with the local profile, which is the shape the cluster phase installs: offline auth,
 # ReadWriteOnce claim, stub executor.
-render() { helm template "$RELEASE" charts/factory -f charts/factory/values-minikube.yaml --namespace "$NAMESPACE"; }
+render() { helm template "$RELEASE" charts/factory -f charts/factory/values-local.yaml --namespace "$NAMESPACE"; }
 render >"$work/rendered.yaml" || {
     echo 'test-k8s: helm template failed'
     exit 1
@@ -135,7 +135,18 @@ expect_not_contains 'the service never selects the driver'       "$service_selec
 render | grep -q 'value: "1800000"' && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
 
-# --- Phase two: minikube ---------------------------------------------------------------------
+# The dashboard pod must not start its server until the in-chart database accepts connections: the
+# server's migration retry gives up after ~55s and then serves every DB-backed route as a 500
+# forever — a state no amount of client-side polling recovers. On a cold cluster the database
+# image pulls for minutes, so the wait has to live in the pod spec, as an init container running
+# the same pg_isready the database pod's readiness probe runs.
+dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' "$work/rendered.yaml")"
+expect_contains 'the dashboard waits for the database before starting' "$dashboard" \
+    'wait-for-database'
+expect_contains 'the wait is an init container, not a sidecar' "$dashboard" 'initContainers:'
+expect_contains 'the wait is the database readiness predicate' "$dashboard" 'pg_isready'
+
+# --- Phase two: the cluster -------------------------------------------------------------------
 
 if [ "${1:-}" != '--cluster' ]; then
     printf '\n%d passed, %d failed (cluster phase skipped — pass --cluster)\n' "$pass" "$fail"
@@ -143,7 +154,7 @@ if [ "${1:-}" != '--cluster' ]; then
     exit
 fi
 
-for tool in kubectl minikube docker; do
+for tool in kubectl docker; do
     command -v "$tool" >/dev/null || {
         echo "test-k8s: $tool is required for the cluster phase"
         exit 1
@@ -152,20 +163,68 @@ done
 
 # The cluster phase installs a release and deletes runner Jobs in its namespace — and "runner Job"
 # is identified only by the factory.job label, which any release in the namespace shares. This
-# script is built for a disposable local cluster; anything else has to say so explicitly.
+# script is built for a disposable local kind cluster; anything else has to say so twice: the
+# context must be shaped `kind-<name>` (how kind always names them) AND that name's cluster must
+# be the one actually serving the context. Those two facts are BOUND, not checked independently:
+# kind publishes the control-plane API on host 127.0.0.1:<port> and writes that same `server:`
+# into the kubeconfig, so the guard reads the context's server address and requires a control-plane
+# container labelled `io.x-k8s.kind.cluster=<name>` (the same label `kind load --name` resolves
+# below; k8s node objects carry no kind label) to be publishing that port. Two independent
+# fingerprints — a docker label on this daemon, node objects over the wire — could each pass
+# against a different cluster and admit a context aimed anywhere; the endpoint cannot. There is
+# no override — a context outside both has no image-load path here anyway.
 context="$(kubectl config current-context 2>/dev/null || true)"
-if [ "$context" != 'minikube' ] && [ -z "${FACTORY_K8S_ALLOW_ANY_CLUSTER:-}" ]; then
+case "$context" in
+kind-*)
+    kind_name="${context#kind-}"
+    command -v kind >/dev/null || {
+        echo "test-k8s: kind is required for the cluster phase (context is $context)"
+        exit 1
+    }
+    server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"
+    [ -n "$server" ] || {
+        echo "test-k8s: refusing to run the cluster phase against '$context'."
+        echo "  It deletes every runner Job in the namespace, and the context's API server"
+        echo "  address could not be read — the context may be dangling or not a kind"
+        echo "  cluster's. Create one (`kind create cluster --name <name>`) and aim kubectl at it."
+        exit 1
+    }
+    serving=0
+    for container in $(docker ps -q --filter "label=io.x-k8s.kind.cluster=$kind_name" \
+        --filter 'label=io.x-k8s.kind.role=control-plane'); do
+        host_port="$(docker inspect -f '{{(index (index .NetworkSettings.Ports "6443/tcp") 0).HostPort}}' \
+            "$container" 2>/dev/null || true)"
+        case "$server" in
+        "https://127.0.0.1:$host_port" | "https://localhost:$host_port")
+            serving=1
+            break
+            ;;
+        esac
+    done
+    [ "$serving" = '1' ] || {
+        echo "test-k8s: refusing to run the cluster phase against '$context'."
+        echo "  It deletes every runner Job in the namespace, and no kind cluster named"
+        echo "  '$kind_name' is serving the context's endpoint ($server): no control-plane"
+        echo "  container of that cluster publishes the port the context points at. It"
+        echo "  may not be a disposable kind cluster."
+        echo '  Create one (`kind create cluster --name <name>`) and aim kubectl at it.'
+        exit 1
+    }
+    ;;
+*)
     echo "test-k8s: refusing to run the cluster phase against '$context'."
-    echo '  It deletes every runner Job in the namespace. Aim it at minikube, or set'
-    echo '  FACTORY_K8S_ALLOW_ANY_CLUSTER=1 if the cluster really is disposable.'
+    echo '  It deletes every runner Job in the namespace. Create a disposable kind cluster'
+    echo '  (`kind create cluster --name <name>`) and aim kubectl at it — its context is'
+    echo '  kind-<name>.'
     exit 1
-fi
+    ;;
+esac
 
 echo
 echo '# cluster'
 
 kubectl cluster-info >/dev/null 2>&1 || {
-    echo 'test-k8s: no reachable cluster (is minikube running?)'
+    echo "test-k8s: no reachable cluster (is the kind cluster $kind_name running?)"
     exit 1
 }
 
@@ -190,19 +249,18 @@ docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/n
     exit 1
 }
 
-echo 'loading the images into minikube'
-# docker save through `minikube ssh`, rather than `minikube image load` or `minikube docker-env`:
-# the first did not exist before minikube v1.24, and the second makes the host's docker CLI talk to
-# the node's daemon, which dies on any version skew between the two. Streaming a tarball through
-# ssh works on every version of both.
-docker save "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE" |
-    minikube ssh --native-ssh=false docker load >/dev/null || {
-    echo 'test-k8s: could not load images into minikube'
-    exit 1
-}
+echo "loading the images into the kind cluster $kind_name"
+# One load call per image, not one variadic invocation: every kind version accepts
+# `kind load docker-image <image> --name <cluster>`, older ones not always a list.
+for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE"; do
+    kind load docker-image "$image" --name "$kind_name" >/dev/null || {
+        echo "test-k8s: could not load $image into the kind cluster $kind_name"
+        exit 1
+    }
+done
 
 echo "installing the release $RELEASE"
-helm install "$RELEASE" charts/factory -f charts/factory/values-minikube.yaml \
+helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml \
     --set "dashboard.image=$DASH_IMAGE" \
     --set "driver.image=$DRIVER_IMAGE" \
     --set "driver.executorImage=$STUB_IMAGE" \
@@ -212,10 +270,17 @@ helm install "$RELEASE" charts/factory -f charts/factory/values-minikube.yaml \
 }
 installed=1
 
+# The timescale deployment is waited for deliberately: the dashboard listens the moment its
+# process is up — health answers, availability reports — but its migrations only start landing
+# once the database accepts connections, and the server gives up retrying after ~55s. On a cold
+# kind node the database image is still being pulled through containerd in that window, so
+# queueing before it is available fails every POST no matter how long the queue step polls.
 kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
-    -n "$NAMESPACE" --timeout=300s >/dev/null 2>&1 &&
-    ok 'the dashboard and driver come up' || bad 'the dashboard and driver come up' \
+    "deployment/$RELEASE-factory-timescale" \
+    -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
+    ok 'the dashboard, driver and database come up' || \
+    bad 'the dashboard, driver and database come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
 
 # Through the dashboard, so the assertion is the user's own path: queue, then poll the board.
@@ -239,14 +304,65 @@ done
     exit 1
 }
 
-id="$(node -e '
-fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from minikube" }) })
-    .then(async (r) => process.stdout.write(String((await r.json()).id ?? "")))
-    .catch(() => process.stdout.write(""));
+# The wait above covers the cold case (database image still pulling); this poll covers the
+# residual one — migrations retry on a backoff, so the first POST after the database is up can
+# still land inside it. The server adopts the database on the attempt that works; the script
+# gives it the same grace. No rejection is proof the job was not created: the route wraps store
+# calls in `guard`, which answers 503 to ANY throw — including one raised by the postgres client
+# while awaiting the result of an INSERT that has already committed — and a 000 means no response
+# came back, not that nothing was processed. Repeating the non-idempotent POST on either would
+# queue a duplicate the test does not track. So on 000 and on 5xx the loop reconciles first: it
+# reads GET /api/jobs (limit 200, the endpoint's cap) and, if a job whose command is this test's
+# command exists, adopts its id and carries on with the normal flow. A list read that FAILS is no
+# evidence either way, so only a read that SUCCEEDS and shows no such job re-arms the POST; a
+# failed read keeps waiting here (the loop has 60 iterations) rather than re-POSTing blind. Any
+# other answer — a 2xx whose body will not parse into an id, say — may have created a job, so
+# the loop stops and lets the check below report, rather than re-POSTing the same command into a
+# duplicate. Same shape as the status poll below.
+id=""
+reconcile=0
+for _ in $(seq 1 60); do
+    if [ "$reconcile" = '0' ]; then
+        response="$(node -e '
+fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster" }) })
+    .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id); })
+    .catch(() => process.stdout.write("000|"));
 ' "$BASE/api/jobs")"
+        status="${response%%|*}"
+        id="${response#*|}"
+        case "$status" in
+        000 | 5*) reconcile=1 ;;
+        *) break ;;
+        esac
+    else
+        adopted="$(node -e '
+fetch(process.argv[1])
+    .then(async (r) => {
+        if (r.status !== 200) { process.stdout.write("no"); return; }
+        const b = await r.json().catch(() => null);
+        if (!b || !Array.isArray(b.jobs)) { process.stdout.write("no"); return; }
+        const hit = b.jobs.find((j) => j.command === process.argv[2]);
+        process.stdout.write(hit ? "id " + String(hit.id) : "none");
+    })
+    .catch(() => process.stdout.write("no"));
+' "$BASE/api/jobs?limit=200" 'hello from the cluster')"
+        case "$adopted" in
+        'id '*)
+            id="${adopted#id }"
+            break
+            ;;
+        none) reconcile=0 ;; # the read succeeded and showed no such job: re-POST is safe
+        esac
+    fi
+    sleep 1
+done
 case "$id" in
 *-*) ok 'a job was queued' ;;
-*) bad 'a job was queued' "no id came back" ;;
+*) bad 'a job was queued' "no id came back"
+    kill "$pf_pid" 2>/dev/null
+    printf '\n%d passed, %d failed\n' "$pass" "$fail"
+    exit 1
+    ;;
 esac
 
 # The stub image echoes its arguments, so the output is the proof the prompt reached the pod — the
@@ -264,7 +380,7 @@ fetch(process.argv[1])
     esac
 done
 expect_contains 'the job ran to completion' "$result" 'succeeded'
-expect_contains 'the prompt reached the pod' "$result" 'hello from minikube'
+expect_contains 'the prompt reached the pod' "$result" 'hello from the cluster'
 
 # The runner object the executor created — the thing only kubernetes could prove. Found by the
 # factory.job label the spec stamps on it (the release labels belong to the chart's objects).
