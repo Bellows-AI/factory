@@ -72,14 +72,32 @@ const MARKER = /^###__bellows:(.*)$/;
 /**
  * Cuts a comment. A `#` opens one at line start or after whitespace, never inside quotes — which
  * is what makes `TOKEN: "ab # cd"` survive and `image: postgres # pinned` not carry its comment
- * into the tag. No escape sequences anywhere: quotes are recognized, not interpreted.
+ * into the tag. The tracker follows the same quoting rules scalar() decodes by, so an escape
+ * cannot mis-toggle it: in a double-quoted span `\"` is a character the span holds, and in a
+ * single-quoted one the doubled `''` is the whole escape, consumed as a pair.
  */
 function stripComment(line: string): string {
     let quote: string | null = null;
     for (let i = 0; i < line.length; i += 1) {
         const ch = line[i];
-        if (quote) {
-            if (ch === quote) quote = null;
+        if (quote === '"') {
+            // The backslash escapes the next character, so `\"` is a quoted quote and the span
+            // stays open — otherwise `"va\"" # note` cuts its comment inside the value.
+            if (ch === '\\') {
+                i += 1;
+                continue;
+            }
+            if (ch === '"') quote = null;
+            continue;
+        }
+        if (quote === "'") {
+            // The doubled quote is the escape: consume the pair, and only a lone `'` closes
+            // the span.
+            if (ch === "'" && line[i + 1] === "'") {
+                i += 1;
+                continue;
+            }
+            if (ch === "'") quote = null;
             continue;
         }
         if (ch === '"' || ch === "'") {
@@ -91,14 +109,56 @@ function stripComment(line: string): string {
     return line;
 }
 
-/** A scalar: surrounding quotes stripped, everything else kept as written (numbers included). */
+/**
+ * The backslash escapes a double-quoted scalar decodes (YAML 1.2 §7.3.2) — the common safe set,
+ * nothing more. Anything outside the map is refused rather than passed through with its
+ * backslash: the service runs on what this returns, and a forwarded escape speaks for a value
+ * the author did not write.
+ */
+const DOUBLE_QUOTED_ESCAPES = new Map<string, string>([
+    ['\\', '\\'],
+    ['"', '"'],
+    ['n', '\n'],
+    ['t', '\t'],
+    ['r', '\r'],
+    ['0', '\0'],
+    ['/', '/'],
+    ['b', '\b'],
+    ['f', '\f'],
+]);
+
+/**
+ * A scalar. Unquoted values are kept as written (numbers included). A quoted value is decoded by
+ * the rules its quoting promises — that is what makes `PASSWORD: "pa\"ss"` start the service
+ * with `pa"ss` rather than the escape syntax. Single quotes (§7.3.1) know exactly one escape,
+ * the doubled `''`, and a backslash is the character it is; double quotes (§7.3.2) process the
+ * map above and refuse an escape outside it, under this file's standing posture that a
+ * construct the parser does not understand is an error a human reads.
+ */
 function scalar(raw: string): string {
     const value = raw.trim();
-    if (
-        value.length >= 2 &&
-        ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-    ) {
-        return value.slice(1, -1);
+    if (value.length < 2) return value;
+    if (value.startsWith("'") && value.endsWith("'")) {
+        return value.slice(1, -1).replace(/''/g, "'");
+    }
+    if (value.startsWith('"') && value.endsWith('"')) {
+        const body = value.slice(1, -1);
+        let out = '';
+        for (let i = 0; i < body.length; i += 1) {
+            const ch = body[i];
+            if (ch !== '\\') {
+                out += ch;
+                continue;
+            }
+            const next = body[i + 1] ?? '';
+            const decoded = DOUBLE_QUOTED_ESCAPES.get(next);
+            if (decoded === undefined) {
+                throw new Error(`.bellows.yaml: unknown escape "\\${next}" in a double-quoted value`);
+            }
+            out += decoded;
+            i += 1;
+        }
+        return out;
     }
     return value;
 }

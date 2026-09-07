@@ -710,6 +710,81 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
     });
 
+    // A lost lease fires kill() while the setup may still be awaiting the daemon. Throwing is the
+    // loop's contract for it — the outcome of a lost lease is discarded, and the next attempt's
+    // fence removes whatever was already created — so the abort's only job is to stop THIS
+    // attempt from creating more resources and from spawning the runner over a lease that is gone.
+    it('aborts the setup, creating nothing more and spawning nothing, when the job is killed mid-setup', async () => {
+        const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                // The lease is lost while the readout is in flight; kill() is what the loop
+                // calls, and it must be recorded before the read resolves.
+                await handle.kill!(job);
+                return { stdout: READOUT };
+            }
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            return { stdout: '' };
+        });
+        const { fn, seen } = spawnRecording('ran\n', 0);
+        const runner = servicesRunner(exec, fn);
+        handle.kill = runner.kill;
+
+        await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /killed while setting up services/,
+        );
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).not.toContainEqual(['network', 'create', networkName(job)]);
+        expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
+        expect(seen).toHaveLength(0);
+    });
+
+    // Ordering, not just outcome: the rejection must not be observable while the teardown is
+    // still in flight, or the caller sees shutdown and the next lifecycle step race the
+    // removals. The LAST teardown step is held in flight on a gate the test controls — armed
+    // only after the readout, so the fence's own network rm passes — and a rejection observable
+    // while the gate is closed is one that did not wait for cleanup.
+    it('tears the services down before a spawn error rejects', async () => {
+        let releaseNetworkRm: (() => void) | null = null;
+        const networkRmGate = new Promise<void>((resolve) => {
+            releaseNetworkRm = resolve;
+        });
+        let armed = false;
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                armed = true;
+                return { stdout: READOUT };
+            }
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            if (args[0] === 'network' && args[1] === 'rm' && armed) await networkRmGate;
+            return { stdout: '' };
+        });
+        // A child that never closes: the CLI could not even be spawned, which is the 'error'
+        // event and nothing else.
+        const erroring = (() => {
+            const c = new EventEmitter() as ChildProcess;
+            process.nextTick(() => c.emit('error', new Error('spawn docker ENOENT')));
+            return c;
+        }) as unknown as typeof spawn;
+        const pending = servicesRunner(exec, erroring).run(job, { id: SESSION, resume: false });
+        let rejected = false;
+        pending.catch(() => {
+            rejected = true;
+        });
+        // A macrotask, so every microtask — the rejection among them — gets its turn while the
+        // gate is still closed.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(rejected).toBe(false);
+
+        releaseNetworkRm!();
+        await expect(pending).rejects.toThrow(/ENOENT/);
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
+    });
+
     it('leaves the daemon alone when the switch is off', async () => {
         const exec = daemon(READOUT);
         const { fn, seen } = spawnRecording('ran\n', 0);

@@ -374,6 +374,12 @@ type Spawn = typeof spawn;
 type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
 
 export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn, execDocker: ExecDocker = (args) => run('docker', args)): Runner {
+    /*
+     * Job ids whose kill() fired while a run of the same id may still be awaiting the daemon in
+     * its services setup. Keyed by id, not a per-run boolean, because kill() names a job and
+     * under concurrency the job it names need not be the one whose setup is in flight.
+     */
+    const killed = new Set<BoardJob['id']>();
     /**
      * Removes every service container this job labeled and the job's network. It runs twice with
      * the same body: as the re-claim FENCE before anything is created (a dead previous attempt
@@ -392,6 +398,10 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
     };
 
     const kill = async (job: BoardJob): Promise<void> => {
+        // Recorded before anything is torn down: a run of this id sitting in its services setup
+        // reads this between awaited steps and aborts instead of creating more resources or
+        // spawning the runner over a lease that is already gone.
+        killed.add(job.id);
         // Killing the `docker run` process would only detach the CLI; the container keeps running
         // and the workspace keeps being written to. The daemon has to be told. The declared
         // services go with it: a killed job's database has no reason to outlive the job, and the
@@ -412,6 +422,9 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         },
 
         async run(job, session, onOutput) {
+            // A fresh claim is a fresh lease: drop any kill recorded against an earlier attempt
+            // of this id, or the setup abort below would tear down a run nobody killed.
+            killed.delete(job.id);
             // The re-claim fence, the docker twin of the kubernetes runner's delete-before-create:
             // the container name is derived from the job id, so anything already holding it is a
             // leftover of a previous attempt — a driver that died before it could kill its runner,
@@ -438,6 +451,21 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
              */
             let servicesNetwork: string | null = null;
             let refusal: string | null = null;
+            /*
+             * A kill that lands while this setup is awaiting the daemon must stop the attempt.
+             * Throwing loses nothing: the loop discards a lost-lease outcome, and the next
+             * attempt's fence removes whatever was already created — what it must not do is go
+             * on creating the network, starting services and spawning the runner for a lease
+             * this driver no longer holds, colliding with the next attempt. So the flag is
+             * checked after every awaited step below, and once more just before the spawn: the
+             * gap between that check and spawnFn is synchronous, so nothing can land inside it
+             * unobserved.
+             */
+            const assertNotKilled = async (): Promise<void> => {
+                if (!killed.has(job.id)) return;
+                await serviceTeardown(job);
+                throw new Error(`job ${job.id}: killed while setting up services`);
+            };
             if (config.servicesEnabled) {
                 await serviceTeardown(job);
                 let raw: string;
@@ -446,6 +474,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 } catch (e) {
                     throw new Error(`could not read .bellows.yaml: ${(e as Error).message}`);
                 }
+                await assertNotKilled();
                 let specs: ServiceSpec[];
                 try {
                     specs = collectServices(splitBellowsSections(raw));
@@ -462,6 +491,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     } catch (e) {
                         throw new Error(`could not create the services network: ${(e as Error).message}`);
                     }
+                    await assertNotKilled();
                     for (const spec of specs) {
                         try {
                             await execDocker(serviceRunArgs(job, spec));
@@ -469,6 +499,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                             await serviceTeardown(job);
                             throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
                         }
+                        await assertNotKilled();
                     }
                 }
             }
@@ -476,6 +507,10 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 return { exitCode: null, output: refusal, timedOut: false, idled: false, started: true };
             }
 
+            // The runner container is the last resource this attempt creates, and the spawn is
+            // what a killed setup must never reach — see assertNotKilled for why a throw is the
+            // right verdict here.
+            await assertNotKilled();
             return new Promise<RunOutcome>((resolve, reject) => {
                 // The verdict for a close, decided after the process is gone. An exit 125 is
                 // ambiguous on the shared stderr — the daemon's refusal and a command that
@@ -560,10 +595,12 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 child.on('error', (error) => {
                     done();
                     // The spawn itself failed (docker missing, exec blew up). Whatever services
-                    // were started before it are torn down here rather than at the fence of a
-                    // claim that may never come.
-                    void serviceTeardown(job);
-                    reject(error);
+                    // were started before it are torn down BEFORE the rejection lands: teardown
+                    // tolerates absence, so either way a rejection means cleanup is as done as
+                    // it gets — a rejection that raced an unobserved teardown would let process
+                    // shutdown or the next lifecycle step run while the removals are still in
+                    // flight.
+                    serviceTeardown(job).then(() => reject(error), () => reject(error));
                 });
                 child.on('close', (code) => {
                     done();

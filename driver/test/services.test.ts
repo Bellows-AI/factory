@@ -89,6 +89,54 @@ describe('parseBellows', () => {
         ]);
     });
 
+    it('decodes the escapes a quoted scalar promises', () => {
+        // The service runs on what the author DECLARED. A double-quoted scalar follows the
+        // backslash rules of YAML 1.2 §7.3.2 and a single-quoted one the doubled-quote rule of
+        // §7.3.1 — stripping the quotes without decoding shipped the escape syntax itself to
+        // the container as the credential.
+        const text = [
+            'services:',
+            '  - name: db',
+            '    image: postgres',
+            '    environment:',
+            '      PASSWORD: "pa\\"ss"',
+            '      KEY: \'it\'\'s\'',
+            '      PATH: "a\\\\b"',
+            '      WINPATH: \'C:\\path\'',
+            '      BODY: "line1\\nline2\\tend"',
+        ].join('\n');
+        expect(parseBellows(text)[0]?.environment).toEqual([
+            { key: 'PASSWORD', value: 'pa"ss' },
+            { key: 'KEY', value: 'it\'s' },
+            { key: 'PATH', value: 'a\\b' },
+            { key: 'WINPATH', value: 'C:\\path' },
+            { key: 'BODY', value: 'line1\nline2\tend' },
+        ]);
+    });
+
+    it('refuses an escape it does not decode in a double-quoted scalar', () => {
+        // Strictness posture: a typo like `\q` passed through with its backslash would hand the
+        // container a credential the author did not write, silently.
+        expect(() =>
+            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      BAD: "a\\qb"\n'),
+        ).toThrow(/escape/);
+    });
+
+    it('cuts a comment after an escaped quote inside a double-quoted value', () => {
+        // `\"` must not toggle the quote tracker: the comment after the scalar is still a
+        // comment, and the scalar still closes where it closes.
+        const text = [
+            'services:',
+            '  - name: db',
+            '    image: postgres',
+            '    environment:',
+            '      TOKEN: "va\\"" # note',
+        ].join('\n');
+        expect(parseBellows(text)).toEqual([
+            { name: 'db', image: 'postgres', environment: [{ key: 'TOKEN', value: 'va"' }] },
+        ]);
+    });
+
     it('refuses a service with no name or no image', () => {
         expect(() => parseBellows('services:\n  - image: redis\n')).toThrow(/missing "name"/);
         expect(() => parseBellows('services:\n  - name: cache\n')).toThrow(/missing "image"/);
