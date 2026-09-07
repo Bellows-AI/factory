@@ -146,10 +146,13 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
         }
     }
     // The board's stacked environment, same discipline: names in the pod spec, values in the
-    // per-job Secret (created before the Job — see create()). claimEnv has already dropped the
-    // reserved names, so WORKDIR stays the one literal here.
+    // per-attempt Secret (created before the Job — see create()). claimEnv has already dropped the
+    // reserved names, so WORKDIR stays the one literal here. NOT optional: this driver created
+    // this exact Secret moments earlier under this attempt's own lease token, so a missing key is
+    // a bug and must fail loud (CreateContainerConfigError) rather than start the pod silently
+    // without its env.
     for (const name of Object.keys(claimEnv(job))) {
-        env.push({ name, valueFrom: { secretKeyRef: { name: secretName(job), key: name, optional: true } } });
+        env.push({ name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } });
     }
 
     // The argv the docker runner puts after the image name, unchanged: the executor image's
@@ -215,17 +218,23 @@ export const jobsPath = (namespace: string): string => `/apis/batch/v1/namespace
 export const jobPath = (namespace: string, name: string): string => `${jobsPath(namespace)}/${name}`;
 
 /**
- * The per-job Secret carrying the board's resolved environment. One per attempt, created before the
- * Job and reaped with it: the pod spec references it by `secretKeyRef`, so the values are readable
- * only through the API server's RBAC — never off the Job object itself.
+ * The per-attempt Secret carrying the board's resolved environment. One per ATTEMPT — the lease
+ * token is part of the name — created before the Job and reaped with it: the pod spec references
+ * it by `secretKeyRef`, so the values are readable only through the API server's RBAC — never off
+ * the Job object itself. The token in the name is what keeps a reclaimed job's superseded worker
+ * from deleting the replacement attempt's Secret: its `kill()` can only ever address the Secret
+ * of the attempt it actually ran.
  *
- * The id is asserted before it lands in an API path, the same way the Job name's is.
+ * Both halves are asserted before they join an API path, the same way the Job name's is.
  */
 export const secretName = (job: BoardJob): string => {
     if (!JOB_ID.test(job.id)) {
         throw new Error(`refusing to address a job id that is not a uuid: ${job.id}`);
     }
-    return `factory-job-${job.id}-env`;
+    if (!JOB_ID.test(job.leaseToken)) {
+        throw new Error(`refusing to address a lease token that is not a uuid: ${job.leaseToken}`);
+    }
+    return `factory-job-${job.id}-${job.leaseToken}-env`;
 };
 
 /** The Secret object the claim env becomes. Values ride in stringData, nowhere else. */
@@ -374,9 +383,10 @@ export function createKubernetesRunner(
         const post = async (): Promise<K8sResponse> => request('POST', jobsPath(config.k8sNamespace), spec);
         if (Object.keys(env).length) {
             // Before the Job — a pod that references a Secret that is not there yet is a
-            // CreateContainerConfigError and a burned attempt. The pre-delete makes a re-claim
-            // idempotent: the previous attempt's Secret holds the same name until it is removed.
-            await forgetSecret(job);
+            // CreateContainerConfigError and a burned attempt. The name carries this attempt's
+            // lease token, so there is no previous attempt's Secret at this name to sweep — and
+            // deliberately no pre-create delete, which under a shared name was what let a
+            // superseded worker's cleanup destroy a replacement's Secret.
             const secretResponse = await request('POST', secretsPath, secretBody(job, env));
             if (secretResponse.status >= 300) {
                 throw new Error(
@@ -407,10 +417,10 @@ export function createKubernetesRunner(
             if (removed.status >= 300 && removed.status !== 404) {
                 throw new Error(`deleting the leftover runner answered ${removed.status}: ${removed.body.slice(0, 200)}`);
             }
-            // NOT the env Secret: the one this run created (before the first POST) is exactly what
-            // the replacement Job references, and the previous attempt's was already swept by the
-            // pre-create delete. Deleting here would start the replacement pod silently without
-            // its claim env — the secretKeyRef is optional by design.
+            // NOT the env Secret — only the leftover Job. The Secret the replacement Job
+            // references is this attempt's own (its name carries this run's lease token), created
+            // before the first POST; a secret delete here could only ever hit what this run or a
+            // successor depends on.
             let waits = 0;
             for (;;) {
                 let probe: K8sResponse;
@@ -491,8 +501,9 @@ export function createKubernetesRunner(
             /*
              * Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed
              * verdict read — must still reap the env Secret: the loop's catch never calls kill(),
-             * and when the job retires dead there is no next attempt whose pre-delete would sweep
-             * it. The cleanup is the OUTSIDE of the run, not a step in it.
+             * and when the job retires dead there is no next attempt to reap it. The cleanup is
+             * the OUTSIDE of the run, not a step in it. With the lease token in the name, both
+             * this and kill() can only ever remove their own attempt's Secret.
              */
             try {
                 return await runner.run0(job, session);

@@ -90,12 +90,16 @@ driver reads that as "no environment" (`?? {}`).
   credential does not fail there — `--remote-control` starts a perfectly ordinary local session and
   the only symptom is that it never appears at claude.ai/code. The volume is the only credential a
   Remote Control runner gets. Revisit with an allowlist if that ever needs to change.
-- **Kubernetes: a per-job Secret.** `claimEnv`'s keys go into the pod spec as `secretKeyRef` against
-  `factory-job-<id>-env`, created (values in `stringData`) BEFORE the Job — a pod referencing a
-  Secret that is not there yet is a `CreateContainerConfigError` and a burned attempt — and deleted
-  wherever the Job is: the re-claim fence, `kill()`, and once the verdict and log have been read.
-  No value ever lands in the pod spec. The chart's Role grows `secrets: [create, delete]` — no
-  `get`, no `list`; the driver writes values it was handed and never reads one back.
+- **Kubernetes: a per-attempt Secret.** `claimEnv`'s keys go into the pod spec as `secretKeyRef` against
+  `factory-job-<id>-<lease token>-env` — the lease token is in the name because a reclaimed job's
+  superseded worker must not be able to delete the replacement attempt's Secret — created (values in
+  `stringData`) BEFORE the Job (a pod referencing a Secret that is not there yet is a
+  `CreateContainerConfigError` and a burned attempt, so the keys are referenced non-optionally) and
+  deleted when the attempt ends: `kill()`, and once the verdict and log have been read — the re-claim
+  fence deletes only the leftover Job. A driver that crashes before cleanup leaks its attempt's
+  Secret, since Secrets carry no TTL; the `factory.job: <id>` label is what a cleanup job would
+  select. No value ever lands in the pod spec. The chart's Role grows `secrets: [create, delete]` —
+  no `get`, no `list`; the driver writes values it was handed and never reads one back.
 
 ## "Core secrets" and GitHub authentication
 

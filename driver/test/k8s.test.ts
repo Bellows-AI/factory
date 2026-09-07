@@ -149,16 +149,19 @@ describe('the runner job spec', () => {
     });
 
     // The claim env's VALUES never touch the pod spec — anyone who can `get pods` would read them.
-    // They live in a per-job Secret the runner creates before the Job and reaps with it.
+    // They live in a per-attempt Secret the runner creates before the Job and reaps with it.
     it('references claim env by secretKeyRef into the per-job Secret, never by value', () => {
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         const container = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), envJob, {
             id: SESSION,
             resume: false,
         }).spec.template.spec.containers[0];
+        // NOT optional: the driver created this exact Secret moments before the Job, under this
+        // attempt's own lease token — a missing key is a bug and must fail loud
+        // (CreateContainerConfigError), not start the pod silently without its env.
         expect(container.env).toContainEqual({
             name: 'CORE_TOKEN',
-            valueFrom: { secretKeyRef: { name: secretName(envJob), key: 'CORE_TOKEN', optional: true } },
+            valueFrom: { secretKeyRef: { name: secretName(envJob), key: 'CORE_TOKEN' } },
         });
         expect(JSON.stringify(container.env)).not.toContain('shh');
     });
@@ -330,6 +333,10 @@ describe('the kubernetes runner', () => {
         const jobIndex = calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(secretIndex).toBeGreaterThanOrEqual(0);
         expect(secretIndex).toBeLessThan(jobIndex);
+        // And creating it is the FIRST thing the run does to a Secret: the name carries this
+        // attempt's lease token, so there is no previous attempt's Secret at this name to sweep.
+        const firstSecretCall = calls.find((call) => call.path?.includes('/secrets'));
+        expect(firstSecretCall?.method).toBe('POST');
         // Reaped once the verdict and the log have been read — not before, or the pod could not
         // have pulled the values at all.
         expect(
@@ -350,6 +357,50 @@ describe('the kubernetes runner', () => {
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         await runner(request).kill(envJob);
         expect(calls.some((call) => call.method === 'DELETE' && call.path === `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`)).toBe(true);
+    });
+
+    /*
+     * The reported race: a lease expires, the board reclaims the job, and a replacement attempt
+     * creates its Secret. The superseded worker then processes its lost heartbeat and its kill()
+     * ran — under a job-id-only Secret name — against the SAME name, deleting the replacement's
+     * Secret and leaving its pod to start silently without the claim env. With the lease token in
+     * the name, the old worker can only ever address its own attempt's Secret.
+     */
+    it("deletes only the superseded attempt's Secret when the job id has been reclaimed", async () => {
+        const oldJob: BoardJob = {
+            ...job,
+            env: { CORE_TOKEN: 'shh' },
+            leaseToken: '22222222-2222-4222-8222-222222222222',
+        };
+        const newJob: BoardJob = {
+            ...job,
+            env: { CORE_TOKEN: 'shh' },
+            leaseToken: '99999999-9999-4999-8999-999999999999',
+        };
+        const { request, calls } = fakeRequest();
+
+        // The replacement attempt runs to completion: it creates and reaps its OWN Secret.
+        await runner(request).run(newJob, { id: SESSION, resume: false });
+        const afterRun = calls.length;
+        expect(
+            calls.slice(0, afterRun).some(
+                (call) =>
+                    call.method === 'DELETE' &&
+                    call.path === `/api/v1/namespaces/${namespace}/secrets/${secretName(newJob)}`,
+            ),
+        ).toBe(true);
+
+        // The superseded worker's kill must not be able to touch the replacement's Secret — the
+        // replacement's own run legitimately reaped it above, so the hazard is scoped to the
+        // deletes the kill itself issues.
+        await runner(request).kill(oldJob);
+        const killDeletes = calls
+            .slice(afterRun)
+            .filter((call) => call.method === 'DELETE' && call.path?.includes('/secrets'));
+        expect(killDeletes.some((call) => call.path === `/api/v1/namespaces/${namespace}/secrets/${secretName(newJob)}`)).toBe(false);
+        expect(killDeletes.map((call) => call.path)).toEqual([
+            `/api/v1/namespaces/${namespace}/secrets/${secretName(oldJob)}`,
+        ]);
     });
 
     it('reports a non-zero exit with the pod exit code and the tail of the log', async () => {
@@ -430,9 +481,9 @@ describe('the kubernetes runner', () => {
     // forever heartbeating a lease around a create that keeps 409ing. Bounded, then thrown: the
     // job goes back to the board rather than two writers racing one checkout.
     // The env Secret this run creates precedes its first Job POST — and must SURVIVE the 409
-    // fence: the replacement Job references it by name, and a deleted one (optional secretKeyRef)
-    // would start the pod silently without any claim env. The fence deletes the leftover JOB; the
-    // leftover SECRET was already swept by the pre-create delete before the first POST.
+    // fence: the replacement Job references it by name, and a deleted one would start the pod
+    // silently without its claim env. The fence deletes the leftover JOB and nothing else — with
+    // the lease token in the Secret's name, there is no previous attempt's Secret at this name.
     it('keeps the freshly created Secret across the 409 fence', async () => {
         const calls: Call[] = [];
         let posts = 0;
@@ -581,8 +632,9 @@ describe('the kubernetes runner', () => {
     // Any throw after the Job was created — poll exhaustion, a vanished object — skips the
     // verdict-path cleanup, and the loop's catch never calls kill(). Without a delete here the
     // claim env's plaintext values stay in a Secret nobody will reap when the job retires dead.
-    // The run STARTS with a delete (the re-claim's idempotency pre-delete), so the proof is the
-    // LAST call being a delete — one the throw came after.
+    // The run never touches a Secret before creating it (the name carries the lease token, so
+    // there is no pre-create sweep), so the proof is the LAST call being a delete — one the throw
+    // came after.
     it('deletes the per-job Secret even when the run throws after creating it', async () => {
         const { request, calls } = fakeRequest({
             job: { status: 503, body: 'unavailable' },
@@ -598,8 +650,8 @@ describe('the kubernetes runner', () => {
         const last = calls[calls.length - 1]!;
         expect(last.method).toBe('DELETE');
         expect(last.path).toBe(`/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`);
-        // And it was the post-create cleanup, not merely the pre-create one: the Job create,
-        // its failed status polls and the delete all follow the Secret's creation.
+        // And it was the post-create cleanup: the Job create, its failed status polls and the
+        // delete all follow the Secret's creation.
         const secretCreate = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/secrets'));
         const lastDelete = calls.length - 1;
         expect(lastDelete).toBeGreaterThan(secretCreate);

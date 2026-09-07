@@ -117,7 +117,7 @@ describe('the docker run arguments', () => {
     });
 });
 
-describe("the board's environment", () => {
+describe('the board\'s environment', () => {
     const envJob: BoardJob = {
         ...job,
         env: { MY_TOKEN: 'board-secret', WORKDIR: '/etc', TRUST_WORKDIR: '1' },
