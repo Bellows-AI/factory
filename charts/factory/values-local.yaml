@@ -12,9 +12,6 @@
 #   kind load docker-image echo-executor --name factory
 #   helm install dev charts/factory -f charts/factory/values-local.yaml
 #
-# On minikube the same shape: `minikube start`, the same three builds, and
-# `minikube image load factory-ai factory-driver echo-executor` before the same helm install.
-#
 # See charts/factory/README.md for the walkthrough and scripts/test-k8s.sh for the scripted version.
 
 dashboard:

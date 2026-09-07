@@ -10,8 +10,7 @@
 #   docker build -f docker/Dockerfile --target runtime -t factory-ai .
 dashboard:
     image: factory-ai
-    # IfNotPresent so side-loaded images (kind load docker-image, minikube image load) resolve
-    # without a registry.
+    # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
     replicas: 1
     port: 8080

@@ -12,7 +12,7 @@ a variable documented in `docs/kubernetes.md`.
 
 | Object | Purpose |
 | --- | --- |
-| `Deployment <release>-factory` | The dashboard. `AUTH_MODE` defaults to `github` here, as compose pins it — this deployment holds checkouts and serves a route that runs shell commands. |
+| `Deployment <release>-factory` | The dashboard. `AUTH_MODE` defaults to `github` here, as compose pins it — this deployment holds checkouts and serves a route that runs shell commands. With the in-chart database enabled, an init container holds the server back until the database accepts connections. |
 | `Service <release>-factory` | ClusterIP. The driver reaches the board by this name; people reach it through whatever the operator deliberately puts in front. |
 | `Deployment <release>-factory-driver` + `ServiceAccount` + `Role`/`RoleBinding` | The "operator for runners": watches the board and reconciles one runner Job per claimed job. The Role is namespace-scoped and carries only the four calls the runner makes — create/delete Jobs, read pods, read pod logs. Never a ClusterRole. |
 | `Job <release>-factory-job-…` (per job, at runtime) | One runner pod, `restartPolicy: Never`, `backoffLimit: 0` — the cluster never re-runs a job; the board owns retries. `automountServiceAccountToken: false`, so a runner holds no API credentials. |
@@ -43,13 +43,10 @@ helm install dev charts/factory -f charts/factory/values-local.yaml
 kubectl wait --for=condition=available deployment/dev-factory --timeout=300s
 ```
 
-On minikube the shape is the same: `minikube start` instead of `kind create cluster`, and
-`minikube image load factory-ai factory-driver echo-executor` instead of the `kind load` line.
-
-`values-local.yaml` is the offline profile for either provider: `GITHUB_MODE=none` (serves whatever
-the database holds, fetches nothing), `AUTH_MODE=none` + `AUTH_ALLOW_PUBLIC_BIND=1` — the ClusterIP
-is the perimeter, the k8s analogue of the `127.0.0.1` bind every open stack here runs behind — and
-the stub executor image, so a queued job runs a real pod and echoes its prompt back.
+`values-local.yaml` is the offline profile: `GITHUB_MODE=none` (serves whatever the database holds,
+fetches nothing), `AUTH_MODE=none` + `AUTH_ALLOW_PUBLIC_BIND=1` — the ClusterIP is the perimeter,
+the k8s analogue of the `127.0.0.1` bind every open stack here runs behind — and the stub executor
+image, so a queued job runs a real pod and echoes its prompt back.
 
 Then:
 
@@ -67,11 +64,10 @@ curl -s localhost:8080/api/jobs/<id>
 
 `scripts/test-k8s.sh` runs the same walkthrough as assertions (`npm run test:k8s`), plus
 `helm lint`/`helm template` checks that do not need a cluster at all. Its cluster phase runs
-against minikube or kind and refuses any other kubectl context.
+against kind and refuses any other kubectl context.
 
 ## Uninstall
 
 `helm uninstall dev` removes everything the release created, including both claims — and the
 checkouts and history on them. The claims are deliberately not annotated to survive; a dev install
-is disposable by construction. `kind delete cluster --name factory` (or `minikube delete`) removes
-the cluster itself.
+is disposable by construction. `kind delete cluster --name factory` removes the cluster itself.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# The Kubernetes stack, end to end on a local cluster: minikube or kind.
+# The Kubernetes stack, end to end on a local kind cluster.
 #
 #   scripts/test-k8s.sh              # lint + template only (needs helm)
-#   scripts/test-k8s.sh --cluster    # then the real thing (needs minikube or kind running)
+#   scripts/test-k8s.sh --cluster    # then the real thing (needs a kind cluster running)
 #
 # Phase one is offline: helm lint, and helm template assertions that the rendered manifests carry
 # the security-relevant decisions — credentials by secretKeyRef and never by value, a
@@ -135,6 +135,17 @@ expect_not_contains 'the service never selects the driver'       "$service_selec
 render | grep -q 'value: "1800000"' && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
 
+# The dashboard pod must not start its server until the in-chart database accepts connections: the
+# server's migration retry gives up after ~55s and then serves every DB-backed route as a 500
+# forever — a state no amount of client-side polling recovers. On a cold cluster the database
+# image pulls for minutes, so the wait has to live in the pod spec, as an init container running
+# the same pg_isready the database pod's readiness probe runs.
+dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' "$work/rendered.yaml")"
+expect_contains 'the dashboard waits for the database before starting' "$dashboard" \
+    'wait-for-database'
+expect_contains 'the wait is an init container, not a sidecar' "$dashboard" 'initContainers:'
+expect_contains 'the wait is the database readiness predicate' "$dashboard" 'pg_isready'
+
 # --- Phase two: the cluster -------------------------------------------------------------------
 
 if [ "${1:-}" != '--cluster' ]; then
@@ -152,27 +163,12 @@ done
 
 # The cluster phase installs a release and deletes runner Jobs in its namespace — and "runner Job"
 # is identified only by the factory.job label, which any release in the namespace shares. This
-# script is built for a disposable local cluster; anything else has to say so explicitly. kind
-# contexts are always `kind-<name>`, so the allowlist is exactly the disposable local providers.
+# script is built for a disposable local kind cluster; anything else has to say so by being one:
+# kind contexts are always `kind-<name>`, so that shape is the whole guard. There is no override —
+# a context outside the shape has no image-load path here anyway.
 context="$(kubectl config current-context 2>/dev/null || true)"
 case "$context" in
-minikube | kind-*) ;;
-*)
-    if [ -z "${FACTORY_K8S_ALLOW_ANY_CLUSTER:-}" ]; then
-        echo "test-k8s: refusing to run the cluster phase against '$context'."
-        echo '  It deletes every runner Job in the namespace. Aim it at minikube or a kind'
-        echo '  cluster (context kind-<name>), or set FACTORY_K8S_ALLOW_ANY_CLUSTER=1 if the'
-        echo '  cluster really is disposable.'
-        exit 1
-    fi
-    ;;
-esac
-
-# Which provider is under the context decides the image-load path below. The escape hatch above
-# keeps today's minikube-style loading, the same default the guard has always implied.
-case "$context" in
 kind-*)
-    provider=kind
     kind_name="${context#kind-}"
     command -v kind >/dev/null || {
         echo "test-k8s: kind is required for the cluster phase (context is $context)"
@@ -180,11 +176,11 @@ kind-*)
     }
     ;;
 *)
-    provider=minikube
-    command -v minikube >/dev/null || {
-        echo 'test-k8s: minikube is required for the cluster phase'
-        exit 1
-    }
+    echo "test-k8s: refusing to run the cluster phase against '$context'."
+    echo '  It deletes every runner Job in the namespace. Create a disposable kind cluster'
+    echo '  (`kind create cluster --name <name>`) and aim kubectl at it — its context is'
+    echo '  kind-<name>.'
+    exit 1
     ;;
 esac
 
@@ -192,7 +188,7 @@ echo
 echo '# cluster'
 
 kubectl cluster-info >/dev/null 2>&1 || {
-    echo 'test-k8s: no reachable cluster (is the local cluster running?)'
+    echo "test-k8s: no reachable cluster (is the kind cluster $kind_name running?)"
     exit 1
 }
 
@@ -217,31 +213,15 @@ docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/n
     exit 1
 }
 
-case "$provider" in
-kind)
-    echo "loading the images into the kind cluster $kind_name"
-    # One load call per image, not one variadic invocation: every kind version accepts
-    # `kind load docker-image <image> --name <cluster>`, older ones not always a list.
-    for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE"; do
-        kind load docker-image "$image" --name "$kind_name" >/dev/null || {
-            echo "test-k8s: could not load $image into the kind cluster $kind_name"
-            exit 1
-        }
-    done
-    ;;
-minikube)
-    echo 'loading the images into minikube'
-    # docker save through `minikube ssh`, rather than `minikube image load` or `minikube docker-env`:
-    # the first did not exist before minikube v1.24, and the second makes the host's docker CLI talk to
-    # the node's daemon, which dies on any version skew between the two. Streaming a tarball through
-    # ssh works on every version of both.
-    docker save "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE" |
-        minikube ssh --native-ssh=false docker load >/dev/null || {
-        echo 'test-k8s: could not load images into minikube'
+echo "loading the images into the kind cluster $kind_name"
+# One load call per image, not one variadic invocation: every kind version accepts
+# `kind load docker-image <image> --name <cluster>`, older ones not always a list.
+for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE"; do
+    kind load docker-image "$image" --name "$kind_name" >/dev/null || {
+        echo "test-k8s: could not load $image into the kind cluster $kind_name"
         exit 1
     }
-    ;;
-esac
+done
 
 echo "installing the release $RELEASE"
 helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml \
@@ -254,10 +234,17 @@ helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml \
 }
 installed=1
 
+# The timescale deployment is waited for deliberately: the dashboard listens the moment its
+# process is up — health answers, availability reports — but its migrations only start landing
+# once the database accepts connections, and the server gives up retrying after ~55s. On a cold
+# kind node the database image is still being pulled through containerd in that window, so
+# queueing before it is available fails every POST no matter how long the queue step polls.
 kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
-    -n "$NAMESPACE" --timeout=300s >/dev/null 2>&1 &&
-    ok 'the dashboard and driver come up' || bad 'the dashboard and driver come up' \
+    "deployment/$RELEASE-factory-timescale" \
+    -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
+    ok 'the dashboard, driver and database come up' || \
+    bad 'the dashboard, driver and database come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
 
 # Through the dashboard, so the assertion is the user's own path: queue, then poll the board.
@@ -281,10 +268,10 @@ done
     exit 1
 }
 
-# Polled, not one-shot: the dashboard listens the moment its process is up, but its migrations
-# retry with backoff until the in-chart database finishes initializing — on a fast-provisioning
-# cluster the first POST can land inside that window. The server adopts the database on the
-# attempt that works; the script gives it the same grace. Same shape as the status poll below.
+# The wait above covers the cold case (database image still pulling); this poll covers the
+# residual one — migrations retry on a backoff, so the first POST after the database is up can
+# still land inside it. The server adopts the database on the attempt that works; the script
+# gives it the same grace. Same shape as the status poll below.
 id=""
 for _ in $(seq 1 60); do
     id="$(node -e '
