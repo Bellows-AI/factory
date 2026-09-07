@@ -55,6 +55,20 @@ resolved is failed rather than run somewhere broader, and the driver re-asserts 
 accident, not against a determined member: anyone who can queue a job can ask the agent to read any
 path the container can see.
 
+**Runner secrets are stored plaintext, and that is a stated tradeoff, not an oversight.** The env
+vars and secrets an operator configures for runners (see [env.md](env.md)) must be RETRIEVED to be
+injected, so hashing is impossible and encryption with a key that lives in the same `.env` is
+theatre with extra steps — the App private key already ships that way. The honest statement: read
+access to the database is equivalent to holding every runner credential. What the application does
+promise is write-only at the API — every list read nulls a secret's value, admin included — so the
+browser never holds one, and the claim never persists one onto the job row that every member can
+read. The values do cross the board→driver hop in the claim JSON; that hop already carries the
+worker token's authority and supports https, and under `AUTH_MODE=none` the whole board is open
+anyway. On the driver they reach the container through a 0600 `--env-file` written around the
+spawn — never through the driver process's own environment, where member-controlled names could
+steer the docker CLI on the host — and an agent can always `printenv` inside its own container:
+masking runner output would be decoration on top of a boundary that does not exist.
+
 **The driver mounts `/var/run/docker.sock`, which is root on the host.** A process holding that
 socket can start a container with the host filesystem mounted, so it is not "docker access", it is
 uid 0. It once sat behind a compose profile so `docker compose up` could not start it by surprise;

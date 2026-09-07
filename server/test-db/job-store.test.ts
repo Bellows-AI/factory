@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { createEnvVarStore } from '../src/db/env-var-store.js';
 
 const url = process.env.DATABASE_URL;
 
@@ -689,6 +690,67 @@ describe.runIf(enabled)('attribution', () => {
         const claim = await rootless.claim('driver-1', 300);
         expect(claim?.userId).toBe(userId);
         expect(claim?.workspacePath).toBeNull();
+    });
+
+    it('carries the stacked environment on the claim, resolved for the author and repo label', async () => {
+        const userId = await account(5005, 'env-cat');
+        const envStore = createEnvVarStore({ sql, orgId: ORG });
+        await sql`truncate env_var`;
+        await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
+        await envStore.replaceWorkspace(userId, [{ name: 'CORE', value: 'workspace-value', isSecret: false }]);
+        await envStore.replaceRepo('Bellows-AI', 'bellows.ai', [
+            { name: 'CORE', value: 'repo-value', isSecret: false },
+            { name: 'REPO_ONLY', value: 'repo-only-value', isSecret: true },
+        ]);
+        const envAware = createJobStore({ sql, orgId: ORG, env: envStore });
+
+        await envAware.create('echo hi', userId, { repo: 'Bellows-AI/bellows.ai', executor: null });
+        const claim = await envAware.claim('driver-1', 300);
+        // Repo beats workspace beats org on the collision, and the secrets travel as values —
+        // injection is what they are for.
+        expect(claim?.env).toEqual({ CORE: 'repo-value', REPO_ONLY: 'repo-only-value' });
+
+        // A job with no repo label gets org + workspace only.
+        await envAware.create('echo hi', userId, { repo: null, executor: null });
+        const second = await envAware.claim('driver-2', 300);
+        expect(second?.env).toEqual({ CORE: 'workspace-value' });
+    });
+
+    it('carries no environment when the board was built without a resolver', async () => {
+        const userId = await account(5006, 'plain-cat');
+        await store.create('echo hi', userId, { repo: null, executor: null });
+        const claim = await store.claim('driver-1', 300);
+        expect(claim?.env).toBeUndefined();
+    });
+
+    it('leaves a job claimable when the env resolver fails, without burning an attempt', async () => {
+        /*
+         * The claim's UPDATE is only safe to keep if the resolver answers: a half-claim — running,
+         * with a lease nobody holds and an attempt already burned — would strand the job until the
+         * lease expired on every retry, walking it to dead on an infrastructure blip.
+         */
+        const userId = await account(5007, 'flaky-cat');
+        let fail = true;
+        const flaky = createJobStore({
+            sql,
+            orgId: ORG,
+            env: {
+                resolveFor: async () => {
+                    if (fail) throw new Error('env store down');
+                    return {};
+                },
+            },
+        });
+        await flaky.create('echo hi', userId, { repo: null, executor: null });
+
+        await expect(flaky.claim('driver-1', 300)).rejects.toThrow('env store down');
+
+        // The store is back: the job is still queued, still attempt 0, and the very next claim
+        // takes it with a full environment.
+        fail = false;
+        const claim = await flaky.claim('driver-2', 300);
+        expect(claim?.id).toBeTruthy();
+        expect(claim?.attempts).toBe(1);
     });
 
     it('keeps the job when the account that queued it is deleted', async () => {

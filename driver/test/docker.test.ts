@@ -1,9 +1,10 @@
 import { describe, expect, it, vitest } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { containerName, createDockerRunner, dockerArgs, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
+import { claimEnv, containerName, createDockerRunner, dockerArgs, envFileBody, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -113,6 +114,85 @@ describe('the docker run arguments', () => {
     // can ask the daemon whether a 125 run left a container behind before removing it.
     it('leaves nothing behind, by explicit cleanup rather than --rm', () => {
         expect(args()).not.toContain('--rm');
+    });
+});
+
+describe("the board's environment", () => {
+    const envJob: BoardJob = {
+        ...job,
+        env: { MY_TOKEN: 'board-secret', WORKDIR: '/etc', TRUST_WORKDIR: '1' },
+    };
+
+    it('reads a claim without an env field as no environment', () => {
+        // A board that predates the field omits it — the established defensive read.
+        expect(claimEnv(job)).toEqual({});
+    });
+
+    it('carries the claim env into the runner by env file, never through this process', () => {
+        /*
+         * `-e NAME` reads the value from the docker CLI's OWN environment — and claim names are
+         * member-controlled. A member's PATH or DOCKER_HOST there steers the CLI the driver
+         * executes on the host, which is host code execution, not "the runner's environment". So
+         * the values travel in a --env-file the driver writes and removes, and this process's
+         * environment stays exactly the operator's.
+         */
+        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, '/tmp/env-file');
+        expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
+        expect(line).not.toContain('MY_TOKEN');
+        expect(line.some((arg) => arg.includes('board-secret'))).toBe(false);
+    });
+
+    it('gives the claim precedence over the driver’s own forwarded names', () => {
+        // docker gives `-e` precedence over `--env-file`, so a name the claim also carries must
+        // not go out as `-e` — otherwise the driver's own value would silently win.
+        const configured = loadDriverConfig({ RUNNER_ENV: 'MY_TOKEN,OTHER' });
+        const line = dockerArgs(configured, envJob, { id: SESSION, resume: false }, '/tmp/env-file');
+        expect(line).toEqual(expect.arrayContaining(['-e', 'OTHER']));
+        expect(line).not.toContain('MY_TOKEN');
+        expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
+    });
+
+    it('refuses to run a claim that carries env with no env file to put it in', () => {
+        // A silent drop would run the job without the credentials it was queued against.
+        expect(() => dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false })).toThrow(
+            /no env file/,
+        );
+    });
+
+    it('writes one NAME=value line per variable, reserved names dropped', () => {
+        expect(envFileBody(envJob)).toBe('MY_TOKEN=board-secret\n');
+        expect(envFileBody(job)).toBe('');
+        // A value with a newline would corrupt the file's line structure — refused, not mangled.
+        expect(() =>
+            envFileBody({ ...job, env: { BROKEN: 'line1\nline2' } }),
+        ).toThrow(/newline/);
+    });
+
+    it('never forwards a name the runner itself claims', () => {
+        expect(claimEnv(envJob)).toEqual({ MY_TOKEN: 'board-secret' });
+        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, '/tmp/env-file');
+        // The one WORKDIR on the line is the runner's own, with the mount in it; TRUST_WORKDIR
+        // belongs to the Remote Control branch, which this is not.
+        expect(line.filter((arg) => arg === 'WORKDIR' || arg === 'TRUST_WORKDIR')).toHaveLength(0);
+        expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
+    });
+
+    it('forwards no board env to a Remote Control runner, and writes no env file for one', () => {
+        // The same exclusion RUNNER_ENV obeys: a forwarded credential does not fail there, it
+        // degrades the session in silence.
+        const line = dockerArgs(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), envJob, {
+            id: SESSION,
+            resume: false,
+        }, '/tmp/env-file');
+        expect(line).not.toContain('--env-file');
+        expect(line).not.toContain('MY_TOKEN');
+        expect(line.some((arg) => arg.includes('board-secret'))).toBe(false);
+    });
+
+    it('writes no env file for a claim without env', () => {
+        expect(envFileBody(job)).toBe('');
+        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, '/tmp/env-file');
+        expect(line).not.toContain('--env-file');
     });
 });
 
@@ -435,5 +515,30 @@ describe('the docker runner', () => {
         // The fence and the cleanup `rm` go through the same seam; only the inspect is the
         // classifier, and an unambiguous exit code must not pay for one.
         expect(inspect.mock.calls.filter((call) => call[0][0] === 'inspect')).toHaveLength(0);
+    });
+
+    it('spawns docker with the claim env in a file, and its own environment untouched', async () => {
+        // The values reach the container through the --env-file, so the docker CLI's own
+        // environment stays the operator's — a member-configured PATH or DOCKER_* can never steer
+        // the CLI this driver executes.
+        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            spawnFn as unknown as typeof spawn,
+            noContainer,
+        );
+        const outcome = await runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ exitCode: 0 });
+        const [cmd, argv, options] = spawnFn.mock.calls[0]!;
+        expect(cmd).toBe('docker');
+        const args = argv as string[];
+        const fileArg = args[args.indexOf('--env-file') + 1];
+        expect(fileArg).toBeTruthy();
+        // The file existed and carried the value while the CLI ran; it is gone once the run is.
+        expect(existsSync(fileArg)).toBe(false);
+        // The CLI's environment is inherited, never merged with claim values.
+        expect(options && 'env' in options).toBe(false);
+        expect(args.some((arg) => arg.includes('board-secret'))).toBe(false);
     });
 });

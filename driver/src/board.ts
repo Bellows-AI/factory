@@ -37,6 +37,12 @@ export interface BoardJob {
      * rather than fallen back from. See dockerArgs.
      */
     workspacePath: string | null;
+    /**
+     * The environment the board resolved for this job — org < workspace < repo, secrets included.
+     * Read defensively (`?? {}` at claim): a board that predates the field omits it, and the
+     * runner's environment is then exactly what this process's own configuration forwards.
+     */
+    env?: Record<string, string>;
 }
 
 /** Whether the board still recognises this worker as the holder of the job. */
@@ -112,6 +118,7 @@ export function createBoard({
                 followUp: claimed.followUp ?? false,
                 userId: claimed.userId ?? null,
                 workspacePath: claimed.workspacePath ?? null,
+                env: claimed.env ?? {},
             };
         },
 

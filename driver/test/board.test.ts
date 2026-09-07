@@ -109,4 +109,15 @@ describe('the claimed job', () => {
         expect(job?.followUp).toBe(true);
         expect(job?.resumeSessionId).toBe('session-1');
     });
+
+    it('carries the environment the board resolved, reading a missing one as empty', async () => {
+        const { fetch } = recorder(() => claimed({ env: { CORE: 'value' } }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.env).toEqual({ CORE: 'value' });
+
+        // A board that predates the field omits it; `{}` keeps the runner spawn honest.
+        const { fetch: bare } = recorder(() => claimed());
+        const oldBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
+        expect((await oldBoard.claim('driver-1'))?.env).toEqual({});
+    });
 });

@@ -3,6 +3,9 @@ The driver's identity and permissions, in the namespace it runs in — a Role an
 ClusterRole, because its reach is exactly the runner Jobs it creates, in the namespace the chart
 installed it to. The verbs are the calls the kubernetes runner makes and nothing more: create a
 Job, read its status, delete it (kill and the re-claim fence), list its pods, read a pod's log.
+`secrets` is the claim env's per-job Secret: create it before the Job, read nothing back, delete it
+with the runner. No `get` on secrets list is granted and no wildcard, so the driver can only ever
+address the Secret named after a job id it is already running.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -21,6 +24,9 @@ rules:
     - apiGroups: ['batch']
       resources: ['jobs']
       verbs: ['create', 'get', 'delete']
+    - apiGroups: ['']
+      resources: ['secrets']
+      verbs: ['create', 'delete']
     - apiGroups: ['']
       resources: ['pods']
       verbs: ['list']

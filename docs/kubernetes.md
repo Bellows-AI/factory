@@ -22,6 +22,7 @@ The two implementations decide the same things and are pinned the same way:
 | --- | --- | --- |
 | Workspace | `-v factory-ai_workspaces:/workspaces`, `WORKDIR=<mount>/<org>/<uuid>` | PVC `<claim>` mounted at `<mount>`, same `WORKDIR` env |
 | Credentials | `-e NAME`, value read from the driver's own env | `valueFrom.secretKeyRef` against `RUNNER_CREDENTIALS_SECRET`, one key per `RUNNER_ENV` name |
+| Claim env | `-e NAME` merged in, value in the child env | `secretKeyRef` against a per-job Secret (`factory-job-<id>-env`), created before the Job, reaped with it |
 | Orphan visibility | `--label factory.job=<id>` | the same label on the Job and its pod template |
 | Timeout | the driver kills the container after `DRIVER_JOB_TIMEOUT_MS` | `activeDeadlineSeconds` = that value, enforced by the kubelet |
 | A failed run | the container exits, `--rm` cleans it | the pod terminates, `restartPolicy: Never`, `backoffLimit: 0`, object reaped by `ttlSecondsAfterFinished` |
@@ -34,6 +35,15 @@ argv that every `ps` on the host can read; `valueFrom.secretKeyRef` keeps it out
 everyone who can `get pods` can read. Same threat, same answer, different syntax. A literal
 `value:` on a credential env is the one thing `runnerJobSpec` must never grow — the test suite
 pins that `WORKDIR` (a path, not a secret) is the only literal value in the runner env.
+
+**The claim env's per-job Secret is the third Secret object in the story, and it is reaped as
+carefully as it is created.** The board resolves the stacked environment onto the claim
+([env.md](env.md)); the runner posts it as `factory-job-<id>-env` (`stringData`, `Opaque`) BEFORE
+the Job — a pod that references a Secret that is not there yet is a `CreateContainerConfigError`
+and a burned attempt — and deletes it in every path where it deletes the Job: the re-claim fence
+(the leftover holds the name the replacement will take), `kill()`, and once the verdict and log
+have been read. The chart's Role grows `secrets: ['create', 'delete']` and nothing else — no `get`,
+no `list`; the driver writes values it was handed and never reads one back.
 
 **The runner gets no ServiceAccount token.** Pods automount one by default, and a driver-spawned
 pod would automount the *driver's own* identity — the identity that may create Jobs. A Claude
