@@ -74,6 +74,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `K8S_NAMESPACE` | `default` | Where runner Jobs are created. Meaningless under docker. The chart sets it via the downward API. |
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials under `EXECUTOR=kubernetes`, one key per `RUNNER_ENV` name — the k8s form of `-e NAME`: names travel, values stay in the Secret. Unset forwards nothing. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy under `EXECUTOR=kubernetes`. Kubernetes defaults an untagged or `:latest` image to `Always` and would ignore the node's own images; the docker runner has no equivalent problem, so the docker behavior has to be stated. |
+| `RUNNER_SERVICES` | off | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service as a sibling container on a per-job network and joins the runner to it, so `postgres://db:5432` resolves for exactly that job. Read the section below before turning it on. |
 
 **The workspace is passed as a volume name, not a path.** The driver's runners are *siblings*, not
 children: it talks to the host's daemon over a socket, so a path inside the driver container means
@@ -172,6 +173,66 @@ the operator flipped `RUNNER_CLI` while something was parked, and restoring a cl
 opencode's database is impossible (`Session not found`, loudly, if it were tried). A follow-up
 whose parent ran under a DIFFERENT CLI than the driver now serving the queue fails at run time
 the same loud way — the operator keeps one CLI per queue.
+
+## Auxiliary services (`.bellows.yaml`)
+
+**A checkout can ask for the containers its tests need.** A `services:` list in a `.bellows.yaml`
+at the root of any checkout in the author's workspace — Drone's services syntax, trimmed to what a
+test run actually needs:
+
+```yaml
+services:
+  - name: db
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: secret
+```
+
+With `RUNNER_SERVICES=1` (off by default), the driver reads every checkout's file before the run —
+through a throwaway container over the workspaces volume, because it has no host path into a named
+volume — starts one detached container per service, and puts
+the runner on the same user-defined network. **The service's `name` is its DNS name inside the
+job**: `postgres://db:5432` resolves for exactly as long as the job runs, and to nothing afterwards.
+Service exit codes are ignored, and there is no health wait: the agent can watch a service refuse a
+connection and retry, which is what agents are for.
+
+- **The merge across checkouts is a union, and a duplicate name fails the job.** The claim does not
+  say which repository a job is about — `job.repo` is tasks-UI metadata — so every checkout's file
+  applies, capped at ten services across the workspace. Two repos defining `db` would race for one
+  alias, and no first-wins or last-wins rule reads as anything but "the wrong database came up", so
+  the job fails naming both.
+- **A runner that joins both networks needs Docker 25.0.** Multi-network container create landed
+  in API 1.44; on older daemons `--network` is single-valued and the last one silently wins, which
+  with `RUNNER_NETWORK` set would drop the runner's telemetry without an error. A deployment that
+  runs services plus a telemetry network runs a current docker.
+- **The parse is strict to the point of rudeness, deliberately.** Unknown keys are refused, which
+  is what makes a pasted Drone pipeline fail loudly instead of doing nothing — and `ports:` is an
+  unknown key. There is no host port publishing and no volume mounting: the daemon executing these
+  argv is root on the host, and a published port is the one step from "a database for my tests" to
+  "a listener on somebody's machine". Size is bounded where author content crosses into this
+  process or onto an argv: a `.bellows.yaml` is read only to its first 64 KiB (the readout refuses
+  the rest in place), an environment value is at most 8192 characters. A parse refusal fails the
+  job terminally with the reason in the output, rather than burning attempts on a file that cannot
+  change.
+- **The fleet is fenced like the runner.** Service containers are labeled `factory.job`, removed
+  by label before anything is created — a dead previous attempt's leftovers, the same fence the
+  runner container's `rm` is — and torn down after the run, on kill, on timeout: every path the
+  runner itself dies on. The per-job network (`factory-job-<id>-services`) is created and removed
+  with them. Teardown is the feature's own machinery, so a fleet from before a `RUNNER_SERVICES`
+  flip off survives until the flag is back on; reclaim it then with `docker rm`/`docker network
+  rm` — by the `factory.job` label and the `factory-job-<id>-services` name — since pruning the
+  workspaces volume removes neither.
+- **A refused read or a refused service start is infrastructure, not a verdict.** Thrown, so the
+  job goes back to its lease instead of being reported failed — the distinction "a run that never
+  started is not a failed job" draws, one layer out.
+- **The security posture is stated, not solved.** This lets a repo author run arbitrary images
+  through the driver's socket — one capability the runner container deliberately does not have. It
+  is the same trust the checkout already carried: the agent runs arbitrary code in that tree, and
+  the tree now also names containers. What it does not do is widen the blast radius across
+  members: services are per-job, on a per-job network, reachable only from that job's runner.
+- **`EXECUTOR=kubernetes` refuses the flag at startup**, the way Remote Control is refused:
+  services are docker networks and sibling containers the kubernetes runner does not create, and
+  silent absence would read as a broken feature rather than the configuration decision it was.
 
 ## The session ids, and driving a job from the Claude UI
 
@@ -435,6 +496,11 @@ claim. "Nothing runs an executor yet" stays true.
   such coupling, so it stays open to every member.
   Under `AUTH_MODE=none` all of it is open, including the worker routes — see [security.md](security.md),
   which is where the consequence is written down.
+- **No service volumes, health checks, depends-on ordering or restart policies.** A service that
+  needs a warmed database is the agent's problem — it can sleep and retry, which is the one
+  superpower a headless run has. Add keys to the parser when a real job needs them, not before.
+- **No kubernetes services.** `RUNNER_SERVICES` is refused under `EXECUTOR=kubernetes`; the docker
+  sibling-container trick has no k8s twin written for it.
 
 ## Testing
 
@@ -447,7 +513,10 @@ Lease expiry is simulated by ageing `lease_expires_at` with SQL, never by sleepi
 
 `driver/test/` injects both the board and docker, so it spawns nothing and needs no daemon.
 `dockerArgs()` is exported and pinned separately: everything security-relevant about a runner is
-decided in that one array.
+decided in that one array. The `.bellows.yaml` parser and the service argv builders are pinned the
+same way in `driver/test/services.test.ts`, and the service lifecycle is driven through the same
+injected daemon seam in `driver/test/docker.test.ts` — readout, network, fleet, teardown, fence,
+and the off-switch proving the daemon hears nothing new when `RUNNER_SERVICES` is unset.
 
 `npm run test:jobs` (`scripts/test-jobs.sh`) is the end-to-end: a real board, a real database, a
 real driver and real containers, with no Claude and no credential. The runners are two stub images

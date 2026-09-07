@@ -117,6 +117,14 @@ export interface DriverConfig {
      * have used what the daemon holds. `IfNotPresent` is that behavior, stated.
      */
     imagePullPolicy: string;
+    /**
+     * Honors `.bellows.yaml` in the author's checkouts: before a run, the driver reads the file
+     * (through a throwaway container over the workspaces volume — it has no host path), starts
+     * each declared service as a sibling container on a per-job network, and joins the runner to
+     * it, so `redis://cache:6379` resolves for the duration of one job. Off by default, so that
+     * turning repo-defined containers on is something somebody typed — see docs/jobs.md.
+     */
+    servicesEnabled: boolean;
 }
 
 const DEFAULTS = {
@@ -230,6 +238,20 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         );
     }
 
+    // Auxiliary services are docker networks and sibling containers, created and torn down around
+    // each run — machinery only the docker runner has. Refused at startup rather than silently
+    // absent, for the same reason Remote Control is: a driver that claimed jobs and quietly never
+    // started a declared service would read as a broken feature instead of the configuration
+    // error it is.
+    const servicesEnabled = flag(env.RUNNER_SERVICES);
+    if (servicesEnabled && executor === 'kubernetes') {
+        throw new Error(
+            'RUNNER_SERVICES is not supported under EXECUTOR=kubernetes: auxiliary services from ' +
+                '.bellows.yaml are docker networks and sibling containers the kubernetes runner does ' +
+                'not create. Run service-backed workloads on EXECUTOR=docker.',
+        );
+    }
+
     // And the last impossible pair. The kubernetes runner speaks claude-code only — its Job spec is
     // `--session-id`/`--resume` argv — while an opencode job arrives with no session at all.
     // Allowed, the first claim would burn an attempt on the runner's own refusal, and the job would
@@ -275,5 +297,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         k8sNamespace: text(env.K8S_NAMESPACE, 'K8S_NAMESPACE', 'default'),
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw as (typeof PULL_POLICIES)[number],
+        servicesEnabled,
     };
 }

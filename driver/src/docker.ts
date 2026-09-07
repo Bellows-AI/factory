@@ -2,6 +2,8 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
+import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBellowsSections } from './services.js';
+import type { ServiceSpec } from './services.js';
 
 const run = promisify(execFile);
 
@@ -248,7 +250,7 @@ function workspacePath(job: BoardJob): string {
     return path;
 }
 
-export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
+export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null, servicesNetwork: string | null = null): string[] {
     const args = [
         'run',
         '--name',
@@ -295,6 +297,13 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
     }
 
     if (config.network) args.push('--network', config.network);
+
+    // The per-job services network, when the job declared services and the driver honors them.
+    // Repeated --network flags need Docker 25.0 (API 1.44), where multi-network create landed;
+    // on older daemons the flag is single-valued and the LAST one silently wins — which here
+    // would drop the runner's telemetry network without an error. The two networks do different
+    // jobs: config.network carries telemetry out, this one carries the job's DNS names in.
+    if (servicesNetwork) args.push('--network', servicesNetwork);
 
     // opencode: headless only — Remote Control is refused in the config, so there is no RC branch
     // here and no permissions flag either (the image's baked opencode.json decides them).
@@ -365,10 +374,31 @@ type Spawn = typeof spawn;
 type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
 
 export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn, execDocker: ExecDocker = (args) => run('docker', args)): Runner {
+    /**
+     * Removes every service container this job labeled and the job's network. It runs twice with
+     * the same body: as the re-claim FENCE before anything is created (a dead previous attempt
+     * leaves its fleet behind — the same leftover the runner container's rm catches, one layer
+     * out) and as the TEARDOWN after a run. Idempotent by construction: every removal tolerates
+     * the thing already being gone.
+     */
+    const serviceTeardown = async (job: BoardJob): Promise<void> => {
+        if (!config.servicesEnabled) return;
+        const found = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`, '--filter', 'label=factory.service']).catch(
+            () => ({ stdout: '' }),
+        );
+        const ids = found.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
+        for (const id of ids) await execDocker(['rm', '-f', id]).catch(() => undefined);
+        await execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
+    };
+
     const kill = async (job: BoardJob): Promise<void> => {
         // Killing the `docker run` process would only detach the CLI; the container keeps running
-        // and the workspace keeps being written to. The daemon has to be told.
-        await run('docker', ['kill', containerName(job)]).catch(() => undefined);
+        // and the workspace keeps being written to. The daemon has to be told. The declared
+        // services go with it: a killed job's database has no reason to outlive the job, and the
+        // close handler's teardown would catch them anyway — this is so a kill while nothing is
+        // reading the outcome (lost lease, shutdown) still reclaims them.
+        await execDocker(['kill', containerName(job)]).catch(() => undefined);
+        await serviceTeardown(job);
     };
 
     return {
@@ -391,6 +421,61 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             // the name conflict (docker exit 125) and the job terminal-fails blaming a command
             // that never ran.
             await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+
+            /*
+             * Auxiliary services (issue #6): read the checkouts' .bellows.yaml, then network and
+             * containers, each step with its own verdict.
+             *
+             * A refused read and a refused service start are INFRASTRUCTURE — the daemon said no
+             * to a container this process spawned, the same class as a refused runner spawn — so
+             * they throw, and the loop leaves the job to its lease instead of blaming the command.
+             * A partial fleet is torn down on the way out. A parse refusal, by contrast, is the
+             * AUTHOR's: deterministic, and fully said by the message, so it is returned as a
+             * failed run rather than thrown — retrying a file that cannot change would burn
+             * attempts on an error no retry fixes. (`started: true` there means "this verdict is
+             * final", not "a container ran"; the loop reads it only to decide between reporting
+             * and leaving the job to its lease.)
+             */
+            let servicesNetwork: string | null = null;
+            let refusal: string | null = null;
+            if (config.servicesEnabled) {
+                await serviceTeardown(job);
+                let raw: string;
+                try {
+                    raw = (await execDocker(readBellowsArgs(config, job))).stdout;
+                } catch (e) {
+                    throw new Error(`could not read .bellows.yaml: ${(e as Error).message}`);
+                }
+                let specs: ServiceSpec[];
+                try {
+                    specs = collectServices(splitBellowsSections(raw));
+                } catch (e) {
+                    refusal = (e as Error).message;
+                    specs = [];
+                }
+                if (specs.length) {
+                    servicesNetwork = networkName(job);
+                    // The fence already removed a stale network; a create over the fresh name
+                    // cannot collide.
+                    try {
+                        await execDocker(['network', 'create', servicesNetwork]);
+                    } catch (e) {
+                        throw new Error(`could not create the services network: ${(e as Error).message}`);
+                    }
+                    for (const spec of specs) {
+                        try {
+                            await execDocker(serviceRunArgs(job, spec));
+                        } catch (e) {
+                            await serviceTeardown(job);
+                            throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
+                        }
+                    }
+                }
+            }
+            if (refusal !== null) {
+                return { exitCode: null, output: refusal, timedOut: false, idled: false, started: true };
+            }
+
             return new Promise<RunOutcome>((resolve, reject) => {
                 // The verdict for a close, decided after the process is gone. An exit 125 is
                 // ambiguous on the shared stderr — the daemon's refusal and a command that
@@ -415,10 +500,14 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // leaving one daemon round-trip of litter behind is not tidiness worth
                     // keeping. Failed removals are the fence's business.
                     await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+                    // The services outlive the runner by one teardown: the author's tests may
+                    // have left their database mid-write, and nothing reads the workspace after
+                    // the runner is gone, so nothing needs them anymore.
+                    await serviceTeardown(job);
                     return { exitCode: code, output, timedOut, idled, started };
                 };
 
-                const child = spawnFn('docker', dockerArgs(config, job, session), {
+                const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork), {
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
                 let timedOut = false;
@@ -470,6 +559,10 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
 
                 child.on('error', (error) => {
                     done();
+                    // The spawn itself failed (docker missing, exec blew up). Whatever services
+                    // were started before it are torn down here rather than at the fence of a
+                    // claim that may never come.
+                    void serviceTeardown(job);
                     reject(error);
                 });
                 child.on('close', (code) => {

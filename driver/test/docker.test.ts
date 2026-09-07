@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { containerName, createDockerRunner, dockerArgs, opencodeSessionReadoutArgs, parseOpencodeSessionId, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
+import { networkName, serviceRunArgs } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -21,8 +22,8 @@ const job: BoardJob = {
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
 
-const args = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = { id: SESSION, resume: false }) =>
-    dockerArgs(loadDriverConfig(env), job, session);
+const args = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = { id: SESSION, resume: false }, servicesNetwork: string | null = null) =>
+    dockerArgs(loadDriverConfig(env), job, session, servicesNetwork);
 
 const resumed = (env: NodeJS.ProcessEnv = {}) =>
     dockerArgs(loadDriverConfig(env), job, { id: SESSION, resume: true });
@@ -102,6 +103,28 @@ describe('the docker run arguments', () => {
         expect(args({ RUNNER_NETWORK: 'factory-ai_default' })).toEqual(
             expect.arrayContaining(['--network', 'factory-ai_default']),
         );
+    });
+
+    // servicesNetwork is null whenever the job declared no services — and then the argv is
+    // byte-identical to what the pins above and below expect, which is the compatibility promise
+    // the whole feature makes: no .bellows.yaml, no difference.
+    it('joins the per-job services network only when one is given', () => {
+        expect(args()).not.toContain(networkName(job));
+        expect(args({}, { id: SESSION, resume: false }, networkName(job))).toEqual(
+            expect.arrayContaining(['--network', networkName(job)]),
+        );
+    });
+
+    it('can sit on both the configured and the per-job network', () => {
+        // RUNNER_NETWORK carries telemetry to the collector; the services network carries the
+        // job's DNS aliases. Two different jobs for one container — and a Docker 25.0 floor
+        // (API 1.44 is where multi-network create landed): on an older daemon the last --network
+        // silently wins, so a driver running services plus a telemetry network needs a current
+        // docker, which docs/jobs.md states.
+        const line = args({ RUNNER_NETWORK: 'factory-ai_default' }, { id: SESSION, resume: false }, networkName(job));
+        expect(line.filter((arg) => arg === '--network')).toHaveLength(2);
+        expect(line.indexOf('factory-ai_default')).toBeGreaterThanOrEqual(0);
+        expect(line.indexOf(networkName(job))).toBeGreaterThan(line.indexOf('factory-ai_default'));
     });
 
     it('skips permissions only when told to', () => {
@@ -515,5 +538,190 @@ describe('the docker runner', () => {
 
         expect(outcome.exitCode).toBe(0);
         expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
+    });
+});
+
+/*
+ * Auxiliary services (issue #6). The switch is on in this whole block, and the daemon is
+ * scripted on argv shape: the readout run (it carries --entrypoint sh) answers with the checkouts'
+ * `.bellows.yaml` files, the service runs (they carry --network-alias) answer created, the label
+ * `ps` answers one container id, and everything else succeeds empty. The spawn stands in for the
+ * runner container itself and records the argv it was given.
+ */
+describe('auxiliary services (RUNNER_SERVICES)', () => {
+    const READOUT = '###__bellows:demo\nservices:\n  - name: stub\n    image: stub-svc:1\n';
+
+    const daemon = (readout: string, opts: { readoutFails?: boolean; serviceFails?: boolean } = {}) =>
+        vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                if (opts.readoutFails) throw new Error('daemon refused the readout');
+                return { stdout: readout };
+            }
+            if (args[0] === 'run' && args.includes('--network-alias')) {
+                if (opts.serviceFails) throw new Error('daemon refused the service');
+                return { stdout: '' };
+            }
+            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            return { stdout: '' };
+        });
+
+    const spawnRecording = (stdout: string, code: number | null) => {
+        const seen: string[][] = [];
+        const fn = ((command: string, argv: string[]) => {
+            seen.push(argv);
+            const c = new EventEmitter() as ChildProcess;
+            const stream = (text: string) => {
+                const s = new EventEmitter();
+                if (text) process.nextTick(() => s.emit('data', Buffer.from(text)));
+                return s;
+            };
+            c.stdout = stream(stdout);
+            c.stderr = stream('');
+            process.nextTick(() => c.emit('close', code));
+            return c;
+        }) as unknown as typeof spawn;
+        return { fn, seen };
+    };
+
+    const servicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) =>
+        createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '1' }), fn, exec as unknown as (args: string[]) => Promise<{ stdout: string }>);
+
+    it('reads .bellows.yaml, creates the job network, starts the service, and joins the runner to it', async () => {
+        const exec = daemon(READOUT);
+        const { fn, seen } = spawnRecording('ran\n', 0);
+        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ exitCode: 0, started: true });
+        const calls = exec.mock.calls.map((call) => call[0]);
+        const readAt = calls.findIndex((a) => a[0] === 'run' && a.includes('--entrypoint'));
+        const createAt = calls.findIndex((a) => a[0] === 'network' && a[1] === 'create');
+        const serviceAt = calls.findIndex((a) => a[0] === 'run' && a.includes('--network-alias'));
+        // Read before create, create before the service — the fence's rounds sit between, which
+        // is why these are comparisons and not exact positions.
+        expect(readAt).toBeGreaterThanOrEqual(0);
+        expect(createAt).toBeGreaterThan(readAt);
+        expect(serviceAt).toBeGreaterThan(createAt);
+        expect(calls[serviceAt]).toEqual(serviceRunArgs(job, { name: 'stub', image: 'stub-svc:1', environment: [] }));
+        // The runner shares the network — that is the whole feature: inside the job, `stub`
+        // resolves to the service container.
+        expect(seen[0]).toEqual(dockerArgs(loadDriverConfig({ RUNNER_SERVICES: '1' }), job, { id: SESSION, resume: false }, networkName(job)));
+    });
+
+    it('starts nothing and changes no argv when the flag is on but no file declares services', async () => {
+        // The path every existing repo takes the moment an operator turns the flag on: empty
+        // readout, no network, byte-identical runner argv — the compatibility promise, exercised
+        // end to end rather than only at the dockerArgs parameter.
+        const exec = daemon('');
+        const { fn, seen } = spawnRecording('ran\n', 0);
+        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ exitCode: 0, started: true });
+        expect(seen[0]).toEqual(dockerArgs(loadDriverConfig({ RUNNER_SERVICES: '1' }), job, { id: SESSION, resume: false }));
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).not.toContainEqual(['network', 'create', networkName(job)]);
+        expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
+    });
+
+    it('fails the job with the readout’s oversize refusal, rather than throwing it at the lease', async () => {
+        // The size bound exists because unbounded author content would otherwise die inside
+        // execFile's maxBuffer and classify as infrastructure. The marker path must therefore
+        // land on the terminal-refusal side of the taxonomy: failed with the reason, zero spawns.
+        const exec = daemon('###__bellows:demo\n###__bellows_error:/workspaces/b/x/demo/.bellows.yaml is larger than 65536 bytes\n');
+        const { fn, seen } = spawnRecording('', 0);
+        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
+
+        expect(outcome.started).toBe(true);
+        expect(outcome.exitCode).toBeNull();
+        expect(outcome.output).toContain('.bellows.yaml');
+        expect(outcome.output).toContain('larger than 65536 bytes');
+        expect(seen).toHaveLength(0);
+        expect(exec.mock.calls.map((call) => call[0])).not.toContainEqual(['network', 'create', networkName(job)]);
+    });
+
+    it('tears the services and the network down after the run, whatever the verdict', async () => {
+        const exec = daemon(READOUT);
+        await servicesRunner(exec, spawnRecording('', 1).fn).run(job, { id: SESSION, resume: false });
+
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(calls[calls.length - 1]).toEqual(['network', 'rm', networkName(job)]);
+    });
+
+    it('fences leftover services before anything is created', async () => {
+        const exec = daemon(READOUT);
+        await servicesRunner(exec, spawnRecording('', 0).fn).run(job, { id: SESSION, resume: false });
+
+        const calls = exec.mock.calls.map((call) => call[0]);
+        const firstPsAt = calls.findIndex((a) => a[0] === 'ps');
+        const createAt = calls.findIndex((a) => a[0] === 'network' && a[1] === 'create');
+        // A dead previous attempt leaves its fleet behind — the same leftover the runner
+        // container's rm catches, one layer out, and for the same reason.
+        expect(firstPsAt).toBeGreaterThanOrEqual(0);
+        expect(firstPsAt).toBeLessThan(createAt);
+        expect(
+            calls.slice(0, createAt).some((a) => a[0] === 'rm' && a[1] === '-f' && a[2] === 'svc-id-1'),
+        ).toBe(true);
+    });
+
+    it('fails the job with the parse reason, and starts nothing, when a file is malformed', async () => {
+        // `ports:` is exactly the key the parser refuses — a host publish can never be parsed
+        // into existence by writing YAML.
+        const exec = daemon('###__bellows:demo\nservices:\n  - name: db\n    ports: ["5432:5432"]\n');
+        const { fn, seen } = spawnRecording('', 0);
+        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
+
+        // A deterministic author error: terminal failed with the reason in the output, not a
+        // retry — burning attempts on a file that cannot change would be the verdict that lies.
+        expect(outcome.started).toBe(true);
+        expect(outcome.exitCode).toBeNull();
+        expect(outcome.output).toContain('.bellows.yaml');
+        expect(outcome.output).toContain('ports');
+        expect(seen).toHaveLength(0);
+        expect(exec.mock.calls.map((call) => call[0])).not.toContainEqual(['network', 'create', networkName(job)]);
+    });
+
+    it('sends a refused readout to the lease instead of blaming the command', async () => {
+        const exec = daemon('', { readoutFails: true });
+        const { fn, seen } = spawnRecording('', 0);
+        await expect(servicesRunner(exec, fn).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not read \.bellows\.yaml/,
+        );
+        expect(seen).toHaveLength(0);
+    });
+
+    it('sends a refused service to the lease, after tearing down what did start', async () => {
+        const exec = daemon(READOUT, { serviceFails: true });
+        const { fn, seen } = spawnRecording('', 0);
+        await expect(servicesRunner(exec, fn).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not start service "stub"/,
+        );
+        expect(seen).toHaveLength(0);
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
+    });
+
+    it('kill() takes the services and the network down with the runner', async () => {
+        const exec = daemon(READOUT);
+        await servicesRunner(exec, spawnRecording('', 0).fn).kill(job);
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).toContainEqual(['kill', containerName(job)]);
+        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
+    });
+
+    it('leaves the daemon alone when the switch is off', async () => {
+        const exec = daemon(READOUT);
+        const { fn, seen } = spawnRecording('ran\n', 0);
+        const outcome = await createDockerRunner(
+            loadDriverConfig({}),
+            fn,
+            exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+        ).run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ exitCode: 0, started: true });
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls.every((a) => a[0] !== 'ps' && a[0] !== 'network')).toBe(true);
+        expect(seen[0]).toEqual(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }));
     });
 });
