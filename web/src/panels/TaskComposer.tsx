@@ -35,14 +35,26 @@ export function TaskComposer({
     onSend: (command: string, repo: string | null, executor: string | null) => Promise<string | null>;
 }) {
     const [draft, setDraft] = useState('');
-    const [executor, setExecutor] = useState('');
+    const [executor, setExecutor] = useState(() => executors[0]?.name ?? '');
+    const [executorTouched, setExecutorTouched] = useState(false);
     const [repo, setRepo] = useState('');
 
+    // The FIRST configured executor is the default: a member who set one up means their tasks to
+    // run on it, not on an unlabelled runner. Explicit `none` wins the moment they pick it —
+    // `executorTouched` is what stops this autoselect from stomping their choice back on the
+    // next workspace poll.
+    useEffect(() => {
+        if (!executorTouched && executor === '' && executors.length > 0) {
+            setExecutor(executors[0]!.name);
+        }
+    }, [executors, executor, executorTouched]);
+
     // A configured executor can be deleted on the Workspace page while a draft sits here; the
-    // select would go blank while `send` still submitted the stale name. Clamp to what exists.
+    // select would go blank while `send` still submitted the stale name. Clamp to what exists —
+    // back to the first executor, or none when the list is empty.
     useEffect(() => {
         if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
-            setExecutor('');
+            setExecutor(executors.length > 0 ? executors[0]!.name : '');
         }
     }, [executors, executor]);
 
@@ -117,7 +129,10 @@ export function TaskComposer({
                         <select
                             className="composer-select"
                             value={executor}
-                            onChange={(e) => setExecutor(e.target.value)}
+                            onChange={(e) => {
+                                setExecutorTouched(true);
+                                setExecutor(e.target.value);
+                            }}
                         >
                             <option value="">none</option>
                             {executors.map((candidate) => (

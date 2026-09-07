@@ -296,6 +296,79 @@ describe('the kubernetes runner', () => {
         expect(outcome.output).toBe('claude: permission denied');
     });
 
+    /**
+     * Live output on this platform is the log tail read mid-run: one poll sees the Job still
+     * running, discovers the pod, and hands the caller what the log says so far; the next sees
+     * the terminal status and the finished run reports exactly as it always did. The final log
+     * read is unchanged — the preview never replaces the report.
+     */
+    it('streams the log tail while the pod runs, and reports the finished log at the end', async () => {
+        const tails: string[] = [];
+        let gets = 0;
+        const request: K8sRequest = (method, path) => {
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                gets += 1;
+                // First poll: still running, and worth a look at the log. Second: done.
+                return Promise.resolve(
+                    gets === 1
+                        ? { status: 200, body: JSON.stringify({ status: {} }) }
+                        : (FAKE.job as K8sResponse),
+                );
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) {
+                return gets === 1
+                    ? Promise.resolve({ status: 200, body: 'partial output\n' })
+                    : Promise.resolve(FAKE.log as K8sResponse);
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) =>
+            tails.push(tail),
+        );
+
+        expect(tails).toEqual(['partial output\n']);
+        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
+    });
+
+    // A pod that has not been scheduled yet, or a log endpoint that hiccups, is a skipped preview —
+    // never a failed run.
+    it('streams nothing, and fails nothing, when the mid-run log read answers badly', async () => {
+        const tails: string[] = [];
+        let gets = 0;
+        const request: K8sRequest = (method, path) => {
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                gets += 1;
+                return Promise.resolve(
+                    gets === 1
+                        ? { status: 200, body: JSON.stringify({ status: {} }) }
+                        : (FAKE.job as K8sResponse),
+                );
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve({ status: 500, body: 'unavailable' });
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) =>
+            tails.push(tail),
+        );
+
+        expect(tails).toEqual([]);
+        expect(outcome.exitCode).toBe(0);
+    });
+
     /*
      * A job id is only reused when a lease expired and the row was reclaimed — and the leftover Job
      * object from the first attempt may still exist. Replacing it is the fencing mechanism: two

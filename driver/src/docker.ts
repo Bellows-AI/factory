@@ -24,6 +24,13 @@ export interface RunOutcome {
      * and exited 125 is a verdict, reported like any other.
      */
     started: boolean;
+    /**
+     * The session the run actually used, when the runner could only know it after the fact —
+     * opencode mints its own (`ses_…`) and the runner scrapes it out of the session database the
+     * run left behind. Null for claude-code, whose session is minted up front and reported
+     * before the container starts, and for every run whose scrape found nothing.
+     */
+    sessionId?: string | null;
 }
 
 /**
@@ -40,7 +47,12 @@ export interface RunSession {
 }
 
 export interface Runner {
-    run(job: BoardJob, session: RunSession | null): Promise<RunOutcome>;
+    /**
+     * Runs the job. `onOutput` is the live-output hook: the runner calls it with its newest output
+     * tail whenever fresh output arrives, and the loop decides what reaches the board and how
+     * often. Optional — a caller that does not stream simply never gets a call.
+     */
+    run(job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void): Promise<RunOutcome>;
     /**
      * The Remote Control id the Claude UI addresses this session by, or null while the bridge has
      * not connected yet — which is the ordinary answer for the first few seconds of a run, and the
@@ -52,6 +64,15 @@ export interface Runner {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * What an agent session id may look like before it is interpolated into runner argv — claude's
+ * uuids and opencode's `ses_…` both qualify, and nothing shell-shaped does. The id on a resume
+ * claim comes from the board, and a board is not something this process trusts with a fragment of
+ * a command. Copied from server/src/routes/jobs.ts, which states the same rule for the report:
+ * this package depends on nothing, deliberately.
+ */
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 
 /**
  * `<org>/<user id>` and nothing else, asserted before it is interpolated into a `docker run`.
@@ -146,6 +167,55 @@ export function reportTail(logText: string): string {
 export const containerName = (job: BoardJob): string => `factory-job-${job.id}`;
 
 /**
+ * The session database opencode writes under XDG_DATA_HOME, as the runner sets it: one directory
+ * per member, next to their checkouts, on the workspaces volume.
+ */
+export function opencodeDbPath(config: DriverConfig, job: BoardJob): string {
+    return `${config.workspaceMount}/${workspacePath(job)}/.opencode/opencode/opencode.db`;
+}
+
+/**
+ * The full `docker run` argv that reads the session id a finished opencode run left behind —
+ * pure, and exported, because it is the part worth pinning: the readout is a throwaway container
+ * over the workspaces volume, entrypoint swapped for node, whose only work is one read-only
+ * query for the newest root session.
+ *
+ * It runs AFTER the job container exits (docker exec cannot), and against the volume rather than
+ * inside any container, which is why the run may be over before the id is known and why the
+ * runner reports it in the outcome instead of mid-run.
+ */
+export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob): string[] {
+    const db = opencodeDbPath(config, job);
+    return [
+        'run',
+        '--rm',
+        '-v',
+        `${config.workspaceVolume}:${config.workspaceMount}`,
+        '--entrypoint',
+        'node',
+        config.image,
+        '-e',
+        // CommonJS: `node -e` is CommonJS unless told otherwise. The query takes the newest ROOT
+        // session — subagents create children under a parent_id, and the conversation a follow-up
+        // continues is the run's own root.
+        `const {DatabaseSync}=require("node:sqlite");` +
+            `try{` +
+            `const db=new DatabaseSync(${JSON.stringify(db)},{readOnly:true});` +
+            `const row=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
+            `if(row&&row.id)console.log(row.id);` +
+            `}catch{}`,
+    ];
+}
+
+/** Pulls a session id out of the readout's stdout, tolerating anything that is not one. */
+export function parseOpencodeSessionId(stdout: string): string | null {
+    const id = stdout.trim().split('\n')[0]?.trim() ?? '';
+    // The shape opencode mints (`ses_…`), and the shape SESSION_ID in dockerArgs will re-assert
+    // before the id is handed to a runner argv on the follow-up claim.
+    return /^ses_[A-Za-z0-9._-]+$/.test(id) ? id : null;
+}
+
+/**
  * Where the image sets CLAUDE_CONFIG_DIR. The login lives under it, so that whole directory is what
  * the auth volume has to cover — mounting anything narrower hides the baked configuration behind an
  * empty volume without carrying the credential.
@@ -227,13 +297,39 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
     if (config.network) args.push('--network', config.network);
 
     // opencode: headless only — Remote Control is refused in the config, so there is no RC branch
-    // here and no permissions flag either (the image's baked opencode.json decides them). And no
-    // session: opencode cannot adopt an id minted in advance, `run --session <id>` only continues
-    // one it created. A resume arriving here means board state from before a RUNNER_CLI flip, and
-    // a silent wrong run is worse than a throw.
+    // here and no permissions flag either (the image's baked opencode.json decides them).
+    //
+    // Sessions: opencode mints its own (`ses_…`) and cannot adopt one minted in advance, so a
+    // fresh run is given none — the runner scrapes the id the run actually used after it ends and
+    // the loop reports it. A follow-up is the exception to "cannot adopt": its claim carries the
+    // session opencode ITSELF created (persisted via XDG_DATA_HOME below), and `run --session
+    // <id> <command>` continues that conversation with the new adjustment. A resume claim with
+    // nothing to deliver is a parked claude-code session — standby is a Remote Control feature —
+    // and is refused by loop.ts before it gets here.
     if (config.cli === 'opencode') {
-        if (session) throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a session`);
-        args.push(config.image, 'run', job.command);
+        if (session && !session.resume) {
+            throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
+        }
+        if (session && !job.followUp) {
+            // Unreachable through the loop, which refuses this state first — this is the runner
+            // asserting it too, because `run --session <id>` with nothing to deliver would idle a
+            // headless run to its deadline. Standby is a Remote Control feature; opencode has none.
+            throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
+        }
+        // The session database has to outlive the container or there is nothing to resume into:
+        // a fresh container starts with an empty one. Pointing XDG_DATA_HOME at the member's own
+        // tree on the workspaces volume persists it per member, next to their checkouts — a
+        // dot-directory the workspace reconcile never mistakes for a checkout (it clones only
+        // rows it selected, and its naming rules refuse a leading dot).
+        args.push('-e', `XDG_DATA_HOME=${config.workspaceMount}/${workspacePath(job)}/.opencode`);
+        args.push(config.image, 'run');
+        if (session) {
+            if (!SESSION_ID.test(session.id)) {
+                throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
+            }
+            args.push('--session', session.id);
+        }
+        args.push(job.command);
         return args;
     }
 
@@ -285,7 +381,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             return read ? parseRemoteSessionId(read.stdout) : null;
         },
 
-        async run(job, session) {
+        async run(job, session, onOutput) {
             // The re-claim fence, the docker twin of the kubernetes runner's delete-before-create:
             // the container name is derived from the job id, so anything already holding it is a
             // leftover of a previous attempt — a driver that died before it could kill its runner,
@@ -325,7 +421,6 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 const child = spawnFn('docker', dockerArgs(config, job, session), {
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
-
                 let timedOut = false;
                 let idled = false;
 
@@ -350,6 +445,9 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // Byte-true, because the report has to fit the board's body limit whatever the
                     // log contained — see reportTail.
                     output = reportTail(output);
+                    // The same tail a complete report would carry, handed over as it grows. Every
+                    // chunk calls back; throttling is the loop's business, not this runner's.
+                    onOutput?.(output);
                     idle();
                 };
                 child.stdout?.on('data', collect);
@@ -376,7 +474,25 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 });
                 child.on('close', (code) => {
                     done();
-                    void verdict(code).then(resolve, reject);
+                    void verdict(code)
+                        .then(async (outcome) => {
+                            /*
+                             * opencode mints its own session id, so the loop had none to report at
+                             * spawn — this is where it comes from instead: one throwaway container
+                             * over the workspaces volume, one read-only query against the
+                             * database the run just closed. A failed read is not a failed run:
+                             * it costs the task its follow-ups, not its verdict.
+                             */
+                            if (config.cli === 'opencode') {
+                                const read = await execDocker(opencodeSessionReadoutArgs(config, job)).catch(
+                                    () => null,
+                                );
+                                const id = read ? parseOpencodeSessionId(read.stdout) : null;
+                                if (id) outcome.sessionId = id;
+                            }
+                            return outcome;
+                        })
+                        .then(resolve, reject);
                 });
             });
         },

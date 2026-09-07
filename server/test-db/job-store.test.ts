@@ -186,12 +186,59 @@ describe.skipIf(!enabled)('job store', () => {
         expect(result).toBe('missing');
     });
 
+    it('streams a rolling output tail while the run is going', async () => {
+        const { id } = await queue('echo hi');
+        const claim = await store.claim('w1', 300);
+
+        expect(await store.progress(id, claim!.leaseToken, 'working')).toBe('ok');
+        expect(await store.progress(id, claim!.leaseToken, 'working\nstill working')).toBe('ok');
+
+        // Replace, never append: the driver owns the window, and an unbounded append would grow
+        // the row for as long as a session runs.
+        expect(await store.get(id)).toMatchObject({ output: 'working\nstill working' });
+
+        // The final report wins — the tail was only ever a preview of it.
+        await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        expect(await store.get(id)).toMatchObject({ output: 'done' });
+    });
+
+    it('refuses an output tail from a worker whose lease was reclaimed', async () => {
+        const { id } = await queue('echo hi');
+        const stale = await store.claim('w1', 300);
+        await expireLease(id);
+        await store.claim('w2', 300);
+
+        expect(await store.progress(id, stale!.leaseToken, 'from the zombie')).toBe('lost');
+        expect(await store.progress(ABSENT, stale!.leaseToken, 'nowhere')).toBe('missing');
+    });
+
     it('records the session an attempt is running as', async () => {
         const { id } = await queue('echo hi');
         const claim = await store.claim('w1', 300);
 
         expect(await store.session(id, claim!.leaseToken, SESSION, null)).toBe('ok');
         expect(await store.get(id)).toMatchObject({ sessionId: SESSION });
+    });
+
+    /**
+     * Session ids are not pinned to uuids: opencode mints its own (`ses_…`), scraped by the
+     * runner after the run and reported before the verdict. A follow-up on such a task must work
+     * exactly like a claude one — and the claim must hand the token back, because `run --session
+     * <id>` is how the runner restores that conversation.
+     */
+    it('follows up a task whose session is an executor token, and hands it back on the claim', async () => {
+        const { id } = await queue('drive me');
+        const claim = await store.claim('w1', 300);
+        const ses = 'ses_f86188c3dffeZGYO4yZq4atba9';
+
+        await store.session(id, claim!.leaseToken, ses, null);
+        await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+
+        const followUp = await store.createFollowUp(id, 'again', null);
+        expect(await store.get(followUp.id)).toMatchObject({ followUpTo: id, sessionId: ses });
+
+        const second = await store.claim('w2', 300);
+        expect(second).toMatchObject({ id: followUp.id, resumeSessionId: ses, followUp: true });
     });
 
     // Two reports per attempt: the local id at spawn, the remote one once the bridge connects. The
@@ -431,7 +478,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('creates a follow-up that continues the parent session and links to it', async () => {
         const parent = await finishWithSession('drive me', { repo: null, executor: null }, true);
 
-        const followUp = await store.createFollowUp(parent, 'now adjust the tone', null, null);
+        const followUp = await store.createFollowUp(parent, 'now adjust the tone', null);
 
         expect(await store.get(followUp.id)).toMatchObject({
             command: 'now adjust the tone',
@@ -443,13 +490,16 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         });
     });
 
-    // The thread keeps its tab: the follow-up renders in the parent's repository view.
-    it('inherits the parent repo but takes the new executor label', async () => {
+    // The thread keeps its tab AND its runner: the follow-up renders in the parent's repository
+    // view and is bound to the executor that ran the task — the board copies it at insert, and
+    // no body can retarget it (a conversation switching executors mid-thread is exactly the
+    // cross-CLI resume nothing can do).
+    it('inherits the parent repo and the parent executor', async () => {
         const parent = await finishWithSession('drive me', { repo: 'acme/web', executor: 'main' });
 
-        const followUp = await store.createFollowUp(parent, 'again, tighter', null, 'other');
+        const followUp = await store.createFollowUp(parent, 'again, tighter', null);
 
-        expect(await store.get(followUp.id)).toMatchObject({ repo: 'acme/web', executor: 'other' });
+        expect(await store.get(followUp.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
     });
 
     // A moving job belongs to its worker and its run is not over; a follow-up on one would race it.
@@ -457,14 +507,14 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const { id } = await queue('echo hi');
         await store.claim('w1', 300);
 
-        expect(await store.createFollowUp(id, 'again', null, null)).toBe('not_finished');
+        expect(await store.createFollowUp(id, 'again', null)).toBe('not_finished');
     });
 
     it('refuses a follow-up on a task the user has marked done', async () => {
         const parent = await finishWithSession('echo hi');
         await store.markDone(parent);
 
-        expect(await store.createFollowUp(parent, 'again', null, null)).toBe('task_done');
+        expect(await store.createFollowUp(parent, 'again', null)).toBe('task_done');
     });
 
     // The done button and a follow-up can overlap on the same finished task, and both statements
@@ -493,7 +543,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         // The timer is the assertion device: the follow-up must still be waiting when it fires,
         // not deciding against a snapshot taken before the lock was even taken.
-        const followUp = store.createFollowUp(parent, 'again', null, null);
+        const followUp = store.createFollowUp(parent, 'again', null);
         const outcome = await Promise.race([
             followUp,
             new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), 450)),
@@ -516,7 +566,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const claim = await store.claim('w1', 300);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
 
-        expect(await store.createFollowUp(id, 'again', null, null)).toBe('no_session');
+        expect(await store.createFollowUp(id, 'again', null)).toBe('no_session');
     });
 
     // The child inherits the parent's session, and a session resumes only in the checkout tree it
@@ -539,25 +589,52 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         await store.session(parent, claim!.leaseToken, SESSION, null);
         await store.complete(parent, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
-        expect(await store.createFollowUp(parent, 'again', authorB, null)).toBe('forbidden');
+        expect(await store.createFollowUp(parent, 'again', authorB)).toBe('forbidden');
         // A caller with no account — the route tests' no-auth-store shape — cannot claim a task
         // that has one. The author's own follow-up still lands.
-        expect(await store.createFollowUp(parent, 'again', null, null)).toBe('forbidden');
-        expect(await store.createFollowUp(parent, 'again', authorA, null)).toMatchObject({ id: expect.any(String) });
+        expect(await store.createFollowUp(parent, 'again', null)).toBe('forbidden');
+        expect(await store.createFollowUp(parent, 'again', authorA)).toMatchObject({ id: expect.any(String) });
     });
 
     it('separates a missing parent from a refused follow-up', async () => {
         const id = await finishWithSession('echo hi');
 
-        expect(await store.createFollowUp(ABSENT, 'again', null, null)).toBe('missing');
-        expect(await otherOrgStore.createFollowUp(id, 'again', null, null)).toBe('missing');
+        expect(await store.createFollowUp(ABSENT, 'again', null)).toBe('missing');
+        expect(await otherOrgStore.createFollowUp(id, 'again', null)).toBe('missing');
+    });
+
+    /**
+     * The chain IS the conversation: the thread read returns the root and every adjustment,
+     * oldest first, whichever member's id was asked — the UI keeps one task per conversation, so
+     * a member deep in the thread must resolve to the same view.
+     */
+    it('reads the whole follow-up chain from any member of it', async () => {
+        const parent = await finishWithSession('drive me');
+        const first = await store.createFollowUp(parent, 'first adjustment', null);
+        const claim = await store.claim('w1', 300);
+        await store.session(first.id, claim!.leaseToken, SESSION, null);
+        await store.complete(first.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+        const second = await store.createFollowUp(first.id, 'second adjustment', null);
+
+        for (const member of [parent, first.id, second.id]) {
+            const chain = await store.thread(member);
+            expect(chain?.map((task) => task.command)).toEqual([
+                'drive me',
+                'first adjustment',
+                'second adjustment',
+            ]);
+        }
+
+        // And the org guard holds: another org's store reads nothing of this conversation.
+        expect(await otherOrgStore.thread(parent)).toBeNull();
+        expect(await store.thread(ABSENT)).toBeNull();
     });
 
     // The whole point: the worker gets the parent session back AND the new command to deliver
     // into it — restore and continue, not just restore.
     it('hands a follow-up claim the parent session and the command to deliver', async () => {
         const parent = await finishWithSession('drive me');
-        const { id } = await store.createFollowUp(parent, 'again', null, null);
+        const { id } = await store.createFollowUp(parent, 'again', null);
 
         const claim = await store.claim('w1', 300);
 
@@ -568,7 +645,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // the conversation survives the crash, and the adjustment still reaches the agent.
     it('re-delivers the command when a follow-up attempt is reclaimed', async () => {
         const parent = await finishWithSession('drive me');
-        const { id } = await store.createFollowUp(parent, 'again', null, null);
+        const { id } = await store.createFollowUp(parent, 'again', null);
         await store.claim('w1', 300);
         await expireLease(id);
 
@@ -582,7 +659,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // ordinary job has always had.
     it('does not re-deliver the command when a parked follow-up is resumed', async () => {
         const parent = await finishWithSession('drive me');
-        const { id } = await store.createFollowUp(parent, 'drive me too', null, null);
+        const { id } = await store.createFollowUp(parent, 'drive me too', null);
         const first = await store.claim('w1', 300);
         await store.session(id, first!.leaseToken, SESSION, null);
         await store.suspend(id, first!.leaseToken);
@@ -600,12 +677,12 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // session (whatever its run reported), never by reaching back to the root's.
     it('follows up on a follow-up, chaining the newest session', async () => {
         const parent = await finishWithSession('drive me');
-        const first = await store.createFollowUp(parent, 'first adjustment', null, null);
+        const first = await store.createFollowUp(parent, 'first adjustment', null);
         const claim = await store.claim('w1', 300);
         await store.session(first.id, claim!.leaseToken, CHAIN, null);
         await store.complete(first.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
 
-        const second = await store.createFollowUp(first.id, 'second adjustment', null, null);
+        const second = await store.createFollowUp(first.id, 'second adjustment', null);
 
         expect(await store.get(second.id)).toMatchObject({
             followUpTo: first.id,

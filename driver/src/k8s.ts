@@ -427,7 +427,7 @@ export function createKubernetesRunner(
             ).catch(() => undefined);
         },
 
-        async run(job, session): Promise<RunOutcome> {
+        async run(job, session, onOutput): Promise<RunOutcome> {
             // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session
             // is an opencode job, which this executor does not carry. Mirrors the docker runner's
             // own refusal of a sessionless claude-code run.
@@ -449,6 +449,14 @@ export function createKubernetesRunner(
             let timedOut = false;
             let jobSucceeded = false;
             let failures = 0;
+            /*
+             * Live output, best effort: the same log tail the finished run reports, read mid-run
+             * and handed to the caller on every poll that found something. The pod is discovered
+             * by label and remembered; every failure here — a pod not scheduled yet, a 503, a
+             * dropped connection — costs freshness, never the run, because the status poll below
+             * still owns the verdict and the final log read still owns the report.
+             */
+            let podName: string | null = null;
             for (;;) {
                 let response: K8sResponse;
                 try {
@@ -483,6 +491,39 @@ export function createKubernetesRunner(
                         (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded',
                     );
                     break;
+                }
+                if (onOutput) {
+                    if (podName === null) {
+                        try {
+                            const pods = await request(
+                                'GET',
+                                `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
+                                    `job-name=${name(job)}`,
+                                )}`,
+                            );
+                            // Skipping terminating pods for the same reason the final read does:
+                            // a replaced attempt's pod carries the same label, and its log is not
+                            // this run's output.
+                            podName =
+                                parse<K8sPodList>(pods.body).items?.find(
+                                    (item) => !item.metadata?.deletionTimestamp,
+                                )?.metadata?.name ?? null;
+                        } catch {
+                            // Not scheduled yet, or the API server blinked. The next poll looks again.
+                        }
+                    }
+                    if (podName !== null) {
+                        try {
+                            const log = await request(
+                                'GET',
+                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${podName}/log?tailLines=${LOG_TAIL_LINES}`,
+                            );
+                            if (log.status < 300) onOutput(reportTail(log.body));
+                        } catch {
+                            // The log endpoint hiccups on a pod that is only starting. Freshness
+                            // waits a poll; the run does not care.
+                        }
+                    }
                 }
                 await sleep(POLL_MS);
             }

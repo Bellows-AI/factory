@@ -21,6 +21,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
 interface BoardStub extends Board {
     completed: { id: string; status: string; exitCode: number | null; output: string }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
+    progressed: { id: string; output: string }[];
     suspended: string[];
     beats: number;
 }
@@ -32,7 +33,14 @@ interface BoardStub extends Board {
  */
 function stubBoard(
     jobs: BoardJob[],
-    options: { lease?: LeaseState; idleBeforeStop?: number; failClaims?: number; failSession?: boolean } = {},
+    options: {
+        lease?: LeaseState;
+        progressLease?: LeaseState;
+        failProgress?: boolean;
+        idleBeforeStop?: number;
+        failClaims?: number;
+        failSession?: boolean;
+    } = {},
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
     let idle = 0;
@@ -42,6 +50,7 @@ function stubBoard(
     const board: BoardStub = {
         completed: [],
         sessions: [],
+        progressed: [],
         suspended: [],
         beats: 0,
         async suspend(claimed) {
@@ -52,6 +61,11 @@ function stubBoard(
             if (options.failSession) throw new Error('board unreachable');
             board.sessions.push({ id: claimed.id, sessionId, remoteSessionId });
             return 'held';
+        },
+        async progress(claimed, output) {
+            if (options.failProgress) throw new Error('board unreachable');
+            board.progressed.push({ id: claimed.id, output });
+            return options.progressLease ?? 'held';
         },
         async claim() {
             if (failures > 0) {
@@ -78,7 +92,7 @@ function stubBoard(
 }
 
 function stubRunner(
-    outcome: (job: BoardJob, session: RunSession | null) => Promise<RunOutcome>,
+    outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
     remote: string | null = null,
 ): Runner & { killed: string[]; lookups: number } {
     const runner = {
@@ -328,6 +342,97 @@ describe('the poll loop', () => {
         expect(board.board.completed).toHaveLength(1);
     });
 
+    /**
+     * The live-output contract, end to end: the runner hands the loop its newest tail as it grows,
+     * and the loop flushes each distinct tail to the board while the run is still going — so the
+     * dashboard shows the work instead of a spinner. The final complete report carries `final`,
+     * not the last tail: the preview never replaces the verdict.
+     */
+    it('streams the output tail to the board while the run goes', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('tail one');
+            while (board.board.progressed.length < 1) await sleep();
+            onOutput?.('tail two');
+            while (board.board.progressed.length < 2) await sleep();
+            return ok({ output: 'final' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.progressed).toEqual([
+            { id: job(1).id, output: 'tail one' },
+            { id: job(1).id, output: 'tail two' },
+        ]);
+        expect(board.board.completed).toEqual([
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final' },
+        ]);
+    });
+
+    // A run is not failed by its own telemetry. The output stream is a preview; losing it costs
+    // freshness, never the job.
+    it('completes the job anyway when the output stream fails', async () => {
+        const board = stubBoard([job(1)], { failProgress: true });
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('tail one');
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            onOutput?.('tail two');
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            return ok({ output: 'final' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toEqual([
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final' },
+        ]);
+    });
+
+    // Same failure, rate-limited: an unreachable board during a three-hour session must not write
+    // a log line every flush period.
+    it('complains about a failing output stream once, not per flush', async () => {
+        const board = stubBoard([job(1)], { failProgress: true });
+        const logs: string[] = [];
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('tail one');
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            onOutput?.('tail two');
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            return ok();
+        });
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config(),
+            sleep,
+            log: (m) => logs.push(m),
+        });
+        board.attach(loop);
+
+        await loop.start();
+
+        expect(logs.filter((m) => m.includes('could not stream output'))).toHaveLength(1);
+    });
+
+    // The 409 a stream report gets back is NOT a kill order: the heartbeat is the one place that
+    // decides a superseded run must die, and a telemetry refusal must not duplicate that decision.
+    it('does not kill the runner when the board refuses the output stream', async () => {
+        const board = stubBoard([job(1)], { progressLease: 'lost' });
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('tail one');
+            while (board.board.progressed.length < 1) await sleep();
+            return ok({ output: 'final' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.progressed).toHaveLength(1);
+        expect(runner.killed).toEqual([]);
+        expect(board.board.completed).toEqual([
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final' },
+        ]);
+    });
+
     // An idle Remote Control session is nobody's failure: it is a job waiting for a human. Reporting
     // an exit code for it would make it indistinguishable from a run that ended.
     it('parks an idle runner instead of completing it', async () => {
@@ -392,11 +497,11 @@ describe('an opencode runner', () => {
         ]);
     });
 
-    // A claim carrying resumeSessionId under opencode can only be board state from before a
-    // RUNNER_CLI flip: standby is a Remote Control feature, and opencode refuses Remote Control at
-    // startup. Failing it with a reason beats restoring a session the runner cannot adopt — or
-    // re-running the command into a transcript somebody has been driving by hand.
-    it('fails a job it cannot resume, with a reason, without running it', async () => {
+    // A claim carrying resumeSessionId under opencode WITHOUT a follow-up can only be board state
+    // from before a RUNNER_CLI flip: standby is a Remote Control feature, and opencode refuses
+    // Remote Control at startup. Failing it with a reason beats restoring a session the runner
+    // cannot adopt — or idling a headless run to its deadline.
+    it('fails a parked job it cannot resume, with a reason, without running it', async () => {
         const board = stubBoard([job(1, '44444444-4444-4444-8444-444444444444')]);
         let ran = 0;
         const runner = stubRunner(async () => {
@@ -409,5 +514,41 @@ describe('an opencode runner', () => {
         expect(ran).toBe(0);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
         expect(board.board.completed[0]?.output).toContain('opencode');
+    });
+
+    /**
+     * The follow-up carve-out, and the reason an opencode task is follow-up-able at all: the
+     * child's session is opencode's OWN (scraped and reported when the parent ran), so the runner
+     * restores it with `--session` and delivers the new command into it.
+     */
+    it('runs an opencode follow-up, restoring the session it carries', async () => {
+        const board = stubBoard([{ ...job(1, 'ses_f86188c3dffeZGYO4yZq4atba9'), followUp: true }]);
+        let given: RunSession | null | undefined;
+        const runner = stubRunner(async (_job, session) => {
+            given = session;
+            return ok();
+        });
+
+        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+
+        expect(given).toEqual({ id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true });
+        expect(board.board.completed).toHaveLength(1);
+        // Already on the board from the insert — nothing re-reported at spawn.
+        expect(board.board.sessions).toEqual([]);
+    });
+
+    // opencode mints its own session id, so the loop learns it from the outcome — the runner
+    // scrapes it out of the session database after the run and the board is told while the lease
+    // is still live, because a follow-up resumes exactly this.
+    it('reports the session id the runner scraped from a finished opencode run', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9' }));
+
+        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+
+        expect(board.board.sessions).toEqual([
+            { id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9', remoteSessionId: null },
+        ]);
+        expect(board.board.completed).toHaveLength(1);
     });
 });

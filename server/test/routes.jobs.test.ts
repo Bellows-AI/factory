@@ -20,8 +20,9 @@ interface StoreStub extends JobStore {
     listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
     completed: { id: string; output: string | null }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
+    progressed: { id: string; output: string }[];
     suspended: string[];
-    followUps: { parentId: string; command: string; createdBy: string | null; executor: string | null }[];
+    followUps: { parentId: string; command: string; createdBy: string | null }[];
     markedDone: string[];
 }
 
@@ -37,6 +38,7 @@ function stubStore(
         claim?: Claim | null;
         verdict?: LeaseResult;
         job?: Job | null;
+        thread?: Job[] | null;
         resume?: 'ok' | 'missing' | 'conflict';
         followUp?: FollowUpRefusal;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
@@ -51,6 +53,7 @@ function stubStore(
         commands: [],
         completed: [],
         sessions: [],
+        progressed: [],
         suspended: [],
         followUps: [],
         markedDone: [],
@@ -74,9 +77,9 @@ function stubStore(
             stub.commands.push(command);
             return { id: ID };
         },
-        async createFollowUp(parentId, command, createdBy, executor) {
+        async createFollowUp(parentId, command, createdBy) {
             boom();
-            stub.followUps.push({ parentId, command, createdBy: createdBy ?? null, executor: executor ?? null });
+            stub.followUps.push({ parentId, command, createdBy: createdBy ?? null });
             return options.followUp ?? { id: FOLLOW_UP_ID };
         },
         async markDone(id) {
@@ -98,6 +101,11 @@ function stubStore(
             stub.sessions.push({ id, sessionId, remoteSessionId });
             return options.verdict ?? 'ok';
         },
+        async progress(id, _token, output) {
+            boom();
+            stub.progressed.push({ id, output });
+            return options.verdict ?? 'ok';
+        },
         async complete(id, _token, { output }) {
             boom();
             stub.completed.push({ id, output });
@@ -106,6 +114,10 @@ function stubStore(
         async get() {
             boom();
             return options.job ?? null;
+        },
+        async thread() {
+            boom();
+            return options.thread ?? null;
         },
         async list(filter) {
             boom();
@@ -332,6 +344,22 @@ describe('POST /api/jobs/:id/session', () => {
         expect(store.sessions).toEqual([{ id: ID, sessionId: SESSION, remoteSessionId: null }]);
     });
 
+    /**
+     * Not pinned to a uuid: claude-code's ids are, but opencode mints its own (`ses_…`), and the
+     * board records the session the run used rather than second-guessing a foreign CLI's format.
+     * What matters for the record is that it is a bounded opaque token, not free-form text.
+     */
+    it('takes an executor token such as opencode’s as a session id', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const ses = 'ses_f86188c3dffeZGYO4yZq4atba9';
+
+        const response = await post(instance, `/api/jobs/${ID}/session`, { leaseToken: TOKEN, sessionId: ses });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.sessions[0]?.sessionId).toBe(ses);
+    });
+
     // The second report of an attempt. The remote id is assigned by Anthropic's backend when the
     // bridge connects, so it can only ever arrive after the run has started.
     it('records the remote session id when the bridge has reported one', async () => {
@@ -374,13 +402,64 @@ describe('POST /api/jobs/:id/session', () => {
 
     it.each([
         ['a missing session id', { leaseToken: TOKEN }, 'BAD_SESSION_ID'],
-        ['a session id that is not a uuid', { leaseToken: TOKEN, sessionId: 'nope' }, 'BAD_SESSION_ID'],
+        ['a non-string session id', { leaseToken: TOKEN, sessionId: 42 }, 'BAD_SESSION_ID'],
+        ['a session id starting with a dot', { leaseToken: TOKEN, sessionId: '.hidden' }, 'BAD_SESSION_ID'],
+        ['a session id with whitespace in it', { leaseToken: TOKEN, sessionId: 'ses x' }, 'BAD_SESSION_ID'],
+        ['an oversized session id', { leaseToken: TOKEN, sessionId: 'x'.repeat(257) }, 'BAD_SESSION_ID'],
         ['a malformed lease token', { leaseToken: 'nope', sessionId: SESSION }, 'BAD_TOKEN'],
     ])('refuses %s', async (_label, payload, code) => {
         const instance = await harnessWith(stubStore());
         const response = await post(instance, `/api/jobs/${ID}/session`, payload);
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe(code);
+    });
+});
+
+describe('POST /api/jobs/:id/output', () => {
+    it('streams a rolling tail of the running attempt', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step 1\n' });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.progressed).toEqual([{ id: ID, output: 'step 1\n' }]);
+    });
+
+    // Same rule as every other worker write: a superseded worker must not relabel the run that
+    // replaced it. Refused, never merged.
+    it('rejects a tail from a worker whose lease was reclaimed', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
+        const response = await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'late' });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('LEASE_LOST');
+    });
+
+    it('answers 404 for a job that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'missing' }));
+        const response = await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'late' });
+        expect(response.statusCode).toBe(404);
+    });
+
+    it.each([
+        ['a missing tail', { leaseToken: TOKEN }, 'BAD_OUTPUT'],
+        ['a non-string tail', { leaseToken: TOKEN, output: 42 }, 'BAD_OUTPUT'],
+        ['a malformed lease token', { leaseToken: 'nope', output: 'x' }, 'BAD_TOKEN'],
+    ])('refuses %s', async (_label, payload, code) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/output`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe(code);
+    });
+
+    // The driver sends a bounded tail; this is the backstop, exactly as complete has one.
+    it('truncates the tail before it reaches the store', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'x'.repeat(100_000) });
+
+        expect(store.progressed[0]?.output).toHaveLength(64 * 1024);
     });
 });
 
@@ -437,21 +516,21 @@ describe('parking and resuming', () => {
 });
 
 describe('POST /api/jobs/:id/follow-up', () => {
-    it('queues a follow-up on a finished task', async () => {
+    // The executor is NOT taken from the body, even if a stale client sends one: the adjustment
+    // is bound to the executor that ran the task, copied from the parent at insert.
+    it('queues a follow-up on a finished task, ignoring any executor in the body', async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
         const response = await post(instance, `/api/jobs/${ID}/follow-up`, {
             command: 'now adjust the tone',
-            executor: 'main',
+            executor: 'some-other-executor',
         });
 
         expect(response.statusCode).toBe(201);
         expect(response.json()).toEqual({ id: FOLLOW_UP_ID, status: 'queued' });
         // `createdBy` comes from the caller, never the body — the same rule as create.
-        expect(store.followUps).toEqual([
-            { parentId: ID, command: 'now adjust the tone', createdBy: null, executor: 'main' },
-        ]);
+        expect(store.followUps).toEqual([{ parentId: ID, command: 'now adjust the tone', createdBy: null }]);
     });
 
     it.each([
@@ -471,11 +550,12 @@ describe('POST /api/jobs/:id/follow-up', () => {
         ['an empty executor', ''],
         ['an executor with a path separator', 'a/b'],
         ['a non-string executor', 7],
-    ])('refuses %s', async (_label, executor) => {
-        const instance = await harnessWith(stubStore());
+    ])('ignores a stale %s in the body', async (_label, executor) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
         const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again', executor });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_EXECUTOR');
+        expect(response.statusCode).toBe(201);
+        expect(store.followUps).toEqual([{ parentId: ID, command: 'again', createdBy: null }]);
     });
 
     // A follow-up is a person's action on a finished run: there is no lease token to present and
@@ -640,6 +720,32 @@ describe('GET /api/jobs', () => {
         const instance = await harnessWith(stubStore({ job: null }));
         const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
         expect(response.statusCode).toBe(404);
+    });
+
+    // The whole follow-up chain, and ANY member's id resolves to it — the UI keeps one task per
+    // conversation, so the URL may name the root or any adjustment.
+    it('reads the whole thread from any member of it', async () => {
+        const child = { ...job, id: FOLLOW_UP_ID, command: 'now adjust the tone', followUpTo: ID };
+        const instance = await harnessWith(stubStore({ thread: [job, child] }));
+
+        for (const member of [ID, FOLLOW_UP_ID]) {
+            const response = await instance.inject({ method: 'GET', url: `/api/jobs/${member}/thread` });
+            expect(response.statusCode).toBe(200);
+            expect(response.json().jobs).toHaveLength(2);
+        }
+    });
+
+    it('answers 404 for a thread whose job does not exist', async () => {
+        const instance = await harnessWith(stubStore({ thread: null }));
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/thread` });
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('refuses a malformed id on the thread', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await instance.inject({ method: 'GET', url: '/api/jobs/nope/thread' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
     });
 
     it('lists jobs', async () => {

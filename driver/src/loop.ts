@@ -24,6 +24,9 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
 const REMOTE_POLL_MS = 3_000;
 const REMOTE_LOOKUPS = 40;
 
+/** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
+const PROGRESS_MS = 2_000;
+
 interface JobState {
     finished: boolean;
     lost: boolean;
@@ -115,20 +118,72 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
         })();
     }
 
+    /**
+     * Streams the runner's output tail to the board while the run goes, so the dashboard shows the
+     * work instead of a spinner.
+     *
+     * The runner calls back with its newest tail whenever it has one; this flushes at most once
+     * per period, and only what changed — the runner's chunk rate is the container's, the board's
+     * is this period.
+     *
+     * Deliberately not a second heartbeat. A `409` here is NOT acted on — the heartbeat is the one
+     * place that decides a superseded run must die (docs/jobs.md) — and a failure costs freshness,
+     * never the run, because the complete report carries the final tail regardless.
+     */
+    function watchOutput(job: BoardJob, state: JobState): (tail: string) => void {
+        let latest: string | null = null;
+        let sent: string | null = null;
+        let complained = false;
+        void (async () => {
+            while (!state.finished && !state.lost) {
+                await Promise.race([sleep(PROGRESS_MS), state.woken]);
+                if (state.finished || state.lost) return;
+                if (latest === null || latest === sent) continue;
+                sent = latest;
+                let verdict: 'held' | 'lost';
+                try {
+                    verdict = await board.progress(job, latest);
+                    complained = false;
+                } catch (e) {
+                    // Rate-limited to the first failure in a row: a board unreachable for a
+                    // three-hour session must not write a log line every two seconds.
+                    if (!complained) {
+                        complained = true;
+                        log(`job ${job.id}: could not stream output, continuing: ${(e as Error).message}`);
+                    }
+                    continue;
+                }
+                // The board no longer recognises this attempt. Killing the container is the
+                // heartbeat's verdict alone; this pump just stops talking.
+                if (verdict === 'lost') return;
+            }
+        })();
+        return (tail) => {
+            latest = tail;
+        };
+    }
+
     async function runJob(job: BoardJob): Promise<void> {
         const state = newJobState();
         const beating = heartbeat(job, state);
+        // Armed before the run so the runner can hand over tails from its first chunk. The pump
+        // stops itself the moment the run finishes; the final complete report carries the tail
+        // that matters.
+        const onOutput = watchOutput(job, state);
         // A resumed job already has its session, and the board already knows it. A fresh one gets
         // one minted here rather than read back from the runner, and reported before the container
         // exists: the whole point is that the board holds the session for the attempt even if the
         // run dies before it produces a line of output.
         //
-        // Except under opencode, which gets null: it mints its own session ids and cannot adopt
-        // one, so there is nothing to mint, give or report — minting a uuid anyway would put a
-        // session on the board that the runner never used.
+        // opencode is the exception on both halves, and for the same reason: it mints its own
+        // session ids (`ses_…`) and cannot adopt one, so a fresh run gets none — the runner
+        // scrapes the id the run used and reports it when the outcome lands. A follow-up claim
+        // carries the session opencode itself created, restored via `--session` on the runner.
         const session: RunSession | null =
             config.cli === 'opencode'
-                ? null
+                ? job.resumeSessionId
+                    ? { id: job.resumeSessionId, resume: true }
+                    : null
                 : job.resumeSessionId
                   ? { id: job.resumeSessionId, resume: true }
                   : { id: randomUUID(), resume: false };
@@ -161,7 +216,7 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
                     log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
                 }
             }
-            const outcome = await runner.run(job, session);
+            const outcome = await runner.run(job, session, onOutput);
             await settle();
 
             if (state.lost) return;
@@ -191,6 +246,20 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
                         : `job ${job.id}: idle for ${config.idleMs}ms, parked on standby`,
                 );
                 return;
+            }
+
+            // The session the run actually used, when the runner could only learn it after the
+            // fact (opencode scrapes it at close). Reported while the lease is still live, BEFORE
+            // the verdict — a follow-up can only be asked for once the task is finished, and it
+            // resumes exactly this. A 'lost' verdict is not acted on: the heartbeat is what kills
+            // a superseded run, and losing the link is not losing the job.
+            if (outcome.sessionId) {
+                try {
+                    await board.session(job, outcome.sessionId, null);
+                    log(`job ${job.id}: session ${outcome.sessionId}`);
+                } catch (e) {
+                    log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
+                }
             }
 
             const status = outcome.exitCode === 0 && !outcome.timedOut ? 'succeeded' : 'failed';
@@ -274,24 +343,23 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
                 }
 
                 /*
-                 * A job's session cannot follow it across a RUNNER_CLI flip.
-                 *
-                 * Standby is a Remote Control feature and opencode refuses Remote Control at
-                 * startup, so a claim carrying resumeSessionId under opencode means the operator
-                 * changed the CLI while a job was parked — or while a follow-up was waiting.
-                 * Restoring it is impossible — opencode cannot adopt a session id — and re-running
-                 * the command would re-enter a transcript somebody may have been driving by hand.
-                 * Failed with a reason, so the job reaches a terminal state somebody can act on.
+                 * A job's session cannot follow it across a RUNNER_CLI flip — with one carve-out:
+                 * a FOLLOW-UP under opencode runs, because its session is opencode's own and the
+                 * runner restores it with `--session`. What is still refused is a resume claim
+                 * carrying nothing to deliver: standby is a Remote Control feature and opencode
+                 * refuses Remote Control at startup, so a parked claim under opencode means the
+                 * operator changed the CLI while something was parked. Restoring a claude-code
+                 * session is impossible — opencode has none in its database — and resuming it
+                 * without a command would idle a headless run to its deadline.
                  */
-                if (config.cli === 'opencode' && job.resumeSessionId) {
+                if (config.cli === 'opencode' && job.resumeSessionId && !job.followUp) {
                     log(`job ${job.id}: carries a session this opencode driver cannot restore, failing`);
                     await board
                         .complete(job, {
                             status: 'failed',
                             exitCode: null,
-                            output: job.followUp
-                                ? 'This job continues an agent session, and this driver runs opencode, whose runner cannot restore a session it did not start. Follow up on the task again once a claude-code driver is serving this queue.'
-                                : 'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
+                            output:
+                                'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
                         })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;

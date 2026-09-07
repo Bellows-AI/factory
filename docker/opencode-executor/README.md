@@ -60,10 +60,11 @@ docker run --rm \
     opencode-executor run 'summarise the diff on this branch'
 ```
 
-The command is the CLI's headless form: `run <prompt>`. There is no session flag on purpose —
-`opencode run --session <id>` continues a session opencode itself created; it cannot adopt one
-minted in advance, so the driver mints and reports nothing for these jobs and the board carries no
-session id for them.
+The command is the CLI's headless form: `run [--session <id>] <prompt>`. A fresh run is
+`run <prompt>` — opencode mints its own session ids (`ses_…`) and cannot adopt one minted in
+advance. A FOLLOW-UP is `run --session <id> <prompt>`: it continues a session opencode itself
+created on an earlier run, which is why the driver sets `XDG_DATA_HOME` (below) so that database
+outlives the container.
 
 ## Permissions are baked, not flagged
 
@@ -83,10 +84,15 @@ To run another policy, mount your own over the baked file:
 
 ## Session ids
 
-opencode mints its own session ids (`ses_…`) and stores them under its data directory. The driver
-does not read them back out: minting a uuid and reporting it would put a session on the board that
-the runner never used, which is a lie the claude path never has to tell because its CLI accepts an
-id as input. A job run by this image shows no session link. Its runs still emit OTLP, but the
+opencode mints its own session ids (`ses_…`) and stores them in a sqlite database under its data
+directory. The driver points `XDG_DATA_HOME` at a `.opencode` directory in the member's own tree
+on the workspaces volume, and the image's entrypoint creates it on first run — the database
+outlives the container, which is the whole mechanism: a follow-up runs `run --session <id>` in a
+fresh container, and that only works if the session is still in the database it reads. After a
+run the driver reads the newest root session out of the database with one throwaway node
+container (`node:sqlite`, read-only) and reports the id to the board, which is what makes the
+task follow-up-able. A job run by this image still shows no session link — the link is built from
+claude-code's Remote Control id, which opencode does not have. Its runs still emit OTLP, but the
 server's metric map carries no opencode rows yet, so spend records as an unmapped agent — null,
 never zero — until those rows are added (see `docs/limits.md`).
 

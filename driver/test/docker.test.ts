@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { containerName, createDockerRunner, dockerArgs, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
+import { containerName, createDockerRunner, dockerArgs, opencodeSessionReadoutArgs, parseOpencodeSessionId, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -262,14 +262,51 @@ describe('an opencode runner', () => {
     const oc = (env: NodeJS.ProcessEnv = {}) => args({ RUNNER_CLI: 'opencode', ...env }, null);
 
     // opencode's asymmetry, per the repo's own executor spec: `run --session <id>` CONTINUES an
-    // existing session, it cannot adopt one minted in advance. So the headless form is just
-    // `run <command>`, and no session id travels in either direction.
+    // existing session, it cannot adopt one minted in advance. So a fresh run is just
+    // `run <command>` — the id it uses is scraped after the run and reported then.
     it('runs the command headless, with no session id at all', () => {
         const line = oc();
         expect(line.slice(-3)).toEqual(['opencode-executor', 'run', 'fix the failing build']);
         expect(line).not.toContain('--session-id');
         expect(line).not.toContain('--resume');
         expect(line).not.toContain(SESSION);
+    });
+
+    // The session database has to outlive the container or there is nothing to resume into: a
+    // fresh container starts with an empty one. It lives per member, next to their checkouts, on
+    // the workspaces volume.
+    it('persists the session database under the member’s own workspace tree', () => {
+        expect(oc()).toEqual(
+            expect.arrayContaining(['-e', `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`]),
+        );
+    });
+
+    /**
+     * The follow-up: the claim carries the session opencode ITSELF created (scraped and reported
+     * when the parent ran), and `run --session <id> <command>` continues that conversation with
+     * the new adjustment. This is what makes an opencode task follow-up-able.
+     */
+    it('continues its own session with the new command on a follow-up', () => {
+        const line = dockerArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), { ...job, followUp: true }, {
+            id: 'ses_f86188c3dffeZGYO4yZq4atba9',
+            resume: true,
+        });
+        expect(line.slice(-5)).toEqual([
+            'opencode-executor',
+            'run',
+            '--session',
+            'ses_f86188c3dffeZGYO4yZq4atba9',
+            'fix the failing build',
+        ]);
+    });
+
+    // Standby is a Remote Control feature and opencode cannot be configured for it, so a resume
+    // with nothing to deliver means board state from before a RUNNER_CLI flip. The loop refuses
+    // it first; the runner refuses it too, because a headless run restoring a session without a
+    // command would idle to its deadline.
+    it('refuses to restore a session when there is no command to deliver', () => {
+        expect(() => resumed({ RUNNER_CLI: 'opencode' })).toThrow(/session/);
+        expect(() => oc()).not.toThrow();
     });
 
     it('keeps the explicit-image rule', () => {
@@ -298,12 +335,40 @@ describe('an opencode runner', () => {
         );
         expect(line.some((arg) => arg.includes('ANTHROPIC_API_KEY='))).toBe(false);
     });
+});
 
-    // Standby is a Remote Control feature and opencode cannot be configured for it, so a resumed
-    // session here means board state from before a RUNNER_CLI flip. A silent wrong run is worse
-    // than a throw.
-    it('refuses to hand a session to a runner that cannot adopt one', () => {
-        expect(() => resumed({ RUNNER_CLI: 'opencode' })).toThrow(/session/);
+describe('scraping the session opencode used', () => {
+    /**
+     * The readout is a throwaway container over the workspaces volume, entrypoint swapped for
+     * node — the job container is already gone by the time it runs, and the driver has no host
+     * path into a named volume. Pure and pinned for the same reason dockerArgs is.
+     */
+    it('reads the session database out of the member’s data directory, root sessions only', () => {
+        const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
+        expect(line.slice(0, 8)).toEqual([
+            'run',
+            '--rm',
+            '-v',
+            'factory-ai_workspaces:/workspaces',
+            '--entrypoint',
+            'node',
+            'opencode-executor',
+            '-e',
+        ]);
+        expect(line[8]).toContain(`/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`);
+        expect(line[8]).toContain('parent_id is null');
+        expect(line[8]).toContain('readOnly');
+    });
+
+    it('pulls the session id out of the readout’s answer, and nothing that is not one', () => {
+        expect(parseOpencodeSessionId('ses_f86188c3dffeZGYO4yZq4atba9\n')).toBe(
+            'ses_f86188c3dffeZGYO4yZq4atba9',
+        );
+        expect(parseOpencodeSessionId('')).toBeNull();
+        // Not a session id: a path, an error line, or a uuid that would read as claude's.
+        expect(parseOpencodeSessionId('/workspaces/bellows/x/.opencode')).toBeNull();
+        expect(parseOpencodeSessionId('Error: Session not found')).toBeNull();
+        expect(parseOpencodeSessionId('33333333-3333-4333-8333-333333333333')).toBeNull();
     });
 });
 
@@ -435,5 +500,20 @@ describe('the docker runner', () => {
         // The fence and the cleanup `rm` go through the same seam; only the inspect is the
         // classifier, and an unambiguous exit code must not pay for one.
         expect(inspect.mock.calls.filter((call) => call[0][0] === 'inspect')).toHaveLength(0);
+    });
+
+    /**
+     * The live-output hook: every chunk that arrives is handed to the caller as the newest tail —
+     * the same string a complete report would carry, growing. One call per chunk; throttling is
+     * the loop's business.
+     */
+    it('hands every chunk it reads to the output stream', async () => {
+        const tails: string[] = [];
+        const runner = createDockerRunner(loadDriverConfig({}), child('step one\n', 'warn\n', 0), noContainer);
+
+        const outcome = await runner.run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
+
+        expect(outcome.exitCode).toBe(0);
+        expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
     });
 });
