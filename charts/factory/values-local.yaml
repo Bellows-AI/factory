@@ -1,0 +1,45 @@
+# A single-node local Kubernetes stack, end to end and offline: no GitHub App, no OAuth
+# registration, no Claude credential. The executor image is a stub whose entrypoint echoes — the
+# same trick scripts/test-jobs.sh uses — so a queued job runs a real pod, reports a real exit code
+# and output, and proves the whole board -> driver -> runner path without a model call.
+#
+#   kind create cluster --name factory
+#   docker build -f docker/Dockerfile --target runtime -t factory-ai .
+#   docker build -f docker/driver.Dockerfile -t factory-driver .
+#   printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' | docker build -t echo-executor -
+#   kind load docker-image factory-ai --name factory
+#   kind load docker-image factory-driver --name factory
+#   kind load docker-image echo-executor --name factory
+#   helm install dev charts/factory -f charts/factory/values-local.yaml
+#
+# On minikube the same shape: `minikube start`, the same three builds, and
+# `minikube image load factory-ai factory-driver echo-executor` before the same helm install.
+#
+# See charts/factory/README.md for the walkthrough and scripts/test-k8s.sh for the scripted version.
+
+dashboard:
+    image: factory-ai
+    workspaceRoot: /workspaces
+
+auth:
+    # Open, because the cluster is local and the perimeter is the ClusterIP — the k8s analogue of
+    # the 127.0.0.1 bind every open stack in this repository runs behind. The chart's own default stays
+    # `github`; turning it off here is a decision this file makes once, in one place.
+    mode: none
+    # The bind is 0.0.0.0 inside the container, so loadConfig demands this hatch for an open mode.
+    allowPublicBind: '1'
+
+github:
+    mode: none
+
+# One node, so the claim is ReadWriteOnce: the local provisioner cannot serve ReadWriteMany.
+workspaces:
+    accessModes:
+        - ReadWriteOnce
+
+timescale:
+    enabled: true
+
+driver:
+    image: factory-driver
+    executorImage: echo-executor

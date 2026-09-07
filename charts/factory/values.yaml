@@ -10,7 +10,8 @@
 #   docker build -f docker/Dockerfile --target runtime -t factory-ai .
 dashboard:
     image: factory-ai
-    # IfNotPresent so side-loaded images (minikube image load) resolve without a registry.
+    # IfNotPresent so side-loaded images (kind load docker-image, minikube image load) resolve
+    # without a registry.
     imagePullPolicy: IfNotPresent
     replicas: 1
     port: 8080
@@ -75,8 +76,8 @@ timescale:
     resources: {}
 
 # The checkouts. Default ReadWriteMany because the dashboard pod and every runner pod share one
-# claim across nodes; minikube overrides ReadWriteOnce (single node). A default StorageClass that
-# cannot serve the mode fails scheduling loudly, not silently.
+# claim across nodes; values-local.yaml overrides ReadWriteOnce (single node). A default
+# StorageClass that cannot serve the mode fails scheduling loudly, not silently.
 workspaces:
     storageSize: 20Gi
     accessModes:

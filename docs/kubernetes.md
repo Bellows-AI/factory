@@ -70,18 +70,18 @@ board, say), that is a new decision, made then.
 ## The chart
 
 `charts/factory/` — see [its README](../charts/factory/README.md) for the object list and the
-minikube walkthrough. Decisions that look like cruft and are not:
+local-cluster walkthrough (kind or minikube). Decisions that look like cruft and are not:
 
 - **The in-chart TimescaleDB is a plain Deployment, not the upstream chart dependency.** One
   deployment, one claim, no subchart; it mirrors compose running a plain timescale container. For
   anything real, `timescale.enabled=false` and `database.url` point at a managed instance — which
   is also why the helper fails the template when that combination is asked for without a URL.
 - **`AUTH_MODE` defaults to `github` in the chart**, as compose pins it, because the chart's
-  dashboard holds checkouts and serves a route that runs shell commands. The minikube values file
+  dashboard holds checkouts and serves a route that runs shell commands. The local values file
   turns it off explicitly (`none` + `AUTH_ALLOW_PUBLIC_BIND=1`, the ClusterIP being the perimeter —
   the k8s analogue of the loopback bind). Under `github`, `auth.publicUrl` is required; the server
   refuses to boot without it, by design.
-- **`values-minikube.yaml` points the executor at a stub echo image**, the same trick
+- **`values-local.yaml` points the executor at a stub echo image**, the same trick
   `scripts/test-jobs.sh` uses: a queued job runs a real pod that echoes its prompt, which proves
   the whole board → driver → Job → pod → complete path offline, with no Claude and no credential.
 
@@ -106,5 +106,8 @@ was a driver that claims jobs and burns attempts running nothing.
   way `createBoard` takes `fetch`), so the suite spawns nothing and needs no cluster; `runnerJobSpec`
   is pure and pinned like `dockerArgs`, including the no-literal-credential and no-service-account
   pins above.
-- `npm run test:k8s` — `helm lint`/`helm template` assertions plus the minikube walkthrough as a
-  script, mirroring `scripts/test-jobs.sh`. Needs helm; the minikube phase needs a cluster.
+- `npm run test:k8s` — `helm lint`/`helm template` assertions plus the local-cluster walkthrough as
+  a script, mirroring `scripts/test-jobs.sh`. Needs helm; the `--cluster` phase needs a real
+  minikube or kind cluster — the script refuses any other kubectl context (allowlist: `minikube`
+  and `kind-*`, kind contexts always being `kind-<name>`) unless
+  `FACTORY_K8S_ALLOW_ANY_CLUSTER=1`, because the phase deletes every runner Job in the namespace.
