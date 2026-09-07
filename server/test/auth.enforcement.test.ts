@@ -131,6 +131,7 @@ describe('the route table', () => {
         [`/api/jobs/${JOB_ID}/session`, 'worker'],
         [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
         [`/api/jobs/${JOB_ID}/complete`, 'worker'],
+        [`/api/jobs/${JOB_ID}/output`, 'worker'],
         ['/api/otlp/v1/logs', 'ingest'],
         ['/api/sessions/branch', 'ingest'],
         // Both fall through to `user` rather than being listed anywhere, which is the point: the

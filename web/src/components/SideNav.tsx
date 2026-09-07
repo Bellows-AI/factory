@@ -36,7 +36,10 @@ const ITEMS: readonly Item[] = [
  *
  * The task list below is the same decision held at a smaller scale: the `/api/jobs` poll runs only
  * while the member is in the tasks area, so off `/tasks*` this renders no list at all rather than
- * paying for one on every page.
+ * paying for one on every page. And it lists TASKS, not runs: a follow-up is a new row on the
+ * board, but it continues the conversation it was asked on, so only thread roots
+ * (`followUpTo === null`) appear here — the detail view resolves any member's id to the whole
+ * chain.
  */
 export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
     return (
@@ -57,19 +60,21 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
                                 <p className="sidenav-empty">No tasks yet</p>
                             ) : (
                                 <ul className="sidenav-subitems">
-                                    {tasks.map((task) => (
-                                        <li key={task.id}>
-                                            <NavLink
-                                                to={`/tasks/${task.id}`}
-                                                title={task.command}
-                                                className={({ isActive }) =>
-                                                    isActive ? 'sidenav-task is-active' : 'sidenav-task'
-                                                }
-                                            >
-                                                {task.command}
-                                            </NavLink>
-                                        </li>
-                                    ))}
+                                    {tasks
+                                        .filter((task) => task.followUpTo === null)
+                                        .map((task) => (
+                                            <li key={task.id}>
+                                                <NavLink
+                                                    to={`/tasks/${task.id}`}
+                                                    title={task.command}
+                                                    className={({ isActive }) =>
+                                                        isActive ? 'sidenav-task is-active' : 'sidenav-task'
+                                                    }
+                                                >
+                                                    {task.command}
+                                                </NavLink>
+                                            </li>
+                                        ))}
                                 </ul>
                             )
                         ) : null}

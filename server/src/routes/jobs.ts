@@ -56,6 +56,14 @@ const LIST_LIMIT_MAX = 200;
 /** Far past the `cse_` tokens seen in practice, and short enough that it cannot be an essay. */
 const REMOTE_SESSION_LIMIT = 256;
 
+/**
+ * What an agent session id may look like. Not pinned to a uuid: claude-code's are, but opencode
+ * mints its own (`ses_…`), and the board's job is to RECORD the session the run used, not to
+ * second-guess a foreign CLI's id format. Still an opaque-token check, not free-form: the value
+ * rides back to the driver on a follow-up claim and becomes runner argv there.
+ */
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
+
 const STATUSES: readonly JobStatus[] = ['queued', 'running', 'standby', 'succeeded', 'failed', 'dead'];
 
 function leaseSeconds(raw: unknown): number | null {
@@ -166,8 +174,8 @@ export const jobRoutes =
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
                 return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
             }
-            if (typeof sessionId !== 'string' || !UUID.test(sessionId)) {
-                return bad(reply, 'BAD_SESSION_ID', 'sessionId must be a uuid');
+            if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
+                return bad(reply, 'BAD_SESSION_ID', 'sessionId must be a short opaque token');
             }
             // Not a uuid, and not checked against a shape: it is an opaque token minted elsewhere
             // (`cse_…` today), and pinning its format here would break on the day it changes.
@@ -196,6 +204,36 @@ export const jobRoutes =
                 return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
             }
             return reply.code(200).send({ id, sessionId, remoteSessionId: remoteSessionId ?? null });
+        });
+
+        // A rolling tail of the running attempt's output, so the dashboard shows the work while it
+        // happens. Separate from complete because the run has not ended — there is no verdict
+        // here, and the final complete report overwrites whatever this last stored. The driver
+        // owns the window: this stores the tail it is sent, replacing the previous one, truncated
+        // by the same rule complete applies.
+        app.post('/api/jobs/:id/output', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const { leaseToken, output } = body(request.body);
+            if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+                return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+            }
+            if (typeof output !== 'string') {
+                return bad(reply, 'BAD_OUTPUT', 'output must be a string');
+            }
+
+            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job output failed'), () =>
+                store.progress(id, leaseToken, output.slice(0, OUTPUT_LIMIT)),
+            );
+            if (!result.ok) return reply;
+            if (result.value === 'missing') {
+                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+            }
+            if (result.value === 'lost') {
+                return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
+            }
+            return reply.code(200).send({ id });
         });
 
         // Parking a job, not finishing it. Separate from complete because there is no outcome yet:
@@ -246,6 +284,8 @@ export const jobRoutes =
         // it just did. The store decides every refusal atomically with the insert, so a follow-up
         // can never land on a parent that turns out to be running or done. No lease token — the
         // task is finished, nobody holds it, and this is a person's action for exactly that reason.
+        // The executor is NOT taken from the body: the adjustment is bound to the executor that
+        // ran the task, copied from the parent at insert like the repo and the session.
         app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
@@ -258,18 +298,13 @@ export const jobRoutes =
             if (command.length > COMMAND_LIMIT) {
                 return bad(reply, 'BAD_COMMAND', `command exceeds ${COMMAND_LIMIT} characters`);
             }
-            const executor = fields.executor === undefined || fields.executor === null ? null : fields.executor;
-            if (executor !== null) {
-                const reason = typeof executor !== 'string' ? 'executor must be a string' : executorReason(executor);
-                if (reason) return bad(reply, 'BAD_EXECUTOR', reason);
-            }
 
             // Read off the authenticated request, never off the body — the create route's rule
             // about impersonation applies word for word here.
             const createdBy = callerOf(request)?.user.id ?? null;
 
             const created = await guard(reply, (e) => request.log.error({ err: e }, 'job follow-up failed'), () =>
-                store.createFollowUp(id, command, createdBy, typeof executor === 'string' ? executor : null),
+                store.createFollowUp(id, command, createdBy),
             );
             if (!created.ok) return reply;
             if (typeof created.value === 'string') {
@@ -355,6 +390,21 @@ export const jobRoutes =
             if (!job.ok) return reply;
             if (job.value === null) return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
             return reply.code(200).send(job.value);
+        });
+
+        // The whole follow-up chain containing this task, oldest first. ANY member resolves to the
+        // same conversation — the UI keeps one task per thread, so the URL may name the root or
+        // any adjustment and the page must not change identity underneath the reader.
+        app.get('/api/jobs/:id/thread', async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const jobs = await guard(reply, (e) => request.log.error({ err: e }, 'job thread read failed'), () =>
+                store.thread(id),
+            );
+            if (!jobs.ok) return reply;
+            if (jobs.value === null) return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+            return reply.code(200).send({ jobs: jobs.value });
         });
 
         app.get('/api/jobs', async (request, reply) => {

@@ -27,7 +27,9 @@ function job(overrides: Partial<Job> = {}): Job {
         createdAt: '2026-09-01T12:00:00.000Z',
         startedAt: '2026-09-01T12:00:01.000Z',
         finishedAt: '2026-09-01T12:04:00.000Z',
-        sessionId: null,
+        // A finished claude-code run has a session by default here: the follow-up composer is
+        // offered for exactly these, and the sessionless case has its own test below.
+        sessionId: '33333333-3333-4333-8333-333333333333',
         remoteSessionId: null,
         ...overrides,
     };
@@ -61,25 +63,23 @@ const renderComposer = ({
     );
 
 interface DetailArgs {
-    task?: Job | null;
+    /** One task or a whole follow-up chain — the page hands the polled thread over as-is. */
+    jobs?: Job[] | null;
     error?: string | null;
-    executors?: { name: string; type: string }[];
     actionError?: string | null;
     sending?: boolean;
 }
 
 const renderDetail = ({
-    task = job(),
+    jobs = [job()],
     error = null,
-    executors = [],
     actionError = null,
     sending = false,
 }: DetailArgs = {}) =>
     renderToStaticMarkup(
         <TaskDetail
-            task={task}
+            jobs={jobs}
             error={error}
-            executors={executors}
             actionError={actionError}
             sending={sending}
             onFollowUp={async () => null}
@@ -117,6 +117,28 @@ describe('TaskComposer', () => {
         expect(html).toContain('<option value="" selected');
     });
 
+    // A member who configured executors means their tasks to run on one: the FIRST is the
+    // default, and `none` stays available for a deliberate unlabelled run.
+    it('preselects the first configured executor, and none only when there is none', () => {
+        const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
+        expect(one).toContain('<option value="main" selected');
+
+        const two = renderComposer({
+            repos: [],
+            executors: [
+                { name: 'main', type: 'claude' },
+                { name: 'heavy', type: 'claude' },
+            ],
+        });
+        expect(two).toContain('<option value="main" selected');
+        expect(two).not.toContain('<option value="heavy" selected');
+
+        const empty = renderComposer({ repos: [], executors: [] });
+        // Only the `none` options exist, and the executor one is the one selected.
+        expect(empty).toContain('<option value="" selected');
+        expect(empty).not.toContain('<option value="main"');
+    });
+
     it('keeps the composer reachable when no repository is selected', () => {
         // A member with nothing picked can still queue: the task simply carries no repo.
         const html = renderComposer({ repos: [] });
@@ -148,7 +170,7 @@ describe('TaskComposer', () => {
 
 describe('TaskDetail', () => {
     it('shows the command, status, executor and stamp of the task', () => {
-        const html = renderDetail({ task: job({ executor: 'main' }) });
+        const html = renderDetail({ jobs: [job({ executor: 'main' })] });
         expect(html).toContain('fix the flaky login test');
         expect(html).toContain('succeeded');
         expect(html).toContain('main');
@@ -156,7 +178,7 @@ describe('TaskDetail', () => {
     });
 
     it('renders the output as text, never as markup', () => {
-        const html = renderDetail({ task: job({ output: '<script>alert(1)</script>' }) });
+        const html = renderDetail({ jobs: [job({ output: '<script>alert(1)</script>' })] });
         // Container output is arbitrary text; escaping it is the difference between a transcript
         // and a hole.
         expect(html).toContain('&lt;script&gt;');
@@ -167,46 +189,46 @@ describe('TaskDetail', () => {
     it('claims nothing about a task or output that has not loaded', () => {
         // A finished task whose detail has not arrived must not read as one with no output —
         // that is a false statement about a run somebody is waiting on.
-        expect(renderDetail({ task: null })).toMatch(/Loading the task/);
-        const waiting = renderDetail({ task: job({ status: 'running', output: null, exitCode: null, finishedAt: null, startedAt: null }) });
+        expect(renderDetail({ jobs: null })).toMatch(/Loading the task/);
+        const waiting = renderDetail({ jobs: [job({ status: 'running', output: null, exitCode: null, finishedAt: null, startedAt: null })] });
         expect(waiting).toContain('Waiting for the executor');
-        const empty = renderDetail({ task: job({ output: null }) });
+        const empty = renderDetail({ jobs: [job({ output: null })] });
         expect(empty).toContain('No output recorded');
     });
 
     it('says so in place when the task could not be loaded', () => {
-        const html = renderDetail({ task: null, error: 'Request failed (503)' });
+        const html = renderDetail({ jobs: null, error: 'Request failed (503)' });
         expect(html).toContain('Request failed (503)');
     });
 
     it('shows the exit code of a finished run', () => {
-        const html = renderDetail({ task: job({ status: 'failed', exitCode: 1 }) });
+        const html = renderDetail({ jobs: [job({ status: 'failed', exitCode: 1 })] });
         expect(html).toContain('exit 1');
     });
 
     it('offers Resume only on a standby task', () => {
-        const parked = renderDetail({ task: job({ status: 'standby' }) });
+        const parked = renderDetail({ jobs: [job({ status: 'standby' })] });
         expect(parked).toContain('Resume');
-        const running = renderDetail({ task: job({ status: 'running' }) });
+        const running = renderDetail({ jobs: [job({ status: 'running' })] });
         expect(running).not.toContain('Resume');
     });
 
     it('offers Done and a follow-up composer on a finished task, and neither on a moving one', () => {
         // The run ending is not the task ending: these two exist exactly for the gap between "the
         // executor stopped" and "I am satisfied".
-        const finished = renderDetail({ task: job() });
+        const finished = renderDetail({ jobs: [job()] });
         expect(finished).toContain('>Done<');
         expect(finished).toContain('<textarea');
         expect(finished).toContain('>Send<');
         for (const status of ['queued', 'running', 'standby'] as const) {
-            const moving = renderDetail({ task: job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null }) });
+            const moving = renderDetail({ jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })] });
             expect(moving, status).not.toContain('>Done<');
             expect(moving, status).not.toContain('<textarea');
         }
     });
 
     it('never offers them on a task the user has already marked done', () => {
-        const html = renderDetail({ task: job({ doneAt: '2026-09-01T13:00:00.000Z' }) });
+        const html = renderDetail({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
         expect(html).not.toContain('>Done<');
         expect(html).not.toContain('<textarea');
         // The verdict is visible, not silently implied by the buttons' absence.
@@ -214,15 +236,52 @@ describe('TaskDetail', () => {
     });
 
     it('disables the follow-up Send until text is typed', () => {
-        const html = renderDetail({ task: job() });
+        const html = renderDetail({ jobs: [job()] });
         const send = html.slice(html.lastIndexOf('>Send<') - 200, html.lastIndexOf('>Send<'));
         expect(send).toContain('disabled');
     });
 
+    /**
+     * A follow-up continues the run's agent session, and the board refuses one for a run that
+     * never reported a session — every opencode task, and a claude-code run whose driver died
+     * before reporting — with 409 NO_SESSION. The composer must not be offered where it can only
+     * ever fail; the page says why instead.
+     */
+    it('offers no follow-up composer on a run with no session to continue, and says why', () => {
+        const html = renderDetail({ jobs: [job({ sessionId: null })] });
+        expect(html).not.toContain('<textarea');
+        expect(html).not.toContain('>Send<');
+        expect(html).toContain('no agent session to continue');
+        // The done verdict is unrelated to sessions and stays available.
+        expect(html).toContain('>Done<');
+    });
+
+    /**
+     * A follow-up is a new row on the board but NOT a new task here: the chain renders as one
+     * conversation, oldest first, and the composer + Done verdict belong to the NEWEST run only —
+     * older runs are history.
+     */
+    it('renders the follow-up chain as one conversation, with the newest run in charge', () => {
+        const root = job({ command: 'fix the flaky login test' });
+        const child = {
+            ...job({ command: 'now tighten the retry logic' }),
+            id: '44444444-4444-4444-8444-444444444444',
+            followUpTo: root.id,
+        };
+        const html = renderDetail({ jobs: [root, child] });
+
+        expect(html).toContain('fix the flaky login test');
+        expect(html).toContain('now tighten the retry logic');
+        // Both messages, in order.
+        expect(html.indexOf('fix the flaky login test')).toBeLessThan(html.indexOf('now tighten the retry logic'));
+        // One Done button, on the newest run only.
+        expect(html.match(/>Done</g)).toHaveLength(1);
+        expect(html).toContain('<textarea');
+    });
+
     it('never emits a placeholder value', () => {
         const html = renderDetail({
-            task: job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null }),
-            executors: [{ name: 'main', type: 'claude' }],
+            jobs: [job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null })],
         });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });

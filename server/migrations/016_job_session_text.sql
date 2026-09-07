@@ -1,0 +1,11 @@
+-- An agent session id is whatever the executor's CLI minted, not always a uuid.
+--
+-- 007 typed session_id uuid, because claude-code's ids are uuids and the driver minted them, so
+-- the board could have asserted the format. opencode breaks that assumption: it mints its own
+-- (`ses_…`) -- which no process here can predict -- and the runner scrapes it out of the run's
+-- session database after the run ends and reports it like any other session. The board's job is
+-- to RECORD the session the run used, not to second-guess a foreign CLI's id format, so the
+-- column widens to text like remote_session_id in 009. The report route validates the same
+-- bounded opaque-token shape the driver re-asserts before the id becomes runner argv on a
+-- follow-up claim; uuid values in existing rows convert losslessly.
+alter table job alter column session_id type text using session_id::text;

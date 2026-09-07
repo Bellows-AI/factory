@@ -53,7 +53,7 @@ export interface UseJobs {
     error: string | null;
     queue: (command: string, repo: string | null, executor: string | null) => Promise<QueueResult>;
     resume: (id: string) => Promise<string | null>;
-    followUp: (id: string, command: string, executor: string | null) => Promise<QueueResult>;
+    followUp: (id: string, command: string) => Promise<QueueResult>;
     markDone: (id: string) => Promise<string | null>;
 }
 
@@ -200,13 +200,14 @@ export function useJobs(enabled: boolean): UseJobs {
     // declaration that it is done — so both re-arm the poll exactly as queue and resume do: the
     // member sees the follow-up appear, or the done state land, on the next tick. The follow-up
     // creates a NEW row and answers with ITS id: the conversation continues on the child's page.
+    // No executor on the body: the board binds the adjustment to the executor that ran the task.
     const followUp = useCallback(
-        async (id: string, command: string, executor: string | null): Promise<QueueResult> => {
+        async (id: string, command: string): Promise<QueueResult> => {
             try {
                 const response = await fetch(`/api/jobs/${id}/follow-up`, {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ command, executor }),
+                    body: JSON.stringify({ command }),
                 });
                 if (response.status === 401) {
                     reportUnauthenticated();
@@ -251,21 +252,20 @@ export function useJobs(enabled: boolean): UseJobs {
 }
 
 /**
- * One task, whole, until it is finished. The list projection carries no output, so the thread's
- * transcript only ever comes from here — polled while the task can still move, stopped the moment
- * it cannot.
+ * One task's whole conversation — the root job and every follow-up after it, oldest first — from
+ * `GET /api/jobs/:id/thread`. ANY member's id resolves to the same chain, which is what lets the
+ * detail page keep one URL per task while follow-ups keep arriving as new rows underneath.
  *
- * A failed tick says so and stops, the way `useWorkspace`'s poll does: the last good answer stays
- * on screen, an error line takes the place of the spinner, and re-selecting the task re-arms the
+ * A failed tick says so and stops, the way the other polls do: the last good answer stays on
+ * screen, an error line takes the place of the spinner, and re-selecting the task re-arms the
  * poll. What it must never do is go quiet — a transcript that silently stops growing reads as a
  * finished run.
  *
- * `refresh` re-arms the chain by hand, for the one verdict that arrives AFTER the poll has
- * stopped: a finished task is terminal and the run will never change again, but the user's own
- * `done` lands on the row afterwards, and only a fresh poll carries it back.
+ * The poll stops when EVERY member is terminal: a finished thread can still grow, but only by the
+ * member's own follow-up, and `refresh` re-arms for exactly that.
  */
-export function useJob(id: string | null): { job: Job | null; error: string | null; refresh: () => void } {
-    const [job, setJob] = useState<Job | null>(null);
+export function useThread(id: string | null): { jobs: Job[] | null; error: string | null; refresh: () => void } {
+    const [jobs, setJobs] = useState<Job[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const timer = useRef<number | null>(null);
     const controller = useRef<AbortController | null>(null);
@@ -277,7 +277,7 @@ export function useJob(id: string | null): { job: Job | null; error: string | nu
         const current = idRef.current;
         if (current === null) return;
         try {
-            const response = await fetch(`/api/jobs/${current}`, { signal });
+            const response = await fetch(`/api/jobs/${current}/thread`, { signal });
             if (response.status === 401) {
                 reportUnauthenticated();
                 return;
@@ -290,11 +290,11 @@ export function useJob(id: string | null): { job: Job | null; error: string | nu
                 setError(body.error ?? `Request failed (${response.status})`);
                 return;
             }
-            const body = (await response.json()) as Job;
+            const body = (await response.json()) as { jobs: Job[] };
             if (signal.aborted) return;
-            setJob(body);
+            setJobs(body.jobs);
             setError(null);
-            if (isTerminal(body.status)) return;
+            if (body.jobs.every((task) => isTerminal(task.status))) return;
             timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 15_000 : 2_000);
         } catch (e) {
             if (signal.aborted) return;
@@ -313,7 +313,7 @@ export function useJob(id: string | null): { job: Job | null; error: string | nu
     useEffect(() => {
         // Every id change is a different question: the previous task's answer must not render
         // under the new one while its first fetch is in flight.
-        setJob(null);
+        setJobs(null);
         setError(null);
         if (id === null) return;
         start();
@@ -323,5 +323,5 @@ export function useJob(id: string | null): { job: Job | null; error: string | nu
         };
     }, [id, start]);
 
-    return { job, error, refresh: start };
+    return { jobs, error, refresh: start };
 }

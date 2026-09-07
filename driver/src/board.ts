@@ -53,6 +53,12 @@ export interface Board {
     claim(worker: string): Promise<BoardJob | null>;
     heartbeat(job: BoardJob): Promise<LeaseState>;
     /**
+     * Streams a rolling tail of the runner's output while the job runs, so the dashboard shows the
+     * work instead of a spinner. Best-effort by contract: a failure here costs freshness, never
+     * the run — the complete report carries the final tail.
+     */
+    progress(job: BoardJob, output: string): Promise<LeaseState>;
+    /**
      * Tells the board which agent session this attempt runs as. Called twice under Remote Control:
      * once at spawn with the local id alone, and again once the bridge has reported the remote one
      * the Claude UI addresses the session by.
@@ -126,6 +132,14 @@ export function createBoard({
             const response = await post(`/api/jobs/${job.id}/heartbeat`, {
                 leaseToken: job.leaseToken,
                 leaseSeconds,
+            });
+            return response.status === 409 ? 'lost' : 'held';
+        },
+
+        async progress(job, output) {
+            const response = await post(`/api/jobs/${job.id}/output`, {
+                leaseToken: job.leaseToken,
+                output,
             });
             return response.status === 409 ? 'lost' : 'held';
         },

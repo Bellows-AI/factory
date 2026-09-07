@@ -22,8 +22,9 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
   resumeSessionId ? restore that session : mint one, POST /api/jobs/:id/session
   followUp ? deliver the command into the restored session : a park resume delivers nothing
   spawn the runner with the command, as that session
-  (claude-code mints and reports a session uuid; opencode does neither — see below)
+  (claude-code mints and reports a session uuid; opencode reports the id it used, scraped at close — see below)
   POST /api/jobs/:id/heartbeat {leaseToken}     every leaseSeconds/3, while it runs
+  POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
 POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
   ... or, if the runner went quiet:
 POST /api/jobs/:id/suspend  {leaseToken}        -> standby, session kept
@@ -58,7 +59,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `JOB_BOARD_URL` | `http://127.0.0.1:8080` | Must be http(s); the scheme is checked, because `new URL('dashboard:8080')` parses. |
 | `JOB_BOARD_TOKEN` | unset | The worker token, from `npm run worker-token -- --name <worker>`. Required against a board running `AUTH_MODE=github`; unset against an open one, where the header is **omitted rather than sent empty** — an empty Bearer is a credential that failed, not one that was never offered. It is also how the board knows which organization this driver works for. |
 | `EXECUTOR_IMAGE` | `claude-executor` | The runner image. `opencode-executor` under `RUNNER_CLI=opencode`, unless set explicitly. |
-| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run <prompt>`. Explicit enum. Under `opencode` no session is minted or reported, and Remote Control, skip-permissions and the kubernetes executor are refused at startup. |
+| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run [--session <id>] <prompt>`. Explicit enum. Under `opencode` no session is minted — the runner scrapes the id the run used and reports it at close — and Remote Control, skip-permissions and the kubernetes executor are refused at startup. |
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
 | `DRIVER_CONCURRENCY` | `2` | |
@@ -145,22 +146,48 @@ of the lease — 100s by default — and awaiting it before reporting left every
 in `running` for a minute and a half. Found by running the driver for real; a unit test with an
 instant fake clock cannot see it, so `loop.test.ts` models a period that never elapses.
 
+**Live output is a rolling tail, and the driver owns the window.** Without it the dashboard showed
+"Waiting for the executor…" for the whole run — the status moved, the work did not. The mechanics:
+
+- The docker runner hands the loop its newest output tail on every chunk it reads (the tail it
+  would report on complete anyway); the kubernetes twin reads the pod log's tail on each status
+  poll. Neither throttles — that is the loop's business.
+- The loop flushes at most once every 2s, and only when the tail changed — the pace the detail
+  page itself polls at, so a faster flush would be requests the reader cannot see.
+- The board **replaces** `output` with the tail it is sent, never appends. Appending would grow
+  the row unbounded over a long session, and this side cannot know where the previous tail ended
+  anyway. The final `complete` report overwrites whatever the last tail was: the stream is a
+  preview, the verdict is the verdict.
+- A `409` from the output route is **not a kill order**. The heartbeat is the one place that
+  decides a superseded run must die; a telemetry refusal must not duplicate that decision, so the
+  pump just stops talking. A failed request costs freshness, not the run, and complains about
+  consecutive failures once rather than every flush.
+
 **`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
-headless form becomes `run <command>`, and no session is minted, passed or reported: opencode
-mints its own ids and cannot adopt one — `run --session <id>` continues a session opencode
-created, it never creates one with a given id — so minting a uuid anyway would put a session on
-the board that the runner never used. These jobs show no session link. Their runs still emit OTLP,
-but the server's metric map carries no opencode rows yet, so spend records as an unmapped agent —
-null, never zero — until those rows are added (see [limits.md](limits.md)). The combination is
-refused at startup with `RUNNER_REMOTE_CONTROL` (that is claude-code's bridge) and with
-`RUNNER_SKIP_PERMISSIONS` (that appends a claude-code flag; opencode's permissions come from the
-`opencode.json` baked into its image — see [its README](../docker/opencode-executor/README.md)).
-A parked job claimed by an opencode driver is failed with a reason rather than restored: standby
-is a Remote Control feature, so a claim carrying `resumeSessionId` under opencode means the
-operator flipped `RUNNER_CLI` while something was parked, and re-running that command would
-re-enter a transcript somebody may have been driving by hand. The same asymmetry is why an
-**opencode task can never be followed up** (`409 NO_SESSION` at the board): there is no session id
-to continue, and the refusal lives at follow-up time rather than as a silent fresh run.
+headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own
+ids (`ses_…`) and cannot adopt one minted in advance — minting a uuid anyway would put a session
+on the board that the runner never used. Instead the runner **scrapes the id the run actually
+used** after the container exits: opencode keeps its sessions in a sqlite database, the driver
+persists that database per member by pointing `XDG_DATA_HOME` at a `.opencode` directory in the
+member's own tree on the workspaces volume (which is also what makes a session resumable at all —
+a fresh container starts with an empty one), and one throwaway node container reads the newest
+root session out of it. The id is reported while the lease is still live, before the verdict,
+because a follow-up resumes exactly that row. These jobs show no session link (the link is built
+from `remote_session_id`, which stays claude-only). Their runs still emit OTLP, but the server's
+metric map carries no opencode rows yet, so spend records as an unmapped agent — null, never zero
+— until those rows are added (see [limits.md](limits.md)). The combination is refused at startup
+with `RUNNER_REMOTE_CONTROL` (that is claude-code's bridge) and with `RUNNER_SKIP_PERMISSIONS`
+(that appends a claude-code flag; opencode's permissions come from the `opencode.json` baked into
+its image — see [its README](../docker/opencode-executor/README.md)).
+
+**Any executor can resume its own sessions.** A follow-up claim carries the session id the parent
+run used, whatever CLI minted it: claude-code restores with `--resume <uuid> -p <command>`,
+opencode with `run --session <ses_…> <command>`. The one refusal that survives is a resume claim
+under opencode with **nothing to deliver** — standby is a Remote Control feature, so that means
+the operator flipped `RUNNER_CLI` while something was parked, and restoring a claude session into
+opencode's database is impossible (`Session not found`, loudly, if it were tried). A follow-up
+whose parent ran under a DIFFERENT CLI than the driver now serving the queue fails at run time
+the same loud way — the operator keeps one CLI per queue.
 
 ## The session ids, and driving a job from the Claude UI
 
@@ -290,15 +317,18 @@ resumable by a request from outside rather than only by the worker that parked i
 
 ## Follow-ups and done: a task is over when the user says so
 
-A run finishing is not a task finishing. `POST /api/jobs/:id/follow-up {command, executor?}` queues
+A run finishing is not a task finishing. `POST /api/jobs/:id/follow-up {command}` queues
 an adjustment on a **finished** task as a continuation of what it just did, and `POST
 /api/jobs/:id/done` records the user closing the task by hand. Between "the executor stopped
 talking" and "I am satisfied" sit as many rounds of "again, but tighter" as the human wants.
 
 **A follow-up is a NEW job row, never an edit of the parent.** `job` is an audit record of what ran
 (the `created_by` precedent), and overwriting the parent's command or output would erase the very
-run the user is following up on. The new row carries `parent_job_id` — the chat renders it as a
-reply — and copies of the parent's `repo`, `session_id` and `remote_session_id` from insert. The
+run the user is following up on. The new row carries `parent_job_id` — it is one row per RUN, but
+still one TASK to the member: `GET /api/jobs/:id/thread` resolves any member's id to the whole
+chain, the task page renders it as one conversation, a follow-up extends the view in place instead
+of navigating away, and the sidenav lists thread roots only — copies of the parent's `repo`,
+`session_id` and `remote_session_id` from insert. The
 repo copy keeps the thread under its repository's name in the task list; the session copies are what make the claim resume the parent
 conversation without any new claim-side rule.
 
@@ -316,10 +346,11 @@ parent to be finished, not done, to carry a session, and to be the caller's own 
 the parent row's lock, so it cannot race a completion, a second follow-up, or another request's
 `done` from a stale snapshot. The read that names which precondition failed runs only when nothing
 inserted, and a parent that moves on between the two can make a refusal name the newer state; the
-retry succeeds. `409 NO_SESSION` is the interesting one: **an opencode task can never be followed
-up**, because opencode mints its own session ids and the board never sees one — there is nothing
-honest to continue, and starting a fresh run would look like a continuation while carrying nothing
-over. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
+retry succeeds. `409 NO_SESSION` is the interesting one: a parent whose run never reported a
+session has nothing to continue, and starting a fresh run would look like a continuation while
+carrying nothing over — every task run before the session mechanic existed, and any run whose
+driver died before it could report. Since 016 the session id is whatever the executor minted — a
+claude uuid or an opencode `ses_…` — so every executor with a reported session can be followed up. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
 retried click answers the first verdict's instant rather than rewriting it.
 
 **Delivering the command into a restored session is the follow-up's exception to delivered-once, and
@@ -410,7 +441,7 @@ claim. "Nothing runs an executor yet" stays true.
   that; a volume per job would make the login a template to copy rather than a mount.
 - **No per-job authorization.** There is authentication now — see [auth.md](auth.md) — and the two
   credentials are disjoint: a session cookie queues, follows up, marks done, resumes and reads, a
-  `Bearer fwt_…` worker token claims, heartbeats, suspends and completes. A session on `/claim`
+  `Bearer fwt_…` worker token claims, heartbeats, streams output, suspends and completes. A session on `/claim`
   would let any member take work away from the driver running it; a worker token on `POST /api/jobs`
   would produce a job with no author. But **membership is not a sandbox**: every member can queue a
   command that runs against their own checkouts, follow up on their own tasks, and close any task —

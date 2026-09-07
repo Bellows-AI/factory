@@ -28,7 +28,7 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/claim$/,
     // `resume` is deliberately absent: nobody holds a parked job, which is exactly what makes it
     // resumable by a person rather than only by the worker that parked it.
-    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete)$/,
+    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output)$/,
 ];
 
 /** Machine-to-machine telemetry, from the collector and from developer laptops. */

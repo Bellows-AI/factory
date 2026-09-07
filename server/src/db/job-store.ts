@@ -144,21 +144,18 @@ export interface JobStore {
      */
     create(command: string, createdBy: string | null, target: { repo: string | null; executor: string | null }): Promise<{ id: string }>;
     /**
-     * Queues a follow-up on a finished task: a new job that inherits the parent's repo and session
-     * ids, linked through `followUpTo`. Atomic and conditional — the insert only lands when the
-     * parent is finished, not done, carries a session, and is the caller's own task — so the
-     * refusals above are decided in the same statement that would have created the row, never by
-     * a read that could race a claim or a completion in between.
+     * Queues a follow-up on a finished task: a new job that inherits the parent's repo, executor
+     * and session ids, linked through `followUpTo`. Atomic and conditional — the insert only
+     * lands when the parent is finished, not done, carries a session, and is the caller's own
+     * task — so the refusals above are decided in the same statement that would have created the
+     * row, never by a read that could race a claim or a completion in between.
      *
-     * `executor` is the new label for the new command; everything else the thread shares is the
-     * parent's.
+     * The thread's labels and session are ALL the parent's, taken from the row and never from a
+     * body: an adjustment continues the run it adjusts, on the executor that ran it — a
+     * conversation switching executors mid-thread is exactly the cross-CLI resume the driver
+     * cannot do.
      */
-    createFollowUp(
-        parentId: string,
-        command: string,
-        createdBy: string | null,
-        executor: string | null,
-    ): Promise<{ id: string } | FollowUpRefusal>;
+    createFollowUp(parentId: string, command: string, createdBy: string | null): Promise<{ id: string } | FollowUpRefusal>;
     /**
      * The user's verdict that the task is done. Terminal tasks only — a moving run is not the
      * user's to finish. Idempotent: marking a done task done again answers the same instant, and
@@ -183,6 +180,14 @@ export interface JobStore {
         remoteSessionId: string | null,
     ): Promise<LeaseResult>;
     /**
+     * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
+     * while it happens instead of a silent spinner. Lease-guarded like every other worker write,
+     * and REPLACE, never append: the driver owns the tail window, and an unbounded append would
+     * grow the row for as long as a session runs. The final complete report overwrites whatever
+     * this last stored.
+     */
+    progress(id: string, leaseToken: string, output: string): Promise<LeaseResult>;
+    /**
      * Parks a running job: the container is gone, but the job is not finished and its session is
      * kept so it can be restored. Lease-guarded, like every other worker write.
      */
@@ -197,6 +202,13 @@ export interface JobStore {
         leaseToken: string,
         result: { status: JobOutcome; exitCode: number | null; output: string | null },
     ): Promise<LeaseResult>;
+    /**
+     * The whole follow-up chain containing `id` — the root task and every adjustment after it,
+     * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a
+     * member deep in the thread must resolve to the same view), which is why the walk goes UP to
+     * the root first and then collects everything below it. Null when `id` is not a job here.
+     */
+    thread(id: string): Promise<Job[] | null>;
     get(id: string): Promise<Job | null>;
     /** Newest first. `output` is not selected — it is unbounded and no list view shows it. */
     list(filter: { status?: JobStatus | undefined; repo?: string | undefined; limit: number }): Promise<Job[]>;
@@ -297,7 +309,7 @@ export function createJobStore({
             return { id: rows[0]!.id };
         },
 
-        async createFollowUp(parentId, command, createdBy, executor) {
+        async createFollowUp(parentId, command, createdBy) {
             await gate();
             // One conditional insert: the select carries every precondition (finished, not done,
             // has a session, same org), so a follow-up can never land on a parent that fails one.
@@ -308,12 +320,12 @@ export function createJobStore({
             // done task with queued follow-up work. The author predicate is null-safe (`is not
             // distinct from`): a null caller may only follow up a parent with no author — the
             // state every pre-accounts task is in — and an authored parent refuses a caller with
-            // no account, which is the read below's forbidden answer. The session ids are copied
-            // at insert, which is what makes the claim resume the parent conversation without any
-            // new claim-side rule.
+            // no account, which is the read below's forbidden answer. The session ids AND the
+            // executor are copied at insert, which is what makes the claim resume the parent
+            // conversation, on the executor that ran it, without any new claim-side rule.
             const rows = await sql<{ id: string }[]>`
                 with parent as (
-                    select id, repo, session_id, remote_session_id
+                    select id, repo, executor, session_id, remote_session_id
                     from job
                     where org_id = ${orgId} and id = ${parentId}
                       and status in ('succeeded','failed','dead')
@@ -323,7 +335,7 @@ export function createJobStore({
                     for update
                 )
                 insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id)
-                select ${orgId}, ${command}, ${createdBy}, repo, ${executor}, id, session_id, remote_session_id
+                select ${orgId}, ${command}, ${createdBy}, repo, executor, id, session_id, remote_session_id
                 from parent
                 returning id
             `;
@@ -502,6 +514,21 @@ export function createJobStore({
             return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
         },
 
+        async progress(id, leaseToken, output) {
+            await gate();
+            // The tail the driver sent IS the output while the run is going — stored verbatim,
+            // replaced on every report. No append, no merge: this side cannot know where the
+            // previous tail ended, and the driver already keeps the window bounded.
+            const rows = await sql<{ id: string }[]>`
+                update job set output = ${output}
+                where org_id = ${orgId} and id = ${id}
+                  and status = 'running' and lease_token = ${leaseToken}
+                returning id
+            `;
+            if (rows[0]) return 'ok';
+            return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
+        },
+
         async suspend(id, leaseToken) {
             await gate();
             const rows = await sql<{ id: string }[]>`
@@ -559,6 +586,39 @@ export function createJobStore({
             // A report from a worker whose lease was reclaimed is refused, not merged: the job is
             // someone else's now, and the two runs did different work.
             return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
+        },
+
+        async thread(id) {
+            await gate();
+            // Up: from any member to the root. Down: the root plus every descendant. A linear
+            // chain today (each follow-up names its immediate parent), and if two adjustments ever
+            // landed on one parent, both come back in creation order — the conversation still
+            // reads top to bottom.
+            const rows = await sql<JobRow[]>`
+                with recursive up as (
+                    select id, parent_job_id from job
+                    where org_id = ${orgId} and id = ${id}
+                    union all
+                    select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
+                      where j.org_id = ${orgId}
+                ),
+                root as (
+                    select id from up where parent_job_id is null
+                ),
+                chain as (
+                    select * from job where org_id = ${orgId} and id = (select id from root)
+                    union all
+                    select j.* from job j join chain on j.parent_job_id = chain.id
+                      where j.org_id = ${orgId}
+                )
+                select id, command, status, attempts, max_attempts, claimed_by, created_by,
+                       session_id, remote_session_id, exit_code, output, repo, executor,
+                       parent_job_id, done_at, created_at, started_at, finished_at
+                from chain
+                order by created_at, id
+            `;
+            const [first] = rows;
+            return first ? rows.map(toJob) : null;
         },
 
         async get(id) {

@@ -63,6 +63,14 @@ exists. The runner deletes it and creates its own — the same rule the docker r
 409 heartbeat says *kill the container*: two writers on one checkout is the thing actually worth
 preventing. `docs/jobs.md` calls that the single most important line in the board contract.
 
+**Live output here is the pod log, re-read per poll.** The docker runner sees output as stream
+chunks; this platform has no equivalent attach, so the runner reads the pod log's tail on each
+status poll and hands it to the loop's flusher — doubling the API-server reads of a running job
+from one per 2s to two, which is the price of the dashboard watching the work. Discovery is by
+the same `job-name` label the final read uses, skipping terminating pods for the same reason (a
+replaced attempt's log is not this run's), and every failed read is a skipped preview rather than
+a verdict: the status poll owns the outcome, the final log read owns the report.
+
 ## The operator is the driver
 
 "Operator for runners" is satisfied by running the driver in-cluster, not by a CRD controller. The
@@ -111,9 +119,10 @@ minikube walkthrough. Decisions that look like cruft and are not:
 
 Refused combinations, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_REMOTE_CONTROL=1` — Remote
 Control needs a tty held open, an auth volume and an idle-parking loop that only the docker runner
-has; and `EXECUTOR=kubernetes` + `RUNNER_CLI=opencode` — the Job spec is `--session-id`/`--resume`
-argv, which an opencode job (no session at all) can never fill. The alternative to refusing either
-was a driver that claims jobs and burns attempts running nothing.
+has; and `EXECUTOR=kubernetes` + `RUNNER_CLI=opencode` — the Job spec is the claude-code argv
+(`--session-id`/`--resume`) and the session scrape after a run is a throwaway docker container
+over the workspaces volume, neither of which this runner has an opencode form for. The
+alternative to refusing either was a driver that claims jobs and burns attempts running nothing.
 
 ## Testing
 

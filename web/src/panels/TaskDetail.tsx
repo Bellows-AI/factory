@@ -1,57 +1,97 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isTerminal, type Job } from '../api/useJobs.js';
 import { taskTime } from '../format.js';
 
 /**
- * One task, whole: the command, its run's verdict and output, and — while the task can still take
- * one — the composer for a follow-up.
+ * One task, whole: the follow-up chain rendered as ONE conversation — the root command first,
+ * every adjustment after it, each with its run's verdict and output — and, while the newest run
+ * can still take one, the composer to continue it.
  *
- * Props in, markup out, like every panel: the detail poll lives in the page (`useJob`), and this
- * component owns only the follow-up draft. There is no "Replying to" banner because there is no
- * arming step any more — the task being continued IS this page.
+ * Props in, markup out, like every panel: the detail poll lives in the page (`useThread`), and
+ * this component owns only the follow-up draft. Follow-ups are new rows on the board (it is an
+ * audit record of what ran), but they are NOT new tasks here: the chain renders top to bottom in
+ * this one view, and sending an adjustment extends it in place.
  *
  * Output is rendered as text — a container's stdout is arbitrary bytes, and the Remote Control
  * ones are a captured TUI — so it travels in a `<pre>` and never as markup.
  */
 export function TaskDetail({
-    task,
+    jobs,
     error,
-    executors,
     actionError,
     sending,
     onFollowUp,
     onResume,
     onDone,
 }: {
-    /** The selected task, whole — the only place an output comes from. Null until the poll lands. */
-    task: Job | null;
+    /** The task's whole chain, oldest first — null until the thread poll lands. */
+    jobs: Job[] | null;
     /** Why there is no task yet. Said in place, never silently. */
     error: string | null;
-    executors: readonly { name: string; type: string }[];
     /** Why the last follow-up did not queue. Said in place, never silently. */
     actionError: string | null;
     sending: boolean;
-    onFollowUp: (command: string, executor: string | null) => Promise<string | null>;
+    onFollowUp: (command: string) => Promise<string | null>;
     onResume: (id: string) => Promise<void>;
     onDone: (id: string) => Promise<void>;
 }) {
     const [draft, setDraft] = useState('');
-    const [executor, setExecutor] = useState('');
     const [resumingId, setResumingId] = useState<string | null>(null);
     const [doneId, setDoneId] = useState<string | null>(null);
+    const outputRef = useRef<HTMLPreElement | null>(null);
 
-    // A configured executor can be deleted on the Workspace page while a draft sits here; the
-    // select would go blank while `send` still submitted the stale name. Clamp to what exists.
+    // The conversation continues on the newest run: the composer, the Done verdict and the
+    // live-output scroll all belong to it. Older runs are history — their Done is someone
+    // else's to click, and their output never grows again. Computed before the early return,
+    // because the scroll effect below needs it on every render.
+    const latest = jobs === null || jobs.length === 0 ? null : jobs[jobs.length - 1];
+
+    // The output streams in while the newest run goes (the driver flushes tails to the board, and
+    // the thread poll picks them up), and somebody watching a run wants the newest line — so the
+    // pane follows the tail while the task can still move. A finished run is history; scrolling
+    // it is the reader's.
+    const liveStatus = latest?.status;
+    const liveOutput = latest?.output;
     useEffect(() => {
-        if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
-            setExecutor('');
+        if (liveStatus !== undefined && !isTerminal(liveStatus) && outputRef.current) {
+            outputRef.current.scrollTop = outputRef.current.scrollHeight;
         }
-    }, [executors, executor]);
+    }, [liveStatus, liveOutput]);
+
+    if (jobs === null || jobs.length === 0) {
+        return (
+            <section className="panel">
+                <div className="panel-head">
+                    <h2>Tasks</h2>
+                </div>
+                {error !== null ? (
+                    <p className="muted">{error}</p>
+                ) : (
+                    <p className="muted">Loading the task…</p>
+                )}
+            </section>
+        );
+    }
+
+    // The run ending is not the task ending: the member can ask for an adjustment or close the
+    // task by hand. Neither exists once they have said done. The assertion is sound: the early
+    // return above guarantees a non-empty chain, and `latestTask` is its newest member. (Named
+    // apart from the per-run `task` in the map below, which shadows it otherwise.)
+    const latestTask = latest as Job;
+    const open = isTerminal(latestTask.status) && latestTask.doneAt === null;
+    // A follow-up continues the newest run's agent session, and the board refuses one for a run
+    // that never reported a session — every run whose driver died before reporting — with 409
+    // NO_SESSION. Offering the composer there would be a control that can only fail, so the page
+    // says so instead.
+    const canFollowUp = open && latestTask.sessionId !== null;
+    const sessionless = open && latestTask.sessionId === null;
 
     const send = async () => {
-        if (task === null || !draft.trim() || sending) return;
-        const chosen = executor === '' ? null : executor;
-        if ((await onFollowUp(draft, chosen)) === null) setDraft('');
+        if (!draft.trim() || sending) return;
+        // No executor choice here: the adjustment is bound to the executor that ran the task —
+        // the board copies it from the parent, and a conversation switching executors mid-thread
+        // is exactly the cross-CLI resume nothing can do.
+        if ((await onFollowUp(draft)) === null) setDraft('');
     };
 
     const resume = async (id: string) => {
@@ -76,71 +116,61 @@ export function TaskDetail({
         }
     };
 
-    if (task === null) {
-        return (
-            <section className="panel">
-                <div className="panel-head">
-                    <h2>Tasks</h2>
-                </div>
-                {error !== null ? (
-                    <p className="muted">{error}</p>
-                ) : (
-                    <p className="muted">Loading the task…</p>
-                )}
-            </section>
-        );
-    }
-
-    // The run ending is not the task ending: the member can ask for an adjustment or close the
-    // task by hand. Neither exists once they have said done.
-    const open = isTerminal(task.status) && task.doneAt === null;
-
     return (
         <section className="panel">
             <div className="panel-head">
                 <h2>Tasks</h2>
             </div>
             {actionError !== null ? <p className="status">{actionError}</p> : null}
-            <article className="chat-exchange">
-                <p className="msg-user">{task.command}</p>
-                <p className="msg-meta">
-                    <span className="pill">{task.status}</span>
-                    {task.executor !== null ? <span className="pill">{task.executor}</span> : null}
-                    {task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
-                    {task.exitCode !== null ? <span className="chat-exit">exit {task.exitCode}</span> : null}
-                    <span className="muted">{taskTime(task.createdAt)}</span>
-                    {task.status === 'standby' ? (
-                        <button
-                            type="button"
-                            className="chat-resume"
-                            disabled={resumingId === task.id}
-                            onClick={() => void resume(task.id)}
-                        >
-                            Resume
-                        </button>
-                    ) : null}
-                    {open ? (
-                        <button
-                            type="button"
-                            className="chat-resume"
-                            disabled={doneId === task.id}
-                            onClick={() => void done(task.id)}
-                        >
-                            Done
-                        </button>
-                    ) : null}
-                </p>
-                <div className="chat-detail">
-                    {task.output !== null ? (
-                        <pre className="chat-output">{task.output}</pre>
-                    ) : isTerminal(task.status) ? (
-                        <p className="muted">No output recorded.</p>
-                    ) : (
-                        <p className="muted">Waiting for the executor…</p>
-                    )}
-                </div>
-            </article>
-            {open ? (
+            {jobs.map((task) => {
+                const taskOpen = isTerminal(task.status) && task.doneAt === null && task.id === latestTask.id;
+                return (
+                    <article className="chat-exchange" key={task.id}>
+                        <p className="msg-user">{task.command}</p>
+                        <p className="msg-meta">
+                            <span className="pill">{task.status}</span>
+                            {task.executor !== null ? <span className="pill">{task.executor}</span> : null}
+                            {task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
+                            {task.exitCode !== null ? (
+                                <span className="chat-exit">exit {task.exitCode}</span>
+                            ) : null}
+                            <span className="muted">{taskTime(task.createdAt)}</span>
+                            {task.status === 'standby' ? (
+                                <button
+                                    type="button"
+                                    className="chat-resume"
+                                    disabled={resumingId === task.id}
+                                    onClick={() => void resume(task.id)}
+                                >
+                                    Resume
+                                </button>
+                            ) : null}
+                            {taskOpen ? (
+                                <button
+                                    type="button"
+                                    className="chat-resume"
+                                    disabled={doneId === task.id}
+                                    onClick={() => void done(task.id)}
+                                >
+                                    Done
+                                </button>
+                            ) : null}
+                        </p>
+                        <div className="chat-detail">
+                            {task.output !== null ? (
+                                <pre ref={task.id === latestTask.id ? outputRef : undefined} className="chat-output">
+                                    {task.output}
+                                </pre>
+                            ) : isTerminal(task.status) ? (
+                                <p className="muted">No output recorded.</p>
+                            ) : (
+                                <p className="muted">Waiting for the executor…</p>
+                            )}
+                        </div>
+                    </article>
+                );
+            })}
+            {canFollowUp ? (
                 <div className="composer">
                     <textarea
                         className="composer-input"
@@ -152,26 +182,17 @@ export function TaskDetail({
                         }}
                     />
                     <div className="composer-row">
-                        <label className="composer-label">
-                            Executor{' '}
-                            <select
-                                className="composer-select"
-                                value={executor}
-                                onChange={(e) => setExecutor(e.target.value)}
-                            >
-                                <option value="">none</option>
-                                {executors.map((candidate) => (
-                                    <option key={candidate.name} value={candidate.name}>
-                                        {candidate.name}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
                         <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
                             Send
                         </button>
                     </div>
                 </div>
+            ) : null}
+            {sessionless ? (
+                <p className="muted">
+                    This run has no agent session to continue, so it cannot take a follow-up. Queue
+                    a new task instead.
+                </p>
             ) : null}
         </section>
     );

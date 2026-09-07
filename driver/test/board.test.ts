@@ -69,11 +69,33 @@ describe('the worker token', () => {
 
         await board.heartbeat(job);
         await board.session(job, 'session-1', null);
+        await board.progress(job, 'a tail of the output');
         await board.suspend(job);
         await board.complete(job, { status: 'succeeded', exitCode: 0, output: '' });
 
-        expect(calls).toHaveLength(4);
+        expect(calls).toHaveLength(5);
         for (const call of calls) expect(call.headers.authorization).toBe('Bearer fwt_abc');
+    });
+
+    // The one write whose purpose is the dashboard: the tail travels on its own route so a reader
+    // can watch the work while it happens.
+    it('streams the output tail to the job it belongs to', async () => {
+        const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const job = {
+            id: 'job-1',
+            command: 'echo hi',
+            attempts: 1,
+            leaseToken: 'token-1',
+            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+            resumeSessionId: null,
+            userId: null,
+        };
+
+        await board.progress(job, 'partial output');
+
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/output');
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', output: 'partial output' });
     });
 });
 
