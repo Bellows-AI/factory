@@ -43,8 +43,12 @@ carefully as it is created.** The board resolves the stacked environment onto th
 `CreateContainerConfigError` and a burned attempt. The lease token is in the name because a
 reclaimed job's superseded worker must not be able to delete the replacement attempt's Secret —
 whose keys the pod references non-optionally, so a missing Secret fails loud instead of starting
-silently without its env. The runner deletes the Secret when its attempt ends — `kill()`, and once
-the verdict and log have been read; the re-claim fence deletes only the leftover Job. The tradeoff:
+silently without its env. The runner reaps the Secret with the run's own exit — once the verdict
+and log have been read, on a throw, or on the kill-induced Job 404 — and never by `kill()` itself,
+which can interleave the run's create() between the Secret POST and the Job POST; the re-claim
+fence deletes only the leftover Job. Stated honestly: a stale attempt whose Job was deleted before
+it existed runs to its natural end with its env intact and its report refused by the board — the
+pre-feature semantics — rather than sitting in `CreateContainerConfigError`. The tradeoff:
 a driver that crashes before cleanup leaks its attempt's Secret (Secrets have no TTL), and the
 `factory.job: <id>` label is what a cleanup job would select. The chart's Role grows
 `secrets: ['create', 'delete']` and nothing else — no `get`, no `list`; the driver writes values it

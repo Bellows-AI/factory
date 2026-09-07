@@ -485,13 +485,22 @@ export function createKubernetesRunner(
 
         // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing
         // is the ordinary end of a finished run, and one that fails is the kubelet's deadline doing
-        // this function's work.
+        // this function's work. No Secret delete here: the run() wrapper below owns the Secret's
+        // whole lifetime — it reaps on the verdict, on a throw, and on the kill-induced "Job no
+        // longer exists" 404 — so every Secret that exists was created inside a run0 that is
+        // either in flight (the wrapper will reap it) or done (the wrapper reaped it), and this
+        // function's own delete would be redundant cleanup. It would also be harmful: a kill can
+        // interleave the same attempt's create() between its Secret POST and its Job POST (a
+        // lease-lost heartbeat), deleting the Secret the Job it is about to create references and
+        // stranding its pod in CreateContainerConfigError. The cost of leaving the Secret alone is
+        // stated, not hidden: a stale attempt whose Job was deleted before it existed runs to its
+        // natural end with its env intact and its report refused by the board — the same semantics
+        // the runner had before env injection.
         async kill(job: BoardJob) {
             await request(
                 'DELETE',
                 `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Background`,
             ).catch(() => undefined);
-            await forgetSecretIfAny(job);
         },
 
         // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session

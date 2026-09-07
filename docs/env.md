@@ -95,8 +95,10 @@ driver reads that as "no environment" (`?? {}`).
   superseded worker must not be able to delete the replacement attempt's Secret — created (values in
   `stringData`) BEFORE the Job (a pod referencing a Secret that is not there yet is a
   `CreateContainerConfigError` and a burned attempt, so the keys are referenced non-optionally) and
-  deleted when the attempt ends: `kill()`, and once the verdict and log have been read — the re-claim
-  fence deletes only the leftover Job. A driver that crashes before cleanup leaks its attempt's
+  reaped by the run's own exit — once the verdict and log have been read, on a throw, or on the
+  kill-induced Job 404 — and never by `kill()` itself, which can interleave the run's create()
+  between the Secret POST and the Job POST; the re-claim fence deletes only the leftover Job. A
+  driver that crashes before cleanup leaks its attempt's
   Secret, since Secrets carry no TTL; the `factory.job: <id>` label is what a cleanup job would
   select. No value ever lands in the pod spec. The chart's Role grows `secrets: [create, delete]` —
   no `get`, no `list`; the driver writes values it was handed and never reads one back.

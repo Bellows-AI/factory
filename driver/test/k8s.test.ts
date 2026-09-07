@@ -352,19 +352,31 @@ describe('the kubernetes runner', () => {
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
 
-    it('deletes the per-job Secret when it kills the runner', async () => {
+    /*
+     * kill() deletes the Job and nothing else. The env Secret is the run() wrapper's to reap —
+     * on the verdict, on a throw, or on the kill-induced "Job no longer exists" 404 — because a
+     * delete here can interleave the SAME attempt's create() between its Secret POST and its
+     * Job POST (a lease-lost heartbeat): the Job would then be created referencing a Secret that
+     * no longer exists, and its pod would sit in CreateContainerConfigError.
+     */
+    it('deletes only the runner Job when it kills, never the env Secret', async () => {
         const { request, calls } = fakeRequest();
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         await runner(request).kill(envJob);
-        expect(calls.some((call) => call.method === 'DELETE' && call.path === `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`)).toBe(true);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, containerName(envJob))),
+            ),
+        ).toBe(true);
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
 
     /*
      * The reported race: a lease expires, the board reclaims the job, and a replacement attempt
      * creates its Secret. The superseded worker then processes its lost heartbeat and its kill()
-     * ran — under a job-id-only Secret name — against the SAME name, deleting the replacement's
-     * Secret and leaving its pod to start silently without the claim env. With the lease token in
-     * the name, the old worker can only ever address its own attempt's Secret.
+     * deletes a Secret — under a job-id-only name, the replacement's. The lease token in the name
+     * used to bound the damage to the old attempt's own Secret; kill() now deletes no Secret at
+     * all — the run's own exit reaps it — so nothing a kill does can reach any attempt's Secret.
      */
     it("deletes only the superseded attempt's Secret when the job id has been reclaimed", async () => {
         const oldJob: BoardJob = {
@@ -390,17 +402,11 @@ describe('the kubernetes runner', () => {
             ),
         ).toBe(true);
 
-        // The superseded worker's kill must not be able to touch the replacement's Secret — the
-        // replacement's own run legitimately reaped it above, so the hazard is scoped to the
-        // deletes the kill itself issues.
+        // The superseded worker's kill must not be able to touch the replacement's Secret — and
+        // since kill() deletes no Secret at all (the run's own exit reaps it), neither the
+        // replacement's nor the old attempt's is reachable from a kill.
         await runner(request).kill(oldJob);
-        const killDeletes = calls
-            .slice(afterRun)
-            .filter((call) => call.method === 'DELETE' && call.path?.includes('/secrets'));
-        expect(killDeletes.some((call) => call.path === `/api/v1/namespaces/${namespace}/secrets/${secretName(newJob)}`)).toBe(false);
-        expect(killDeletes.map((call) => call.path)).toEqual([
-            `/api/v1/namespaces/${namespace}/secrets/${secretName(oldJob)}`,
-        ]);
+        expect(calls.slice(afterRun).some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
 
     it('reports a non-zero exit with the pod exit code and the tail of the log', async () => {
