@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
-import { Outlet, useOutletContext } from 'react-router-dom';
+import { Outlet, useLocation, useOutletContext } from 'react-router-dom';
 import { useStats } from '../api/useStats.js';
 import type { StatsPayload, FetchState } from '../api/useStats.js';
+import { useJobs } from '../api/useJobs.js';
+import type { UseJobs } from '../api/useJobs.js';
 import { DEFAULT_RANGE, rangeQuery } from './RangeSelector.js';
 import type { RangeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
@@ -22,6 +24,8 @@ export interface ShellContext {
     progress: FetchState | null;
     error: string | null;
     refresh: () => void;
+    /** The one task-list poll, shared by the tasks pages the way the stats poll is. */
+    tasks: UseJobs;
 }
 
 /** Typed access to what the layout route publishes. */
@@ -51,11 +55,20 @@ export function AppShell() {
     const query = useMemo(() => rangeQuery(range), [range]);
     const { data, refreshing, progress, error, refresh } = useStats(query);
 
-    const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh };
+    // The task list is the same decision as the stats poll above — one instance, above the Outlet —
+    // with one difference: it is gated to the tasks area. The sidenav's own comment already rejected
+    // a poll that runs on every page for a number nobody is looking at, and a full task list is that
+    // request at a larger size; so the chain runs only while the member is on `/tasks` or under it,
+    // and the sidenav renders no list anywhere else.
+    const { pathname } = useLocation();
+    const onTasks = pathname === '/tasks' || pathname.startsWith('/tasks/');
+    const tasks = useJobs(onTasks);
+
+    const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh, tasks };
 
     return (
         <div className="shell">
-            <SideNav />
+            <SideNav tasks={onTasks ? tasks.jobs : null} />
             <div className="shell-main">
                 <TopBar data={data} refreshing={refreshing} onRefresh={refresh} />
                 <Outlet context={context} />

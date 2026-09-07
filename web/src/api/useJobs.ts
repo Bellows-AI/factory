@@ -41,63 +41,69 @@ export function isTerminal(status: JobStatus): boolean {
 
 const LIST_LIMIT = 50;
 
+/** What a queueing call answers: the created task's id to navigate to, or why nothing was created. */
+export interface QueueResult {
+    id: string | null;
+    error: string | null;
+}
+
+/** What `useJobs` returns — published through the shell's outlet context, like the stats poll. */
+export interface UseJobs {
+    jobs: Job[] | null;
+    error: string | null;
+    queue: (command: string, repo: string | null, executor: string | null) => Promise<QueueResult>;
+    resume: (id: string) => Promise<string | null>;
+    followUp: (id: string, command: string, executor: string | null) => Promise<QueueResult>;
+    markDone: (id: string) => Promise<string | null>;
+}
+
 /**
- * The task list for one tab, polled until nothing on it can change any more.
+ * The task list for the sidenav tree and the tasks pages, polled until nothing on it can change any
+ * more.
  *
  * Same discipline as `useWorkspace`: one abortable polling chain, the last good answer stays on
  * screen through a failed tick, 401s are handed to the gate rather than bannered (every later poll
- * would 401 too), and a hidden tab slows to a crawl. `queue` and `resume` re-arm the chain, which
- * is also how a member sees their own task appear.
+ * would 401 too), and a hidden tab slows to a crawl. There is ONE instance, owned by the shell, and
+ * `enabled` gates it to the tasks area — off `/tasks*` the chain is torn down and `start` refuses to
+ * run, so a mutation resolving after the member navigated away cannot leak a poll onto another page.
+ * Entering the area is a fresh question: the previous answer is dropped rather than shown stale.
  */
-export function useJobs(repo: string | null): {
-    jobs: Job[] | null;
-    loading: boolean;
-    error: string | null;
-    queue: (command: string, executor: string | null) => Promise<string | null>;
-    resume: (id: string) => Promise<string | null>;
-    followUp: (id: string, command: string, executor: string | null) => Promise<string | null>;
-    markDone: (id: string) => Promise<string | null>;
-} {
+export function useJobs(enabled: boolean): UseJobs {
     const [jobs, setJobs] = useState<Job[] | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [loading, setLoading] = useState(true);
     const timer = useRef<number | null>(null);
     const controller = useRef<AbortController | null>(null);
-    /** Bound at the latest render, so the callbacks below re-arm the current tab's chain. */
-    const repoRef = useRef(repo);
-    repoRef.current = repo;
+    /** Bound at the latest render, so the callbacks below re-arm the current chain. */
+    const enabledRef = useRef(enabled);
+    enabledRef.current = enabled;
 
     const poll = useCallback(async (signal: AbortSignal) => {
         if (signal.aborted) return;
-        const tab = repoRef.current;
-        const url = `/api/jobs?limit=${LIST_LIMIT}${tab ? `&repo=${encodeURIComponent(tab)}` : ''}`;
+        const url = `/api/jobs?limit=${LIST_LIMIT}`;
         try {
             const response = await fetch(url, { signal });
             if (response.status === 401) {
                 reportUnauthenticated();
-                setLoading(false);
                 return;
             }
             if (!response.ok) {
                 if (signal.aborted) return;
                 const body = (await response.json().catch(() => ({}))) as { error?: string };
                 setError(body.error ?? `Request failed (${response.status})`);
-                setLoading(false);
                 // A failed tick must not end the chain: the board is shared, and a transient 503
-                // during a deploy would otherwise freeze the chat until somebody acts. The error
+                // during a deploy would otherwise freeze the list until somebody acts. The error
                 // stays visible; the quiet floor is the retry pace.
                 timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 60_000 : 30_000);
                 return;
             }
             const body = (await response.json()) as { jobs: Job[] };
-            // The body can complete after a tab switch aborted the chain; landing it would paint
-            // the previous tab's tasks under the new one.
+            // The body can complete after the area was left and the chain aborted; landing it would
+            // paint tasks into a shell that asked for nothing.
             if (signal.aborted) return;
-            // As served: newest first. The panel owns the chat order, like every other display
-            // concern.
+            // As served: newest first. The sidenav reads them in this order; the detail page does
+            // not list at all.
             setJobs(body.jobs);
             setError(null);
-            setLoading(false);
 
             // While anything can still move — queued, running, parked — keep watching. A quiet
             // board drops to a slow floor rather than stopping outright, because this board is
@@ -109,13 +115,13 @@ export function useJobs(repo: string | null): {
         } catch (e) {
             if (signal.aborted) return;
             setError((e as Error).message);
-            setLoading(false);
             // Same as a failed response above: visible, and still coming back.
             timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 60_000 : 30_000);
         }
     }, []);
 
     const start = useCallback(() => {
+        if (!enabledRef.current) return;
         controller.current?.abort();
         if (timer.current !== null) window.clearTimeout(timer.current);
         const own = new AbortController();
@@ -124,38 +130,46 @@ export function useJobs(repo: string | null): {
     }, [poll]);
 
     useEffect(() => {
-        // A tab switch is a different question, not a refresh of the old answer: the previous
-        // tab's tasks — and its error — must not sit under the new tab until the fetch lands.
+        if (!enabled) {
+            // Leaving the tasks area stops the question: no chain, no timer, no stale answer held
+            // in wait for the next visit.
+            controller.current?.abort();
+            if (timer.current !== null) window.clearTimeout(timer.current);
+            setJobs(null);
+            setError(null);
+            return;
+        }
+        // Entering it is a fresh question, not a refresh of the old answer.
         setJobs(null);
         setError(null);
-        setLoading(true);
         start();
         return () => {
             controller.current?.abort();
             if (timer.current !== null) window.clearTimeout(timer.current);
         };
-    }, [start, repo]);
+    }, [start, enabled]);
 
     const queue = useCallback(
-        async (command: string, executor: string | null): Promise<string | null> => {
+        async (command: string, repo: string | null, executor: string | null): Promise<QueueResult> => {
             try {
                 const response = await fetch('/api/jobs', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ command, repo: repoRef.current, executor }),
+                    body: JSON.stringify({ command, repo, executor }),
                 });
                 if (response.status === 401) {
                     reportUnauthenticated();
-                    return 'Your session expired';
+                    return { id: null, error: 'Your session expired' };
                 }
                 if (!response.ok) {
                     const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not queue the task (${response.status})`;
+                    return { id: null, error: body.error ?? `Could not queue the task (${response.status})` };
                 }
+                const body = (await response.json()) as { id: string };
                 start();
-                return null;
+                return { id: body.id, error: null };
             } catch (e) {
-                return (e as Error).message;
+                return { id: null, error: (e as Error).message };
             }
         },
         [start],
@@ -184,9 +198,10 @@ export function useJobs(repo: string | null): {
 
     // Both of these are a person's verdict on a finished task — an adjustment to ask for, or the
     // declaration that it is done — so both re-arm the poll exactly as queue and resume do: the
-    // member sees the follow-up appear, or the done state land, on the next tick.
+    // member sees the follow-up appear, or the done state land, on the next tick. The follow-up
+    // creates a NEW row and answers with ITS id: the conversation continues on the child's page.
     const followUp = useCallback(
-        async (id: string, command: string, executor: string | null): Promise<string | null> => {
+        async (id: string, command: string, executor: string | null): Promise<QueueResult> => {
             try {
                 const response = await fetch(`/api/jobs/${id}/follow-up`, {
                     method: 'POST',
@@ -195,16 +210,17 @@ export function useJobs(repo: string | null): {
                 });
                 if (response.status === 401) {
                     reportUnauthenticated();
-                    return 'Your session expired';
+                    return { id: null, error: 'Your session expired' };
                 }
                 if (!response.ok) {
                     const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not queue the follow-up (${response.status})`;
+                    return { id: null, error: body.error ?? `Could not queue the follow-up (${response.status})` };
                 }
+                const body = (await response.json()) as { id: string };
                 start();
-                return null;
+                return { id: body.id, error: null };
             } catch (e) {
-                return (e as Error).message;
+                return { id: null, error: (e as Error).message };
             }
         },
         [start],
@@ -231,7 +247,7 @@ export function useJobs(repo: string | null): {
         [start],
     );
 
-    return { jobs, loading, error, queue, resume, followUp, markDone };
+    return { jobs, error, queue, resume, followUp, markDone };
 }
 
 /**
@@ -243,8 +259,12 @@ export function useJobs(repo: string | null): {
  * on screen, an error line takes the place of the spinner, and re-selecting the task re-arms the
  * poll. What it must never do is go quiet — a transcript that silently stops growing reads as a
  * finished run.
+ *
+ * `refresh` re-arms the chain by hand, for the one verdict that arrives AFTER the poll has
+ * stopped: a finished task is terminal and the run will never change again, but the user's own
+ * `done` lands on the row afterwards, and only a fresh poll carries it back.
  */
-export function useJob(id: string | null): { job: Job | null; error: string | null } {
+export function useJob(id: string | null): { job: Job | null; error: string | null; refresh: () => void } {
     const [job, setJob] = useState<Job | null>(null);
     const [error, setError] = useState<string | null>(null);
     const timer = useRef<number | null>(null);
@@ -282,22 +302,26 @@ export function useJob(id: string | null): { job: Job | null; error: string | nu
         }
     }, []);
 
-    useEffect(() => {
+    const start = useCallback(() => {
         controller.current?.abort();
         if (timer.current !== null) window.clearTimeout(timer.current);
+        const own = new AbortController();
+        controller.current = own;
+        void poll(own.signal);
+    }, [poll]);
+
+    useEffect(() => {
         // Every id change is a different question: the previous task's answer must not render
         // under the new one while its first fetch is in flight.
         setJob(null);
         setError(null);
         if (id === null) return;
-        const own = new AbortController();
-        controller.current = own;
-        void poll(own.signal);
+        start();
         return () => {
-            own.abort();
+            controller.current?.abort();
             if (timer.current !== null) window.clearTimeout(timer.current);
         };
-    }, [id, poll]);
+    }, [id, start]);
 
-    return { job, error };
+    return { job, error, refresh: start };
 }

@@ -2,11 +2,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job } from '../src/api/useJobs.js';
 import { taskTime } from '../src/format.js';
-import { TasksPanel } from '../src/panels/TasksPanel.js';
+import { TaskComposer } from '../src/panels/TaskComposer.js';
+import { TaskDetail } from '../src/panels/TaskDetail.js';
 
 /**
  * The same contract the other panel suites pin: props in, markup out, and no DOM — `useEffect`
- * never runs under renderToStaticMarkup, so the hooks are exercised by the page that owns them and
+ * never runs under renderToStaticMarkup, so the hooks are exercised by the pages that own them and
  * this suite exercises what the reader actually sees.
  */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
@@ -32,92 +33,130 @@ function job(overrides: Partial<Job> = {}): Job {
     };
 }
 
-interface RenderArgs {
+interface ComposerArgs {
     repos?: { owner: string; name: string }[] | null;
     workspaceError?: string | null;
     executors?: { name: string; type: string }[];
-    repo?: string | null;
-    jobs?: Job[] | null;
-    detail?: Job | null;
-    detailError?: string | null;
-    selectedId?: string | null;
-    followUpTarget?: string | null;
+    actionError?: string | null;
+    sending?: boolean;
 }
 
-const render = ({
+const renderComposer = ({
     repos = [{ owner: 'acme', name: 'web' }],
     workspaceError = null,
     executors = [],
-    repo = null,
-    jobs = [],
-    detail = null,
-    detailError = null,
-    selectedId = null,
-    followUpTarget = null,
-}: RenderArgs = {}) =>
+    actionError = null,
+    sending = false,
+}: ComposerArgs = {}) =>
     renderToStaticMarkup(
-        <TasksPanel
+        <TaskComposer
             repos={repos}
             workspaceError={workspaceError}
             onRetryWorkspace={() => {}}
             executors={executors}
-            repo={repo}
-            onRepo={() => {}}
-            jobs={jobs}
-            detail={detail}
-            detailError={detailError}
-            selectedId={selectedId}
-            onSelect={() => {}}
-            onResume={async () => {}}
+            actionError={actionError}
+            sending={sending}
             onSend={async () => null}
-            sending={false}
-            followUpTarget={followUpTarget}
-            onFollowUp={() => {}}
-            onCancelFollowUp={() => {}}
+        />,
+    );
+
+interface DetailArgs {
+    task?: Job | null;
+    error?: string | null;
+    executors?: { name: string; type: string }[];
+    actionError?: string | null;
+    sending?: boolean;
+}
+
+const renderDetail = ({
+    task = job(),
+    error = null,
+    executors = [],
+    actionError = null,
+    sending = false,
+}: DetailArgs = {}) =>
+    renderToStaticMarkup(
+        <TaskDetail
+            task={task}
+            error={error}
+            executors={executors}
+            actionError={actionError}
+            sending={sending}
+            onFollowUp={async () => null}
+            onResume={async () => {}}
             onDone={async () => {}}
         />,
     );
 
-describe('TasksPanel', () => {
-    it('renders an All tab plus one per selected repository, marking the active one', () => {
-        const html = render({
+describe('TaskComposer', () => {
+    it('waits for the workspace before offering a repository choice', () => {
+        // "Not known yet" and "known empty" are different sentences: an unreachable workspace must
+        // not read as a member who never picked anything, and there is nothing to type into yet.
+        const html = renderComposer({ repos: null });
+        expect(html).toMatch(/Loading your workspace/);
+        expect(html).not.toContain('<textarea');
+    });
+
+    it('says so, with a way back in, when the workspace could not be loaded', () => {
+        const html = renderComposer({ repos: null, workspaceError: 'Request failed (503)' });
+        expect(html).toContain('Request failed (503)');
+        expect(html).toContain('Retry');
+    });
+
+    it('offers one repository option per selection plus none, none by default', () => {
+        // The tabs are gone; the composer stamps the task with a repo instead, and the default is
+        // no repository at all — the old All tab's exact semantics.
+        const html = renderComposer({
             repos: [
                 { owner: 'acme', name: 'web' },
                 { owner: 'acme', name: 'api' },
             ],
-            repo: 'acme/api',
         });
-        expect(html).toContain('>All</button>');
-        expect(html).toContain('acme/web');
-        expect(html).toContain('acme/api');
-        // Exactly one tab carries the marker, and it is the active one.
-        const active = html.match(/class="tab is-active"[^>]*>([^<]*)</g) ?? [];
-        expect(active).toHaveLength(1);
-        expect(active[0]).toContain('acme/api');
+        expect(html).toContain('<option value="acme/web">');
+        expect(html).toContain('<option value="acme/api">');
+        expect(html).toContain('<option value="" selected');
     });
 
-    it('renders one exchange per job, oldest first', () => {
-        // The API returns newest first; a chat reads top-down, oldest at the top.
-        const newer = job({ id: '22222222-2222-4222-8222-222222222222', command: 'newer task', createdAt: '2026-09-02T12:00:00.000Z' });
-        const older = job({ id: '33333333-3333-4333-8333-333333333333', command: 'older task', createdAt: '2026-09-01T12:00:00.000Z' });
-        const html = render({ jobs: [newer, older] });
-        expect(html.indexOf('older task')).toBeLessThan(html.indexOf('newer task'));
+    it('keeps the composer reachable when no repository is selected', () => {
+        // A member with nothing picked can still queue: the task simply carries no repo.
+        const html = renderComposer({ repos: [] });
+        expect(html).toContain('<textarea');
+        expect(html).toContain('>Send<');
+    });
+
+    it('disables Send until a command is typed', () => {
+        // The composer starts empty, which is exactly the state a fresh render has.
+        const html = renderComposer({});
+        const send = html.slice(html.indexOf('>Send<') - 200, html.indexOf('>Send<'));
+        expect(send).toContain('disabled');
+    });
+
+    it('shows the board\'s refusal in place', () => {
+        const html = renderComposer({ actionError: 'Could not queue the task (503)' });
+        expect(html).toContain('Could not queue the task (503)');
+    });
+
+    it('never emits a placeholder value', () => {
+        const html = renderComposer({
+            repos: [{ owner: 'acme', name: 'web' }],
+            executors: [{ name: 'main', type: 'claude' }],
+            actionError: null,
+        });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+describe('TaskDetail', () => {
+    it('shows the command, status, executor and stamp of the task', () => {
+        const html = renderDetail({ task: job({ executor: 'main' }) });
+        expect(html).toContain('fix the flaky login test');
         expect(html).toContain('succeeded');
+        expect(html).toContain('main');
+        expect(html).toContain('2026-09-01 12:00');
     });
 
-    it('names the executor of a task, and nothing when it has none', () => {
-        const labelled = render({ jobs: [job({ executor: 'main' })] });
-        expect(labelled).toContain('main');
-        const bare = render({ jobs: [job()] });
-        expect(bare).not.toContain('undefined');
-    });
-
-    it('renders the executor output as text, never as markup', () => {
-        const html = render({
-            jobs: [job()],
-            selectedId: '11111111-1111-4111-8111-111111111111',
-            detail: job({ output: '<script>alert(1)</script>' }),
-        });
+    it('renders the output as text, never as markup', () => {
+        const html = renderDetail({ task: job({ output: '<script>alert(1)</script>' }) });
         // Container output is arbitrary text; escaping it is the difference between a transcript
         // and a hole.
         expect(html).toContain('&lt;script&gt;');
@@ -125,133 +164,67 @@ describe('TasksPanel', () => {
         expect(html).toContain('<pre');
     });
 
-    it('claims nothing about an output that has not loaded yet', () => {
+    it('claims nothing about a task or output that has not loaded', () => {
         // A finished task whose detail has not arrived must not read as one with no output —
         // that is a false statement about a run somebody is waiting on.
-        const html = render({
-            jobs: [job()],
-            selectedId: '11111111-1111-4111-8111-111111111111',
-        });
-        expect(html).toContain('Loading output');
-        expect(html).not.toContain('No output recorded');
+        expect(renderDetail({ task: null })).toMatch(/Loading the task/);
+        const waiting = renderDetail({ task: job({ status: 'running', output: null, exitCode: null, finishedAt: null, startedAt: null }) });
+        expect(waiting).toContain('Waiting for the executor');
+        const empty = renderDetail({ task: job({ output: null }) });
+        expect(empty).toContain('No output recorded');
     });
 
-    it('says so in place when the output could not be loaded', () => {
-        const html = render({
-            jobs: [job()],
-            selectedId: '11111111-1111-4111-8111-111111111111',
-            detailError: 'Request failed (503)',
-        });
+    it('says so in place when the task could not be loaded', () => {
+        const html = renderDetail({ task: null, error: 'Request failed (503)' });
         expect(html).toContain('Request failed (503)');
     });
 
     it('shows the exit code of a finished run', () => {
-        const html = render({ jobs: [job({ status: 'failed', exitCode: 1 })] });
+        const html = renderDetail({ task: job({ status: 'failed', exitCode: 1 }) });
         expect(html).toContain('exit 1');
     });
 
-    it('offers Resume only on a standby job', () => {
-        const parked = render({ jobs: [job({ status: 'standby' })] });
+    it('offers Resume only on a standby task', () => {
+        const parked = renderDetail({ task: job({ status: 'standby' }) });
         expect(parked).toContain('Resume');
-        const running = render({ jobs: [job({ status: 'running' })] });
+        const running = renderDetail({ task: job({ status: 'running' }) });
         expect(running).not.toContain('Resume');
     });
 
-    it('never emits a placeholder value', () => {
-        const html = render({
-            repos: [{ owner: 'acme', name: 'web' }],
-            jobs: [
-                job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null }),
-                job({ status: 'standby', exitCode: null }),
-            ],
-        });
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    it('offers Done and a follow-up composer on a finished task, and neither on a moving one', () => {
+        // The run ending is not the task ending: these two exist exactly for the gap between "the
+        // executor stopped" and "I am satisfied".
+        const finished = renderDetail({ task: job() });
+        expect(finished).toContain('>Done<');
+        expect(finished).toContain('<textarea');
+        expect(finished).toContain('>Send<');
+        for (const status of ['queued', 'running', 'standby'] as const) {
+            const moving = renderDetail({ task: job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null }) });
+            expect(moving, status).not.toContain('>Done<');
+            expect(moving, status).not.toContain('<textarea');
+        }
     });
 
-    it('shows an empty-state sentence when the tab has no jobs', () => {
-        const html = render({ jobs: [] });
-        expect(html).toMatch(/No tasks/);
+    it('never offers them on a task the user has already marked done', () => {
+        const html = renderDetail({ task: job({ doneAt: '2026-09-01T13:00:00.000Z' }) });
+        expect(html).not.toContain('>Done<');
+        expect(html).not.toContain('<textarea');
+        // The verdict is visible, not silently implied by the buttons' absence.
+        expect(html).toContain('chat-done');
     });
 
-    it('keeps the All thread and composer reachable when no repository is selected', () => {
-        // A deselected repository must not take its jobs with it: repo-less tasks stay on All.
-        const html = render({ repos: [], jobs: [job({ status: 'standby', command: 'resume me without a repo' })] });
-        expect(html).toContain('>All</button>');
-        expect(html).toContain('<textarea');
-        expect(html).toContain('>Send<');
-        expect(html).toContain('resume me without a repo');
-        expect(html).toContain('Resume');
-        expect(html).not.toMatch(/Select repositories/);
-    });
-
-    it('does not blame the selection for a workspace that has not answered', () => {
-        // "Not known yet" and "known empty" are different sentences: an unreachable workspace must
-        // not read as a member who never picked anything.
-        expect(render({ repos: null })).toMatch(/Loading your workspace/);
-    });
-
-    it('says so, with a way back in, when the workspace could not be loaded', () => {
-        const html = render({ repos: null, workspaceError: 'Request failed (503)' });
-        expect(html).toContain('Request failed (503)');
-        expect(html).toContain('Retry');
-        expect(html).not.toMatch(/Select repositories/);
-    });
-
-    it('disables Send until a command is typed', () => {
-        // The composer starts empty, which is exactly the state a fresh render has.
-        const html = render({});
-        const send = html.slice(html.indexOf('>Send<') - 200, html.indexOf('>Send<'));
+    it('disables the follow-up Send until text is typed', () => {
+        const html = renderDetail({ task: job() });
+        const send = html.slice(html.lastIndexOf('>Send<') - 200, html.lastIndexOf('>Send<'));
         expect(send).toContain('disabled');
     });
 
-    describe('done and follow-ups', () => {
-        // The run ending is not the task ending: these two actions exist exactly for the gap
-        // between "the executor stopped" and "I am satisfied".
-        it('offers Done and Follow up on a finished task, and neither on a moving one', () => {
-            const finished = render({ jobs: [job()] });
-            expect(finished).toContain('>Done<');
-            expect(finished).toContain('Follow up');
-            for (const status of ['queued', 'running', 'standby'] as const) {
-                const moving = render({ jobs: [job({ status })] });
-                expect(moving, status).not.toContain('>Done<');
-                expect(moving, status).not.toContain('Follow up');
-            }
+    it('never emits a placeholder value', () => {
+        const html = renderDetail({
+            task: job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null }),
+            executors: [{ name: 'main', type: 'claude' }],
         });
-
-        it('never offers them on a task the user has already marked done', () => {
-            const html = render({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
-            expect(html).not.toContain('>Done<');
-            expect(html).not.toContain('Follow up');
-            // The verdict is visible, not silently implied by the buttons' absence.
-            expect(html).toContain('chat-done');
-        });
-
-        it('connects a follow-up exchange to the task it follows, in order', () => {
-            const parent = job({
-                id: '22222222-2222-4222-8222-222222222222',
-                command: 'parent task',
-                createdAt: '2026-09-01T12:00:00.000Z',
-            });
-            const child = job({
-                id: '33333333-3333-4333-8333-333333333333',
-                command: 'the adjustment',
-                followUpTo: parent.id,
-                createdAt: '2026-09-01T12:30:00.000Z',
-            });
-            // As served: newest first.
-            const html = render({ jobs: [child, parent] });
-            expect(html).toContain('chat-follow-up');
-            expect(html.indexOf('parent task')).toBeLessThan(html.indexOf('the adjustment'));
-        });
-
-        it('names the task a follow-up is aimed at, with a way out, while composing one', () => {
-            const armed = render({ jobs: [job()], followUpTarget: '11111111-1111-4111-8111-111111111111' });
-            expect(armed).toMatch(/Replying to/);
-            expect(armed).toContain('Cancel');
-            const idle = render({ jobs: [job()] });
-            expect(idle).not.toMatch(/Replying to/);
-            expect(idle).not.toContain('>Cancel<');
-        });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
 
