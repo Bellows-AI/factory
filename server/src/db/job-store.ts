@@ -1,4 +1,4 @@
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
@@ -98,6 +98,16 @@ export interface Claim {
      * `?? false` on the driver side.
      */
     followUp: boolean;
+    /**
+     * The environment the runner starts with, resolved at claim time for THIS job's author and
+     * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a
+     * board built without an env store, which the driver reads as "no environment".
+     *
+     * Deliberately NOT persisted on the job row: `GET /api/jobs/:id` serves output and metadata to
+     * every member, and storing the merged values there would publish the very secrets this
+     * feature exists to hold.
+     */
+    env?: Record<string, string>;
 }
 
 /**
@@ -264,11 +274,25 @@ export function createJobStore({
     orgId,
     hasWorkspaces = true,
     ready,
+    env,
 }: {
     sql: Sql;
     hasWorkspaces?: boolean;
     orgId: string;
     ready?: Promise<unknown>;
+    /**
+     * The env-var store's resolver, when the deployment stores runner environment. Present in
+     * index.ts, absent in the tests that predate it — a claim then simply carries no `env`. The
+     * second parameter is the executor the resolver MUST run on: the claim's own transaction, so
+     * a claim holds one connection rather than two (a resolver on the pool would let enough
+     * concurrent claims wedge the pool against itself).
+     */
+    env?: {
+        resolveFor(
+            target: { userId: string | null; repo: string | null },
+            exec: Sql | TransactionSql,
+        ): Promise<Record<string, string>>;
+    };
 }): JobStore {
     const gate = async () => {
         if (ready) await ready;
@@ -353,15 +377,25 @@ export function createJobStore({
         async claim(worker, leaseSeconds) {
             await gate();
 
-            // Retire what has burned its attempts, before looking for work. Without this a command
-            // that kills its worker is reclaimed every time its lease expires, forever.
-            await sql`
-                update job set status = 'dead', finished_at = now(), lease_token = null
-                where org_id = ${orgId} and status = 'running'
-                  and lease_expires_at <= now() and attempts >= max_attempts
-            `;
+            /*
+             * One transaction, not two autocommitted statements. The UPDATE makes the job running
+             * with a fresh lease before the env resolver answers; if the resolver then throws, a
+             * half-claim must not survive — a row that is `running` with a lease nobody holds is
+             * stranded until that lease expires on every retry, walking the job to dead on an
+             * infrastructure blip. The rollback puts it back: queued, attempt unburned, claimable
+             * by the very next poll. (The resolver reads env_var, not job, so it needs no share of
+             * this transaction — only its failure needs the rollback.)
+             */
+            return sql.begin(async (tx) => {
+                // Retire what has burned its attempts, before looking for work. Without this a
+                // command that kills its worker is reclaimed every time its lease expires, forever.
+                await tx`
+                    update job set status = 'dead', finished_at = now(), lease_token = null
+                    where org_id = ${orgId} and status = 'running'
+                      and lease_expires_at <= now() and attempts >= max_attempts
+                `;
 
-            const rows = await sql<
+                const rows = await tx<
                 {
                     id: string;
                     command: string;
@@ -370,6 +404,7 @@ export function createJobStore({
                     lease_expires_at: Date;
                     created_by: string | null;
                     session_id: string | null;
+                    repo: string | null;
                     parent_job_id: string | null;
                     follow_up: boolean;
                 }[]
@@ -417,27 +452,36 @@ export function createJobStore({
                 -- never been parked, so its command still has to go out; a resumed parked one has,
                 -- so it must not.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                          session_id,
+                          session_id, repo,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up
             `;
 
-            const row = rows[0];
-            if (!row) return null;
-            return {
-                id: row.id,
-                command: row.command,
-                attempts: row.attempts,
-                leaseToken: row.lease_token,
-                leaseExpiresAt: row.lease_expires_at.toISOString(),
-                userId: row.created_by,
-                // Built here rather than in the route, because this is where the org is bound. Null
-                // for an unattributed job — no member, so no workspace — and null when this
-                // deployment has no workspace root, where no directory exists to point at.
-                workspacePath: hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null,
-                // Survived the case above, so this claim is a resume.
-                resumeSessionId: row.session_id,
-                followUp: row.follow_up,
-            };
+                const row = rows[0];
+                if (!row) return null;
+                return {
+                    id: row.id,
+                    command: row.command,
+                    attempts: row.attempts,
+                    leaseToken: row.lease_token,
+                    leaseExpiresAt: row.lease_expires_at.toISOString(),
+                    userId: row.created_by,
+                    // Built here rather than in the route, because this is where the org is bound. Null
+                    // for an unattributed job — no member, so no workspace — and null when this
+                    // deployment has no workspace root, where no directory exists to point at.
+                    workspacePath: hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null,
+                    // Survived the case above, so this claim is a resume.
+                    resumeSessionId: row.session_id,
+                    followUp: row.follow_up,
+                    // Resolved here rather than in the route, because the org is bound here and
+                    // the author and repo label are in hand — and ON THE TRANSACTION, so a claim
+                    // holds one connection. A resolver failure propagates: the claim route's
+                    // guard answers 503, the driver retries the claim, and a job is never handed
+                    // out with half an environment.
+                    ...(env
+                        ? { env: await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) }
+                        : {}),
+                };
+            });
         },
 
         async heartbeat(id, leaseToken, leaseSeconds) {

@@ -20,6 +20,7 @@ of decisions that look like cruft and are not, and most are guarded by a test th
 | `driver/src/k8s.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
 | `server/src/routes/jobs.ts`, `db/job-store.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
+| `env_var`, `routes/env.ts`, the claim's `env`, the driver's env forwarding, the `/env` page | [docs/env.md](docs/env.md) |
 | `filterPrs()`, `parseRange`, `revertForRange()`, the range selector, charts | [docs/date-range.md](docs/date-range.md) |
 | `server/src/store/*`, `stats-service.ts`, the sync watermark, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |

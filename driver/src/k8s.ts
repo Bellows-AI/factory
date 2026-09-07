@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { containerName, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
+import { claimEnv, containerName, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
 import type { RunOutcome, RunSession, Runner } from './docker.js';
 
 /**
@@ -145,6 +145,15 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             });
         }
     }
+    // The board's stacked environment, same discipline: names in the pod spec, values in the
+    // per-attempt Secret (created before the Job — see create()). claimEnv has already dropped the
+    // reserved names, so WORKDIR stays the one literal here. NOT optional: this driver created
+    // this exact Secret moments earlier under this attempt's own lease token, so a missing key is
+    // a bug and must fail loud (CreateContainerConfigError) rather than start the pod silently
+    // without its env.
+    for (const name of Object.keys(claimEnv(job))) {
+        env.push({ name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } });
+    }
 
     // The argv the docker runner puts after the image name, unchanged: the executor image's
     // ENTRYPOINT is the same claude wrapper, so the platform below the container is the only
@@ -207,6 +216,35 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
 export const jobsPath = (namespace: string): string => `/apis/batch/v1/namespaces/${namespace}/jobs`;
 
 export const jobPath = (namespace: string, name: string): string => `${jobsPath(namespace)}/${name}`;
+
+/**
+ * The per-attempt Secret carrying the board's resolved environment. One per ATTEMPT — the lease
+ * token is part of the name — created before the Job and reaped with it: the pod spec references
+ * it by `secretKeyRef`, so the values are readable only through the API server's RBAC — never off
+ * the Job object itself. The token in the name is what keeps a reclaimed job's superseded worker
+ * from deleting the replacement attempt's Secret: its `kill()` can only ever address the Secret
+ * of the attempt it actually ran.
+ *
+ * Both halves are asserted before they join an API path, the same way the Job name's is.
+ */
+export const secretName = (job: BoardJob): string => {
+    if (!JOB_ID.test(job.id)) {
+        throw new Error(`refusing to address a job id that is not a uuid: ${job.id}`);
+    }
+    if (!JOB_ID.test(job.leaseToken)) {
+        throw new Error(`refusing to address a lease token that is not a uuid: ${job.leaseToken}`);
+    }
+    return `factory-job-${job.id}-${job.leaseToken}-env`;
+};
+
+/** The Secret object the claim env becomes. Values ride in stringData, nowhere else. */
+const secretBody = (job: BoardJob, env: Record<string, string>) => ({
+    apiVersion: 'v1',
+    kind: 'Secret',
+    type: 'Opaque',
+    metadata: { name: secretName(job), labels: { 'factory.job': job.id } },
+    stringData: env,
+});
 
 /**
  * One call against the API server. The body is the raw response text rather than a parsed object:
@@ -330,8 +368,32 @@ export function createKubernetesRunner(
         return containerName(job);
     };
 
+    const secretsPath = `/api/v1/namespaces/${config.k8sNamespace}/secrets`;
+
+    /** Best-effort: a 404 is the ordinary end of a reaped Secret, and any other failure is the fence's business. */
+    const forgetSecret = (job: BoardJob): Promise<void> =>
+        request('DELETE', `${secretsPath}/${secretName(job)}`).then(() => undefined, () => undefined);
+
+    /** Only a job that carries env ever touches the per-job Secret — not even to delete one. */
+    const forgetSecretIfAny = (job: BoardJob): Promise<void> =>
+        Object.keys(claimEnv(job)).length ? forgetSecret(job) : Promise.resolve();
+
     const create = async (job: BoardJob, spec: RunnerJobSpec): Promise<void> => {
+        const env = claimEnv(job);
         const post = async (): Promise<K8sResponse> => request('POST', jobsPath(config.k8sNamespace), spec);
+        if (Object.keys(env).length) {
+            // Before the Job — a pod that references a Secret that is not there yet is a
+            // CreateContainerConfigError and a burned attempt. The name carries this attempt's
+            // lease token, so there is no previous attempt's Secret at this name to sweep — and
+            // deliberately no pre-create delete, which under a shared name was what let a
+            // superseded worker's cleanup destroy a replacement's Secret.
+            const secretResponse = await request('POST', secretsPath, secretBody(job, env));
+            if (secretResponse.status >= 300) {
+                throw new Error(
+                    `creating the runner secret answered ${secretResponse.status}: ${secretResponse.body.slice(0, 200)}`,
+                );
+            }
+        }
         let response = await post();
         if (response.status === 409) {
             /*
@@ -355,6 +417,10 @@ export function createKubernetesRunner(
             if (removed.status >= 300 && removed.status !== 404) {
                 throw new Error(`deleting the leftover runner answered ${removed.status}: ${removed.body.slice(0, 200)}`);
             }
+            // NOT the env Secret — only the leftover Job. The Secret the replacement Job
+            // references is this attempt's own (its name carries this run's lease token), created
+            // before the first POST; a secret delete here could only ever hit what this run or a
+            // successor depends on.
             let waits = 0;
             for (;;) {
                 let probe: K8sResponse;
@@ -410,7 +476,7 @@ export function createKubernetesRunner(
         }
     };
 
-    return {
+    const runner = {
         // Remote Control is refused at config under this executor, and the loop polls the remote id
         // only under Remote Control — so null is never even asked for. The interface blesses it.
         async remoteSessionId() {
@@ -419,15 +485,44 @@ export function createKubernetesRunner(
 
         // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing
         // is the ordinary end of a finished run, and one that fails is the kubelet's deadline doing
-        // this function's work.
-        async kill(job) {
+        // this function's work. No Secret delete here: the run() wrapper below owns the Secret's
+        // whole lifetime — it reaps on the verdict, on a throw, and on the kill-induced "Job no
+        // longer exists" 404 — so every Secret that exists was created inside a run0 that is
+        // either in flight (the wrapper will reap it) or done (the wrapper reaped it), and this
+        // function's own delete would be redundant cleanup. It would also be harmful: a kill can
+        // interleave the same attempt's create() between its Secret POST and its Job POST (a
+        // lease-lost heartbeat), deleting the Secret the Job it is about to create references and
+        // stranding its pod in CreateContainerConfigError. The cost of leaving the Secret alone is
+        // stated, not hidden: a stale attempt whose Job was deleted before it existed runs to its
+        // natural end with its env intact and its report refused by the board — the same semantics
+        // the runner had before env injection.
+        async kill(job: BoardJob) {
             await request(
                 'DELETE',
                 `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Background`,
             ).catch(() => undefined);
         },
 
-        async run(job, session, onOutput): Promise<RunOutcome> {
+        // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session
+        // is an opencode job, which this executor does not carry. Mirrors the docker runner's
+        // own refusal of a sessionless claude-code run.
+        async run(job: BoardJob, session: RunSession, onOutput?: (tail: string) => void) {
+            /*
+             * Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed
+             * verdict read — must still reap the env Secret: the loop's catch never calls kill(),
+             * and when the job retires dead there is no next attempt to reap it. The cleanup is
+             * the OUTSIDE of the run, not a step in it. With the lease token in the name, both
+             * this and kill() can only ever remove their own attempt's Secret.
+             */
+            try {
+                return await runner.run0(job, session, onOutput);
+            } finally {
+                await forgetSecretIfAny(job);
+            }
+        },
+
+        // The body of run() above, split out only so its cleanup can wrap the throw paths too.
+        async run0(job: BoardJob, session: RunSession, onOutput?: (tail: string) => void): Promise<RunOutcome> {
             // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session
             // is an opencode job, which this executor does not carry. Mirrors the docker runner's
             // own refusal of a sessionless claude-code run.
@@ -582,8 +677,10 @@ export function createKubernetesRunner(
             // A resolved outcome here always means the pod was created, ran and exited: Job and
             // pod creation failures throw on their way to the loop's catch, so this is a verdict,
             // whatever the code — started is true even at 125, which is a perfectly ordinary exit
-            // status for a shell or an agent CLI.
+            // status for a shell or an agent CLI. The env Secret went with the run above — the
+            // pod read it by now, and the wrapper's finally has removed it.
             return { exitCode, output, timedOut, idled: false, started: true };
         },
     };
+    return runner;
 }

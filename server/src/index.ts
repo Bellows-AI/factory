@@ -8,6 +8,7 @@ import { migrate } from './db/migrate.js';
 import { createPrStore } from './db/pr-store.js';
 import { createUserRepoStore } from './db/user-repo-store.js';
 import { createUserExecutorStore } from './db/user-executor-store.js';
+import { createEnvVarStore } from './db/env-var-store.js';
 import { createCloneQueue } from './workspace/queue.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createPostgresStore } from './telemetry/store.js';
@@ -104,11 +105,15 @@ const client = createGitHubClient({ config, repos, tokens });
 
 // Unconditional, unlike the telemetry store: the database is mandatory and the board is not a
 // product option. It gates its own queries on `ready`, so it is safe to build before migrations.
+// `env` is what makes the claim carry the runner environment — resolved here, in the store, not in
+// the route.
+const envVarStore = createEnvVarStore({ sql, orgId: config.orgId, ready });
 const jobStore = createJobStore({
     sql,
     orgId: config.orgId,
     hasWorkspaces: config.workspaceRoot !== null,
     ready,
+    env: envVarStore,
 });
 
 // Unconditional too, and note that this does NOT depend on a workspace root being configured: with
@@ -179,6 +184,7 @@ const app = await buildApp({
     jobs: jobStore,
     userRepos: userRepoStore,
     userExecutors: userExecutorStore,
+    envVars: envVarStore,
     cloneQueue,
     auth: authStore,
     identity,

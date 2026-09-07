@@ -4,6 +4,7 @@ import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
+import type { EnvVarStore } from './db/env-var-store.js';
 import type { JobStore } from './db/job-store.js';
 import type { UserExecutorStore } from './db/user-executor-store.js';
 import type { UserRepoStore } from './db/user-repo-store.js';
@@ -12,6 +13,7 @@ import { createFactsCache } from './workspace/facts.js';
 import type { CloneQueue } from './workspace/queue.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { authRoutes } from './routes/auth.js';
+import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
 import { jobRoutes } from './routes/jobs.js';
@@ -44,6 +46,11 @@ export interface AppDeps {
     userRepos?: UserRepoStore | undefined;
     /** Rides the same registration bargain as userRepos — no store, no routes. */
     userExecutors?: UserExecutorStore | undefined;
+    /**
+     * Environment variables and secrets for runners. Unconditional in index.ts — the database is
+     * mandatory — but optional here, so the route tests that predate it stay as they are.
+     */
+    envVars?: EnvVarStore | undefined;
     /** Absent in the route tests, where nothing should start cloning. */
     cloneQueue?: CloneQueue | undefined;
     /**
@@ -90,6 +97,7 @@ export async function buildApp({
     jobs,
     userRepos,
     userExecutors,
+    envVars,
     cloneQueue,
     auth,
     identity,
@@ -117,6 +125,7 @@ export async function buildApp({
     await app.register(repoRoutes(repos));
     if (store) await app.register(ingestRoutes(store));
     if (jobs) await app.register(jobRoutes(jobs));
+    if (envVars) await app.register(envRoutes({ store: envVars, repos }));
     if (userRepos) {
         await app.register(
             workspaceRoutes({
