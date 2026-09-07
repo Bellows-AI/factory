@@ -163,15 +163,30 @@ done
 
 # The cluster phase installs a release and deletes runner Jobs in its namespace — and "runner Job"
 # is identified only by the factory.job label, which any release in the namespace shares. This
-# script is built for a disposable local kind cluster; anything else has to say so by being one:
-# kind contexts are always `kind-<name>`, so that shape is the whole guard. There is no override —
-# a context outside the shape has no image-load path here anyway.
+# script is built for a disposable local kind cluster; anything else has to say so twice: the
+# context must be shaped `kind-<name>` (how kind always names them) AND a kind cluster of that
+# name must be verifiable behind it. Kind stamps the identity on the node CONTAINER
+# (`io.x-k8s.kind.cluster` — the same label `kind load --name` resolves two steps below; k8s node
+# objects carry no kind label), and names the node objects `<cluster>-<role>`, so both are
+# checked: the name alone would admit any context renamed into the shape, pointing anywhere.
+# There is no override — a context outside both has no image-load path here anyway.
 context="$(kubectl config current-context 2>/dev/null || true)"
 case "$context" in
 kind-*)
     kind_name="${context#kind-}"
     command -v kind >/dev/null || {
         echo "test-k8s: kind is required for the cluster phase (context is $context)"
+        exit 1
+    }
+    docker ps --filter "label=io.x-k8s.kind.cluster=$kind_name" \
+        --filter 'label=io.x-k8s.kind.role=control-plane' -q | grep -q . &&
+        kubectl get nodes -o name 2>/dev/null | grep -q "^node/$kind_name-" || {
+        echo "test-k8s: refusing to run the cluster phase against '$context'."
+        echo "  It deletes every runner Job in the namespace, and no kind cluster named"
+        echo "  '$kind_name' could be verified behind the context — no control-plane"
+        echo "  container on this daemon carries that cluster label, or the context's"
+        echo "  nodes are not named kind's way. It may not be a disposable kind cluster."
+        echo '  Create one (`kind create cluster --name <name>`) and aim kubectl at it.'
         exit 1
     }
     ;;
@@ -271,16 +286,25 @@ done
 # The wait above covers the cold case (database image still pulling); this poll covers the
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
 # still land inside it. The server adopts the database on the attempt that works; the script
-# gives it the same grace. Same shape as the status poll below.
+# gives it the same grace. The retry is deliberately narrow: each attempt reports `<status>|<id>`,
+# and only a provably jobless rejection is repeated — a 5xx fires before the insert (the store
+# gates on migrations-ready) and 000 means the server never processed the request at all. Any
+# other answer — a 2xx whose body will not parse into an id, say — may have created a job, so
+# the loop stops and lets the check below report, rather than re-POSTing the same command into
+# a duplicate. Same shape as the status poll below.
 id=""
 for _ in $(seq 1 60); do
-    id="$(node -e '
+    response="$(node -e '
 fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster" }) })
-    .then(async (r) => process.stdout.write(String((await r.json()).id ?? "")))
-    .catch(() => process.stdout.write(""));
+    .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id); })
+    .catch(() => process.stdout.write("000|"));
 ' "$BASE/api/jobs")"
-    case "$id" in *-*) break ;; esac
-    sleep 1
+    status="${response%%|*}"
+    id="${response#*|}"
+    case "$status" in
+    000 | 5*) sleep 1 ;;
+    *) break ;;
+    esac
 done
 case "$id" in
 *-*) ok 'a job was queued' ;;
