@@ -788,6 +788,62 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(seen).toHaveLength(1);
     });
 
+    // The abort must be teardown-FREE, not merely stopped. kill() ran the job-scoped teardown
+    // when the lease was lost; whatever THIS attempt created after that point is a leftover only
+    // the NEXT attempt's fence may remove — the fence runs BEFORE the newer attempt creates
+    // anything, so it is the one component that can tell a dead attempt's leftovers from a live
+    // fleet. A teardown fired from the dying attempt has no such timing guarantee: overlapping a
+    // newer attempt's setup, it would delete the network and service containers the newer
+    // attempt is already using.
+    it('aborts without issuing any removals, so a sibling attempt\'s fleet survives', async () => {
+        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
+        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+        const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
+        let killedA = false;
+        let releaseKill: (() => void) | null = null;
+        const killSettled = new Promise<void>((resolve) => {
+            releaseKill = resolve;
+        });
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                if (!killedA) {
+                    // A's lease is lost while its readout is in flight; kill() — its own
+                    // teardown included — must be fully settled before the read resolves.
+                    killedA = true;
+                    await handle.kill!(attemptA);
+                    releaseKill!();
+                }
+                return { stdout: READOUT };
+            }
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            return { stdout: '' };
+        });
+        const { fn, seen } = spawnRecording('ran\n', 0);
+        const runner = servicesRunner(exec, fn);
+        handle.kill = runner.kill;
+
+        const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        await killSettled;
+        // Everything A does from here to its rejection IS the abort path, and the pin is that
+        // it contains no removals at all.
+        const killEnd = exec.mock.calls.length;
+        await expect(runA).rejects.toThrow(/killed while setting up services/);
+        const abortCalls = exec.mock.calls.slice(killEnd).map((call) => call[0]);
+        expect(abortCalls).not.toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(abortCalls).not.toContainEqual(['network', 'rm', networkName(job)]);
+
+        // B, the newer attempt for the same job id: fence, network create, service start and
+        // runner spawn all happen after A's abort — and nothing A did on the way out disturbed
+        // them.
+        const outcome = await runner.run(attemptB, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 0, started: true });
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(calls).toContainEqual(['network', 'create', networkName(job)]);
+        expect(calls.some((a) => a.includes('--network-alias'))).toBe(true);
+        expect(seen).toHaveLength(1);
+    });
+
     // Ordering, not just outcome: the rejection must not be observable while the teardown is
     // still in flight, or the caller sees shutdown and the next lifecycle step race the
     // removals. The LAST teardown step is held in flight on a gate the test controls — armed
@@ -831,6 +887,46 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.map((call) => call[0]);
         expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
         expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
+    });
+
+    // A spawn failure makes Node deliver 'error' and then 'close' with a null code. The close
+    // must not settle the promise once the error has been seen: verdict(null) would read as a
+    // started run with no exit code — a terminal failed job — when the truth is infrastructure
+    // the loop should leave to its lease. The daemon holds the error-path teardown's ps on a
+    // gate, so under the bug the close handler's verdict wins the race and RESOLVES the run.
+    it('rejects with the spawn error even when close follows it while teardown is pending', async () => {
+        let releaseTeardownPs: (() => void) | null = null;
+        const teardownPsGate = new Promise<void>((resolve) => {
+            releaseTeardownPs = resolve;
+        });
+        let psCount = 0;
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') {
+                psCount++;
+                // ps #1 is the entry fence; ps #2 is the error-path teardown, held so the
+                // close handler gets its turn while the teardown is still in flight.
+                if (psCount === 2) await teardownPsGate;
+                return { stdout: 'svc-id-1\n' };
+            }
+            return { stdout: '' };
+        });
+        // Node's failed-spawn order: 'error' first, then 'close' with code null.
+        const errorThenClose = (() => {
+            const c = new EventEmitter() as ChildProcess;
+            process.nextTick(() => {
+                c.emit('error', new Error('spawn docker ENOENT'));
+                c.emit('close', null);
+            });
+            return c;
+        }) as unknown as typeof spawn;
+        const pending = servicesRunner(exec, errorThenClose).run(job, { id: SESSION, resume: false });
+        // A macrotask, so the error, the close and the close handler's verdict all get their
+        // turn while the gate is still closed.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        releaseTeardownPs!();
+        await expect(pending).rejects.toThrow(/ENOENT/);
     });
 
     it('leaves the daemon alone when the switch is off', async () => {

@@ -469,10 +469,18 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
              * checked after every awaited step below, and once more just before the spawn: the
              * gap between that check and spawnFn is synchronous, so nothing can land inside it
              * unobserved.
+             *
+             * The abort is deliberately teardown-FREE. kill() ran the job-scoped teardown when
+             * the lease was lost; anything THIS attempt created after that point is a leftover,
+             * and leftovers belong to the NEXT attempt's fence — the one component that can
+             * safely distinguish them from a live fleet, because it runs BEFORE the newer
+             * attempt creates anything. A teardown fired from this dying attempt has no such
+             * timing guarantee: overlapping a newer attempt's setup, it would delete the
+             * network and service containers the newer attempt is already using, and its
+             * runner spawn would fail with its fleet gone.
              */
             const assertNotKilled = async (): Promise<void> => {
                 if (!killed.has(job.leaseToken)) return;
-                await serviceTeardown(job);
                 throw new Error(`job ${job.id}: killed while setting up services`);
             };
             if (config.servicesEnabled) {
@@ -601,7 +609,16 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     if (idleTimer) clearTimeout(idleTimer);
                 };
 
+                /*
+                 * A spawn failure makes Node deliver 'error' and then 'close' with a null code.
+                 * The flag keeps the two apart: once it is set, close must not settle the
+                 * promise, because verdict(null) would read as a started run with no exit code —
+                 * terminally reported as a failed job — when the truth is infrastructure the
+                 * loop should leave to its lease for retry.
+                 */
+                let spawnFailed = false;
                 child.on('error', (error) => {
+                    spawnFailed = true;
                     done();
                     // The spawn itself failed (docker missing, exec blew up). Whatever services
                     // were started before it are torn down BEFORE the rejection lands: teardown
@@ -612,6 +629,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     serviceTeardown(job).then(() => reject(error), () => reject(error));
                 });
                 child.on('close', (code) => {
+                    // The error handler owns this failure and its rejection is already deferred
+                    // behind the service teardown; a close here carries only the null code of a
+                    // process that never ran, and settling verdict(null) over the pending
+                    // rejection would turn infrastructure into a terminal verdict.
+                    if (spawnFailed) return;
                     done();
                     void verdict(code)
                         .then(async (outcome) => {
