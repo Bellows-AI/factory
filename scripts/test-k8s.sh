@@ -307,18 +307,18 @@ done
 # The wait above covers the cold case (database image still pulling); this poll covers the
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
 # still land inside it. The server adopts the database on the attempt that works; the script
-# gives it the same grace. The retry is deliberately narrow: each attempt reports `<status>|<id>`,
-# and a 5xx is the one rejection repeated directly — it fires before the insert (the store gates
-# on migrations-ready). A 000 is not that: it means no response came back, not that nothing was
-# processed — the INSERT can have committed before the connection died, and repeating the
-# non-idempotent POST would queue a duplicate the test does not track. So on 000 the loop
-# reconciles first: it reads GET /api/jobs (limit 200, the endpoint's cap) and, if a job whose
-# command is this test's command exists, adopts its id and carries on with the normal flow. A
-# list read that FAILS is no evidence either way, so only a read that SUCCEEDS and shows no such
-# job re-arms the POST; a failed read keeps waiting here (the loop has 60 iterations) rather than
-# re-POSTing blind. Any other answer — a 2xx whose body will not parse into an id, say — may
-# have created a job, so the loop stops and lets the check below report, rather than re-POSTing
-# the same command into a duplicate. Same shape as the status poll below.
+# gives it the same grace. No rejection is proof the job was not created: the route wraps store
+# calls in `guard`, which answers 503 to ANY throw — including one raised by the postgres client
+# while awaiting the result of an INSERT that has already committed — and a 000 means no response
+# came back, not that nothing was processed. Repeating the non-idempotent POST on either would
+# queue a duplicate the test does not track. So on 000 and on 5xx the loop reconciles first: it
+# reads GET /api/jobs (limit 200, the endpoint's cap) and, if a job whose command is this test's
+# command exists, adopts its id and carries on with the normal flow. A list read that FAILS is no
+# evidence either way, so only a read that SUCCEEDS and shows no such job re-arms the POST; a
+# failed read keeps waiting here (the loop has 60 iterations) rather than re-POSTing blind. Any
+# other answer — a 2xx whose body will not parse into an id, say — may have created a job, so
+# the loop stops and lets the check below report, rather than re-POSTing the same command into a
+# duplicate. Same shape as the status poll below.
 id=""
 reconcile=0
 for _ in $(seq 1 60); do
@@ -331,8 +331,7 @@ fetch(process.argv[1], { method: "POST", headers: { "content-type": "application
         status="${response%%|*}"
         id="${response#*|}"
         case "$status" in
-        000) reconcile=1 ;;
-        5*) ;; # fires before the insert: repeating the POST is safe
+        000 | 5*) reconcile=1 ;;
         *) break ;;
         esac
     else
