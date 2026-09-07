@@ -23,6 +23,19 @@ spec:
                 {{- include "factory.labels" . | nindent 16 }}
                 app.kubernetes.io/component: dashboard
         spec:
+            {{- if .Values.timescale.enabled }}
+            # The server's migration retry gives up after ~55s and then keeps serving with no
+            # tables — every DB-backed route a 500, and no client-side polling recovers it. On a
+            # cold cluster the database image pulls for minutes, so the server must not start
+            # until the database accepts connections: the same pg_isready the database pod's own
+            # readiness probe runs, against its service. On the single-node cluster this chart's
+            # local profile targets, the database pod has already pulled the timescale image, so
+            # this init container costs no second pull.
+            initContainers:
+                - name: wait-for-database
+                  image: {{ .Values.timescale.image }}
+                  command: ['sh', '-c', 'until pg_isready -h {{ include "factory.fullname" . }}-timescale -U {{ .Values.timescale.user | quote }} -d {{ .Values.timescale.database | quote }}; do sleep 1; done']
+            {{- end }}
             containers:
                 - name: dashboard
                   image: {{ .Values.dashboard.image }}

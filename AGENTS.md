@@ -102,8 +102,8 @@ DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test
 npm run test:jobs
 
 # The same board and driver, on Kubernetes. Phase one is offline helm lint/template assertions;
-# --cluster installs the chart into minikube with a stub echo executor and watches a queued job
-# come back succeeded through real pods. Needs helm; --cluster additionally needs minikube.
+# --cluster installs the chart into a local kind cluster with a stub echo executor and watches a
+# queued job come back succeeded through real pods. Needs helm; --cluster additionally needs kind.
 npm run test:k8s
 
 # Accounts. AUTH_MODE defaults to `none`, where every route is open and the bind address is the
