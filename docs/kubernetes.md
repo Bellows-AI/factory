@@ -113,7 +113,10 @@ was a driver that claims jobs and burns attempts running nothing.
   pins above.
 - `npm run test:k8s` — `helm lint`/`helm template` assertions plus the kind walkthrough as a
   script, mirroring `scripts/test-jobs.sh`. Needs helm; the `--cluster` phase needs a real kind
-  cluster and refuses any other kubectl context — kind contexts are always `kind-<name>`, and a
-  kind cluster of that name must be verifiable behind the context (kind's docker label on the
-  node container, plus node objects named `<cluster>-<role>`; a name check alone would admit any
-  context renamed into the shape), because the phase deletes every runner Job in the namespace.
+  cluster and refuses any other kubectl context — kind contexts are always `kind-<name>`, and the
+  context must be BOUND to the kind cluster of that name: kind publishes the control-plane API on
+  host `127.0.0.1:<port>` and writes that same `server:` into the kubeconfig, so the guard accepts
+  the context only if a control-plane container carrying kind's `io.x-k8s.kind.cluster=<name>`
+  label publishes the port the context points at. Two independent fingerprints (a docker label on
+  this daemon, node objects over the wire) could each pass against a different cluster; the
+  endpoint cannot — and it must not, because the phase deletes every runner Job in the namespace.

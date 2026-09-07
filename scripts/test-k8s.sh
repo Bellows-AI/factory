@@ -164,12 +164,15 @@ done
 # The cluster phase installs a release and deletes runner Jobs in its namespace — and "runner Job"
 # is identified only by the factory.job label, which any release in the namespace shares. This
 # script is built for a disposable local kind cluster; anything else has to say so twice: the
-# context must be shaped `kind-<name>` (how kind always names them) AND a kind cluster of that
-# name must be verifiable behind it. Kind stamps the identity on the node CONTAINER
-# (`io.x-k8s.kind.cluster` — the same label `kind load --name` resolves two steps below; k8s node
-# objects carry no kind label), and names the node objects `<cluster>-<role>`, so both are
-# checked: the name alone would admit any context renamed into the shape, pointing anywhere.
-# There is no override — a context outside both has no image-load path here anyway.
+# context must be shaped `kind-<name>` (how kind always names them) AND that name's cluster must
+# be the one actually serving the context. Those two facts are BOUND, not checked independently:
+# kind publishes the control-plane API on host 127.0.0.1:<port> and writes that same `server:`
+# into the kubeconfig, so the guard reads the context's server address and requires a control-plane
+# container labelled `io.x-k8s.kind.cluster=<name>` (the same label `kind load --name` resolves
+# below; k8s node objects carry no kind label) to be publishing that port. Two independent
+# fingerprints — a docker label on this daemon, node objects over the wire — could each pass
+# against a different cluster and admit a context aimed anywhere; the endpoint cannot. There is
+# no override — a context outside both has no image-load path here anyway.
 context="$(kubectl config current-context 2>/dev/null || true)"
 case "$context" in
 kind-*)
@@ -178,14 +181,32 @@ kind-*)
         echo "test-k8s: kind is required for the cluster phase (context is $context)"
         exit 1
     }
-    docker ps --filter "label=io.x-k8s.kind.cluster=$kind_name" \
-        --filter 'label=io.x-k8s.kind.role=control-plane' -q | grep -q . &&
-        kubectl get nodes -o name 2>/dev/null | grep -q "^node/$kind_name-" || {
+    server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"
+    [ -n "$server" ] || {
+        echo "test-k8s: refusing to run the cluster phase against '$context'."
+        echo "  It deletes every runner Job in the namespace, and the context's API server"
+        echo "  address could not be read — the context may be dangling or not a kind"
+        echo "  cluster's. Create one (`kind create cluster --name <name>`) and aim kubectl at it."
+        exit 1
+    }
+    serving=0
+    for container in $(docker ps -q --filter "label=io.x-k8s.kind.cluster=$kind_name" \
+        --filter 'label=io.x-k8s.kind.role=control-plane'); do
+        host_port="$(docker inspect -f '{{(index (index .NetworkSettings.Ports "6443/tcp") 0).HostPort}}' \
+            "$container" 2>/dev/null || true)"
+        case "$server" in
+        "https://127.0.0.1:$host_port" | "https://localhost:$host_port")
+            serving=1
+            break
+            ;;
+        esac
+    done
+    [ "$serving" = '1' ] || {
         echo "test-k8s: refusing to run the cluster phase against '$context'."
         echo "  It deletes every runner Job in the namespace, and no kind cluster named"
-        echo "  '$kind_name' could be verified behind the context — no control-plane"
-        echo "  container on this daemon carries that cluster label, or the context's"
-        echo "  nodes are not named kind's way. It may not be a disposable kind cluster."
+        echo "  '$kind_name' is serving the context's endpoint ($server): no control-plane"
+        echo "  container of that cluster publishes the port the context points at. It"
+        echo "  may not be a disposable kind cluster."
         echo '  Create one (`kind create cluster --name <name>`) and aim kubectl at it.'
         exit 1
     }
@@ -287,24 +308,54 @@ done
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
 # still land inside it. The server adopts the database on the attempt that works; the script
 # gives it the same grace. The retry is deliberately narrow: each attempt reports `<status>|<id>`,
-# and only a provably jobless rejection is repeated — a 5xx fires before the insert (the store
-# gates on migrations-ready) and 000 means the server never processed the request at all. Any
-# other answer — a 2xx whose body will not parse into an id, say — may have created a job, so
-# the loop stops and lets the check below report, rather than re-POSTing the same command into
-# a duplicate. Same shape as the status poll below.
+# and a 5xx is the one rejection repeated directly — it fires before the insert (the store gates
+# on migrations-ready). A 000 is not that: it means no response came back, not that nothing was
+# processed — the INSERT can have committed before the connection died, and repeating the
+# non-idempotent POST would queue a duplicate the test does not track. So on 000 the loop
+# reconciles first: it reads GET /api/jobs (limit 200, the endpoint's cap) and, if a job whose
+# command is this test's command exists, adopts its id and carries on with the normal flow. A
+# list read that FAILS is no evidence either way, so only a read that SUCCEEDS and shows no such
+# job re-arms the POST; a failed read keeps waiting here (the loop has 60 iterations) rather than
+# re-POSTing blind. Any other answer — a 2xx whose body will not parse into an id, say — may
+# have created a job, so the loop stops and lets the check below report, rather than re-POSTing
+# the same command into a duplicate. Same shape as the status poll below.
 id=""
+reconcile=0
 for _ in $(seq 1 60); do
-    response="$(node -e '
+    if [ "$reconcile" = '0' ]; then
+        response="$(node -e '
 fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster" }) })
     .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id); })
     .catch(() => process.stdout.write("000|"));
 ' "$BASE/api/jobs")"
-    status="${response%%|*}"
-    id="${response#*|}"
-    case "$status" in
-    000 | 5*) sleep 1 ;;
-    *) break ;;
-    esac
+        status="${response%%|*}"
+        id="${response#*|}"
+        case "$status" in
+        000) reconcile=1 ;;
+        5*) ;; # fires before the insert: repeating the POST is safe
+        *) break ;;
+        esac
+    else
+        adopted="$(node -e '
+fetch(process.argv[1])
+    .then(async (r) => {
+        if (r.status !== 200) { process.stdout.write("no"); return; }
+        const b = await r.json().catch(() => null);
+        if (!b || !Array.isArray(b.jobs)) { process.stdout.write("no"); return; }
+        const hit = b.jobs.find((j) => j.command === process.argv[2]);
+        process.stdout.write(hit ? "id " + String(hit.id) : "none");
+    })
+    .catch(() => process.stdout.write("no"));
+' "$BASE/api/jobs?limit=200" 'hello from the cluster')"
+        case "$adopted" in
+        'id '*)
+            id="${adopted#id }"
+            break
+            ;;
+        none) reconcile=0 ;; # the read succeeded and showed no such job: re-POST is safe
+        esac
+    fi
+    sleep 1
 done
 case "$id" in
 *-*) ok 'a job was queued' ;;
