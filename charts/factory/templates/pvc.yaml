@@ -1,8 +1,8 @@
 {{/*
 The organization's checkouts. The dashboard writes them here and every runner mounts the same
 claim — the kubernetes form of the named docker volume the compose services share. Default
-ReadWriteMany because the dashboard and runners share it across nodes; minikube overrides
-ReadWriteOnce in values-minikube.yaml.
+ReadWriteMany because the dashboard and runners share it across nodes; values-local.yaml
+overrides ReadWriteOnce for single-node local clusters.
 */}}
 {{- if not .Values.workspaces.existingClaim }}
 apiVersion: v1
