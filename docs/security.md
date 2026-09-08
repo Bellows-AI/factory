@@ -22,7 +22,10 @@ a separate GitHub App reads repositories. One credential doing both would mean e
 signs in grants repository access, which is exactly the conflation `docs/auth.md` warns about.
 
 Required GitHub App installation permissions: `Metadata: read`, `Pull requests: read`, and
-`Contents: read` (revert rate only).
+`Contents: read` (revert rate only). An operator who wants runners to orchestrate GitHub — commits,
+PRs, reading CI — grants more in the installation settings (`Contents: write`, `Pull requests:
+write`, `Actions: read`): the token minted onto each claim (see [env.md](env.md)) carries the
+installation's permissions, and code cannot grant what the installation does not have.
 
 **The App private key is the worst secret in this repository to leak, and it replaced the least
 bad.** A PAT carries whatever scopes it was issued with, can be revoked from a list, and expires; a
@@ -64,7 +67,11 @@ promise is write-only at the API — every list read nulls a secret's value, adm
 browser never holds one, and the claim never persists one onto the job row that every member can
 read. The values do cross the board→driver hop in the claim JSON; that hop already carries the
 worker token's authority and supports https, and under `AUTH_MODE=none` the whole board is open
-anyway. On the driver they reach the container through a 0600 `--env-file` written around the
+anyway. The App's installation token rides that same hop, minted onto the claim env under
+`GITHUB_TOKEN` (#28): it is the one-hour, installation-scoped credential this file already trusted
+for clones, now handed to the runner by name — a leak of it expires within the hour, which is the
+property that makes the App better than a PAT. On the driver they reach the container through a
+0600 `--env-file` written around the
 spawn — never through the driver process's own environment, where member-controlled names could
 steer the docker CLI on the host — and an agent can always `printenv` inside its own container:
 masking runner output would be decoration on top of a boundary that does not exist.
