@@ -764,6 +764,116 @@ describe('the kubernetes runner', () => {
         expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
     });
 
+    /*
+     * The fence's age bound is derived from THIS driver's lease, not fixed: the driver sends its
+     * own DRIVER_LEASE_SECONDS with every claim and the board honors it, and config accepts
+     * leases down to 10s. A LIVE predecessor — created at its attempt's claim, whose lease was
+     * lost seconds later — is younger than any fixed 60s cutoff, so a fixed bound would spare it
+     * and put two runners on one checkout. At reclaim time a predecessor is at least ~(lease −
+     * the claim→create delay) old while a replacement created after this fence began is ~0s old,
+     * so HALF the lease separates the two across the whole accepted range (10..3600s).
+     */
+    it('deletes a live predecessor younger than a fixed 60s cutoff when the lease is short', async () => {
+        const now = Date.now();
+        const predecessor = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
+        let predecessorAlive = true;
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path) => {
+            calls.push({ method, path });
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        items: predecessorAlive
+                            ? [{ metadata: { name: predecessor, creationTimestamp: new Date(now - 7_000).toISOString() } }]
+                            : [],
+                    }),
+                });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                if (path.startsWith(jobPath(namespace, predecessor))) predecessorAlive = false;
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        // A 10s lease puts the cutoff at 5s: the 7s-old predecessor is deletable — it is a live
+        // writer on this checkout, and the fence's whole purpose is that it must not survive.
+        const r = createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, DRIVER_LEASE_SECONDS: '10' }),
+            request,
+            async () => {},
+        );
+        const outcome = await r.run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        // Deleted BY NAME, Foreground...
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, predecessor)}?propagationPolicy=Foreground`,
+        });
+        // ...and only once it is off the label list does this attempt create its own Job:
+        // LIST (finds the predecessor), DELETE, LIST (clean), POST, then the status poll.
+        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
+    });
+
+    // The mirrored pin, same short lease: a Job created 1 second ago is younger than the 5s
+    // half-lease cutoff — it may be this fence's own replacement — so it is never deleted and
+    // never waited on; the create goes straight ahead.
+    it('spares a fresh successor under a short lease, never waiting on it', async () => {
+        const now = Date.now();
+        const freshName = 'factory-job-11111111-1111-4111-8111-111111111111-newlease-runner';
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path) => {
+            calls.push({ method, path });
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [{ metadata: { name: freshName, creationTimestamp: new Date(now - 1_000).toISOString() } }],
+                    }),
+                });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const r = createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, DRIVER_LEASE_SECONDS: '10' }),
+            request,
+            async () => {},
+        );
+        const outcome = await r.run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        // No delete of the fresh Job anywhere, and no second fence LIST either: one LIST whose
+        // only object is undatable-fresh frees the create immediately.
+        expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
+        expect(calls.map((call) => call.method)).toEqual(['GET', 'POST', 'GET', 'GET', 'GET']);
+    });
+
     // The board refuses a complete POST that does not fit its body limit — an oversized report
     // would fail to report, leave the job to its lease, and re-run finished work until the job
     // went dead. The cap has to hold for the WORST log, not the average one: a character cap

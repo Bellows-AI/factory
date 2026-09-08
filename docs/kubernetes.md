@@ -64,8 +64,13 @@ token and its namespace-scoped Role.
 **Re-claims fence by sweeping, and the sweep is age-bounded.** Job names carry the lease token
 now, so a previous attempt's leftover Jobs sit under other names no delete of this attempt's could
 reach — the runner sweeps them by LABEL instead: it lists `factory.job=<id>`, Foreground-deletes
-only the objects whose `creationTimestamp` predates a 60-second cutoff, by NAME, and creates only
-once no deletable object remains. The age bound is the safety, not the ordering: the selector
+only the objects whose `creationTimestamp` predates a cutoff of HALF THE CONFIGURED LEASE
+(`DRIVER_LEASE_SECONDS`), by NAME, and creates only once no deletable object remains. Half the
+lease is the bound because a reclaim's predecessor was created at its attempt's claim — at
+reclaim time it is at least ~(lease − the claim→create delay) old — while a replacement created
+after this fence began is ~0 seconds old, so the two are separated for every lease the config
+accepts (10..3600s), with margin for the claim→create delay and driver↔apiserver clock skew. The
+age bound is the safety, not the ordering: the selector
 cannot tell a previous attempt's leftover from a replacement attempt's live Job — a superseded
 worker's collection DELETE left in flight past its lease would otherwise foreground-delete the
 replacement's Job — so objects the fence cannot prove predate it are never deleted and never

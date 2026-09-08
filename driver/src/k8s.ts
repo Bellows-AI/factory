@@ -84,15 +84,6 @@ const POLL_MS = 2_000;
 export const POLL_MAX_CONSECUTIVE_FAILURES = 15;
 
 /**
- * How old an object must be before the fence may delete it. The fence may only delete objects
- * that PROVABLY predate it: a replacement attempt's Job, created after this fence began, carries
- * the same `factory.job` label and must be untouchable — the selector cannot tell the two apart.
- * The 60s guard dwarfs plausible driver↔apiserver clock skew and only delays leftover cleanup
- * by a minute.
- */
-const FENCE_MIN_AGE_MS = 60_000;
-
-/**
  * How long create() will wait for label-swept leftover Jobs to actually vanish — about five
  * minutes at POLL_MS, the same patience the status poll has. A list with no deletable objects
  * left is what frees the checkout for the replacement; exceeding the bound is a throw, which
@@ -401,9 +392,22 @@ export function createKubernetesRunner(
         Object.keys(claimEnv(job)).length ? forgetSecret(job) : Promise.resolve();
 
     const create = async (job: BoardJob, spec: RunnerJobSpec): Promise<void> => {
-        // Before any I/O: everything the fence deletes is dated against this instant, so an
-        // object must have been created before the fence even began to be deletable at all.
-        const cutoff = Date.now() - FENCE_MIN_AGE_MS;
+        /*
+         * Before any I/O: everything the fence deletes is dated against this instant, so an
+         * object must have been created before the fence even began to be deletable at all.
+         *
+         * The bound is HALF THE LEASE this driver claims with — config accepts 10..3600s, and
+         * the driver sends its own value with every claim — not a fixed guard. A reclaim's
+         * predecessor Job was created at its attempt's claim, so at reclaim time it is at least
+         * ~(lease − the claim→create delay) old; anything younger than half the lease cannot be
+         * a predecessor and may be this fence's replacement, which is spared: never deleted,
+         * never waited on. Half the lease leaves margin for the claim→create delay and
+         * driver↔apiserver clock skew across the whole accepted lease range. A fixed 60s had
+         * the mirrored hole: with a supported lease shorter than it, a LIVE predecessor younger
+         * than the guard would be spared and two runners would share one checkout — the thing
+         * this fence exists to prevent.
+         */
+        const cutoff = Date.now() - (config.leaseSeconds * 1000) / 2;
         const env = claimEnv(job);
         const post = async (): Promise<K8sResponse> => request('POST', jobsPath(config.k8sNamespace), spec);
         if (Object.keys(env).length) {
