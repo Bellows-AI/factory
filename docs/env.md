@@ -107,10 +107,39 @@ driver reads that as "no environment" (`?? {}`).
 
 The org scope IS the "Core secrets" of the issue, and `GITHUB_TOKEN` is the first one to configure:
 `gh` reads it natively, and `git` picks it up through a credential helper the agent can bootstrap.
-What was deliberately NOT built is auto-minting an installation token per claim: the App's tokens
-are read-only (`contents:read`), a mint would put a GitHub API call on the claim hot path, and it
-is impossible under `GITHUB_MODE=none`. The `env` field on the claim is the seam such a feature
-would layer onto later.
+
+Since #28 an app-mode board ALSO mints the App's installation token onto every claim, under the
+name `GITHUB_TOKEN`. This section used to call that "deliberately not built" and name three costs —
+read-only tokens, a GitHub call on the claim hot path, impossibility under `GITHUB_MODE=none` — and
+each is answered in place:
+
+- **The mint is the base layer, below every configured scope** (`withMintedToken` in job-store.ts,
+  pinned by the offline suite like `stackEnv` is). A `GITHUB_TOKEN` configured in org, workspace or
+  repo WINS the collision: it is a credential an operator deliberately chose, and silently
+  replacing one token with another is a failure nobody notices. The mint fills only the gap. The
+  rule does NOT reach the driver's own forwarded names, where the collision already runs the other
+  way by design: under an app-mode board the claim always carries `GITHUB_TOKEN`, and the claim
+  wins over `RUNNER_ENV`'s `-e NAME` and the k8s credentials Secret — so a `GITHUB_TOKEN` delivered
+  that way is shadowed from now on, and such a credential must move to the org scope to stay
+  authoritative.
+- **Each claim mints FRESH rather than reading the provider's cache.** The token the repo-read path
+  uses is cached and refreshed five minutes before expiry, so a claim served from it could hand a
+  runner a credential with minutes of life left — and a runner's env is written once, its run
+  capped at thirty minutes, with no refresh path. So the claim calls the provider's `fresh()`: one
+  GitHub call per claim (never per poll — an idle board mints nothing), a full hour of life every
+  time, and GitHub does not invalidate the token the mint replaced. A mint failure throws inside
+  the claim transaction, and the same rollback that guards the env resolver leaves the job queued
+  with its attempt unburned — the claim answers 503 and the driver retries, so a job is never
+  handed out with half an environment.
+- **Under `GITHUB_MODE=none` there is no provider, so no mint** — by construction, like every
+  other fetch. The claim env is exactly what it was.
+- **The token's permissions are the installation's defaults.** The create-installation-token API
+  can only narrow, and code cannot grant what the installation does not have: orchestration —
+  commits and PRs (`contents:write`, `pull_requests:write`) and reading CI (`actions:read`) — is
+  granted in the App's installation settings on GitHub, or the runner's token stays read-only.
+- **Remote Control runners get none of it**, exactly as they get no configured env: a forwarded
+  credential there does not fail, it degrades the session in silence. The login volume is the only
+  credential that mode gets.
 
 ## The page
 
@@ -127,8 +156,13 @@ org and repo editors read-only with a sentence saying why (the `root: null` post
   row. Needs a `*_test` database.
 - **`server/test/routes.env.test.ts`** — offline, against the in-memory double: sessions, the
   admin/member split, validation codes, `UNKNOWN_REPO`, the 503 path.
-- **`server/test-db/job-store.test.ts`** — the claim carries the stacked env, and no env when built
-  without a resolver.
+- **`server/test/job-store.env.test.ts`** — offline, the base-layer merge rule (`withMintedToken`):
+  a configured `GITHUB_TOKEN` wins in any scope, the mint fills the gap, and no mint changes
+  nothing.
+- **`server/test-db/job-store.test.ts`** — the claim carries the stacked env, the minted
+  installation token under it as the base layer, a fresh mint per claim, and no env when built
+  without a resolver; a resolver or mint failure leaves the job claimable without burning an
+  attempt.
 - **`driver/test/`** — names only on the docker argv, values in the child environment, reserved
   names dropped, RC exclusion, the k8s Secret lifecycle, and the loop never logging what it was
   handed.

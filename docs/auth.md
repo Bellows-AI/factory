@@ -214,7 +214,10 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 - **The worker token is minted by CLI only.** `npm run worker-token -- --name driver-1`, printed
   once, hash stored. No HTTP route mints a credential: everything else a member can do is bounded by
   the organization, whereas this issues something that claims work and reports results with no human
-  anywhere. The `fwt_` prefix makes a leaked token greppable and makes "cookie or worker token?"
+  anywhere. (The one precision since #28: the claim route mints a GitHub App installation token onto
+  the claim env, but that token is bounded by the installation, scoped to GitHub, and dead within
+  the hour — see [env.md](env.md). The worker token is the only credential that answers for the
+  board itself.) The `fwt_` prefix makes a leaked token greppable and makes "cookie or worker token?"
   answerable without a database lookup.
 - **The token is also the driver's org binding** — it is how a process with no session says which
   organization it is working for, which is why `worker_token.token_hash` is uniquely indexed even

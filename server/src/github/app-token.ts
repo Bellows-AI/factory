@@ -119,6 +119,13 @@ async function discoverInstallation(
 export interface InstallationTokenProvider extends TokenProvider {
     /** The installation these tokens are for, discovered on first use if it was not configured. */
     installationId(): Promise<string>;
+    /**
+     * A token minted NOW, never served from the cache — for a credential that has to outlive the
+     * instant it is handed out. The claim path uses this: a runner's env is written once and the
+     * job outlives the claim, so a cached token's remaining five minutes would die mid-run. The
+     * mint also refreshes what `get` caches, and GitHub does not invalidate the tokens it replaced.
+     */
+    fresh(): Promise<string>;
 }
 
 export function installationTokenProvider(options: AppTokenOptions): InstallationTokenProvider {
@@ -178,6 +185,10 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
                 pending = null;
             });
             return pending;
+        },
+
+        async fresh() {
+            return mint();
         },
 
         async installationId() {

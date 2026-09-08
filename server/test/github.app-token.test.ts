@@ -165,6 +165,36 @@ describe('the installation token', () => {
         await tokens.get();
         expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(2);
     });
+
+    it('mints fresh on demand, never serving the cache', async () => {
+        /*
+         * A claim hands the token to a runner whose job outlives the claim, so that credential has
+         * to start from full life: served from the cache it can carry the five-minute refresh
+         * margin into a run capped at thirty minutes, and the runner has no refresh path.
+         */
+        let now = Date.parse('2026-08-21T12:00:00.000Z');
+        let serial = 0;
+        const { calls, fetchFn } = stubFetch({
+            token: () => `ghs_${++serial}`,
+            expiresAt: () => new Date(now + 3600_000).toISOString(),
+        });
+        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, now: () => now });
+        const mints = () => calls.filter((call) => call.url.includes('/access_tokens')).length;
+
+        const cached = await tokens.get();
+        expect(cached).toBe('ghs_1');
+        expect(mints()).toBe(1);
+
+        // Minutes into the cached token's hour, a claim still mints, and gets a different token.
+        now += 50 * 60 * 1000;
+        const fresh = await tokens.fresh();
+        expect(fresh).toBe('ghs_2');
+        expect(mints()).toBe(2);
+
+        // The fresh mint is also what the cache now holds, so ordinary reads ride it.
+        await expect(tokens.get()).resolves.toBe('ghs_2');
+        expect(mints()).toBe(2);
+    });
 });
 
 describe('discovering the installation', () => {
