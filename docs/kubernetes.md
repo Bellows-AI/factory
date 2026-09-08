@@ -46,7 +46,7 @@ whose keys the pod references non-optionally, so a missing Secret fails loud ins
 silently without its env. The runner reaps the Secret with the run's own exit — once the verdict
 and log have been read, on a throw, or on the kill-induced Job 404 — and never by `kill()` itself,
 which can interleave the run's create() between the Secret POST and the Job POST; the re-claim
-fence deletes only the leftover Job. Stated honestly: a stale attempt whose Job was deleted before
+fence deletes only Jobs, never a Secret — it is the mutex described below. Stated honestly: a stale attempt whose Job was deleted before
 it existed runs to its natural end with its env intact and its report refused by the board — the
 pre-feature semantics — rather than sitting in `CreateContainerConfigError`. The tradeoff:
 a driver that crashes before cleanup leaks its attempt's Secret (Secrets have no TTL), and the
@@ -61,24 +61,23 @@ docker socket riding along with the dashboard, which `docs/security.md` refuses 
 reason. Runner pods set `automountServiceAccountToken: false`; the driver's own pod keeps its
 token and its namespace-scoped Role.
 
-**Re-claims fence by sweeping, and the sweep is age-bounded.** Job names carry the lease token
-now, so a previous attempt's leftover Jobs sit under other names no delete of this attempt's could
+**Re-claims fence by sweeping, and the sweep is a mutex.** Job names carry the lease token now,
+so a previous attempt's leftover Jobs sit under other names no delete of this attempt's could
 reach — the runner sweeps them by LABEL instead: it lists `factory.job=<id>`, Foreground-deletes
-only the objects whose `creationTimestamp` predates a cutoff of HALF THE CONFIGURED LEASE
-(`DRIVER_LEASE_SECONDS`), by NAME, and creates only once no deletable object remains. Half the
-lease is the bound because a reclaim's predecessor was created at its attempt's claim — at
-reclaim time it is at least ~(lease − the claim→create delay) old — while a replacement created
-after this fence began is ~0 seconds old, so the two are separated for every lease the config
-accepts (10..3600s), with margin for the claim→create delay and driver↔apiserver clock skew. The
-age bound is the safety, not the ordering: the selector
-cannot tell a previous attempt's leftover from a replacement attempt's live Job — a superseded
-worker's collection DELETE left in flight past its lease would otherwise foreground-delete the
-replacement's Job — so objects the fence cannot prove predate it are never deleted and never
-waited on, and the fence running before this attempt creates anything is defense in depth rather
-than the load-bearing argument. The alternative to leaving a live leftover Job running is two
-writers on one checkout, the thing actually worth preventing — the same rule the docker runner
-obeys with its label sweep. `docs/jobs.md` calls that the single most important line in the board
-contract.
+EVERY Job the selector answers, by NAME, and creates only once the selector answers nothing. No
+age filter and no cutoff: a predecessor's Job can be younger than any time-derived bound — its
+attempt's Secret creation and its own fencing wait on the kubelet's garbage collector, which is
+unbounded — while a Job created after this fence began must not be deleted, so no clock-derived
+predicate can classify correctly and the fence classifies nothing at all. Making that
+unconditional is safe for two reasons: this attempt's own Job cannot exist yet (its name carries
+this attempt's lease token, and nothing has posted it), and a superseded attempt whose live Job
+is fenced away STANDS DOWN — its status poll answers 404 ("the runner job ... no longer
+exists"), its run reaps its own Secret, and the loop leaves the job to its lease. The fenced
+loser burns its attempt — strictly lesser than the harm the fence exists to prevent, two writers
+on one checkout, which `docs/jobs.md` calls the single most important line in the board contract
+— and attempt-scoped names are why the loser's cleanup can never reach the winner: everything
+its kill and its Secret reaping address carries its own lease token. This is parity with the
+docker runner's fence, which sweeps by job label at execution time.
 
 **Live output here is the pod log, re-read per poll.** The docker runner sees output as stream
 chunks; this platform has no equivalent attach, so the runner reads the pod log's tail on each

@@ -322,7 +322,7 @@ describe('the kubernetes runner', () => {
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
         // The fence is the first thing the run does: a label LIST of the job's previous
-        // attempts — nothing deletable answers — before this one creates anything.
+        // attempts — nothing answers — before this one creates anything.
         expect(calls[0]).toEqual({ method: 'GET', path: expect.stringContaining(jobsPath(namespace)) });
         expect(calls[0].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
@@ -560,20 +560,14 @@ describe('the kubernetes runner', () => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
                 // First read: the old Job is still listed. Second: gone. Everything after is
-                // the NEW Job's own status poll.
+                // the NEW Job's own status poll. The fixture carries no creationTimestamp —
+                // the fence classifies nothing, so it reads none.
                 return Promise.resolve(
                     lists === 1
                         ? {
                               status: 200,
                               body: JSON.stringify({
-                                  items: [
-                                      {
-                                          metadata: {
-                                              name: leftover,
-                                              creationTimestamp: new Date(Date.now() - 10 * 60_000).toISOString(),
-                                          },
-                                      },
-                                  ],
+                                  items: [{ metadata: { name: leftover } }],
                               }),
                           }
                         : { status: 200, body: JSON.stringify({ items: [] }) },
@@ -610,12 +604,11 @@ describe('the kubernetes runner', () => {
     // A re-claim whose sweep never lands — an apiserver losing deletes, say — must not loop
     // forever heartbeating a lease around a create that would run alongside leftovers. Bounded,
     // then thrown: the job goes back to the board rather than two writers racing one checkout.
+    // "Deletable" means ANY item the selector answers — the fence classifies nothing — so the
+    // fixture carries no timestamp for it to read.
     it('gives up when a deletable leftover job never disappears', async () => {
         const leftover = {
-            metadata: {
-                name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner',
-                creationTimestamp: new Date(Date.now() - 10 * 60_000).toISOString(),
-            },
+            metadata: { name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner' },
         };
         const request: K8sRequest = (method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
@@ -694,15 +687,18 @@ describe('the kubernetes runner', () => {
     });
 
     /*
-     * The reported race: attempt A's fence DELETE is still in flight when A's lease expires and
-     * the board reclaims the job; replacement attempt B creates its Job under the same
-     * `factory.job` label. Kubernetes evaluates a selector at PROCESSING time, so A's delayed
-     * collection DELETE would foreground-delete B's active Job, and B's runner would abort on
-     * the vanished object. The fence therefore deletes BY NAME, and only objects whose
-     * creationTimestamp proves they predate the fence: a Job created after the fence began —
-     * the replacement's own — is never deleted and never waited on.
+     * The fence classifies NOTHING, so every Job the `factory.job` selector answers is deleted:
+     * a predecessor's leftover and a successor that reclaimed while this fence was in flight are
+     * indistinguishable to a selector, and no timestamp makes them distinguishable — a
+     * predecessor's Job can be younger than any cutoff, because its attempt's Secret creation
+     * and its own fencing waited on the kubelet's unbounded garbage collection. Each is deleted
+     * BY NAME with Foreground propagation; a collection DELETE is still never issued, because
+     * the API server evaluates a selector at processing time and one in flight could reach Jobs
+     * posted after the fence began — this attempt's own, once created. The fresh successor
+     * fenced here stands down: its status poll answers 404 and its runner leaves the job to the
+     * lease. A burned attempt is the documented cost; two writers on one checkout is the harm.
      */
-    it("deletes only leftover jobs older than the fence, never a replacement's fresh Job", async () => {
+    it('fences every Job the label answers — leftover and fresh successor alike — by name, never as a collection DELETE', async () => {
         const now = Date.now();
         const oldName = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         const freshName = 'factory-job-11111111-1111-4111-8111-111111111111-newlease-runner';
@@ -720,8 +716,8 @@ describe('the kubernetes runner', () => {
                 });
             }
             // The API server evaluates a selector at processing time: a collection DELETE would
-            // take BOTH jobs — the genuine leftover and the replacement's fresh one. That is
-            // the bug this fence must make unreachable.
+            // take EVERY Job of the id — including this attempt's own once created. The fence
+            // must never issue one.
             if (method === 'DELETE' && path.includes('labelSelector=')) {
                 old = false;
                 fresh = false;
@@ -748,33 +744,35 @@ describe('the kubernetes runner', () => {
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
-        // No collection DELETE anywhere in the run: one whose selector would match the
-        // replacement's fresh Job is exactly the delete this fence must never issue.
+        // No collection DELETE anywhere in the run: one whose selector would match this
+        // attempt's own Job once created is exactly the delete this fence must never issue.
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes('labelSelector='))).toBe(false);
-        // The old leftover goes by NAME, Foreground.
+        // Both Jobs go BY NAME, Foreground — the fresh successor too. Its runner detects the
+        // vanished Job in its status poll and stands down.
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, oldName)}?propagationPolicy=Foreground`,
         });
-        // The fresh Job — created after this fence began, the replacement's own — is never
-        // deleted at all.
-        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(freshName))).toBe(false);
-        // And the fence did not wait for it: the LIST after the deletes found only fresh
-        // objects, which do not block — the create went straight ahead.
-        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
+        });
+        // LIST (finds both), two deletes, LIST (clean), create, then the status poll.
+        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
     });
 
     /*
-     * The fence's age bound is derived from THIS driver's lease, not fixed: the driver sends its
-     * own DRIVER_LEASE_SECONDS with every claim and the board honors it, and config accepts
-     * leases down to 10s. A LIVE predecessor — created at its attempt's claim, whose lease was
-     * lost seconds later — is younger than any fixed 60s cutoff, so a fixed bound would spare it
-     * and put two runners on one checkout. At reclaim time a predecessor is at least ~(lease −
-     * the claim→create delay) old while a replacement created after this fence began is ~0s old,
-     * so HALF the lease separates the two across the whole accepted range (10..3600s).
+     * THE race the mutex closes: this attempt loses its lease while its own Secret creation and
+     * fencing consume more than half of it. The predecessor's Job — a different lease token —
+     * was created 7 seconds before the fence's deciding list under a 10s lease, so the
+     * half-lease cutoff computed at fence entry classified it FRESH and spared it: two writers
+     * on one checkout. No clock-derived predicate can classify that correctly — a Job stamped
+     * fence-entry-fresh is exactly what the cutoff tested — so the fence no longer classifies
+     * at all: any Job the label answers is deleted by name and awaited before the create. The
+     * lease is pinned at the supported minimum to prove nothing timing-based remains
+     * load-bearing.
      */
-    it('deletes a live predecessor younger than a fixed 60s cutoff when the lease is short', async () => {
-        const now = Date.now();
+    it('deletes a live predecessor the age filter would have called fresh, and waits for it before creating', async () => {
         const predecessor = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let predecessorAlive = true;
         const calls: Call[] = [];
@@ -785,7 +783,7 @@ describe('the kubernetes runner', () => {
                     status: 200,
                     body: JSON.stringify({
                         items: predecessorAlive
-                            ? [{ metadata: { name: predecessor, creationTimestamp: new Date(now - 7_000).toISOString() } }]
+                            ? [{ metadata: { name: predecessor, creationTimestamp: new Date().toISOString() } }]
                             : [],
                     }),
                 });
@@ -807,8 +805,8 @@ describe('the kubernetes runner', () => {
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
-        // A 10s lease puts the cutoff at 5s: the 7s-old predecessor is deletable — it is a live
-        // writer on this checkout, and the fence's whole purpose is that it must not survive.
+        // A 10s lease puts the entry-time cutoff 5s back: the predecessor — younger than that
+        // at the deciding list — is a live writer on this checkout, and it must not survive.
         const r = createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, DRIVER_LEASE_SECONDS: '10' }),
             request,
@@ -822,17 +820,24 @@ describe('the kubernetes runner', () => {
             method: 'DELETE',
             path: `${jobPath(namespace, predecessor)}?propagationPolicy=Foreground`,
         });
-        // ...and only once it is off the label list does this attempt create its own Job:
+        // ...and only once the selector answers nothing does this attempt create its own Job:
         // LIST (finds the predecessor), DELETE, LIST (clean), POST, then the status poll.
         expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
     });
 
-    // The mirrored pin, same short lease: a Job created 1 second ago is younger than the 5s
-    // half-lease cutoff — it may be this fence's own replacement — so it is never deleted and
-    // never waited on; the create goes straight ahead.
-    it('spares a fresh successor under a short lease, never waiting on it', async () => {
-        const now = Date.now();
+    /*
+     * The round-7 inversion, now doctrine: a Job created seconds ago — a successor that
+     * reclaimed while this fence was in flight — is fenced too. The previous round spared it as
+     * "possibly this fence's own replacement"; the mutex makes no exception, because the one Job
+     * that must never be deleted (this attempt's own) cannot exist yet, and everything else the
+     * label answers is a writer on the checkout. The successor stands down — its status poll
+     * answers 404 — and the fence waits on it like any other object, until the selector answers
+     * nothing. Pinned under the shortest supported lease: the fence is identical at every lease
+     * length, because it reads none.
+     */
+    it('fences a fresh successor too — a stale fence fencing its replacement is the documented mutex behavior', async () => {
         const freshName = 'factory-job-11111111-1111-4111-8111-111111111111-newlease-runner';
+        let fresh = true;
         const calls: Call[] = [];
         const request: K8sRequest = (method, path) => {
             calls.push({ method, path });
@@ -840,11 +845,14 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve({
                     status: 200,
                     body: JSON.stringify({
-                        items: [{ metadata: { name: freshName, creationTimestamp: new Date(now - 1_000).toISOString() } }],
+                        items: fresh
+                            ? [{ metadata: { name: freshName, creationTimestamp: new Date().toISOString() } }]
+                            : [],
                     }),
                 });
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                if (path.startsWith(jobPath(namespace, freshName))) fresh = false;
                 return Promise.resolve({ status: 200, body: '{}' });
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
@@ -868,10 +876,72 @@ describe('the kubernetes runner', () => {
         const outcome = await r.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
-        // No delete of the fresh Job anywhere, and no second fence LIST either: one LIST whose
-        // only object is undatable-fresh frees the create immediately.
-        expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
+        // Deleted BY NAME, Foreground, exactly like any other object the selector answers...
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
+        });
+        // ...and awaited: LIST (finds it), DELETE, LIST (clean), POST, then the status poll.
+        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
+    });
+
+    // A collection that answers 404 has nothing behind it to fence: straight to the create, no
+    // second list, no deletes.
+    it('treats a 404 from the label list as nothing left to fence', async () => {
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path) => {
+            calls.push({ method, path });
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
         expect(calls.map((call) => call.method)).toEqual(['GET', 'POST', 'GET', 'GET', 'GET']);
+    });
+
+    // A dropped connection says nothing about whether the objects are gone; the fence keeps
+    // polling within the same bound instead of creating alongside what may still be there.
+    it('keeps fencing through a transport failure on the list', async () => {
+        const calls: Call[] = [];
+        let lists = 0;
+        const request: K8sRequest = (method, path) => {
+            calls.push({ method, path });
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                lists += 1;
+                // First read: the connection drops. Second: the selector answers nothing.
+                return lists === 1
+                    ? Promise.reject(new Error('connection reset'))
+                    : Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        expect(calls.map((call) => call.method)).toEqual(['GET', 'GET', 'POST', 'GET', 'GET', 'GET']);
     });
 
     // The board refuses a complete POST that does not fit its body limit — an oversized report
