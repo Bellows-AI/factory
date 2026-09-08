@@ -265,4 +265,20 @@ describe('discovering the installation', () => {
             installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get(),
         ).rejects.toThrow(/installed on 2 accounts \(acme, other\)[\s\S]*GITHUB_APP_INSTALLATION_ID/);
     });
+
+    it('abandons a discovery that hangs rather than holding the caller forever', async () => {
+        /*
+         * With no configured id, discovery is the FIRST request a claim makes, and it runs inside
+         * the claim's transaction — so a hung lookup holds the job-row lock and a pool connection
+         * exactly as a hung mint would, and it has to abort on the same clock. This stub only
+         * settles when its signal does.
+         */
+        const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason));
+            })) as typeof fetch;
+        const tokens = installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn, mintTimeoutMs: 10 });
+
+        await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
+    });
 });

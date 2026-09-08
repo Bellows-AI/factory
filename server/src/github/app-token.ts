@@ -41,10 +41,11 @@ const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 /**
  * How long a mint request may run before it is abandoned.
  *
- * A claim runs this request inside its transaction, so GitHub answering slowly holds that claim's
+ * A claim runs these requests inside its transaction, so GitHub answering slowly holds that claim's
  * job-row lock and one of the pool's connections for the duration — and unrelated claims,
- * heartbeats and completions all stall behind a remote request. Aborting the mint bounds the hold;
- * the claim surfaces the failure and its 503/retry path takes over.
+ * heartbeats and completions all stall behind a remote request. Both of them — the installation
+ * lookup, when no id is configured, and the token POST — abort on this clock; the claim surfaces
+ * the failure and its 503/retry path takes over.
  */
 const MINT_TIMEOUT_MS = 5000;
 
@@ -97,6 +98,7 @@ async function discoverInstallation(
     apiUrl: string,
     jwt: string,
     fetchFn: typeof fetch,
+    timeoutMs: number,
 ): Promise<string> {
     const response = await fetchFn(`${apiUrl}/app/installations?per_page=100`, {
         headers: {
@@ -105,6 +107,9 @@ async function discoverInstallation(
             // GitHub rejects an API request with no User-Agent outright.
             'user-agent': 'factory-ai',
         },
+        // The same hold MINT_TIMEOUT_MS puts on the token POST below: with no configured id this
+        // lookup is the first request a claim makes, and a hung one pins the transaction all the same.
+        signal: AbortSignal.timeout(timeoutMs),
     });
     const body = (await json(response, 'installation lookup')) as {
         id?: number;
@@ -164,7 +169,7 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
 
     const mint = async (): Promise<string> => {
         const jwt = appJwt(github.appId, key, now());
-        installation ??= await discoverInstallation(github.apiUrl, jwt, fetchFn);
+        installation ??= await discoverInstallation(github.apiUrl, jwt, fetchFn, mintTimeoutMs);
 
         const response = await fetchFn(`${github.apiUrl}/app/installations/${installation}/access_tokens`, {
             method: 'POST',
