@@ -413,6 +413,25 @@ function parse<T>(body: string): T {
 }
 
 /**
+ * Per-run cleanup state, created fresh inside run() for every run and threaded through run0 into
+ * create — deliberately NOT a closure cell on the runner object: the runner object is reused
+ * across runs and nothing structurally prevents runs from overlapping, so shared closure state
+ * would let one run's stand-down suppress another run's release.
+ */
+interface RunCleanup {
+    /**
+     * True once a post-create stand-down could not prove its own Job deleted: the Job's fate now
+     * belongs to the kubelet's deadline, and the runner may still be on this attempt's checkout
+     * when the next claimant arrives — so the claim is left held rather than released. A checkout
+     * is never handed over voluntarily while this attempt's runner may still be on it. Leaving it
+     * held is safe by construction: acquireClaim's stale-holder takeover (attempt-ordered,
+     * uid-preconditioned release) is the documented self-healing route for a claim whose holder
+     * died, and that claimant sweeps every `factory.job=<id>` Job before starting its own runner.
+     */
+    holdClaim: boolean;
+}
+
+/**
  * The kubernetes Runner. `request` is injected — the `createBoard(computeFetch)` pattern — and so is
  * `sleep`, which is what lets the poll loop be tested without two seconds per poll.
  */
@@ -445,12 +464,18 @@ export function createKubernetesRunner(
      * Best-effort delete of THIS attempt's own Job — by its own attempt-scoped name, which is
      * what keeps it from ever reaching another attempt's objects. Used by the claim verifies
      * around the Job POST: a run that cannot prove the checkout is still its own must not leave a
-     * runner on it. A failure is the kubelet's deadline's business, not this call's.
+     * runner on it. The ANSWER is the delete's verdict, and callers act on it: true when the Job
+     * is provably going away (2xx) or provably already gone (404 — nothing of ours is left on
+     * the checkout either way); false for any other non-2xx status or a transport rejection,
+     * where the Job may survive to the kubelet's deadline. On false the caller HOLDS the
+     * checkout claim instead of releasing it — the one thing worse than a held claim is handing
+     * the checkout to a replacement while this attempt's runner may still be on it — and the
+     * next claimant's stale-holder takeover is the documented route that reclaims both.
      */
-    const deleteOwnJob = (job: BoardJob): Promise<void> =>
+    const deleteOwnJob = (job: BoardJob): Promise<boolean> =>
         request('DELETE', `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Foreground`).then(
-            () => undefined,
-            () => undefined,
+            (response) => response.status < 300 || response.status === 404,
+            () => false,
         );
 
     /**
@@ -540,7 +565,7 @@ export function createKubernetesRunner(
         }
     };
 
-    const create = async (job: BoardJob, spec: RunnerJobSpec): Promise<void> => {
+    const create = async (job: BoardJob, spec: RunnerJobSpec, cleanup: RunCleanup): Promise<void> => {
         const env = claimEnv(job);
 
         /*
@@ -721,7 +746,10 @@ export function createKubernetesRunner(
         try {
             held = await readVerdict(claimPath(config.k8sNamespace, job), 'reading the checkout claim');
         } catch (e) {
-            await deleteOwnJob(job);
+            const deleted = await deleteOwnJob(job);
+            // A failed delete leaves the Job to the kubelet's deadline: hold the claim — the
+            // checkout is never handed over while this attempt's runner may still be on it.
+            if (!deleted) cleanup.holdClaim = true;
             throw e;
         }
         const claim = parse<K8sClaim>(held.body);
@@ -730,7 +758,10 @@ export function createKubernetesRunner(
             held.status === 404 ||
             (readOurs && claim.data?.holder !== undefined && claim.data.holder !== job.leaseToken)
         ) {
-            await deleteOwnJob(job);
+            const deleted = await deleteOwnJob(job);
+            // A failed delete leaves the Job to the kubelet's deadline: hold the claim — the
+            // checkout is never handed over while this attempt's runner may still be on it.
+            if (!deleted) cleanup.holdClaim = true;
             throw new Error(
                 `job ${job.id} stands down: the checkout claim was taken over before the runner could start`,
             );
@@ -741,7 +772,10 @@ export function createKubernetesRunner(
             // alternative to two writers on one checkout, the fence's own rule; the delete is
             // best-effort, so an apiserver that is truly gone still leaves the Job to the
             // kubelet's activeDeadlineSeconds, exactly as before.
-            await deleteOwnJob(job);
+            const deleted = await deleteOwnJob(job);
+            // A failed delete leaves the Job to the kubelet's deadline: hold the claim — the
+            // checkout is never handed over while this attempt's runner may still be on it.
+            if (!deleted) cleanup.holdClaim = true;
             throw new Error(
                 `the checkout claim of job ${job.id} could not be confirmed after creating the runner job ` +
                     `(answered ${held.status})`,
@@ -816,24 +850,44 @@ export function createKubernetesRunner(
              * incarnation (releaseClaim never touches a claim that moved on); the Secret is
              * reaped last. With the lease token in the name, both this and kill() can only ever
              * remove their own attempt's Secret.
+             *
+             * The one exception: a post-create stand-down whose own-Job DELETE did not answer
+             * success or already-gone records that in `cleanup.holdClaim`, and the claim is left
+             * held — the Job's fate then belongs to the kubelet's deadline, and this attempt's
+             * runner may still be on the checkout when a replacement claimant arrives. Releasing
+             * would hand the checkout over with a live writer on it. The held claim needs no other
+             * cleanup: acquireClaim's stale-holder takeover is the documented self-healing route
+             * (the next claimant releases it, uid-preconditioned, and sweeps every `factory.job`
+             * Job before posting its own). `forgetSecretIfAny` stays unconditional — the Secret is
+             * attempt-scoped and a running pod read its env at container start, which
+             * `restartPolicy: Never` + `backoffLimit: 0` mean no restart can need again. The state
+             * is a fresh cell per run, never a closure field: the runner object is reused across
+             * runs and nothing prevents runs from overlapping, so shared closure state could let
+             * one run's stand-down suppress another run's release.
              */
+            const cleanup: RunCleanup = { holdClaim: false };
             try {
-                return await runner.run0(job, session, onOutput);
+                return await runner.run0(job, session, onOutput, cleanup);
             } finally {
-                await releaseClaim(job);
+                if (!cleanup.holdClaim) await releaseClaim(job);
                 await forgetSecretIfAny(job);
             }
         },
 
         // The body of run() above, split out only so its cleanup can wrap the throw paths too.
-        async run0(job: BoardJob, session: RunSession, onOutput?: (tail: string) => void): Promise<RunOutcome> {
+        async run0(
+            job: BoardJob,
+            session: RunSession,
+            onOutput: ((tail: string) => void) | undefined,
+            cleanup: RunCleanup,
+        ): Promise<RunOutcome> {
             // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session
             // is an opencode job, which this executor does not carry. Mirrors the docker runner's
             // own refusal of a sessionless claude-code run.
             if (!session) {
                 throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
             }
-            await create(job, runnerJobSpec(config, job, session));
+            await create(job, runnerJobSpec(config, job, session), cleanup);
 
             /*
              * Poll until the Job reports a terminal status. The kubelet-enforced

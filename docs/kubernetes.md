@@ -108,8 +108,10 @@ never an unbounded one, and never a teardown of the winner; the cost is the lose
 attempt, the documented fenced-loser semantics (issue #32, both races). A verify that cannot
 answer for the full patience leaves nothing behind either: the loser best-effort deletes its
 own Job and burns the attempt — burning an attempt is the alternative to two writers on one
-checkout, the fence's own rule — and only an apiserver that is truly gone leaves the Job to
-the kubelet's deadline.
+checkout, the fence's own rule. When that best-effort delete itself fails, the Job is left
+to the kubelet's deadline AND the claim stays held — the checkout is never handed over
+voluntarily while this attempt's runner may still be on it; the next claimant takes over via
+the stale-holder path.
 
 The docker runner's fence — sweep by label at execution time — keeps the old shape, deliberately:
 the docker API has no conditional delete and no unique-name arbitration, so this protocol cannot

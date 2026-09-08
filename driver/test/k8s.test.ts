@@ -1782,6 +1782,308 @@ describe('the kubernetes runner', () => {
         });
     });
 
+    /*
+     * The failed-delete rule: a post-create stand-down whose own-Job DELETE answers neither 2xx
+     * nor 404 leaves the Job's fate to the kubelet's deadline — and this attempt's runner may
+     * still be on the checkout when a replacement claimant arrives. So the claim is NOT released:
+     * the checkout is never handed over voluntarily while this attempt's runner may still be on
+     * it, and the next claimant's stale-holder takeover (uid-preconditioned release, then a sweep
+     * of every `factory.job=<id>` Job) is the documented route that reclaims both.
+     */
+    it('holds the claim when the post-create verify exhausts its patience and the own-Job delete fails', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    // Read 1 is the pre-create verify (ours); reads 2 through
+                    // POLL_MAX_CONSECUTIVE_FAILURES + 2 are the post-create verify, answering 500
+                    // until its patience is spent; anything after would be the release's read.
+                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
+                    return Promise.resolve(
+                        reads === 1 || spent
+                            ? {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              }
+                            : { status: 500, body: 'unavailable' },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                // The delete fails: whether the Job is really going away is unknown.
+                return Promise.resolve({ status: 500, body: 'refused' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
+        // The delete failed, so the Job may still be on the checkout: the claim is left held.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+    });
+
+    // A 404 from the own-Job DELETE is a SUCCESS here: the Job is already gone, so nothing of
+    // this attempt's is left on the checkout and the claim may be released as usual.
+    it('releases the claim when the own-Job delete answers 404 — already gone is a success', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
+                    return Promise.resolve(
+                        reads === 1 || spent
+                            ? {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              }
+                            : { status: 500, body: 'unavailable' },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
+        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
+        expect(release).toBeDefined();
+        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
+            'claim-uid-1',
+        );
+    });
+
+    // A 2xx from the own-Job DELETE is the ordinary success: the Job is going away, so the
+    // existing behavior is preserved and the claim is released, uid-preconditioned as ever.
+    it('releases the claim when the own-Job delete succeeds after an exhausted post-create verify', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    const spent = reads > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
+                    return Promise.resolve(
+                        reads === 1 || spent
+                            ? {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              }
+                            : { status: 500, body: 'unavailable' },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
+        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
+        expect(release).toBeDefined();
+        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
+            'claim-uid-1',
+        );
+    });
+
+    /*
+     * The taken-over branch sets the hold flag the same way, but the claim itself was never this
+     * attempt's to release once a newer attempt holds it — releaseClaim was a no-op there before
+     * the flag existed, and this pin keeps the uniform flag from regressing that: a failed delete
+     * must not turn a no-op release into a delete of a claim this attempt does not hold.
+     */
+    it('leaves a taken-over claim untouched when the stand-down deletes nothing', async () => {
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let jobPosted = false;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                jobPosted = true;
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath && method === 'GET') {
+                // The claim is ours until this attempt's Job exists; the takeover lands the
+                // moment it is. Later reads — the release's — still answer the new holder.
+                return Promise.resolve(
+                    jobPosted
+                        ? {
+                              status: 200,
+                              body: JSON.stringify({
+                                  metadata: { uid: 'claim-uid-9' },
+                                  data: { holder: NEW_TOKEN, attempt: '2' },
+                              }),
+                          }
+                        : {
+                              status: 200,
+                              body: JSON.stringify({
+                                  metadata: { uid: 'claim-uid-8' },
+                                  data: { holder: job.leaseToken, attempt: '1' },
+                              }),
+                          },
+                );
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 500, body: 'refused' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /taken over before the runner could start/,
+        );
+        // The stand-down did try its own Job delete — and only its own.
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+        });
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(NEW_TOKEN))).toBe(false);
+        // And the claim that moved on is never deleted.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+    });
+
+    // Uniformity: the unverifiable branch (a read that answers but names no holder) holds the
+    // claim on a failed delete exactly like the exhausted-patience branch — and here the release
+    // read WOULD answer ours, so the flag is the only thing standing between the claim and its
+    // release while this attempt's runner may still be on the checkout.
+    it('holds the claim when the verify cannot name a holder and the own-Job delete fails', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    // Read 1: the pre-create verify, ours. Read 2: the post-create verify, a 200
+                    // that names no holder — the unverifiable branch. Read 3+: the release read.
+                    return Promise.resolve(
+                        reads === 2
+                            ? { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
+                            : {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 500, body: 'refused' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not be confirmed/,
+        );
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+    });
+
     // The sweep deletes only when the claim verify answers definitively: a blink on the claim
     // read is 'unknown' — nothing is deleted that round, and the fence looks again within its
     // bound, because deleting on a maybe is what would reach the winner's Job.
