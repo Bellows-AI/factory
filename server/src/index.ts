@@ -8,14 +8,14 @@ import { migrate } from './db/migrate.js';
 import { createPrStore } from './db/pr-store.js';
 import { createUserRepoStore } from './db/user-repo-store.js';
 import { createUserExecutorStore } from './db/user-executor-store.js';
+import { createEnvVarStore } from './db/env-var-store.js';
 import { createCloneQueue } from './workspace/queue.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { createGitHubClient } from './github/client.js';
 import { createGitHubAppClient } from './github/app-client.js';
-import { installationTokenProvider } from './github/app-token.js';
+import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource } from './github/repo-source.js';
-import type { TokenProvider } from './github/token.js';
 import { createStatsService } from './stats-service.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
 
@@ -36,7 +36,7 @@ console.log(`[org] ${config.orgName} (${config.orgId})`);
  * The private key is on `config` already: resolveConfig read GITHUB_APP_PRIVATE_KEY_FILE before the
  * validator ran, so there is no second place here that has to know a file might hold it.
  */
-let tokens: TokenProvider | undefined;
+let tokens: InstallationTokenProvider | undefined;
 let appClient;
 if (config.github.mode === 'app') {
     const provider = installationTokenProvider({ github: config.github });
@@ -104,11 +104,18 @@ const client = createGitHubClient({ config, repos, tokens });
 
 // Unconditional, unlike the telemetry store: the database is mandatory and the board is not a
 // product option. It gates its own queries on `ready`, so it is safe to build before migrations.
+// `env` is what makes the claim carry the runner environment — resolved here, in the store, not in
+// the route. `githubToken` lays the App's installation token under that env as its base layer, so
+// a runner can orchestrate GitHub (PRs, commits, CI reads) with nothing configured; under `none`
+// there is no provider and the claim mints nothing, exactly as nothing here can fetch.
+const envVarStore = createEnvVarStore({ sql, orgId: config.orgId, ready });
 const jobStore = createJobStore({
     sql,
     orgId: config.orgId,
     hasWorkspaces: config.workspaceRoot !== null,
     ready,
+    env: envVarStore,
+    ...(tokens ? { githubToken: tokens } : {}),
 });
 
 // Unconditional too, and note that this does NOT depend on a workspace root being configured: with
@@ -179,6 +186,7 @@ const app = await buildApp({
     jobs: jobStore,
     userRepos: userRepoStore,
     userExecutors: userExecutorStore,
+    envVars: envVarStore,
     cloneQueue,
     auth: authStore,
     identity,

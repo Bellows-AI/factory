@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell.js';
 import { DashboardPage } from './pages/DashboardPage.js';
+import { EnvPage } from './pages/EnvPage.js';
 import { TaskComposerPage } from './pages/TaskComposerPage.js';
 import { TaskDetailPage } from './pages/TaskDetailPage.js';
 import { TasksLayout } from './pages/TasksLayout.js';
@@ -28,6 +29,7 @@ export function App() {
             <Route element={<AppShell />}>
                 <Route index element={<DashboardPage />} />
                 <Route path="workspace" element={<WorkspacePage />} />
+                <Route path="env" element={<EnvPage />} />
                 <Route path="tasks" element={<TasksLayout />}>
                     <Route index element={<TaskComposerPage />} />
                     <Route path=":id" element={<TaskDetailPage />} />

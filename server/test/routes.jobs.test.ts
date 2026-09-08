@@ -265,6 +265,16 @@ describe('POST /api/jobs/claim', () => {
         expect(response.json()).toEqual(claim);
     });
 
+    // The claim's env is the board's business, resolved in the store, and the route must not
+    // reshape it — the driver forwards exactly what it is handed.
+    it('passes a resolved environment through verbatim', async () => {
+        const withEnv: Claim = { ...claim, env: { CORE: 'value', SECRET: 'value' } };
+        const instance = await harnessWith(stubStore({ claim: withEnv }));
+        const response = await post(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().env).toEqual({ CORE: 'value', SECRET: 'value' });
+    });
+
     // The idle poll is the common case: it must be recognisable without parsing a body.
     it('answers 204 when nothing is waiting', async () => {
         const instance = await harnessWith(stubStore({ claim: null }));

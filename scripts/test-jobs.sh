@@ -177,7 +177,10 @@ npm run build -w core >/dev/null 2>&1 && npm run build -w server >/dev/null 2>&1
 }
 
 echo 'building the stub runner images'
-printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' >"$work/Dockerfile.ok"
+# The OK stub prints two env probes BEFORE echoing its arguments, so the output proves both the
+# argv path (prompt, session id) and the env path (the claim's stacked environment) reached the
+# container.
+printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo \\"$@\\"","sh"]\n' >"$work/Dockerfile.ok"
 printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo boom >&2; exit 3"]\n' >"$work/Dockerfile.fail"
 docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null || {
@@ -230,6 +233,18 @@ expect_status 'refuses an empty command'  400 POST /api/jobs '{"command":""}'
 expect_status 'refuses a malformed id'    400 GET '/api/jobs/not-a-uuid'
 expect_status 'unknown job is 404'        404 GET '/api/jobs/00000000-0000-4000-8000-000000000000'
 expect_status 'refuses an unknown status' 400 GET '/api/jobs?status=pending'
+
+# The runner environment, configured the way the UI would: one plain variable and one secret on the
+# org ("core") scope. AUTH_MODE=none resolves the stand-in admin, so the PUT is allowed.
+expect_status 'puts the core env' 200 PUT /api/env/org \
+    '{"vars":[{"name":"FACTORY_ENV_PROBE","value":"org-marker","isSecret":false},{"name":"SECRET_PROBE","value":"secret-marker","isSecret":true}]}'
+expect_status 'refuses an env name that is not a name' 400 PUT /api/env/org \
+    '{"vars":[{"name":"not a name","value":"x","isSecret":false}]}'
+env_list="$(body "$(api GET /api/env)")"
+expect_contains 'the env list names the plain variable' "$env_list" 'FACTORY_ENV_PROBE'
+# The write-only contract, end to end: the secret travels by name, its value is withheld from
+# every read.
+expect_contains 'the core secret value is withheld' "$env_list" '"name":"SECRET_PROBE","value":null'
 
 id="$(create_job 'board only')"
 case "$id" in
@@ -357,6 +372,15 @@ case "$session" in
     *) bad 'the session id was reported' "got '$session'" ;;
 esac
 expect_contains 'the runner was given that id' "$(field "$ran" output)" "$session"
+
+# The vertical proof for the runner environment: configured on the board in the board section,
+# resolved onto the claim, forwarded into the container, printed by the stub. Today the whole
+# chain is dark; with it, the markers come back in the job's output.
+env_job="$(create_job 'env probe')"
+expect_contains 'runs the env job' "$(await_settled "$env_job")" succeeded
+env_ran="$(body "$(api GET "/api/jobs/$env_job")")"
+expect_contains 'the core env reached the runner'     "$(field "$env_ran" output)" 'org-marker'
+expect_contains 'the core secret reached the runner'  "$(field "$env_ran" output)" 'secret-marker'
 
 stop_driver
 start_driver "$IMAGE_FAIL"

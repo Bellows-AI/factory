@@ -38,6 +38,17 @@ const JWT_CLOCK_SKEW_SECONDS = 60;
  */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
+/**
+ * How long a mint request may run before it is abandoned.
+ *
+ * A claim runs these requests inside its transaction, so GitHub answering slowly holds that claim's
+ * job-row lock and one of the pool's connections for the duration — and unrelated claims,
+ * heartbeats and completions all stall behind a remote request. Both of them — the installation
+ * lookup, when no id is configured, and the token POST — abort on this clock; the claim surfaces
+ * the failure and its 503/retry path takes over.
+ */
+const MINT_TIMEOUT_MS = 5000;
+
 const base64url = (value: string | Buffer): string =>
     Buffer.from(value).toString('base64url');
 
@@ -61,6 +72,7 @@ export interface AppTokenOptions {
     readonly github: Extract<GitHubConfig, { mode: 'app' }>;
     readonly fetchFn?: typeof fetch;
     readonly now?: () => number;
+    readonly mintTimeoutMs?: number;
 }
 
 export class GitHubAppError extends Error {}
@@ -86,6 +98,7 @@ async function discoverInstallation(
     apiUrl: string,
     jwt: string,
     fetchFn: typeof fetch,
+    timeoutMs: number,
 ): Promise<string> {
     const response = await fetchFn(`${apiUrl}/app/installations?per_page=100`, {
         headers: {
@@ -94,6 +107,9 @@ async function discoverInstallation(
             // GitHub rejects an API request with no User-Agent outright.
             'user-agent': 'factory-ai',
         },
+        // The same hold MINT_TIMEOUT_MS puts on the token POST below: with no configured id this
+        // lookup is the first request a claim makes, and a hung one pins the transaction all the same.
+        signal: AbortSignal.timeout(timeoutMs),
     });
     const body = (await json(response, 'installation lookup')) as {
         id?: number;
@@ -119,10 +135,19 @@ async function discoverInstallation(
 export interface InstallationTokenProvider extends TokenProvider {
     /** The installation these tokens are for, discovered on first use if it was not configured. */
     installationId(): Promise<string>;
+    /**
+     * A token minted NOW, never served from the cache — for a credential that has to outlive the
+     * instant it is handed out. The claim path uses this: a runner's env is written once and the
+     * job outlives the claim, so a cached token's remaining five minutes would die mid-run. A
+     * fresh mint joins any other mint in flight — concurrent claims share the one request and each
+     * still gets a full-hour token — and the mint refreshes what `get` caches; GitHub does not
+     * invalidate the tokens it replaced.
+     */
+    fresh(): Promise<string>;
 }
 
 export function installationTokenProvider(options: AppTokenOptions): InstallationTokenProvider {
-    const { github, fetchFn = fetch, now = Date.now } = options;
+    const { github, fetchFn = fetch, now = Date.now, mintTimeoutMs = MINT_TIMEOUT_MS } = options;
 
     // Parsed once, at construction. A well-shaped but invalid PEM then fails at boot, where
     // loadConfig's shape check left off, rather than at the first fetch minutes later.
@@ -144,7 +169,7 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
 
     const mint = async (): Promise<string> => {
         const jwt = appJwt(github.appId, key, now());
-        installation ??= await discoverInstallation(github.apiUrl, jwt, fetchFn);
+        installation ??= await discoverInstallation(github.apiUrl, jwt, fetchFn, mintTimeoutMs);
 
         const response = await fetchFn(`${github.apiUrl}/app/installations/${installation}/access_tokens`, {
             method: 'POST',
@@ -153,6 +178,9 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
                 accept: 'application/vnd.github+json',
                 'user-agent': 'factory-ai',
             },
+            // The hold MINT_TIMEOUT_MS bounds: a hung GitHub aborts here instead of pinning the
+            // caller's transaction open.
+            signal: AbortSignal.timeout(mintTimeoutMs),
         });
         const body = (await json(response, 'installation token request')) as {
             token?: string;
@@ -174,6 +202,15 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
     return {
         async get() {
             if (cached && now() < cached.expiresAt - REFRESH_MARGIN_MS) return cached.token;
+            pending ??= mint().finally(() => {
+                pending = null;
+            });
+            return pending;
+        },
+
+        async fresh() {
+            // `get` without the cache check: the same single-flight, since a mint bypassing it
+            // would leave the loser live for an hour, counting against the App.
             pending ??= mint().finally(() => {
                 pending = null;
             });

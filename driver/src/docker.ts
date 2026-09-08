@@ -1,4 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
+import { rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
@@ -250,7 +253,70 @@ function workspacePath(job: BoardJob): string {
     return path;
 }
 
-export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null, servicesNetwork: string | null = null): string[] {
+/**
+ * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
+ * sets, TRUST_WORKDIR is the Remote Control trust answer — which a claim env must never carry.
+ * Mirrored at the board (RESERVED_ENV_NAMES in server/src/routes/env.ts, where a PUT is refused);
+ * copied rather than imported, per this package's zero-dependency rule.
+ */
+export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR'] as const;
+
+/**
+ * The environment the board resolved for this job, minus the reserved names. Pure and exported for
+ * the pinned-argv test — this is the boundary where a claim's secrets become this process's data.
+ *
+ * The accumulator is prototype-less and the passEnv filter below checks own properties: names like
+ * `__proto__` or `toString` pass the board's name validation, and both would otherwise be silently
+ * dropped or wrongly shadow an operator's `RUNNER_ENV` name.
+ */
+export function claimEnv(job: BoardJob): Record<string, string> {
+    const env: Record<string, string> = Object.create(null);
+    for (const [name, value] of Object.entries(job.env ?? {})) {
+        if ((RESERVED_ENV_NAMES as readonly string[]).includes(name)) continue;
+        env[name] = value;
+    }
+    return env;
+}
+
+/**
+ * The `--env-file` body for the claim env: one `NAME=value` line per variable. Pure and exported
+ * for the same pinning as dockerArgs.
+ *
+ * A value containing a newline is REFUSED, never mangled: the file is line-structured and docker
+ * has no quoting for it, so a multiline value would arrive truncated with no error anywhere. The
+ * board refuses one at PUT time; this is the driver's own line of defence against rows that
+ * predate that check.
+ */
+export function envFileBody(job: BoardJob): string {
+    const lines = Object.entries(claimEnv(job)).map(([name, value]) => {
+        if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) {
+            throw new Error(
+                `refusing to write env file for job ${job.id}: "${name}" contains a newline, which an env file cannot carry`,
+            );
+        }
+        return `${name}=${value}`;
+    });
+    return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
+/**
+ * Where the run's env file lives — one per ATTEMPT, lease token included, so a re-claimed
+ * attempt's write can never race a previous attempt's cleanup on the same path. Both halves of the
+ * name are asserted before they join a path: the file write is the one place a board-supplied id
+ * becomes a filesystem operation.
+ */
+const envFilePath = (job: BoardJob): string => {
+    if (!UUID.test(job.id)) {
+        throw new Error(`refusing to write an env file for a job id that is not a uuid: ${job.id}`);
+    }
+    if (job.leaseToken !== undefined && !UUID.test(job.leaseToken)) {
+        throw new Error(`refusing to write an env file for a lease token that is not a uuid: ${job.leaseToken}`);
+    }
+    const token = UUID.test(job.leaseToken ?? '') ? `-${job.leaseToken}` : '';
+    return join(tmpdir(), `factory-env-${job.id}${token}.env`);
+};
+
+export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null, servicesNetwork: string | null = null, envFile?: string): string[] {
     const args = [
         'run',
         '--name',
@@ -290,10 +356,28 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         // when the checkout ships a .claude/settings.local.json.
         args.push('-e', 'TRUST_WORKDIR=1');
     } else {
-        // `-e NAME` without a value: docker reads it from THIS process's environment. `-e NAME=value`
-        // would put the credential in an argv every `ps` on the host can read — the same distinction
-        // the workspace reconcile makes for the git token.
-        for (const name of config.passEnv) args.push('-e', name);
+        // The driver's own credentials ride as before: `-e NAME` without a value, docker reads it
+        // from THIS process's environment. `-e NAME=value` would put the credential in an argv
+        // every `ps` on the host can read — the same distinction the workspace reconcile makes for
+        // the git token.
+        //
+        // The claim's env does NOT ride that way. Its names are member-controlled, and `-e NAME`
+        // reads the value from this process's own environment — a member-configured PATH,
+        // DOCKER_HOST or HOME there steers the docker CLI the driver executes on the host, which
+        // is host code execution rather than a runner environment. So the claim travels in a
+        // --env-file (written and removed by createDockerRunner), the values never touching this
+        // process's environment at all. Reserved names are already gone (claimEnv); docker gives
+        // `-e` precedence over `--env-file`, so a name the claim also carries is dropped from
+        // passEnv — the claim must win.
+        const claim = claimEnv(job);
+        const claimNames = Object.keys(claim);
+        if (claimNames.length && !envFile) {
+            throw new Error(`refusing to run job ${job.id}: the claim carries env but no env file was given`);
+        }
+        for (const name of config.passEnv.filter((n) => !Object.prototype.hasOwnProperty.call(claim, n))) {
+            args.push('-e', name);
+        }
+        if (claimNames.length && envFile) args.push('--env-file', envFile);
     }
 
     if (config.network) args.push('--network', config.network);
@@ -528,7 +612,18 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             // what a killed setup must never reach — see assertNotKilled for why a throw is the
             // right verdict here.
             await assertNotKilled();
-            return new Promise<RunOutcome>((resolve, reject) => {
+
+            /*
+             * The claim env's ride: a 0600 file in the OS temp directory, written just before the spawn
+             * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
+             * in argv and never in this process's environment. Skipped under Remote Control,
+             * exactly like every other forwarded credential.
+             */
+            const claim = config.remoteControl ? {} : claimEnv(job);
+            const file = Object.keys(claim).length ? envFilePath(job) : null;
+            if (file) await writeFile(file, envFileBody(job), { mode: 0o600 });
+
+            const outcome = new Promise<RunOutcome>((resolve, reject) => {
                 // The verdict for a close, decided after the process is gone. An exit 125 is
                 // ambiguous on the shared stderr — the daemon's refusal and a command that
                 // genuinely exited 125 are printed onto the same stream — so the daemon is asked
@@ -559,7 +654,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     return { exitCode: code, output, timedOut, idled, started };
                 };
 
-                const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork), {
+                const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork, file ?? undefined), {
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
                 let timedOut = false;
@@ -656,6 +751,14 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                         .then(resolve, reject);
                 });
             });
+
+            // The file dies with the run — verdict read or not, resolved or thrown. The CLI has
+            // long since read it; the daemon has the values in the container's config.
+            try {
+                return await outcome;
+            } finally {
+                if (file) await rm(file).catch(() => undefined);
+            }
         },
     };
 }

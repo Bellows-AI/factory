@@ -22,7 +22,10 @@ a separate GitHub App reads repositories. One credential doing both would mean e
 signs in grants repository access, which is exactly the conflation `docs/auth.md` warns about.
 
 Required GitHub App installation permissions: `Metadata: read`, `Pull requests: read`, and
-`Contents: read` (revert rate only).
+`Contents: read` (revert rate only). An operator who wants runners to orchestrate GitHub — commits,
+PRs, reading CI — grants more in the installation settings (`Contents: write`, `Pull requests:
+write`, `Actions: read`): the token minted onto each claim (see [env.md](env.md)) carries the
+installation's permissions, and code cannot grant what the installation does not have.
 
 **The App private key is the worst secret in this repository to leak, and it replaced the least
 bad.** A PAT carries whatever scopes it was issued with, can be revoked from a list, and expires; a
@@ -54,6 +57,24 @@ resolved is failed rather than run somewhere broader, and the driver re-asserts 
 `<org>/<uuid>` shape before interpolating it into a `docker run`. This is a boundary against
 accident, not against a determined member: anyone who can queue a job can ask the agent to read any
 path the container can see.
+
+**Runner secrets are stored plaintext, and that is a stated tradeoff, not an oversight.** The env
+vars and secrets an operator configures for runners (see [env.md](env.md)) must be RETRIEVED to be
+injected, so hashing is impossible and encryption with a key that lives in the same `.env` is
+theatre with extra steps — the App private key already ships that way. The honest statement: read
+access to the database is equivalent to holding every runner credential. What the application does
+promise is write-only at the API — every list read nulls a secret's value, admin included — so the
+browser never holds one, and the claim never persists one onto the job row that every member can
+read. The values do cross the board→driver hop in the claim JSON; that hop already carries the
+worker token's authority and supports https, and under `AUTH_MODE=none` the whole board is open
+anyway. The App's installation token rides that same hop, minted onto the claim env under
+`GITHUB_TOKEN` (#28): it is the one-hour, installation-scoped credential this file already trusted
+for clones, now handed to the runner by name — a leak of it expires within the hour, which is the
+property that makes the App better than a PAT. On the driver they reach the container through a
+0600 `--env-file` written around the
+spawn — never through the driver process's own environment, where member-controlled names could
+steer the docker CLI on the host — and an agent can always `printenv` inside its own container:
+masking runner output would be decoration on top of a boundary that does not exist.
 
 **The driver mounts `/var/run/docker.sock`, which is root on the host.** A process holding that
 socket can start a container with the host filesystem mounted, so it is not "docker access", it is

@@ -113,6 +113,11 @@ done
 rbac="$(awk '/^# Source: factory\/templates\/driver-rbac.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains     'the driver role grants the runner calls' "$rbac" \
     "verbs: ['create', 'get', 'delete']"
+# The claim env's per-job Secret: create before the Job, delete with it. No `get`, no `list` —
+# the driver writes values it was handed and never reads one back.
+expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
+    "resources: ['secrets']
+      verbs: ['create', 'delete']"
 expect_contains     'the driver role lists pods, only to find them' "$rbac" "verbs: ['list']"
 expect_not_contains 'the driver role never watches'         "$rbac" 'watch'
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'

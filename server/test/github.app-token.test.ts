@@ -154,6 +154,37 @@ describe('the installation token', () => {
         expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(1);
     });
 
+    it('abandons a mint that hangs rather than holding the caller forever', async () => {
+        /*
+         * The claim runs this request inside its transaction, holding a job-row lock and one of the
+         * pool's connections across it, so a GitHub that never answers would stall every other
+         * claim, heartbeat and completion behind it. The mint has to abort, and the claim's
+         * 503/retry path takes over from there. This stub only settles when its signal does.
+         */
+        const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason));
+            })) as typeof fetch;
+        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, mintTimeoutMs: 10 });
+
+        await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
+    });
+
+    it('mints once when two callers race a fresh mint', async () => {
+        /*
+         * Overlapping claims each ask for fresh, and the loser of a double mint is not invalidated —
+         * it stays live for an hour counting against the App. The fresh path must join the same
+         * single-flight as get, sharing one request, each caller still getting a full-hour token.
+         */
+        let serial = 0;
+        const { calls, fetchFn } = stubFetch({ token: () => `ghs_${++serial}` });
+        const tokens = installationTokenProvider({ github: appConfig(), fetchFn });
+
+        const [a, b] = await Promise.all([tokens.fresh(), tokens.fresh()]);
+        expect(a).toBe(b);
+        expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(1);
+    });
+
     it('trusts GitHub\'s expires_at rather than assuming an hour', async () => {
         let now = Date.parse('2026-08-21T12:00:00.000Z');
         // A ten-minute token: entirely inside what an assumed hour would consider fresh.
@@ -164,6 +195,36 @@ describe('the installation token', () => {
         now += 6 * 60 * 1000;
         await tokens.get();
         expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(2);
+    });
+
+    it('mints fresh on demand, never serving the cache', async () => {
+        /*
+         * A claim hands the token to a runner whose job outlives the claim, so that credential has
+         * to start from full life: served from the cache it can carry the five-minute refresh
+         * margin into a run capped at thirty minutes, and the runner has no refresh path.
+         */
+        let now = Date.parse('2026-08-21T12:00:00.000Z');
+        let serial = 0;
+        const { calls, fetchFn } = stubFetch({
+            token: () => `ghs_${++serial}`,
+            expiresAt: () => new Date(now + 3600_000).toISOString(),
+        });
+        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, now: () => now });
+        const mints = () => calls.filter((call) => call.url.includes('/access_tokens')).length;
+
+        const cached = await tokens.get();
+        expect(cached).toBe('ghs_1');
+        expect(mints()).toBe(1);
+
+        // Minutes into the cached token's hour, a claim still mints, and gets a different token.
+        now += 50 * 60 * 1000;
+        const fresh = await tokens.fresh();
+        expect(fresh).toBe('ghs_2');
+        expect(mints()).toBe(2);
+
+        // The fresh mint is also what the cache now holds, so ordinary reads ride it.
+        await expect(tokens.get()).resolves.toBe('ghs_2');
+        expect(mints()).toBe(2);
     });
 });
 
@@ -203,5 +264,21 @@ describe('discovering the installation', () => {
         await expect(
             installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get(),
         ).rejects.toThrow(/installed on 2 accounts \(acme, other\)[\s\S]*GITHUB_APP_INSTALLATION_ID/);
+    });
+
+    it('abandons a discovery that hangs rather than holding the caller forever', async () => {
+        /*
+         * With no configured id, discovery is the FIRST request a claim makes, and it runs inside
+         * the claim's transaction — so a hung lookup holds the job-row lock and a pool connection
+         * exactly as a hung mint would, and it has to abort on the same clock. This stub only
+         * settles when its signal does.
+         */
+        const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason));
+            })) as typeof fetch;
+        const tokens = installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn, mintTimeoutMs: 10 });
+
+        await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
     });
 });

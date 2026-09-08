@@ -474,6 +474,26 @@ describe('the poll loop', () => {
 
         expect(board.board.completed).toHaveLength(2);
     });
+
+    // "Never log the merged environment" (docs/configuration.md) starts HERE — this is the first
+    // process the values enter on their way to a runner.
+    it('never logs the environment a claim carries', async () => {
+        const messages: string[] = [];
+        const envJob: BoardJob = { ...job(1), env: { SECRET_TOKEN: 'board-secret-value' } };
+        const board = stubBoard([envJob], { idleBeforeStop: 1 });
+        const loop = createLoop({
+            board: board.board,
+            runner: stubRunner(async () => ok()),
+            config: config(),
+            log: (m) => messages.push(m),
+            sleep,
+        });
+        board.attach(loop);
+        await loop.start();
+
+        expect(messages.length).toBeGreaterThan(0);
+        expect(messages.join('\n')).not.toContain('board-secret-value');
+    });
 });
 
 describe('an opencode runner', () => {

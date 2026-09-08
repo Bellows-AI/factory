@@ -16,7 +16,8 @@ unauthenticated, and a socket on that process would make it root on the host.
 
 ```
 POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
-                                        userId, workspacePath, resumeSessionId, followUp} | 204
+                                        userId, workspacePath, resumeSessionId, followUp,
+                                        env} | 204
   every request carries `authorization: Bearer $JOB_BOARD_TOKEN`, when the board requires one
   resumeSessionId ? restore that session : mint one, POST /api/jobs/:id/session
   followUp ? deliver the command into the restored session : a park resume delivers nothing
@@ -67,7 +68,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `DRIVER_JOB_TIMEOUT_MS` | `1800000` | The container is `docker kill`ed and the job reported failed, with a note. **Not armed under Remote Control.** |
 | `RUNNER_IDLE_MS` | `3600000` | Remote Control only: silence for this long parks the job on standby. |
 | `RUNNER_SKIP_PERMISSIONS` | off | Appends `--dangerously-skip-permissions`. Read the paragraph below. |
-| `RUNNER_ENV` | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names forwarded to the runner. Ignored under Remote Control. |
+| `RUNNER_ENV` | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names forwarded to the runner. Ignored under Remote Control. A name the claim also carries is shadowed by it — under an app-mode board that is now always `GITHUB_TOKEN` — see [env.md](env.md). |
 | `RUNNER_REMOTE_CONTROL` | off | Runs the job as a drivable session instead of a headless prompt. Read the section below. |
 | `RUNNER_AUTH_VOLUME` | `claude-executor-auth` | The claude.ai login. Mounted only under Remote Control. |
 | `EXECUTOR` | `docker` | `kubernetes` swaps the `docker run` for a batch Job in the namespace the driver runs in — see [kubernetes.md](kubernetes.md). Explicit enum: anything else is fatal, because a typo must not read as "docker is fine" while jobs are claimed and nothing runs. |
@@ -102,6 +103,24 @@ ready-made relative path rather than a raw user id the driver would have to inte
 **Credentials are passed as `-e NAME`, never `-e NAME=value`.** The value then comes from the
 driver's own environment instead of a `docker run` argv that every `ps` on the host can read. This
 is the same distinction the workspace reconcile makes for the git token.
+
+**The claim's `env` is the runner's stacked environment, and the driver forwards it by env file.**
+The board resolves org < workspace < repo at claim time, for the job's author and repo label — see
+[env.md](env.md) for the storage, the write-only rules and what never persists. Under an app-mode
+board the stack stands on a minted base layer: the App's installation token under `GITHUB_TOKEN`,
+unless a `GITHUB_TOKEN` configured in any scope displaces it (see
+[env.md](env.md), "Core secrets" and GitHub authentication). The claim's values
+NEVER pass through this process's environment: `-e NAME` would read them from there, and the names
+are member-controlled, so a member's `PATH` or `DOCKER_HOST` could steer the docker CLI the driver
+executes on the host. Instead the driver writes a 0600 `--env-file` in the OS temp directory, spawns
+against it, and removes it when the run ends — verdict, throw, or kill. The driver's own
+`RUNNER_ENV` names keep the `-e NAME` form (operator-controlled values only), minus any name the
+claim also carries: docker gives `-e` precedence over `--env-file`, and **the claim must win a
+collision** — its stacked resolution is authoritative, and the names an org configures as core
+secrets are exactly the ones `RUNNER_ENV` forwards by default. A board that predates the field
+omits it; the driver reads that as "no environment". Remote Control runners get none, for the same
+reason they get no `RUNNER_ENV` — a forwarded credential there does not fail, it degrades the
+session in silence.
 
 **`RUNNER_SKIP_PERMISSIONS` is a real decision, not a nuisance flag.** Off, a headless agent stalls
 at permission prompts nobody can answer and the job burns its timeout. On, it edits and runs
