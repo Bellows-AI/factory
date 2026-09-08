@@ -949,6 +949,73 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(seen).toHaveLength(1);
     });
 
+    // A's close that lands LATE: A was killed — kill() tore the fleet down while it was still
+    // legitimately A's own — and the loop re-claimed the job as B before A's CLI client finally
+    // exited. A's close handler must not run the job-scoped teardown a second time: everything
+    // that teardown would find under the job label now belongs to B, and removing it strands
+    // B's runner mid-run.
+    it('skips the service teardown on a killed attempt whose close lands after the replacement stood its fleet up', async () => {
+        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
+        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+        // Both children hold their close until released, so the interleaving — A still alive
+        // while B stands its fleet up, then A's close landing over it — is the test's to pace.
+        const closers: (() => void)[] = [];
+        let resolveSpawn: (() => void) | null = null;
+        const spawned = new Promise<void>((resolve) => {
+            resolveSpawn = resolve;
+        });
+        const gatedSpawn = ((command: string, argv: string[]) => {
+            const c = new EventEmitter() as ChildProcess;
+            const stream = () => {
+                const s = new EventEmitter();
+                return s;
+            };
+            c.stdout = stream();
+            c.stderr = stream();
+            closers.push(() => process.nextTick(() => c.emit('close', 137)));
+            resolveSpawn!();
+            return c;
+        }) as unknown as typeof spawn;
+        const closeOf = async (index: number): Promise<() => void> => {
+            while (closers.length <= index) await spawned;
+            return closers[index]!;
+        };
+
+        const exec = daemon(READOUT);
+        const runner = servicesRunner(exec, gatedSpawn);
+
+        const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        const closeA = await closeOf(0); // A spawned; its CLI client is alive
+        // The loop loses A's lease and kills the attempt: token recorded, A's own fleet torn
+        // down while it is still legitimately A's.
+        await runner.kill(attemptA);
+        // B re-claims the same job id and stands a fresh fleet up.
+        const runB = runner.run(attemptB, { id: SESSION, resume: false });
+        await closeOf(1); // B spawned; its network and service are live
+        const afterBCreation = exec.mock.calls.length;
+
+        // A's CLI client only now exits — daemon slowness makes the close arbitrarily late —
+        // and its verdict lands over B's live fleet.
+        closeA();
+        await runA;
+
+        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+        expect(late).not.toContainEqual([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            'label=factory.service',
+        ]);
+        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+
+        // B is untouched and still finishes under its own verdict.
+        closers[1]!();
+        await expect(runB).resolves.toMatchObject({ exitCode: 137, started: true });
+    });
+
     // Ordering, not just outcome: the rejection must not be observable while the teardown is
     // still in flight, or the caller sees shutdown and the next lifecycle step race the
     // removals. The LAST teardown step is held in flight on a gate the test controls — armed

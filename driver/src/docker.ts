@@ -649,8 +649,15 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
                     // The services outlive the runner by one teardown: the author's tests may
                     // have left their database mid-write, and nothing reads the workspace after
-                    // the runner is gone, so nothing needs them anymore.
-                    await serviceTeardown(job);
+                    // the runner is gone, so nothing needs them anymore. SKIPPED when this
+                    // attempt's kill() already fired: kill ran this job-scoped teardown while
+                    // the fleet was still legitimately this attempt's own, so anything the
+                    // label finds now was created after that — by the replacement attempt the
+                    // re-claim stood up under the same job id. A close that lands late (daemon
+                    // slowness makes them arbitrarily late) must not delete that live fleet
+                    // out from under its runner; the leftovers rule is the next attempt's
+                    // fence, and the fence has already run by the time this close lands.
+                    if (!killed.has(job.leaseToken)) await serviceTeardown(job);
                     return { exitCode: code, output, timedOut, idled, started };
                 };
 
