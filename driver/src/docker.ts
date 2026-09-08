@@ -502,6 +502,19 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         // is recorded — a sibling attempt of the same job carries a different token and must
         // not read this one's cancellation.
         killed.add(job.leaseToken);
+        // A SUPERSEDED attempt — a replacement claim has already run its fence and stood its
+        // own fleet up — must not touch the daemon at all. The container name and the service
+        // label are derived from the job id, so by the time this kill fires they can only
+        // refer to the REPLACEMENT's runner and fleet: a kill by that name, or a job-scoped
+        // teardown, would destroy the live attempt out from under its runner, and the fence
+        // that could reclaim the leftovers has already run. Whatever this attempt left behind
+        // is the replacement's fence's business, the same doctrine the verdict's gate applies.
+        // (The entry is read with absence in mind: a kill for an attempt this process never
+        // ran has no replacement to protect and tears down as before.) Timeout, idle and
+        // ordinary lost-lease kills all fire while the attempt is still current, and take the
+        // path below unchanged.
+        const live = currentAttempt.get(job.id);
+        if (live !== undefined && live !== job.leaseToken) return;
         // Killing the `docker run` process would only detach the CLI; the container keeps running
         // and the workspace keeps being written to. The daemon has to be told. The declared
         // services go with it: a killed job's database has no reason to outlive the job, and the
@@ -740,13 +753,22 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 child.on('error', (error) => {
                     spawnFailed = true;
                     done();
-                    // The spawn itself failed (docker missing, exec blew up). Whatever services
-                    // were started before it are torn down BEFORE the rejection lands: teardown
+                    // The spawn itself failed (docker missing, exec blew up). When this attempt
+                    // is still the live one under the job's names, whatever services were
+                    // started before it are torn down BEFORE the rejection lands: teardown
                     // tolerates absence, so either way a rejection means cleanup is as done as
                     // it gets — a rejection that raced an unobserved teardown would let process
                     // shutdown or the next lifecycle step run while the removals are still in
-                    // flight.
-                    serviceTeardown(job).then(() => reject(error), () => reject(error));
+                    // flight. SUPERSEDED — a replacement claim has already stood its fleet up
+                    // under the same job-derived label and network name — the teardown is
+                    // skipped and the rejection is immediate: the label ps and the network rm
+                    // run at teardown time and would delete the replacement's live fleet, and
+                    // whatever this attempt left behind is the replacement's fence's business.
+                    if (currentAttempt.get(job.id) === job.leaseToken) {
+                        serviceTeardown(job).then(() => reject(error), () => reject(error));
+                    } else {
+                        reject(error);
+                    }
                 });
                 child.on('close', (code) => {
                     // The error handler owns this failure and its rejection is already deferred
