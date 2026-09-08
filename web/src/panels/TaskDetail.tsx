@@ -15,9 +15,9 @@ function Checks({ gates }: { gates: GateCheck[] }) {
         <details className="chat-gates">
             <summary>
                 Checks{' '}
-                <span className="pill">{gates.filter((g) => g.status === 'passed').length}</span>
-                <span className="pill">{gates.filter((g) => g.status === 'failed').length}</span>
-                <span className="pill">{gates.filter((g) => g.status === 'running').length}</span>
+                <span className="pill gate-passed">{gates.filter((g) => g.status === 'passed').length} passed</span>
+                <span className="pill gate-failed">{gates.filter((g) => g.status === 'failed').length} failed</span>
+                <span className="pill gate-running">{gates.filter((g) => g.status === 'running').length} running</span>
             </summary>
             <ul className="chat-gate-list">
                 {gates.map((gate) => (

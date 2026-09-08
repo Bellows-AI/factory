@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createGateManager, createGateServer } from '../src/gates.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
@@ -11,6 +11,26 @@ import { gateEnvContainerName } from '../src/docker.js';
  * verdict it would report. The server tests use a real socket on loopback, because the contract
  * under test is HTTP.
  */
+
+/**
+ * A real socket cannot hand a test the `Server` handle — the gate server keeps it private — so
+ * `createServer` is wrapped, not replaced: the real node:http still builds every server (the
+ * suite's sockets stay real) and each instance is recorded for the one test that must reach it.
+ */
+const { createdServers } = vi.hoisted(() => ({
+    createdServers: [] as import('node:http').Server[],
+}));
+
+vi.mock('node:http', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:http')>();
+    const realCreateServer = actual.createServer.bind(actual);
+    const wrapped = ((handler?: Parameters<typeof actual.createServer>[0]) => {
+        const created = realCreateServer(handler);
+        createdServers.push(created);
+        return created;
+    }) as typeof actual.createServer;
+    return { ...actual, createServer: wrapped };
+});
 
 const KEY = `bellows/44444444-4444-4444-8444-444444444444/factory`;
 const NAME = gateEnvContainerName(KEY);
@@ -246,6 +266,25 @@ describe('the gate environment manager', () => {
         await manager.stop();
     });
 
+    // A spawn failure — docker missing from PATH arrives as code 'ENOENT', not a number — never
+    // ran a command, so it has no exit status to report: it must reject with the container-gone
+    // code like every other harness state, never resolve an exit that did not happen.
+    it('rejects a gate whose docker could not run at all', async () => {
+        const noDocker = exec((args) => {
+            if (args[0] === 'exec') {
+                const error = new Error('spawn docker ENOENT') as Error & { code?: string };
+                error.code = 'ENOENT';
+                return Promise.reject(error);
+            }
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: noDocker });
+        await manager.acquire(KEY, 'node:24', '');
+
+        await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
+        await manager.stop();
+    });
+
     it('rejects a gate for a checkout that has no environment at all', async () => {
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
         await expect(manager.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
@@ -377,6 +416,35 @@ describe('the gate server', () => {
         await server.close();
     });
 
+    // The spawn failure end to end: with docker missing from PATH, the call must not answer 200
+    // carrying a verdict for a gate that never ran — the 409 is the harness-failure answer.
+    it('answers 409, never a verdict, when the exec cannot spawn docker at all', async () => {
+        const noDocker = exec((args) => {
+            if (args[0] === 'exec') {
+                const error = new Error('spawn docker ENOENT') as Error & { code?: string };
+                error.code = 'ENOENT';
+                return Promise.reject(error);
+            }
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: noDocker });
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-enoent', {
+            key: KEY,
+            image: 'node:24',
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
+        const port = await server.listen();
+        const response = await fetch(`http://127.0.0.1:${port}/run`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok-enoent' },
+            body: JSON.stringify({ gate: 'test' }),
+        });
+        expect(response.status).toBe(409);
+        await manager.stop();
+        await server.close();
+    });
+
     // The endpoint is reachable from runner containers running repo-controlled instructions; an
     // unbounded body there is an OOM on the driver, which supervises every in-flight job.
     it('refuses an oversized body instead of reading it', async () => {
@@ -412,6 +480,25 @@ describe('the gate server', () => {
         // The retry re-attempts a fresh bind — here still failing (same bad host), which is the
         // point: a refusal, never a silent port 0.
         await expect(server.listen()).rejects.toThrow();
+        await server.close();
+    });
+
+    // The 'error' listener must stay attached past a successful bind: a server error arriving
+    // later, with the listener gone, would surface as an uncaught exception and take the driver
+    // down. Emitted here the way the runtime would deliver it — absorbed while a listener is
+    // attached, a synchronous throw without one.
+    it('keeps an error listener attached after the bind succeeds', async () => {
+        const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
+        const before = createdServers.length;
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-late', { key: KEY, image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
+        const port = await server.listen();
+        expect(port).toBeGreaterThan(0);
+
+        const bound = createdServers.slice(before).at(-1)!;
+        expect(bound.listenerCount('error')).toBe(1);
+        // A late error, arriving after the bind resolved: absorbed, never thrown.
+        expect(() => bound.emit('error', new Error('late failure'))).not.toThrow();
         await server.close();
     });
 });

@@ -313,6 +313,19 @@ describe('TaskDetail', () => {
             expect(html).toContain('<pre');
         });
 
+        it('labels each summary count with its meaning and status color', () => {
+            // "Checks 1 1 0" tells nobody which number is which; each count is labelled and wears
+            // the same status class the per-gate pill does.
+            const html = renderDetail({ jobs: [job({ gates: [...gates, { name: 'build', status: 'running' as const, exitCode: null, output: null }] })] });
+            const summary = html.slice(html.indexOf('Checks'), html.indexOf('</summary>'));
+            expect(summary).toContain('pill gate-passed');
+            expect(summary).toContain('pill gate-failed');
+            expect(summary).toContain('pill gate-running');
+            expect(summary).toMatch(/1(<!-- -->)? passed/);
+            expect(summary).toMatch(/1(<!-- -->)? failed/);
+            expect(summary).toMatch(/1(<!-- -->)? running/);
+        });
+
         it('renders no checks section for a run without gates', () => {
             expect(renderDetail({ jobs: [job()] })).not.toContain('Checks');
             expect(renderDetail({ jobs: [job({ gates: [] })] })).not.toContain('Checks');

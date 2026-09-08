@@ -364,35 +364,35 @@ export function claimEnv(job: BoardJob): Record<string, string> {
 }
 
 /**
- * The `--env-file` body for the claim env: one `NAME=value` line per variable. Pure and exported
- * for the same pinning as dockerArgs.
- *
- * A value containing a newline is REFUSED, never mangled: the file is line-structured and docker
+ * One `NAME=value` line, refusing a newline in either half: the file is line-structured and docker
  * has no quoting for it, so a multiline value would arrive truncated with no error anywhere. The
  * board refuses one at PUT time; this is the driver's own line of defence against rows that
- * predate that check.
+ * predate that check. The refusal names WHICH half carries the newline — blaming the name for the
+ * value's offence sends a reader hunting through the env scopes for a variable that is fine.
+ */
+const envLine = (job: BoardJob, name: string, value: string): string => {
+    if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) {
+        const part = /[\r\n]/.test(name) ? 'name' : 'value';
+        throw new Error(
+            `refusing to write env file for job ${job.id}: the ${part} of "${name}" contains a newline, which an env file cannot carry`,
+        );
+    }
+    return `${name}=${value}`;
+};
+
+/**
+ * The `--env-file` body for the runner: the claim env's lines, then the loop's minted gate
+ * credentials. Pure and exported for the same pinning as dockerArgs.
  */
 export function envFileBody(job: BoardJob): string {
-    const lines = Object.entries(claimEnv(job)).map(([name, value]) => {
-        if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) {
-            throw new Error(
-                `refusing to write env file for job ${job.id}: "${name}" contains a newline, which an env file cannot carry`,
-            );
-        }
-        return `${name}=${value}`;
-    });
+    const lines = Object.entries(claimEnv(job)).map(([name, value]) => envLine(job, name, value));
     // The driver's own gate credentials go LAST. Docker's --env-file is last-duplicate-wins, so
     // the order is the precedence rule: a `BELLOWS_GATE_TOKEN` a member configured in any env
     // scope was already dropped from the claim lines (reserved names), and the lines here are the
     // driver's minted values — but keeping them visually and structurally after the claim's is
     // what makes "the driver wins a collision" readable in one place.
     for (const [name, value] of Object.entries(job.gateEnv ?? {})) {
-        if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) {
-            throw new Error(
-                `refusing to write env file for job ${job.id}: "${name}" contains a newline, which an env file cannot carry`,
-            );
-        }
-        lines.push(`${name}=${value}`);
+        lines.push(envLine(job, name, value));
     }
     return lines.length ? `${lines.join('\n')}\n` : '';
 }
@@ -477,13 +477,17 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         // passEnv — the claim must win.
         const claim = claimEnv(job);
         const claimNames = Object.keys(claim);
-        if (claimNames.length && !envFile) {
-            throw new Error(`refusing to run job ${job.id}: the claim carries env but no env file was given`);
+        // The loop's minted gate credentials ride the same file — envFileBody appends them after
+        // the claim's lines — so a gated job whose claim resolves to nothing needs one too:
+        // without it the runner has neither credential and can never make an ad-hoc gate call.
+        const needsFile = claimNames.length > 0 || Object.keys(job.gateEnv ?? {}).length > 0;
+        if (needsFile && !envFile) {
+            throw new Error(`refusing to run job ${job.id}: claim or gate env exists but no env file was given`);
         }
         for (const name of config.passEnv.filter((n) => !Object.prototype.hasOwnProperty.call(claim, n))) {
             args.push('-e', name);
         }
-        if (claimNames.length && envFile) args.push('--env-file', envFile);
+        if (needsFile && envFile) args.push('--env-file', envFile);
     }
 
     if (config.network) args.push('--network', config.network);
@@ -585,14 +589,16 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
 
             /*
-             * The claim env's ride: a 0600 file in the OS temp directory, written just before the spawn
+             * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
              * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
-             * in argv and never in this process's environment. Skipped under Remote Control,
-             * exactly like every other forwarded credential.
+             * in argv and never in this process's environment. The body is the claim env PLUS the
+             * loop's minted gate credentials, so a gated job whose claim resolves to nothing still
+             * carries its BELLOWS_GATE_URL/TOKEN. Skipped under Remote Control, exactly like every
+             * other forwarded credential.
              */
-            const claim = config.remoteControl ? {} : claimEnv(job);
-            const file = Object.keys(claim).length ? envFilePath(job) : null;
-            if (file) await writeFile(file, envFileBody(job), { mode: 0o600 });
+            const body = config.remoteControl ? '' : envFileBody(job);
+            const file = body ? envFilePath(job) : null;
+            if (file) await writeFile(file, body, { mode: 0o600 });
 
             const outcome = new Promise<RunOutcome>((resolve, reject) => {
                 // The verdict for a close, decided after the process is gone. An exit 125 is

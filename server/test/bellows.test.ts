@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseBellows, readGatesFile } from '../src/workspace/bellows.js';
 
 /**
@@ -100,6 +103,14 @@ describe('parseBellows', () => {
         expect(() =>
             parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n          command:\n'),
         ).toThrow();
+    });
+
+    it('rejects a whitespace-only quoted command as empty — sh -c would exit green on it', () => {
+        expect(() =>
+            parseBellows(
+                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: "  "\n',
+            ),
+        ).toThrow(/empty command/);
     });
 
     it('rejects a tab indent', () => {
@@ -280,5 +291,79 @@ describe('readGatesFile', () => {
         });
         expect(result.config).toBeNull();
         expect(result.error).toMatch(/workspace path is not <orgId>\/<userId>/);
+    });
+});
+
+/**
+ * `readGatesFile` against a real checkout under `os.tmpdir()` — the seam tests above pin the
+ * path and error plumbing, these pin what the default reader does with the filesystem itself:
+ * a checkout-authored `.bellows.yaml` can be a symlink, so the read must refuse one rather than
+ * follow it, and the size bound must survive a rewrite of the reader. Each test gets its own
+ * mkdtemp tree and removes it.
+ */
+describe('readGatesFile against a real checkout', () => {
+    const ORG = '4f7d3c2e-1a9b-4c8d-8e2f-3a5b6c7d8e9f';
+    const USER = '0b9e6c50-8d13-4b8e-9dfb-2fa2d1ba4c71';
+    let root: string;
+
+    beforeEach(async () => {
+        root = await mkdtemp(join(tmpdir(), 'bellows-read-'));
+    });
+
+    afterEach(async () => {
+        await rm(root, { recursive: true, force: true });
+    });
+
+    const checkoutWith = async (write: (checkout: string) => Promise<void>): Promise<void> => {
+        const checkout = join(root, ORG, USER, 'factory');
+        await mkdir(checkout, { recursive: true });
+        await write(checkout);
+    };
+
+    const read = (): Promise<{ config: unknown; error: string | null }> =>
+        readGatesFile({ root, workspacePath: `${ORG}/${USER}`, repo: 'Bellows-AI/factory' }) as Promise<{
+            config: unknown;
+            error: string | null;
+        }>;
+
+    it('refuses a .bellows.yaml that is a symlink out of the checkout, never leaking the target', async () => {
+        const secret = join(root, 'outside.txt');
+        await writeFile(secret, 'TOPSECRET-CREDENTIALS\n');
+        await checkoutWith(async (checkout) => symlink(secret, join(checkout, '.bellows.yaml')));
+
+        const result = await read();
+        expect(result.config).toBeNull();
+        expect(result.error).toBeTruthy();
+        expect(result.error).not.toMatch(/TOPSECRET/);
+    });
+
+    it('refuses an oversized .bellows.yaml with the size-limit error', async () => {
+        await checkoutWith(async (checkout) =>
+            writeFile(join(checkout, '.bellows.yaml'), 'x'.repeat(64 * 1024 + 1)),
+        );
+        const result = await read();
+        expect(result.config).toBeNull();
+        expect(result.error).toMatch(/larger than 65536 bytes/);
+    });
+
+    it('refuses a whitespace-only quoted command read from disk', async () => {
+        await checkoutWith(async (checkout) =>
+            writeFile(
+                join(checkout, '.bellows.yaml'),
+                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: "  "\n',
+            ),
+        );
+        const result = await read();
+        expect(result.config).toBeNull();
+        expect(result.error).toMatch(/empty command/);
+    });
+
+    it('parses an ordinary valid file from disk', async () => {
+        await checkoutWith(async (checkout) => writeFile(join(checkout, '.bellows.yaml'), EXAMPLE));
+        const result = await read();
+        expect(result).toEqual({
+            config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+            error: null,
+        });
     });
 });

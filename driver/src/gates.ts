@@ -189,8 +189,15 @@ export function createGateManager({
                             code: CONTAINER_GONE,
                         });
                     }
-                    const code = typeof error.code === 'number' ? error.code : CONTAINER_GONE;
-                    return { exitCode: code, output: output || error.message || `exit ${code}` };
+                    // Not an exit status — docker never ran (ENOENT, EACCES). A harness state
+                    // like the branch above: rejected with the code, never returned as an exit
+                    // that did not happen.
+                    if (typeof error.code !== 'number') {
+                        throw Object.assign(new Error(output || error.message || 'docker could not be run'), {
+                            code: CONTAINER_GONE,
+                        });
+                    }
+                    return { exitCode: error.code, output: output || error.message || `exit ${error.code}` };
                 } finally {
                     armCooldown(key, entry);
                 }
@@ -338,9 +345,18 @@ export function createGateServer({
             });
             server = created;
             const pending = new Promise<number>((resolve, reject) => {
-                created.once('error', reject);
+                // The listener stays attached past the bind: a server error arriving later would
+                // otherwise surface as an uncaught exception and take the driver down. Only the
+                // first error settles the promise; past the bind the handler absorbs the rest.
+                let settled = false;
+                created.on('error', (error) => {
+                    if (!settled) {
+                        settled = true;
+                        reject(error);
+                    }
+                });
                 created.listen(0, host, () => {
-                    created.off('error', reject);
+                    settled = true;
                     const address = created.address();
                     resolve(typeof address === 'object' && address ? address.port : 0);
                 });

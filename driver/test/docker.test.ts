@@ -1,6 +1,6 @@
 import { describe, expect, it, vitest } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
@@ -166,6 +166,21 @@ describe('the board\'s environment', () => {
         expect(() =>
             envFileBody({ ...job, env: { BROKEN: 'line1\nline2' } }),
         ).toThrow(/newline/);
+    });
+
+    // The refusal must name WHICH half carries the newline: blaming the name for the value's
+    // offence sends a reader hunting through the env scopes for a variable that is fine.
+    it('names the newline offender, the name or the value', () => {
+        expect(() => envFileBody({ ...job, env: { BROKEN: 'line1\nline2' } })).toThrow(
+            /the value of "BROKEN" contains a newline/,
+        );
+        expect(() => envFileBody({ ...job, env: { 'BRO\nKEN': 'fine' } })).toThrow(
+            /the name of "BRO\nKEN" contains a newline/,
+        );
+        // The gate lines are checked by the same rule.
+        expect(() =>
+            envFileBody({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok\ntok' } }),
+        ).toThrow(/the value of "BELLOWS_GATE_TOKEN" contains a newline/);
     });
 
     it('never forwards a name the runner itself claims', () => {
@@ -572,6 +587,35 @@ describe('the runner env for a gated job', () => {
         ]);
     });
 
+    /**
+     * A claim can resolve to nothing — no env configured in any scope — while the job still
+     * declares gates. The loop mints BELLOWS_GATE_URL/TOKEN for exactly such a job, and a runner
+     * that keyed the env file on the claim alone would spawn with neither: no ad-hoc gate call
+     * possible, and the run's own verification unreadable to the agent.
+     */
+    const gateOnly: BoardJob = {
+        ...job,
+        repo: 'Bellows-AI/factory',
+        gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+        gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
+    };
+
+    it('mounts the env file when the only env is the gate credentials', () => {
+        expect(envFileBody(gateOnly)).toBe(
+            'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n',
+        );
+        const line = dockerArgs(loadDriverConfig({}), gateOnly, { id: SESSION, resume: false }, '/tmp/env-file');
+        expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
+    });
+
+    it('refuses to run a job whose only env is gate credentials with no env file to carry them', () => {
+        // The same silent drop the claim-env refusal prevents — the credentials it was spawned
+        // against never reach the container.
+        expect(() => dockerArgs(loadDriverConfig({}), gateOnly, { id: SESSION, resume: false })).toThrow(
+            /no env file/,
+        );
+    });
+
     it('adds the host gateway mapping so the default gate URL resolves on Linux daemons', () => {
         expect(
             dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, '/tmp/env-file'),
@@ -765,5 +809,44 @@ describe('the docker runner', () => {
 
         expect(outcome.exitCode).toBe(0);
         expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
+    });
+
+    // A gated job whose claim resolves to no variables still needs the minted gate credentials:
+    // keyed on the claim alone, the file would not exist and the runner could never call a gate.
+    it('writes the gate credentials into the env file of a job whose claim env is empty', async () => {
+        let fileBody: string | null = null;
+        const spawnFn = vitest.fn((_cmd: unknown, argv: unknown) => {
+            // Read at spawn time, through the argv: what the CLI could see is what counts.
+            const args = argv as string[];
+            const fileArg = args[args.indexOf('--env-file') + 1];
+            fileBody = readFileSync(fileArg, 'utf8');
+            return fakeChild('', '', 0);
+        });
+        const runner = createDockerRunner(loadDriverConfig({}), spawnFn as unknown as typeof spawn, noContainer);
+
+        const outcome = await runner.run(
+            { ...job, gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' } },
+            { id: SESSION, resume: false },
+        );
+
+        expect(outcome).toMatchObject({ exitCode: 0 });
+        const [, argv] = spawnFn.mock.calls[0]!;
+        expect(argv).toContain('--env-file');
+        expect(fileBody).toBe('BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n');
+    });
+
+    // The Remote Control posture is untouched: no forwarded credential of any kind, the volume
+    // login is the only one — so gate credentials make no env file appear either.
+    it('writes no env file for a Remote Control runner, gate credentials included', async () => {
+        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }),
+            spawnFn as unknown as typeof spawn,
+            noContainer,
+        );
+        await runner.run({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok' } }, { id: SESSION, resume: false });
+
+        const [, argv] = spawnFn.mock.calls[0]!;
+        expect(argv).not.toContain('--env-file');
     });
 });

@@ -19,7 +19,7 @@
  * number, and `readGatesFile` turns that into the job's `gateError`.
  */
 
-import { readFile as fsReadFile, stat as fsStat } from 'node:fs/promises';
+import { constants as fsConstants, open as fsOpen } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface GateDef {
@@ -103,7 +103,7 @@ export function parseBellows(text: string): BellowsConfig | null {
             if (current.command === undefined) {
                 fail(line, `gate "${current.name ?? '?'}" has no command`);
             }
-            if (current.command === '') {
+            if (current.command.trim() === '') {
                 fail(line, `gate "${current.name ?? '?'}" has an empty command`);
             }
             const name = checkName(line, current.name ?? '');
@@ -287,9 +287,29 @@ const GATES_FILE = '.bellows.yaml';
 const GATES_FILE_LIMIT = 64 * 1024;
 
 const defaultRead = async (path: string): Promise<string> => {
-    const stats = await fsStat(path);
-    if (stats.size > GATES_FILE_LIMIT) {
-        throw new Error(`.bellows.yaml is larger than ${GATES_FILE_LIMIT} bytes`);
+    // Only the final path component is checkout-controlled — the repository's content decides
+    // whether a `.bellows.yaml` exists and what it is, including whether it is a symlink. The
+    // segments above it are server-created: `root` is configuration, and readGatesFile
+    // re-asserts the uuid and segment-validates the repo name before joining, so there is
+    // nothing above the file for a checkout to point a parent directory at. O_NOFOLLOW refuses
+    // a symlinked final component at open instead of following it out of the tree; the flag is
+    // undefined on platforms without it, where the open simply proceeds without the guard.
+    const handle = await fsOpen(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+        // Stat and read through the SAME handle. Separate path-based calls could be split by a
+        // concurrent replacement: the size check would bound one inode while the read returned
+        // another, and the limit below would hold a file that was never delivered. Refusing
+        // non-regular files serves the same posture — checkout-authored content on the claim
+        // path is bounded, never read unboundedly.
+        const stats = await handle.stat();
+        if (!stats.isFile()) {
+            throw new Error('.bellows.yaml is not a regular file');
+        }
+        if (stats.size > GATES_FILE_LIMIT) {
+            throw new Error(`.bellows.yaml is larger than ${GATES_FILE_LIMIT} bytes`);
+        }
+        return await handle.readFile('utf8');
+    } finally {
+        await handle.close();
     }
-    return fsReadFile(path, 'utf8') as Promise<string>;
 };
