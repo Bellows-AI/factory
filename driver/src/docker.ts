@@ -484,14 +484,30 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * leaves its fleet behind — the same leftover the runner container's rm catches, one layer
      * out) and as the TEARDOWN after a run. Idempotent by construction: every removal tolerates
      * the thing already being gone.
+     *
+     * `owns` re-arms the entry gate between the awaited steps. Daemon calls are arbitrarily
+     * slow, so a gate checked once at entry is only a snapshot: a replacement claim can
+     * supersede this attempt while the teardown sits between its `ps` and its removals, and by
+     * then the job-derived label and network name already refer to the REPLACEMENT's fleet.
+     * Checked before each removal, the answer holds at the EXECUTION time of every daemon step,
+     * and a flipped answer stops the teardown where it stands — whatever this attempt left
+     * behind is the replacement's fence's business. The FENCE passes no predicate: it is the
+     * cleaner of stale fleets and cannot itself be stale; kill() and the verdict gate at their
+     * own entries, and the spawn-error path below is the one caller whose gate can flip
+     * mid-flight.
      */
-    const serviceTeardown = async (job: BoardJob): Promise<void> => {
+    const serviceTeardown = async (job: BoardJob, owns: () => boolean = () => true): Promise<void> => {
         if (!config.servicesEnabled) return;
         const found = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`, '--filter', 'label=factory.service']).catch(
             () => ({ stdout: '' }),
         );
+        if (!owns()) return;
         const ids = found.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
-        for (const id of ids) await execDocker(['rm', '-f', id]).catch(() => undefined);
+        for (const id of ids) {
+            if (!owns()) return;
+            await execDocker(['rm', '-f', id]).catch(() => undefined);
+        }
+        if (!owns()) return;
         await execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
     };
 
@@ -577,9 +593,9 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
              * attempt's fence removes whatever was already created — what it must not do is go
              * on creating the network, starting services and spawning the runner for a lease
              * this driver no longer holds, colliding with the next attempt. So the flag is
-             * checked after every awaited step below, and once more just before the spawn: the
-             * gap between that check and spawnFn is synchronous, so nothing can land inside it
-             * unobserved.
+             * checked after every awaited step below, and once more after the claim-env file
+             * write — the last await before the spawn — so the gap between that final check
+             * and spawnFn is synchronous, and nothing can land inside it unobserved.
              *
              * The abort is deliberately teardown-FREE. kill() ran the job-scoped teardown when
              * the lease was lost; anything THIS attempt created after that point is a leftover,
@@ -649,6 +665,17 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             const claim = config.remoteControl ? {} : claimEnv(job);
             const file = Object.keys(claim).length ? envFilePath(job) : null;
             if (file) await writeFile(file, envFileBody(job), { mode: 0o600 });
+            // The write above is an await, so the kill-check must run once more: a lease lost
+            // while the write was pending would otherwise reach spawnFn — a runner started over
+            // a dead lease, its job-derived container name colliding with the replacement's.
+            // On this abort the just-written file is removed by hand: the cleanup below only
+            // wraps a settled outcome, and this throw precedes it.
+            try {
+                await assertNotKilled();
+            } catch (abort) {
+                if (file) await rm(file).catch(() => undefined);
+                throw abort;
+            }
 
             const outcome = new Promise<RunOutcome>((resolve, reject) => {
                 // The verdict for a close, decided after the process is gone. An exit 125 is
@@ -764,8 +791,17 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // skipped and the rejection is immediate: the label ps and the network rm
                     // run at teardown time and would delete the replacement's live fleet, and
                     // whatever this attempt left behind is the replacement's fence's business.
+                    // The same race exists MID-TEARDOWN, which the entry check alone cannot
+                    // see: B can claim while the teardown sits between its ps and its removals.
+                    // So the gate travels into the teardown as a live predicate, re-armed
+                    // before every daemon step (see serviceTeardown) — ownership must hold at
+                    // the execution time of each removal, because daemon calls are arbitrarily
+                    // slow — and either way the rejection waits for the teardown's verdict.
                     if (currentAttempt.get(job.id) === job.leaseToken) {
-                        serviceTeardown(job).then(() => reject(error), () => reject(error));
+                        serviceTeardown(job, () => currentAttempt.get(job.id) === job.leaseToken).then(
+                            () => reject(error),
+                            () => reject(error),
+                        );
                     } else {
                         reject(error);
                     }

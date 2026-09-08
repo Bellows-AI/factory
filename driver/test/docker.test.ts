@@ -7,6 +7,25 @@ import { loadDriverConfig } from '../src/config.js';
 import { claimEnv, containerName, createDockerRunner, dockerArgs, envFileBody, opencodeSessionReadoutArgs, parseOpencodeSessionId, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
 import { networkName, serviceRunArgs } from '../src/services.js';
 
+/*
+ * The env-file write is the one await between the setup's final kill-check and the spawn, and a
+ * test below needs the kill to land INSIDE it — deterministically. The mock passes every call
+ * through to the real fs and only parks when a test has armed the gate; every other test in
+ * this file is unaffected.
+ */
+const fsHook = vitest.hoisted(() => ({ gate: null as null | ((path: string) => Promise<void>) }));
+
+vitest.mock('node:fs/promises', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs/promises')>();
+    return {
+        ...actual,
+        writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+            if (fsHook.gate) await fsHook.gate(String(args[0]));
+            return actual.writeFile(...args);
+        },
+    };
+});
+
 const USER = '44444444-4444-4444-8444-444444444444';
 
 const job: BoardJob = {
@@ -644,6 +663,48 @@ describe('the docker runner', () => {
         expect(outcome.exitCode).toBe(0);
         expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
     });
+
+    // The lease lost DURING the env-file write: the kill-check just above the write has already
+    // passed, and the write's await breaks the synchronous gap the setup promises. Without one
+    // more check, the runner spawns over a dead lease — its job-derived container name colliding
+    // with the replacement's. On that abort the just-written file must go too: the cleanup around
+    // the outcome only covers a settled run, and this throw precedes it.
+    it('spawns nothing when the lease is lost during the env-file write, and leaves no file behind', async () => {
+        try {
+            let releaseWrite: (() => void) | null = null;
+            const writeReleased = new Promise<void>((resolve) => {
+                releaseWrite = resolve;
+            });
+            let markWrite: (() => void) | null = null;
+            const writeUnderway = new Promise<void>((resolve) => {
+                markWrite = resolve;
+            });
+            let writtenTo: string | null = null;
+            fsHook.gate = async (path: string) => {
+                fsHook.gate = null; // only this test's write is ever parked
+                writtenTo = path;
+                markWrite!();
+                await writeReleased;
+            };
+
+            const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
+            const runner = createDockerRunner(loadDriverConfig({}), spawnSpy as unknown as typeof spawn, noContainer);
+
+            const pending = runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
+            await writeUnderway; // the run is parked inside the env-file write
+
+            await runner.kill(job); // the lease dies while the write is pending
+            releaseWrite!(); // the write lands; the run now learns its lease is gone
+
+            await expect(pending).rejects.toThrow(/killed while setting up services/);
+            expect(spawnSpy).not.toHaveBeenCalled();
+            // No leak: the file the write just created is removed on the abort path.
+            expect(writtenTo).toBeTruthy();
+            expect(existsSync(writtenTo!)).toBe(false);
+        } finally {
+            fsHook.gate = null;
+        }
+    });
 });
 
 /*
@@ -1271,6 +1332,66 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             '--filter',
             'label=factory.service',
         ]);
+        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+
+        // B is untouched and still finishes under its own verdict.
+        fires[1]!('close', 0);
+        await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
+    });
+
+    // The twin the entry-time snapshot cannot see: the spawn error lands while A is STILL
+    // current — the gate passes and the teardown starts — and B claims the job id only while
+    // that teardown sits mid-flight, between its label ps and its removals. A check made once
+    // at entry cannot catch B: the ps has already listed what to remove and the network rm is
+    // still to come, so by execution time they delete B's live fleet. Daemon calls are
+    // arbitrarily slow, so ownership must hold at the EXECUTION time of each daemon step — the
+    // gate the teardown carries must be re-armed between its awaited steps.
+    it('aborts a spawn-error teardown that a replacement supersedes mid-flight', async () => {
+        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
+        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+        const { fn, fires, childAt } = gatedSpawns();
+        let releaseTeardownPs: (() => void) | null = null;
+        const teardownPsGate = new Promise<void>((resolve) => {
+            releaseTeardownPs = resolve;
+        });
+        let markTeardownPs: (() => void) | null = null;
+        const teardownPsParked = new Promise<void>((resolve) => {
+            markTeardownPs = resolve;
+        });
+        let psCount = 0;
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') {
+                psCount++;
+                // ps #1 is A's entry fence; ps #2 is the error-path teardown, parked so B can
+                // stand its fleet up while the teardown sits between its ps and its removals;
+                // ps #3 is B's entry fence.
+                if (psCount === 2) {
+                    markTeardownPs!();
+                    await teardownPsGate;
+                }
+                return { stdout: 'svc-id-1\n' };
+            }
+            return { stdout: '' };
+        });
+        const runner = servicesRunner(exec, fn);
+
+        const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        await childAt(0); // A spawned; its CLI client is alive
+        fires[0]!('error', new Error('spawn docker ENOENT')); // A is still current: its teardown starts
+        await teardownPsParked; // the teardown is parked between its ps and its removals
+
+        // B re-claims the same job id and stands a fresh fleet up while A's teardown is in flight.
+        const runB = runner.run(attemptB, { id: SESSION, resume: false });
+        await childAt(1); // B spawned; its network and service are live
+        const afterBCreation = exec.mock.calls.length;
+
+        releaseTeardownPs!(); // the teardown resumes — over names B now owns
+        await expect(runA).rejects.toThrow(/ENOENT/); // the rejection still surfaces
+
+        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
         expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
 
