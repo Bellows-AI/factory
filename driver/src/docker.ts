@@ -469,6 +469,15 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * containers. Tokens never repeat, so the set only ever grows, by one entry per lost lease.
      */
     const killed = new Set<BoardJob['leaseToken']>();
+    /*
+     * The newest attempt's lease token per job id. Like `killed`, it is never cleaned: a newer
+     * attempt for the same job SUPERSEDES the older one, so the older entry can never become
+     * current again — only a fresh claim writes here, and tokens never repeat. This is the
+     * natural-close complement of the `killed` set: after a lease expires the board re-claims
+     * the job before any heartbeat has told the loop the lease is lost, so the older attempt is
+     * never killed — yet it is no longer the attempt whose fleet lives under the job's names.
+     */
+    const currentAttempt = new Map<BoardJob['id'], BoardJob['leaseToken']>();
     /**
      * Removes every service container this job labeled and the job's network. It runs twice with
      * the same body: as the re-claim FENCE before anything is created (a dead previous attempt
@@ -513,6 +522,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         },
 
         async run(job, session, onOutput) {
+            // Recorded at entry, before the fence: from here on, this attempt is the newest one
+            // for the job id, and any older attempt still closing learns it in its verdict. See
+            // currentAttempt above.
+            currentAttempt.set(job.id, job.leaseToken);
+
             // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
             // token that was never recorded, so nothing recorded for an earlier attempt can
             // reach this one — and clearing by id would revive exactly the dead attempt the
@@ -650,14 +664,18 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // The services outlive the runner by one teardown: the author's tests may
                     // have left their database mid-write, and nothing reads the workspace after
                     // the runner is gone, so nothing needs them anymore. SKIPPED when this
-                    // attempt's kill() already fired: kill ran this job-scoped teardown while
-                    // the fleet was still legitimately this attempt's own, so anything the
-                    // label finds now was created after that — by the replacement attempt the
-                    // re-claim stood up under the same job id. A close that lands late (daemon
-                    // slowness makes them arbitrarily late) must not delete that live fleet
-                    // out from under its runner; the leftovers rule is the next attempt's
-                    // fence, and the fence has already run by the time this close lands.
-                    if (!killed.has(job.leaseToken)) await serviceTeardown(job);
+                    // attempt is no longer the live one under the job's names. Two ways there:
+                    // its kill() already fired — kill ran this job-scoped teardown while the
+                    // fleet was still legitimately this attempt's own — or a replacement claim
+                    // started WITHOUT any kill, which is the ordinary lease-expiry race: the
+                    // heartbeat has not delivered 'lost' yet, so `killed` holds nothing, but the
+                    // newer attempt owns the job-scoped names now. Either way, everything the
+                    // label finds now was created by the replacement, and a close that lands
+                    // late (daemon slowness makes them arbitrarily late) must not delete that
+                    // live fleet out from under its runner; the leftovers rule is the next
+                    // attempt's fence, and the fence has already run by the time this close
+                    // lands.
+                    if (!killed.has(job.leaseToken) && currentAttempt.get(job.id) === job.leaseToken) await serviceTeardown(job);
                     return { exitCode: code, output, timedOut, idled, started };
                 };
 

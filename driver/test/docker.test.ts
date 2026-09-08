@@ -1016,6 +1016,70 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(runB).resolves.toMatchObject({ exitCode: 137, started: true });
     });
 
+    // The natural-close twin of the test above, with NO kill anywhere: the lease expires
+    // server-side and the board re-claims the job as B before any heartbeat delivers 'lost' —
+    // so the loop never kills A, and A's `killed` marker is never recorded. B's fence removes
+    // A's runner by name, which closes A's CLI client, and A's verdict then lands over B's live
+    // fleet. Not-killed is not the same as still-current: only the newest attempt for the job id
+    // may tear the shared-name fleet down.
+    it('skips the service teardown on a natural close that lands after a replacement claim stood its fleet up', async () => {
+        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
+        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+        const closers: (() => void)[] = [];
+        let resolveSpawn: (() => void) | null = null;
+        const spawned = new Promise<void>((resolve) => {
+            resolveSpawn = resolve;
+        });
+        const gatedSpawn = ((command: string, argv: string[]) => {
+            const c = new EventEmitter() as ChildProcess;
+            const stream = () => {
+                const s = new EventEmitter();
+                return s;
+            };
+            c.stdout = stream();
+            c.stderr = stream();
+            closers.push(() => process.nextTick(() => c.emit('close', 0)));
+            resolveSpawn!();
+            return c;
+        }) as unknown as typeof spawn;
+        const closeOf = async (index: number): Promise<() => void> => {
+            while (closers.length <= index) await spawned;
+            return closers[index]!;
+        };
+
+        const exec = daemon(READOUT);
+        const runner = servicesRunner(exec, gatedSpawn);
+
+        const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        const closeA = await closeOf(0); // A spawned; its CLI client is alive — and never killed
+        // B re-claims the same job id with no kill in between: the heartbeat has not yet told
+        // the loop A's lease is gone. B's fence removes A's runner by name; A's fleet follows
+        // through B's own entry fence.
+        const runB = runner.run(attemptB, { id: SESSION, resume: false });
+        await closeOf(1); // B spawned; its network and service are live
+        const afterBCreation = exec.mock.calls.length;
+
+        // A's CLI client only now closes naturally — its container was fenced away by B.
+        closeA();
+        await runA;
+
+        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+        expect(late).not.toContainEqual([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            'label=factory.service',
+        ]);
+        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+
+        // B is untouched and still finishes under its own verdict.
+        closers[1]!();
+        await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
+    });
+
     // Ordering, not just outcome: the rejection must not be observable while the teardown is
     // still in flight, or the caller sees shutdown and the next lifecycle step race the
     // removals. The LAST teardown step is held in flight on a gate the test controls — armed
