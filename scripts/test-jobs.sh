@@ -7,7 +7,7 @@
 # two throwaway images whose entrypoints echo and exit, which is enough to prove the whole path:
 # the prompt reaches the container, the exit code and output come back, and the board records them.
 #
-# Everything it creates it removes: a *_test database, two stub images, one volume, two processes.
+# Everything it creates it removes: a *_test database, four stub images, one volume, two processes.
 #
 # Needs: docker (with the compose stack's timescale reachable) and node. No jq, no curl.
 set -uo pipefail
@@ -21,6 +21,8 @@ DB="${JOBS_TEST_DB:-factory_jobs_test}"
 DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
 IMAGE_OK="factory-jobs-smoke-ok"
 IMAGE_FAIL="factory-jobs-smoke-fail"
+IMAGE_SVC="factory-jobs-smoke-svc"
+IMAGE_RUN="factory-jobs-smoke-run"
 VOLUME="factory-jobs-smoke-workspaces"
 
 pass=0
@@ -50,7 +52,7 @@ cleanup() {
             -c "drop database if exists $DB" >/dev/null 2>&1
     fi
     docker volume rm "$VOLUME" >/dev/null 2>&1
-    docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" >/dev/null 2>&1
+    docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" >/dev/null 2>&1
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -327,10 +329,11 @@ api POST "/api/jobs/$park_id/complete" \
 echo
 echo '# driver'
 
-start_driver() { # start_driver <image> [RUNNER_CLI]
+start_driver() { # start_driver <image> [RUNNER_CLI] [RUNNER_SERVICES]
     # No ORG_ID. The board sends `workspacePath` on the claim now — it owns the layout, because it
     # is the thing that created the directory — so the driver builds no path of its own.
-    env JOB_BOARD_URL="$BASE" EXECUTOR_IMAGE="$1" RUNNER_CLI="${2:-claude-code}" WORKSPACE_VOLUME="$VOLUME" \
+    env JOB_BOARD_URL="$BASE" EXECUTOR_IMAGE="$1" RUNNER_CLI="${2:-claude-code}" RUNNER_SERVICES="${3:-}" \
+        WORKSPACE_VOLUME="$VOLUME" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
@@ -402,7 +405,91 @@ expect_field    'no session was reported'      "$oc_body" sessionId ''
 
 stop_driver
 
-# Nothing may be left running: every runner is --rm, and the driver drains before it exits.
+# --- Auxiliary services (.bellows.yaml) -------------------------------------------------------
+#
+# Issue #6, end to end: a checkout declares a service, the driver starts it on a per-job network,
+# and the runner reaches it by name. The stub runner is the one image here whose entrypoint EXECUTES
+# the prompt (the driver always puts it last in the argv), so the job's output is an HTTP fetch of
+# `http://stub-svc:8000/probe` — the assertion fails unless the service is up, on the job's network,
+# under the name the file asked for.
+
+echo
+echo '# services'
+
+# The author and their tree, learned the way the board phase learns one: a probe claim, completed
+# immediately so the FIFO below is not holding a live lease.
+wp_id="$(create_job 'services probe')"
+wp_claim="$(body "$(api POST /api/jobs/claim '{"worker":"svc-probe","leaseSeconds":300}')")"
+wp="$(field "$wp_claim" workspacePath)"
+case "$wp" in
+default/????????-????-????-????-????????????) ;;
+*) bad 'the services probe claim carries a workspace path' "got '$wp'" ;;
+esac
+api POST "/api/jobs/$wp_id/complete" \
+    "{\"leaseToken\":\"$(field "$wp_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
+
+# The service: a one-file HTTP responder on busybox nc — current alpine:3 ships no httpd applet,
+# and the answer is deliberately static so the assertion reads the alias, not the server. The
+# runner-exec image: a script that runs the prompt, which the echo stubs cannot do.
+mkdir -p "$work/svc"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'while true; do' \
+    "    printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 13\\r\\n\\r\\nservice-is-up' | nc -l -p 8000" \
+    'done' >"$work/svc/serve.sh"
+printf 'FROM alpine:3\nCOPY serve.sh /serve.sh\nCMD ["sh","/serve.sh"]\n' >"$work/svc/Dockerfile"
+docker build -q -t "$IMAGE_SVC" "$work/svc" >/dev/null || {
+    echo 'test-jobs: could not build the service stub image'
+    exit 1
+}
+mkdir -p "$work/run"
+printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/run/run.sh"
+# `sh /run.sh` rather than exec-ing it: a file written by this script has no exec bit to copy in.
+printf 'FROM alpine:3\nCOPY run.sh /run.sh\nENTRYPOINT ["sh","/run.sh"]\n' >"$work/run/Dockerfile"
+docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
+    echo 'test-jobs: could not build the runner-exec stub image'
+    exit 1
+}
+
+# The file has to sit in the AUTHOR's tree on the volume the driver mounts — that is where the
+# readout container looks, and there is no host path into a named volume. A failed write fails the
+# run here, not later as a misleading job verdict.
+write_bellows() { # write_bellows <contents>
+    docker run --rm -i -v "$VOLUME:/workspaces" alpine:3 \
+        sh -c "mkdir -p '/workspaces/$wp/demo' && cat > '/workspaces/$wp/demo/.bellows.yaml'" \
+        <<<"$1" >/dev/null || {
+        echo 'test-jobs: could not write the .bellows.yaml fixture'
+        exit 1
+    }
+}
+write_bellows 'services:
+  - name: stub-svc
+    image: factory-jobs-smoke-svc'
+
+start_driver "$IMAGE_RUN" claude-code 1
+
+svc="$(create_job 'wget -qO- http://stub-svc:8000/probe')"
+expect_contains 'a declared service is reachable by name' "$(await_settled "$svc")" succeeded
+expect_contains 'the service answered the runner'    "$(field "$(body "$(api GET "/api/jobs/$svc")")" output)" service-is-up
+
+# The refusal path, end to end: a file the parser refuses fails the job with the reason, and the
+# runner never spawns — the output is the parse error alone.
+write_bellows 'services:
+  - name: db
+    image: postgres
+    ports: ["5432:5432"]'
+broken="$(create_job 'echo must not run')"
+expect_contains 'a malformed file fails the job' "$(await_settled "$broken")" failed
+expect_contains 'the parse reason comes back'    "$(field "$(body "$(api GET "/api/jobs/$broken")")" output)" '.bellows.yaml'
+
+stop_driver
+
+# The network is per-job and named after the job id; nothing may survive the driver.
+svc_networks="$(docker network ls --filter name=factory-job- --format '{{.Name}}' | wc -l | tr -d ' ')"
+if [ "$svc_networks" = '0' ]; then ok 'no service networks left behind'; else bad 'no service networks left behind' "$svc_networks remain"; fi
+
+# Nothing may be left running: every runner is --rm, and the driver drains before it exits. The
+# service containers carry the same factory.job label, so this check is theirs too.
 leftover="$(docker ps -aq --filter label=factory.job | wc -l | tr -d ' ')"
 if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain"; fi
 

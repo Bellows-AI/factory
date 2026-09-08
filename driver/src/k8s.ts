@@ -15,9 +15,9 @@ import type { RunOutcome, RunSession, Runner } from './docker.js';
  *   security-relevant about a runner is decided, and pinned by tests for that reason.
  * - The transport is injected, the way `createBoard` takes `fetch`, so this suite spawns nothing
  *   and needs no cluster.
- * - The driver's zero-dependency rule holds: four API calls (create/get/delete a Job, read a pod's
- *   log) do not justify a client library with its transitive tree, and `node:https` is what carries
- *   the cluster CA without hoping an env var pointed Node at it.
+ * - The driver's zero-dependency rule holds: a handful of API calls (sweep/create/get/list Jobs,
+ *   read a pod's log) do not justify a client library with its transitive tree, and `node:https`
+ *   is what carries the cluster CA without hoping an env var pointed Node at it.
  *
  * Remote Control has no counterpart here — a tty held open, an auth volume, idle parking — so
  * `loadDriverConfig` refuses the combination outright rather than running a half-mode.
@@ -84,10 +84,11 @@ const POLL_MS = 2_000;
 export const POLL_MAX_CONSECUTIVE_FAILURES = 15;
 
 /**
- * How long create() will wait for a deleted leftover Job to actually vanish — about five minutes
- * at POLL_MS, the same patience the status poll has. The 404 that ends the wait is what frees the
- * Job's name for the replacement; exceeding the bound is a throw, which leaves the job to its
- * lease — burning an attempt is the alternative to two writers on one checkout.
+ * How long create() will wait for the fence's label sweep to actually empty the selector —
+ * about five minutes at POLL_MS, the same patience the status poll has. A list that answers
+ * nothing is what frees the checkout for the replacement; exceeding the bound is a throw, which
+ * leaves the job to its lease — burning an attempt is the alternative to two writers on one
+ * checkout.
  */
 const REPLACE_MAX_POLLS = 150;
 
@@ -170,7 +171,11 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
         kind: 'Job',
         metadata: {
             name: containerName(job),
-            labels: { 'factory.job': job.id },
+            // factory.job is shared by every attempt of the job: it is what `kubectl get jobs -l
+            // factory.job=<id>` finds a runner that outlived its driver by, and what the re-claim
+            // fence sweeps by. factory.lease is this attempt's alone — the label form of the
+            // naming contract that scopes every per-attempt operation to its own objects.
+            labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
         },
         spec: {
             // A failed runner pod is never re-run by the cluster — a kubelet retry would re-send
@@ -184,7 +189,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             activeDeadlineSeconds: Math.max(1, Math.round(config.jobTimeoutMs / 1000)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels: { 'factory.job': job.id } },
+                metadata: { labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken } },
                 spec: {
                     restartPolicy: 'Never',
                     // The runner gets no ServiceAccount token: automounting one would hand the
@@ -216,6 +221,14 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
 export const jobsPath = (namespace: string): string => `/apis/batch/v1/namespaces/${namespace}/jobs`;
 
 export const jobPath = (namespace: string, name: string): string => `${jobsPath(namespace)}/${name}`;
+
+/**
+ * The label-scoped collection path every attempt of a job shares. The lease token never repeats,
+ * so attempt-scoped names cannot find a previous attempt's leftovers — the `factory.job` label is
+ * the one identifier they all carry, and it is what the fence selects on.
+ */
+export const jobsSelectorPath = (namespace: string, job: BoardJob): string =>
+    `${jobsPath(namespace)}?labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`;
 
 /**
  * The per-attempt Secret carrying the board's resolved environment. One per ATTEMPT — the lease
@@ -394,54 +407,77 @@ export function createKubernetesRunner(
                 );
             }
         }
-        let response = await post();
-        if (response.status === 409) {
-            /*
-             * A job id is only reused when a lease expired and the row was reclaimed — so a 409
-             * means the previous attempt's Job object is still there. Replace it: this run is the
-             * live one, and two writers on one checkout is the thing actually worth preventing
-             * (docs/jobs.md).
-             *
-             * The fence is the 404, not the delete's response. A Foreground DELETE answers once
-             * the deletion is marked; the name stays reserved until the garbage collector has torn
-             * the old pods down — tens of seconds of termination grace. Re-POSTing at once would
-             * 409 again, burn the attempt and leave the job one try from dead. So the delete is
-             * awaited: GET until the object is really gone, bounded, then create — which is also
-             * the property worth having, since the replacement then cannot schedule onto a
-             * checkout somebody is still writing. The closest kubernetes gets to `docker kill`.
-             */
-            const removed = await request(
-                'DELETE',
-                `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Foreground`,
-            );
-            if (removed.status >= 300 && removed.status !== 404) {
-                throw new Error(`deleting the leftover runner answered ${removed.status}: ${removed.body.slice(0, 200)}`);
+        /*
+         * The re-claim fence, and the only job-scoped write this runner does: a plain MUTEX over
+         * the job label. It deletes EVERY Job the `factory.job=<id>` selector answers — by NAME,
+         * per object, with Foreground propagation — and posts this attempt's Job only once the
+         * selector answers nothing. No timestamps, no cutoffs, no clocks: an age filter was
+         * unsound in both directions — a predecessor's Job can be younger than any time-derived
+         * cutoff, because its attempt's Secret creation and its own fencing waited on the
+         * kubelet's unbounded garbage collection, while a Job created after this fence began
+         * must not be touched — so no clock-derived predicate can classify correctly, and the
+         * fence no longer classifies at all. "Every" is unambiguous because this attempt's own
+         * Job cannot exist yet: its name carries this attempt's lease token, and nothing has
+         * posted it.
+         *
+         * A superseded attempt whose live Job is fenced away this way STANDS DOWN: its status
+         * poll answers 404 ("the runner job ... no longer exists", in run0 below), the run's
+         * finally reaps its own Secret, and the loop leaves the job to the lease. The fenced
+         * loser burns its attempt — strictly lesser than the harm the fence exists to prevent,
+         * two writers on one checkout (docs/jobs.md). This is parity with the docker runner's
+         * fence, which sweeps by job label at execution time. Attempt-scoped names are why the
+         * loser's own cleanup can never reach the winner: every name and label it addresses
+         * carries its lease token, so its Secret reaping and its kill can only ever find its own
+         * attempt's objects.
+         */
+        let waits = 0;
+        for (;;) {
+            let probe: K8sResponse;
+            try {
+                probe = await request('GET', jobsSelectorPath(config.k8sNamespace, job));
+            } catch {
+                // A transport failure says nothing about whether the objects are gone; keep
+                // polling within the same bound.
+                probe = { status: 0, body: '' };
             }
-            // NOT the env Secret — only the leftover Job. The Secret the replacement Job
-            // references is this attempt's own (its name carries this run's lease token), created
-            // before the first POST; a secret delete here could only ever hit what this run or a
-            // successor depends on.
-            let waits = 0;
-            for (;;) {
-                let probe: K8sResponse;
-                try {
-                    probe = await request('GET', jobPath(config.k8sNamespace, name(job)));
-                } catch {
-                    // A transport failure says nothing about whether the object is gone; keep
-                    // polling within the same bound.
-                    probe = { status: 0, body: '' };
+            // Nothing answers the selector at all — nothing to fence.
+            if (probe.status === 404) break;
+            if (probe.status >= 200 && probe.status < 300) {
+                const items = parse<{ items?: { metadata?: { name?: string } }[] }>(probe.body).items ?? [];
+                const names: string[] = [];
+                for (const item of items) {
+                    if (item.metadata?.name) names.push(item.metadata.name);
                 }
-                if (probe.status === 404) break;
-                if (++waits > REPLACE_MAX_POLLS) {
-                    throw new Error(
-                        `the leftover runner job ${name(job)} never disappeared after its delete ` +
-                            `(${REPLACE_MAX_POLLS} polls)`,
+                // The selector answers nothing — the checkout is free.
+                if (names.length === 0) break;
+                let deleted = 0;
+                for (const leftover of names) {
+                    const response = await request(
+                        'DELETE',
+                        `${jobPath(config.k8sNamespace, leftover)}?propagationPolicy=Foreground`,
                     );
+                    // A 404 is the ordinary end of an object another fence got to first; a 409
+                    // is a concurrent replacement's fence deleting the same object. Both mean
+                    // the object is being removed. Anything else fails loud, as ever.
+                    if (response.status >= 300 && response.status !== 404 && response.status !== 409) {
+                        throw new Error(
+                            `deleting the leftover runners answered ${response.status}: ${response.body.slice(0, 200)}`,
+                        );
+                    }
+                    if (response.status < 300) deleted += 1;
                 }
-                await sleep(POLL_MS);
+                // Every delete came back 404/409 — another fence removed them already.
+                if (deleted === 0) break;
             }
-            response = await post();
+            if (++waits > REPLACE_MAX_POLLS) {
+                throw new Error(
+                    `the leftover runner jobs of job ${job.id} never disappeared after their delete ` +
+                        `(${REPLACE_MAX_POLLS} polls)`,
+                );
+            }
+            await sleep(POLL_MS);
         }
+        const response = await post();
         if (response.status >= 300) {
             throw new Error(
                 `creating the runner job answered ${response.status}: ${response.body.slice(0, 200)}`,

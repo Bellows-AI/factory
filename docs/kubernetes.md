@@ -23,7 +23,7 @@ The two implementations decide the same things and are pinned the same way:
 | Workspace | `-v factory-ai_workspaces:/workspaces`, `WORKDIR=<mount>/<org>/<uuid>` | PVC `<claim>` mounted at `<mount>`, same `WORKDIR` env |
 | Credentials | `-e NAME`, value read from the driver's own env | `valueFrom.secretKeyRef` against `RUNNER_CREDENTIALS_SECRET`, one key per `RUNNER_ENV` name |
 | Claim env | `-e NAME` merged in, value in the child env | `secretKeyRef` against a per-attempt Secret (`factory-job-<id>-<lease token>-env`), created before the Job, reaped with it |
-| Orphan visibility | `--label factory.job=<id>` | the same label on the Job and its pod template |
+| Orphan visibility | `--label factory.job=<id>` plus `--label factory.lease=<token>` | the same two labels on the Job and its pod template — job for the fence's sweep, lease to scope every per-attempt operation |
 | Timeout | the driver kills the container after `DRIVER_JOB_TIMEOUT_MS` | `activeDeadlineSeconds` = that value, enforced by the kubelet |
 | A failed run | the container exits, `--rm` cleans it | the pod terminates, `restartPolicy: Never`, `backoffLimit: 0`, object reaped by `ttlSecondsAfterFinished` |
 | What a runner must never hold | the docker socket (it does not) | a ServiceAccount token (`automountServiceAccountToken: false`) |
@@ -46,7 +46,7 @@ whose keys the pod references non-optionally, so a missing Secret fails loud ins
 silently without its env. The runner reaps the Secret with the run's own exit — once the verdict
 and log have been read, on a throw, or on the kill-induced Job 404 — and never by `kill()` itself,
 which can interleave the run's create() between the Secret POST and the Job POST; the re-claim
-fence deletes only the leftover Job. Stated honestly: a stale attempt whose Job was deleted before
+fence deletes only Jobs, never a Secret — it is the mutex described below. Stated honestly: a stale attempt whose Job was deleted before
 it existed runs to its natural end with its env intact and its report refused by the board — the
 pre-feature semantics — rather than sitting in `CreateContainerConfigError`. The tradeoff:
 a driver that crashes before cleanup leaks its attempt's Secret (Secrets have no TTL), and the
@@ -61,11 +61,23 @@ docker socket riding along with the dashboard, which `docs/security.md` refuses 
 reason. Runner pods set `automountServiceAccountToken: false`; the driver's own pod keeps its
 token and its namespace-scoped Role.
 
-**Re-claims fence by replacing.** A job id is only reused when a lease expired and the row was
-reclaimed, so a `409 AlreadyExists` on create means the previous attempt's Job object still
-exists. The runner deletes it and creates its own — the same rule the docker runner obeys when a
-409 heartbeat says *kill the container*: two writers on one checkout is the thing actually worth
-preventing. `docs/jobs.md` calls that the single most important line in the board contract.
+**Re-claims fence by sweeping, and the sweep is a mutex.** Job names carry the lease token now,
+so a previous attempt's leftover Jobs sit under other names no delete of this attempt's could
+reach — the runner sweeps them by LABEL instead: it lists `factory.job=<id>`, Foreground-deletes
+EVERY Job the selector answers, by NAME, and creates only once the selector answers nothing. No
+age filter and no cutoff: a predecessor's Job can be younger than any time-derived bound — its
+attempt's Secret creation and its own fencing wait on the kubelet's garbage collector, which is
+unbounded — while a Job created after this fence began must not be deleted, so no clock-derived
+predicate can classify correctly and the fence classifies nothing at all. Making that
+unconditional is safe for two reasons: this attempt's own Job cannot exist yet (its name carries
+this attempt's lease token, and nothing has posted it), and a superseded attempt whose live Job
+is fenced away STANDS DOWN — its status poll answers 404 ("the runner job ... no longer
+exists"), its run reaps its own Secret, and the loop leaves the job to its lease. The fenced
+loser burns its attempt — strictly lesser than the harm the fence exists to prevent, two writers
+on one checkout, which `docs/jobs.md` calls the single most important line in the board contract
+— and attempt-scoped names are why the loser's cleanup can never reach the winner: everything
+its kill and its Secret reaping address carries its own lease token. This is parity with the
+docker runner's fence, which sweeps by job label at execution time.
 
 **Live output here is the pod log, re-read per poll.** The docker runner sees output as stream
 chunks; this platform has no equivalent attach, so the runner reads the pod log's tail on each
