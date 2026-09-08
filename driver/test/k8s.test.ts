@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { containerName } from '../src/docker.js';
-import type { K8sRequest, K8sResponse } from '../src/k8s.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
 import {
     POLL_MAX_CONSECUTIVE_FAILURES,
+    claimName,
     createKubernetesRunner,
     jobPath,
     jobsPath,
@@ -288,8 +289,13 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     const calls: Call[] = [];
     const answers = { ...FAKE, ...overrides };
     const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+    // The checkout claim, emulated the way the apiserver arbitrates it: name uniqueness on POST,
+    // a readable GET, a uid-preconditioned DELETE (see claimServer).
+    const serve = claimServer();
     const request: K8sRequest = (method, path, body) => {
         calls.push({ method, path, body });
+        const claimAnswer = serve(method, path, body);
+        if (claimAnswer) return Promise.resolve(claimAnswer);
         if (path === jobsPath(namespace) && method === 'POST') return Promise.resolve(answers.create as K8sResponse);
         if (path.startsWith(`${jobsPath(namespace)}?`)) {
             if (method === 'DELETE') return Promise.resolve(answers.fenceDelete as K8sResponse);
@@ -316,21 +322,83 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
 
 const runner = (request: K8sRequest) => createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), request, async () => {});
 
+/** A lease token distinct from the fixture job's, for the attempt that reclaimed a job. */
+const NEW_TOKEN = '99999999-9999-4999-8999-999999999999';
+
+const configmapsPath = `/api/v1/namespaces/${namespace}/configmaps`;
+
+/** The checkout claim's path: one ConfigMap per JOB id, shared by every attempt (issue #32). */
+const claimPathFor = (id: string): string => `${configmapsPath}/factory-job-${id}-claim`;
+
+/**
+ * A minimal API server for the checkout claim: ConfigMap NAME uniqueness arbitrates (a POST of a
+ * taken name answers 409), a GET reads the stored claim, and a DELETE honors uid preconditions —
+ * exactly the three apiserver properties the acquire/takeover/release protocol rests on.
+ */
+const claimServer = () => {
+    const claims = new Map<string, { uid: string; holder: string; attempt: string }>();
+    let uids = 0;
+    return (method: K8sMethod, path: string, body: unknown): K8sResponse | undefined => {
+        if (method === 'POST' && path === configmapsPath) {
+            const b = body as { metadata?: { name?: string }; data?: { holder?: string; attempt?: string } };
+            const name = b.metadata?.name ?? '';
+            if (claims.has(name)) return { status: 409, body: '{"reason":"AlreadyExists"}' };
+            claims.set(name, {
+                uid: `claim-uid-${++uids}`,
+                holder: b.data?.holder ?? '',
+                attempt: b.data?.attempt ?? '',
+            });
+            return { status: 201, body: '{}' };
+        }
+        if (path?.startsWith(`${configmapsPath}/`)) {
+            const name = path.slice(configmapsPath.length + 1);
+            const claim = claims.get(name);
+            if (method === 'GET') {
+                return claim
+                    ? {
+                          status: 200,
+                          body: JSON.stringify({
+                              metadata: { uid: claim.uid },
+                              data: { holder: claim.holder, attempt: claim.attempt },
+                          }),
+                      }
+                    : { status: 404, body: '{"kind":"Status"}' };
+            }
+            if (method === 'DELETE') {
+                const want = (body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid;
+                if (claim && (!want || want === claim.uid)) {
+                    claims.delete(name);
+                    return { status: 200, body: '{}' };
+                }
+                return { status: claim ? 409 : 404, body: '{"kind":"Status"}' };
+            }
+        }
+        return undefined;
+    };
+};
+
 describe('the kubernetes runner', () => {
     it('sweeps the job label, then creates the job in the configured namespace and reports success', async () => {
         const { request, calls } = fakeRequest();
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
-        // The fence is the first thing the run does: a label LIST of the job's previous
-        // attempts — nothing answers — before this one creates anything.
-        expect(calls[0]).toEqual({ method: 'GET', path: expect.stringContaining(jobsPath(namespace)) });
-        expect(calls[0].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
+        // The claim is the first thing the run does: one POST whose name uniqueness arbitrates
+        // the checkout. Then the fence: a label LIST of the job's previous attempts — nothing
+        // answers — before this one creates anything.
+        expect(calls[0]?.method).toBe('POST');
+        expect(calls[0]?.path).toBe(configmapsPath);
+        expect(calls[1]).toEqual({ method: 'GET', path: expect.stringContaining(jobsPath(namespace)) });
+        expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
+            `POST ${configmapsPath}`,
             `GET ${jobsPath(namespace)}`,
             `POST ${jobsPath(namespace)}`,
+            `GET ${claimPathFor(job.id)}`,
             `GET ${jobPath(namespace, containerName(job))}`,
             'GET /api/v1/namespaces/factory/pods',
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
+            `GET ${claimPathFor(job.id)}`,
+            `DELETE ${claimPathFor(job.id)}`,
         ]);
         expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
     });
@@ -468,7 +536,10 @@ describe('the kubernetes runner', () => {
     it('streams the log tail while the pod runs, and reports the finished log at the end', async () => {
         const tails: string[] = [];
         let gets = 0;
-        const request: K8sRequest = (method, path) => {
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -511,7 +582,10 @@ describe('the kubernetes runner', () => {
     it('streams nothing, and fails nothing, when the mid-run log read answers badly', async () => {
         const tails: string[] = [];
         let gets = 0;
-        const request: K8sRequest = (method, path) => {
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -555,8 +629,11 @@ describe('the kubernetes runner', () => {
         const calls: Call[] = [];
         const leftover = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let lists = 0;
-        const request: K8sRequest = (method, path) => {
-            calls.push({ method, path });
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
                 // First read: the old Job is still listed. Second: gone. Everything after is
@@ -592,13 +669,27 @@ describe('the kubernetes runner', () => {
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
         expect(outcome.exitCode).toBe(0);
-        // LIST finds the leftover by label, deletes it BY NAME with Foreground propagation,
-        // LISTs again — nothing deletable answers — and only then the create. Foreground
-        // propagation starts the teardown; the next list is what proves the old pods are off
-        // the checkout — the delete's own response does not wait for them.
-        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
-        expect(calls[0].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
-        expect(calls[1].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
+        // Claim, then LIST finds the leftover by label, the claim is confirmed still ours,
+        // the leftover is deleted BY NAME with Foreground propagation, LISTs again — nothing
+        // deletable answers — and only then the create. Foreground propagation starts the
+        // teardown; the next list is what proves the old pods are off the checkout — the
+        // delete's own response does not wait for them.
+        expect(calls.map((call) => call.method)).toEqual([
+            'POST',
+            'GET',
+            'GET',
+            'DELETE',
+            'GET',
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+        ]);
+        expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
+        expect(calls[3].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // A re-claim whose sweep never lands — an apiserver losing deletes, say — must not loop
@@ -610,7 +701,10 @@ describe('the kubernetes runner', () => {
         const leftover = {
             metadata: { name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner' },
         };
-        const request: K8sRequest = (method, path) => {
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [leftover] }) });
             }
@@ -630,6 +724,228 @@ describe('the kubernetes runner', () => {
         );
     });
 
+    /*
+     * Issue #32, race 2: the old fence deleted EVERY Job the `factory.job` selector answered, so
+     * a stale attempt fencing after its replacement was posted would delete the legitimate lease
+     * holder's Job — whose status poll then answers 404 and aborts an active run. Under the
+     * claim protocol the stale attempt loses the acquisition step instead — the claim's attempt
+     * number is ahead of its own — and stands down having created and deleted nothing at all.
+     */
+    it('stands down when a newer attempt holds the checkout claim, and touches nothing of its replacement', async () => {
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const newerJobName = containerName(newerJob);
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let replacementAlive = true;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            // The claim is held by attempt 2; this run is attempt 1.
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+            }
+            if (path === claimPath && method === 'GET') {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        metadata: { uid: 'claim-uid-2' },
+                        data: { holder: NEW_TOKEN, attempt: '2' },
+                    }),
+                });
+            }
+            // The replacement's runner Job is live and answers the label selector.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        items: replacementAlive ? [{ metadata: { name: newerJobName } }] : [],
+                    }),
+                });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobPath(namespace, newerJobName)}?`)) {
+                replacementAlive = false;
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/stands down/);
+        // The replacement's Job still exists — a superseded attempt never reaches the winner.
+        expect(replacementAlive).toBe(true);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(newerJobName))).toBe(false);
+        // Nothing was created either: standing down leaves the job to its lease.
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
+        // And the claim it does not hold is not deleted by the loser either.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+    });
+
+    /*
+     * The takeover pin: a leftover claim of an OLDER attempt (a driver that died holding it) is
+     * released by the next claimant, conditionally on the exact incarnation it read — the uid
+     * precondition is what keeps a stale attempt's delete from ever reaching a newer incarnation
+     * of the claim. Attempt numbers order the attempts of one job; no clock is read anywhere.
+     */
+    it('takes over the leftover claim of an older attempt under a uid precondition, then creates', async () => {
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const claimPath = claimPathFor(job.id);
+        const serve = claimServer();
+        const calls: Call[] = [];
+        // A leftover from the older attempt: the first claim POST stores it under claim-uid-1.
+        let seeded = false;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (!seeded) {
+                seeded = true;
+                serve('POST', configmapsPath, {
+                    metadata: { name: `factory-job-${job.id}-claim` },
+                    data: { holder: job.leaseToken, attempt: '1' },
+                });
+            }
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(newerJob))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            request,
+            async () => {},
+        ).run(newerJob, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        // The takeover delete names the exact claim incarnation that was read.
+        const takeover = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
+        expect(
+            (takeover?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid,
+        ).toBe('claim-uid-1');
+        expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
+            `POST ${configmapsPath}`,
+            `GET ${claimPath}`,
+            `DELETE ${claimPath}`,
+            `POST ${configmapsPath}`,
+            `GET ${jobsPath(namespace)}`,
+            `POST ${jobsPath(namespace)}`,
+            `GET ${claimPath}`,
+            `GET ${jobPath(namespace, containerName(newerJob))}`,
+            'GET /api/v1/namespaces/factory/pods',
+            `GET /api/v1/namespaces/factory/pods/${podName}/log`,
+            `GET ${claimPath}`,
+            `DELETE ${claimPath}`,
+        ]);
+    });
+
+    /*
+     * Issue #32, race 1: both fences could observe an empty selector before either POST became
+     * visible, and both attempts would create Jobs — two runners on one writable checkout, the
+     * exact harm docs/jobs.md calls the single most important line in the board contract. Under
+     * the claim protocol the second attempt's POST answers 409, it takes over only because its
+     * attempt number is ahead, and the FIRST attempt — still inside its sweep, holding nothing
+     * anymore — finds the claim no longer its own and stands down before creating anything.
+     */
+    it('admits one runner per checkout: the superseded attempt stands down mid-sweep', async () => {
+        const olderJob: BoardJob = { ...job, attempts: 1 };
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const newerJobName = containerName(newerJob);
+        const serve = claimServer();
+        const calls: Call[] = [];
+        const liveJobs = new Set<string>();
+
+        let signalOlderClaimed!: () => void;
+        const olderClaimed = new Promise<void>((resolve) => {
+            signalOlderClaimed = resolve;
+        });
+        let openOlderList!: () => void;
+        const olderList = new Promise<void>((resolve) => {
+            openOlderList = resolve;
+        });
+
+        const shared = (method: K8sMethod, path: string, body?: unknown): Promise<K8sResponse> => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({ items: [...liveJobs].map((name) => ({ metadata: { name } })) }),
+                });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                liveJobs.add((body as { metadata?: { name?: string } })?.metadata?.name ?? '');
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                liveJobs.delete((path.slice(jobsPath(namespace).length + 1).split('?')[0]) ?? '');
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(olderJob)) || path === jobPath(namespace, newerJobName)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        // The older attempt's fence: its first label list is held until the test has run the
+        // newer attempt to completion, so the sweep sees the replacement's live Job.
+        const olderRequest: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                // The claim is taken before the first list in the fixed code; signal then. Before
+                // the fix there is no claim POST, so signal at the list instead — the test must
+                // start the newer attempt either way.
+                signalOlderClaimed();
+                return olderClaimed.then(() => olderList).then(() => shared(method, path, body));
+            }
+            const result = shared(method, path, body);
+            if (method === 'POST' && path === configmapsPath) {
+                result.then(
+                    () => signalOlderClaimed(),
+                    () => signalOlderClaimed(),
+                );
+            }
+            return result;
+        };
+
+        const makeRunner = (request: K8sRequest) =>
+            createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), request, async () => {});
+
+        const olderRun = makeRunner(olderRequest).run(olderJob, { id: SESSION, resume: false });
+        await olderClaimed;
+        const newerOutcome = await makeRunner(shared).run(newerJob, { id: SESSION, resume: false });
+        expect(newerOutcome.exitCode).toBe(0);
+        openOlderList();
+        await expect(olderRun).rejects.toThrow(/stands down/);
+
+        // Exactly one runner Job was ever created, and it is the newer attempt's.
+        const jobPosts = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(jobPosts).toHaveLength(1);
+        expect((jobPosts[0]?.body as { metadata?: { name?: string } } | undefined)?.metadata?.name).toBe(newerJobName);
+        // The superseded attempt never reached the winner's objects.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(newerJobName))).toBe(false);
+    });
+
     // The env Secret this run creates precedes its first Job POST — and must SURVIVE the fence:
     // the Job references it by name, and a deleted one would start the pod silently without its
     // claim env. The fence sweeps JOBS by label and nothing else — and the Secret's name carries
@@ -637,8 +953,11 @@ describe('the kubernetes runner', () => {
     it('keeps the freshly created Secret across the label fence', async () => {
         const calls: Call[] = [];
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const serve = claimServer();
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -687,16 +1006,15 @@ describe('the kubernetes runner', () => {
     });
 
     /*
-     * The fence classifies NOTHING, so every Job the `factory.job` selector answers is deleted:
-     * a predecessor's leftover and a successor that reclaimed while this fence was in flight are
-     * indistinguishable to a selector, and no timestamp makes them distinguishable — a
-     * predecessor's Job can be younger than any cutoff, because its attempt's Secret creation
-     * and its own fencing waited on the kubelet's unbounded garbage collection. Each is deleted
+     * The sweep classifies NOTHING, so every Job the `factory.job` selector answers is deleted —
+     * which is safe exactly because the claim is held: whoever the Jobs belonged to, the board
+     * has superseded them, and a successor that reclaims while this sweep is in flight makes the
+     * claim check answer not-ours and stands this attempt down before a single delete lands. No
+     * timestamp makes a predecessor distinguishable — one can be younger than any cutoff, because
+     * its attempt's fencing waited on the kubelet's unbounded garbage collection. Each is deleted
      * BY NAME with Foreground propagation; a collection DELETE is still never issued, because
      * the API server evaluates a selector at processing time and one in flight could reach Jobs
-     * posted after the fence began — this attempt's own, once created. The fresh successor
-     * fenced here stands down: its status poll answers 404 and its runner leaves the job to the
-     * lease. A burned attempt is the documented cost; two writers on one checkout is the harm.
+     * posted after the fence began — this attempt's own, once created.
      */
     it('fences every Job the label answers — leftover and fresh successor alike — by name, never as a collection DELETE', async () => {
         const now = Date.now();
@@ -707,8 +1025,11 @@ describe('the kubernetes runner', () => {
         let old = true;
         let fresh = true;
         const calls: Call[] = [];
-        const request: K8sRequest = (method, path) => {
-            calls.push({ method, path });
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({
                     status: 200,
@@ -747,8 +1068,8 @@ describe('the kubernetes runner', () => {
         // No collection DELETE anywhere in the run: one whose selector would match this
         // attempt's own Job once created is exactly the delete this fence must never issue.
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes('labelSelector='))).toBe(false);
-        // Both Jobs go BY NAME, Foreground — the fresh successor too. Its runner detects the
-        // vanished Job in its status poll and stands down.
+        // Both Jobs go BY NAME, Foreground — the fresh successor's leftover too: its run
+        // released the claim before this attempt acquired it, so its Job is sweepable.
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, oldName)}?propagationPolicy=Foreground`,
@@ -757,8 +1078,23 @@ describe('the kubernetes runner', () => {
             method: 'DELETE',
             path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
         });
-        // LIST (finds both), two deletes, LIST (clean), create, then the status poll.
-        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
+        // Claim, LIST (finds both), claim confirmed ours, two deletes, LIST (clean), create,
+        // claim verified, then the status poll.
+        expect(calls.map((call) => call.method)).toEqual([
+            'POST',
+            'GET',
+            'GET',
+            'DELETE',
+            'DELETE',
+            'GET',
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+        ]);
     });
 
     /*
@@ -776,8 +1112,11 @@ describe('the kubernetes runner', () => {
         const predecessor = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let predecessorAlive = true;
         const calls: Call[] = [];
-        const request: K8sRequest = (method, path) => {
-            calls.push({ method, path });
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({
                     status: 200,
@@ -820,77 +1159,34 @@ describe('the kubernetes runner', () => {
             method: 'DELETE',
             path: `${jobPath(namespace, predecessor)}?propagationPolicy=Foreground`,
         });
-        // ...and only once the selector answers nothing does this attempt create its own Job:
-        // LIST (finds the predecessor), DELETE, LIST (clean), POST, then the status poll.
-        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
-    });
-
-    /*
-     * The round-7 inversion, now doctrine: a Job created seconds ago — a successor that
-     * reclaimed while this fence was in flight — is fenced too. The previous round spared it as
-     * "possibly this fence's own replacement"; the mutex makes no exception, because the one Job
-     * that must never be deleted (this attempt's own) cannot exist yet, and everything else the
-     * label answers is a writer on the checkout. The successor stands down — its status poll
-     * answers 404 — and the fence waits on it like any other object, until the selector answers
-     * nothing. Pinned under the shortest supported lease: the fence is identical at every lease
-     * length, because it reads none.
-     */
-    it('fences a fresh successor too — a stale fence fencing its replacement is the documented mutex behavior', async () => {
-        const freshName = 'factory-job-11111111-1111-4111-8111-111111111111-newlease-runner';
-        let fresh = true;
-        const calls: Call[] = [];
-        const request: K8sRequest = (method, path) => {
-            calls.push({ method, path });
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({
-                    status: 200,
-                    body: JSON.stringify({
-                        items: fresh
-                            ? [{ metadata: { name: freshName, creationTimestamp: new Date().toISOString() } }]
-                            : [],
-                    }),
-                });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                if (path.startsWith(jobPath(namespace, freshName))) fresh = false;
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (path === jobPath(namespace, containerName(job))) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
-                return Promise.resolve(FAKE.pods as K8sResponse);
-            }
-            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
-
-        const r = createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, DRIVER_LEASE_SECONDS: '10' }),
-            request,
-            async () => {},
-        );
-        const outcome = await r.run(job, { id: SESSION, resume: false });
-        expect(outcome.exitCode).toBe(0);
-
-        // Deleted BY NAME, Foreground, exactly like any other object the selector answers...
-        expect(calls).toContainEqual({
-            method: 'DELETE',
-            path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
-        });
-        // ...and awaited: LIST (finds it), DELETE, LIST (clean), POST, then the status poll.
-        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
+        // ...and only once the claim is confirmed ours and the selector answers nothing does
+        // this attempt create its own Job: claim, LIST (finds the predecessor), claim confirmed,
+        // DELETE, LIST (clean), POST, claim verified, then the status poll.
+        expect(calls.map((call) => call.method)).toEqual([
+            'POST',
+            'GET',
+            'GET',
+            'DELETE',
+            'GET',
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+        ]);
     });
 
     // A collection that answers 404 has nothing behind it to fence: straight to the create, no
     // second list, no deletes.
     it('treats a 404 from the label list as nothing left to fence', async () => {
         const calls: Call[] = [];
-        const request: K8sRequest = (method, path) => {
-            calls.push({ method, path });
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
             }
@@ -909,7 +1205,17 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        expect(calls.map((call) => call.method)).toEqual(['GET', 'POST', 'GET', 'GET', 'GET']);
+        expect(calls.map((call) => call.method)).toEqual([
+            'POST',
+            'GET',
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+        ]);
     });
 
     // A dropped connection says nothing about whether the objects are gone; the fence keeps
@@ -917,8 +1223,11 @@ describe('the kubernetes runner', () => {
     it('keeps fencing through a transport failure on the list', async () => {
         const calls: Call[] = [];
         let lists = 0;
-        const request: K8sRequest = (method, path) => {
-            calls.push({ method, path });
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
                 // First read: the connection drops. Second: the selector answers nothing.
@@ -941,7 +1250,379 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        expect(calls.map((call) => call.method)).toEqual(['GET', 'GET', 'POST', 'GET', 'GET', 'GET']);
+        expect(calls.map((call) => call.method)).toEqual([
+            'POST',
+            'GET',
+            'GET',
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+        ]);
+    });
+
+    /*
+     * Release is conditional: the only claim this attempt may ever delete is the exact
+     * incarnation it still holds, proved by a GET before the DELETE. Case (a): a finished run
+     * releases its own claim, uid-preconditioned. Case (b): a claim that has moved on — taken
+     * over, or already gone — is left entirely alone.
+     */
+    it('releases the claim when the run ends, and never releases a claim it no longer holds', async () => {
+        const claimPath = claimPathFor(job.id);
+        // (a) A successful run ends with the claim read and released — before the env Secret's
+        // reap, so the last cleanup call stays the Secret's.
+        const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
+        const released = fakeRequest();
+        await runner(released.request).run(envJob, { id: SESSION, resume: false });
+        const tail = released.calls.slice(-3);
+        expect(tail[0]).toEqual({ method: 'GET', path: claimPath });
+        expect(tail[1]?.method).toBe('DELETE');
+        expect(tail[1]?.path).toBe(claimPath);
+        expect((tail[1]?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
+            'claim-uid-1',
+        );
+        expect(tail[2]).toEqual({
+            method: 'DELETE',
+            path: `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`,
+        });
+
+        // (b) The claim answers gone at release time: no DELETE on the configmaps path at all.
+        let reads = 0;
+        const serve = claimServer();
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) {
+                // The verify read (our claim, still held) succeeds; every later read — the
+                // release's — answers 404, as if another attempt took the claim over and
+                // finished its whole run in between.
+                reads += 1;
+                if (reads > 2) return { status: 404, body: '{"kind":"Status"}' };
+                return claimAnswer;
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        // The acquire POST, the sweep's verify and the post-create verify happened — reads 1
+        // and 2 — and the release read found the claim gone without deleting anything.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+    });
+
+    // A claim with no attempt number — hand-made, or written by a driver from before the field
+    // existed — is never proof of a newer writer, so it is released by takeover like any other
+    // older holder's leftover. Standing down on garbage would let a dead claim hold the
+    // checkout forever.
+    it('takes over a claim object that carries no attempt number', async () => {
+        const claimPath = claimPathFor(job.id);
+        const serve = claimServer();
+        const calls: Call[] = [];
+        let seeded = false;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (!seeded) {
+                seeded = true;
+                // A hand-made claim: a holder, but no attempt field at all.
+                serve('POST', configmapsPath, {
+                    metadata: { name: `factory-job-${job.id}-claim` },
+                    data: { holder: 'someone-else' },
+                });
+            }
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        // Taken over, not stood down: the holder was not a newer attempt.
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(true);
+        // And the takeover was conditioned on the incarnation the GET read.
+        expect(
+            (calls.find((call) => call.method === 'DELETE' && call.path === claimPath)?.body as {
+                preconditions?: { uid?: string };
+            } | undefined)?.preconditions?.uid,
+        ).toBe('claim-uid-1');
+    });
+
+    // The claim name is the one job-scoped object name this runner ever writes — asserted before
+    // it joins an API path, the same way the Job's and the Secret's are.
+    it('names the checkout claim after the job id alone, and refuses a job id that is not a uuid', () => {
+        expect(claimName(job)).toBe(`factory-job-${job.id}-claim`);
+        expect(() => claimName({ ...job, id: '../../etc/passwd' })).toThrow(/not a uuid/);
+    });
+
+    /*
+     * The post-create verify is the bracket that closes race 1's residual window: a takeover
+     * landing between the Job POST and the claim read is answered by the loser deleting its OWN
+     * attempt-scoped Job and standing down — never by touching anything of the winner's.
+     */
+    it('stands down and removes its own Job when the claim is taken over between the Job POST and the verify', async () => {
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let jobPosted = false;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                jobPosted = true;
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    // The claim is ours until this attempt's Job exists; the takeover lands the
+                    // moment it is — exactly the window this bracket closes.
+                    return Promise.resolve(
+                        jobPosted
+                            ? {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-9' },
+                                      data: { holder: NEW_TOKEN, attempt: '2' },
+                                  }),
+                              }
+                            : {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-8' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /taken over before the runner could start/,
+        );
+        // Its OWN Job, by name, Foreground.
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+        });
+        // And nothing of the winner's: no Job of the newer attempt is ever addressed.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(NEW_TOKEN))).toBe(false);
+    });
+
+    // A read that cannot name the incarnation it read is a bad read, and an UNCONDITIONED delete
+    // of it could reach a newer claim — reopening both races through the takeover itself. The
+    // runner refuses instead: fail loud, leave the job to its lease, delete nothing.
+    it('refuses to release a claim it cannot identify, rather than deleting unconditioned', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+            }
+            if (path === claimPath && method === 'GET') {
+                // An older holder by attempt number, but a body with no uid on it.
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({ data: { holder: 'someone-else', attempt: '0' } }),
+                });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not be identified/,
+        );
+        // No delete anywhere near the configmaps path, least of all an unconditioned one.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+        expect(calls.some((call) => call.method === 'DELETE' && call.body !== undefined)).toBe(false);
+    });
+
+    // A blink on the post-create verify is not proof the claim moved: the read runs with the
+    // same bounded patience the status poll has, and only a definitive answer stands the run down.
+    it('keeps the run through a transient failure on the post-create claim verify', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    // First read: the apiserver blinks right after the Job POST. Second: ours.
+                    return Promise.resolve(
+                        reads === 1
+                            ? { status: 503, body: 'unavailable' }
+                            : {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        // The 503 was retried, not acted on; the run created its Job and released its claim.
+        expect(reads).toBeGreaterThanOrEqual(2);
+        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
+    });
+
+    // The sweep deletes only when the claim verify answers definitively: a blink on the claim
+    // read is 'unknown' — nothing is deleted that round, and the fence looks again within its
+    // bound, because deleting on a maybe is what would reach the winner's Job.
+    it('deletes nothing on a round whose claim verify could not be confirmed, and looks again', async () => {
+        const leftover = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
+        const calls: Call[] = [];
+        let claimReads = 0;
+        let lists = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPathFor(job.id)) {
+                if (method === 'GET') {
+                    claimReads += 1;
+                    // The sweep's FIRST verify read: the apiserver blinks. The second (and every
+                    // later read, including the post-create verify and the release) answers ours.
+                    return Promise.resolve(
+                        claimReads === 1
+                            ? { status: 503, body: 'unavailable' }
+                            : {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                lists += 1;
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({ items: lists <= 2 ? [{ metadata: { name: leftover } }] : [] }),
+                });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        // LIST (leftover), verify 503 → no delete, LIST (leftover again), verify ours → DELETE,
+        // LIST (clean), create, verify, poll, pods, log, release, release-delete.
+        expect(calls.map((call) => call.method)).toEqual([
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+            'GET',
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+        ]);
+        expect(calls[5]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // The board refuses a complete POST that does not fit its body limit — an oversized report
@@ -973,8 +1654,11 @@ describe('the kubernetes runner', () => {
     it('keeps polling through transient API failures', async () => {
         const calls: Call[] = [];
         let gets = 0;
-        const request: K8sRequest = (method, path) => {
-            calls.push({ method, path });
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (path === jobsPath(namespace) && method === 'POST') {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -1006,7 +1690,10 @@ describe('the kubernetes runner', () => {
     // all but certainly fired by then — polling on would hold a worker slot forever.
     it('abandons the run after too many consecutive failed reads', async () => {
         let gets = 0;
-        const request: K8sRequest = (method, path) => {
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (path === jobsPath(namespace) && method === 'POST') {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -1066,7 +1753,10 @@ describe('the kubernetes runner', () => {
             FAKE.job as K8sResponse,
         ];
         let served = 0;
-        const request: K8sRequest = (method, path) => {
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (path === jobsPath(namespace) && method === 'POST') {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -1170,7 +1860,10 @@ describe('the kubernetes runner', () => {
 
     it('keeps polling the pod list through transient API failures', async () => {
         let lists = 0;
-        const request: K8sRequest = (method, path) => {
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -1203,7 +1896,10 @@ describe('the kubernetes runner', () => {
     // A log read that fails outright — connection reset, pod gone — must not fail the report: the
     // exit code already carries the verdict, and re-running finished work is the worse outcome.
     it('keeps the verdict when the log read fails outright', async () => {
-        const request: K8sRequest = (method, path) => {
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }

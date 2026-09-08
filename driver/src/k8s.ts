@@ -260,6 +260,56 @@ const secretBody = (job: BoardJob, env: Record<string, string>) => ({
 });
 
 /**
+ * The checkout claim: one ConfigMap per JOB id, the one job-scoped name this runner ever writes,
+ * and the atom that makes the re-claim fence a mutex instead of a GET-then-POST race. The
+ * apiserver's name uniqueness arbitrates — POST it and a `409` means somebody else holds the
+ * checkout — while `data.attempt` (the board's monotonic per-job attempt counter, never a clock)
+ * orders the contenders: a claim whose attempt is ahead of ours is our replacement's, and we
+ * stand down. A ConfigMap and not a Secret because the protocol needs `get`, and granting `get`
+ * on secrets would expose every attempt's env values; this object carries a holder token and an
+ * attempt number, both already known to the driver.
+ *
+ * Everything else stays attempt-scoped: names carrying the lease token are what keep a
+ * superseded attempt's cleanup from ever reaching the winner's objects.
+ */
+export const claimName = (job: BoardJob): string => {
+    if (!JOB_ID.test(job.id)) {
+        throw new Error(`refusing to address a job id that is not a uuid: ${job.id}`);
+    }
+    return `factory-job-${job.id}-claim`;
+};
+
+export const configmapsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/configmaps`;
+
+export const claimPath = (namespace: string, job: BoardJob): string =>
+    `${configmapsPath(namespace)}/${claimName(job)}`;
+
+/** The claim object this attempt POSTs. `data` values are strings — the apiserver rejects numbers. */
+const claimBody = (job: BoardJob) => ({
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+        name: claimName(job),
+        labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+    },
+    data: { holder: job.leaseToken, attempt: String(job.attempts) },
+});
+
+interface K8sClaim {
+    metadata?: { uid?: string };
+    data?: { holder?: string; attempt?: string };
+}
+
+/**
+ * Bounded rounds for the acquire loop: POST 409 → read the holder → the holder vanished or was
+ * an older attempt we released → POST again. Takeover is strictly forward-only (a claim whose
+ * attempt is ahead makes us stand down, never wait), so more than a couple of rounds is an
+ * apiserver flapping; the bound turns that into a thrown error and the job goes back to its
+ * lease instead of two writers racing one checkout.
+ */
+const CLAIM_ROUNDS = 15;
+
+/**
  * One call against the API server. The body is the raw response text rather than a parsed object:
  * the log endpoint answers plain text, and parsing is the caller's problem — which keeps the
  * injected fake a router over (method, path) and nothing more.
@@ -391,44 +441,119 @@ export function createKubernetesRunner(
     const forgetSecretIfAny = (job: BoardJob): Promise<void> =>
         Object.keys(claimEnv(job)).length ? forgetSecret(job) : Promise.resolve();
 
-    const create = async (job: BoardJob, spec: RunnerJobSpec): Promise<void> => {
-        const env = claimEnv(job);
-        const post = async (): Promise<K8sResponse> => request('POST', jobsPath(config.k8sNamespace), spec);
-        if (Object.keys(env).length) {
-            // Before the Job — a pod that references a Secret that is not there yet is a
-            // CreateContainerConfigError and a burned attempt. The name carries this attempt's
-            // lease token, so there is no previous attempt's Secret at this name to sweep — and
-            // deliberately no pre-create delete, which under a shared name was what let a
-            // superseded worker's cleanup destroy a replacement's Secret.
-            const secretResponse = await request('POST', secretsPath, secretBody(job, env));
-            if (secretResponse.status >= 300) {
+    /**
+     * Take the checkout claim, atomically. The POST is the whole mutex: the apiserver grants the
+     * name to exactly one creator, so there is no window in which two attempts both hold the
+     * checkout — the GET-then-POST race the label fence had is closed by construction. A `409`
+     * reads the holder: an attempt number at or ahead of ours is our own replacement, and we
+     * stand down (this is what keeps a superseded attempt from ever touching its winner);
+     * behind ours is a leftover from a driver that died holding the claim, released
+     * conditionally on the exact incarnation we read — the uid precondition is what keeps a
+     * stale attempt's release from ever reaching a newer claim. No clock is read anywhere: the
+     * board's attempt counter orders the contenders, and a claim we cannot classify is released
+     * the same way, because an unclassifiable object is never proof of a newer writer.
+     */
+    const acquireClaim = async (job: BoardJob): Promise<void> => {
+        const path = claimPath(config.k8sNamespace, job);
+        for (let round = 1; ; round += 1) {
+            if (round > CLAIM_ROUNDS) {
+                throw new Error(`the checkout claim of job ${job.id} was never acquired after ${CLAIM_ROUNDS} rounds`);
+            }
+            const post = await request('POST', configmapsPath(config.k8sNamespace), claimBody(job));
+            if (post.status < 300) return;
+            if (post.status !== 409) {
+                throw new Error(`claiming the checkout answered ${post.status}: ${post.body.slice(0, 200)}`);
+            }
+            const get = await request('GET', path);
+            // Gone between our 409 and the read — the holder released it; race for it again.
+            if (get.status === 404) continue;
+            if (get.status >= 300) {
+                throw new Error(`reading the checkout claim answered ${get.status}: ${get.body.slice(0, 200)}`);
+            }
+            const claim = parse<K8sClaim>(get.body);
+            if (claim.data?.holder === job.leaseToken) return;
+            const attempt = Number(claim.data?.attempt);
+            if (Number.isFinite(attempt) && attempt >= job.attempts) {
                 throw new Error(
-                    `creating the runner secret answered ${secretResponse.status}: ${secretResponse.body.slice(0, 200)}`,
+                    `job ${job.id} stands down: the checkout claim is held by a newer attempt ` +
+                        `(${claim.data?.attempt} >= ${job.attempts})`,
                 );
             }
+            const uid = claim.metadata?.uid;
+            if (!uid) {
+                // A read that cannot name the incarnation it read is a bad read, and garbage is
+                // never proof of an older holder: an UNCONDITIONED delete here could reach a
+                // newer claim and reopen both races through this one branch. Fail loud; the job
+                // goes back to its lease. Every apiserver-created object carries a uid.
+                throw new Error(`the checkout claim of job ${job.id} could not be identified: no uid on the object`);
+            }
+            const release = await request('DELETE', path, {
+                apiVersion: 'v1',
+                kind: 'DeleteOptions',
+                preconditions: { uid },
+            });
+            // 404: the holder released it first. 409: the claim we read was replaced in the
+            // meantime — the next round's GET reads the new holder and orders us against it.
+            if (release.status >= 300 && release.status !== 404 && release.status !== 409) {
+                throw new Error(`releasing the checkout claim answered ${release.status}: ${release.body.slice(0, 200)}`);
+            }
         }
+    };
+
+    /**
+     * Give the checkout claim back — conditionally, because the only claim this attempt may ever
+     * release is the exact incarnation it still holds. A claim that answers gone or held by
+     * another attempt is left entirely alone: the first shape means nobody holds the checkout,
+     * the second means a newer attempt took it over, and both leave nothing for this attempt to
+     * undo. A driver that dies holding the claim leaks it — labeled `factory.job` for a cleanup
+     * job, the same accepted-leak posture as the env Secret — and the next claimant releases it
+     * by takeover, because its attempt number is strictly ahead.
+     */
+    const releaseClaim = async (job: BoardJob): Promise<void> => {
+        const path = claimPath(config.k8sNamespace, job);
+        let get: K8sResponse;
+        try {
+            get = await request('GET', path);
+        } catch {
+            return; // Nothing provable; a leaked claim is taken over by the next claimant.
+        }
+        if (get.status === 404 || get.status >= 300) return;
+        const claim = parse<K8sClaim>(get.body);
+        const uid = claim.metadata?.uid;
+        if (claim.data?.holder !== job.leaseToken || !uid) return;
+        try {
+            await request('DELETE', path, { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } });
+        } catch {
+            // Best effort: the leak's cost is one takeover by the next claimant, nothing worse.
+        }
+    };
+
+    const create = async (job: BoardJob, spec: RunnerJobSpec): Promise<void> => {
+        const env = claimEnv(job);
+
         /*
-         * The re-claim fence, and the only job-scoped write this runner does: a plain MUTEX over
-         * the job label. It deletes EVERY Job the `factory.job=<id>` selector answers — by NAME,
-         * per object, with Foreground propagation — and posts this attempt's Job only once the
-         * selector answers nothing. No timestamps, no cutoffs, no clocks: an age filter was
-         * unsound in both directions — a predecessor's Job can be younger than any time-derived
-         * cutoff, because its attempt's Secret creation and its own fencing waited on the
-         * kubelet's unbounded garbage collection, while a Job created after this fence began
-         * must not be touched — so no clock-derived predicate can classify correctly, and the
-         * fence no longer classifies at all. "Every" is unambiguous because this attempt's own
-         * Job cannot exist yet: its name carries this attempt's lease token, and nothing has
-         * posted it.
+         * The re-claim fence, step one: TAKE THE CHECKOUT. One POST per round, arbitrated by the
+         * apiserver's name uniqueness — the atomic mutex the old GET-then-POST label fence could
+         * only approximate. Two attempts can no longer both observe a free checkout and both
+         * create: the second POST answers 409 and reads who won.
+         */
+        await acquireClaim(job);
+
+        /*
+         * Step two: the sweep — the janitor that enforces the takeover. Every Job the
+         * `factory.job=<id>` selector answers is a leftover of the attempts this claim was taken
+         * FROM: deleted BY NAME, per object, with Foreground propagation, until the selector
+         * answers nothing and this attempt's Job is the only possible writer on the checkout. No
+         * timestamps, no cutoffs, no clocks: an age filter was unsound in both directions, so the
+         * sweep classifies nothing. It is safe to sweep "everything" exactly because the claim is
+         * held: whoever the Jobs belonged to, the board has superseded them — and this attempt's
+         * own Job cannot exist yet, its name carrying this attempt's lease token and nothing
+         * having posted it.
          *
-         * A superseded attempt whose live Job is fenced away this way STANDS DOWN: its status
-         * poll answers 404 ("the runner job ... no longer exists", in run0 below), the run's
-         * finally reaps its own Secret, and the loop leaves the job to the lease. The fenced
-         * loser burns its attempt — strictly lesser than the harm the fence exists to prevent,
-         * two writers on one checkout (docs/jobs.md). This is parity with the docker runner's
-         * fence, which sweeps by job label at execution time. Attempt-scoped names are why the
-         * loser's own cleanup can never reach the winner: every name and label it addresses
-         * carries its lease token, so its Secret reaping and its kill can only ever find its own
-         * attempt's objects.
+         * The claim is re-read before every deleting round: a stale attempt whose claim was taken
+         * over mid-sweep STANDS DOWN having deleted nothing — never the winner's Job, which the
+         * old fence deleted on sight (issue #32, race 2). A blink on the claim read deletes
+         * nothing either: the round is skipped and the loop looks again within the same bound.
          */
         let waits = 0;
         for (;;) {
@@ -450,6 +575,37 @@ export function createKubernetesRunner(
                 }
                 // The selector answers nothing — the checkout is free.
                 if (names.length === 0) break;
+                let verified: 'ours' | 'lost' | 'unknown' = 'unknown';
+                try {
+                    const held = await request('GET', claimPath(config.k8sNamespace, job));
+                    if (held.status === 404) {
+                        verified = 'lost';
+                    } else if (held.status >= 200 && held.status < 300) {
+                        // A 2xx that cannot name its holder also reads as lost, deliberately
+                        // asymmetric with step five: standing down deletes nothing, so garbage
+                        // is safe to act on HERE — while step five deletes the Job, so there
+                        // the same evidence fails loud without acting.
+                        verified = parse<K8sClaim>(held.body).data?.holder === job.leaseToken ? 'ours' : 'lost';
+                    }
+                    // 429/5xx: unconfirmed — neither delete nor stand down on a maybe.
+                } catch {
+                    verified = 'unknown';
+                }
+                if (verified === 'lost') {
+                    throw new Error(
+                        `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`,
+                    );
+                }
+                if (verified === 'unknown') {
+                    if (++waits > REPLACE_MAX_POLLS) {
+                        throw new Error(
+                            `the checkout claim of job ${job.id} could not be confirmed before fencing ` +
+                                `(${REPLACE_MAX_POLLS} polls)`,
+                        );
+                    }
+                    await sleep(POLL_MS);
+                    continue;
+                }
                 let deleted = 0;
                 for (const leftover of names) {
                     const response = await request(
@@ -477,10 +633,64 @@ export function createKubernetesRunner(
             }
             await sleep(POLL_MS);
         }
-        const response = await post();
+
+        // Step three: the env Secret, AFTER the claim and the sweep — a stood-down attempt creates
+        // nothing at all. Before the Job, as ever: a pod that references a Secret that is not
+        // there yet is a CreateContainerConfigError and a burned attempt. The name carries this
+        // attempt's lease token, so there is no previous attempt's Secret at this name to sweep —
+        // and deliberately no pre-create delete, which under a shared name was what let a
+        // superseded worker's cleanup destroy a replacement's Secret.
+        if (Object.keys(env).length) {
+            const secretResponse = await request('POST', secretsPath, secretBody(job, env));
+            if (secretResponse.status >= 300) {
+                throw new Error(
+                    `creating the runner secret answered ${secretResponse.status}: ${secretResponse.body.slice(0, 200)}`,
+                );
+            }
+        }
+
+        // Step four: this attempt's Job, under its own attempt-scoped name.
+        const response = await request('POST', jobsPath(config.k8sNamespace), spec);
         if (response.status >= 300) {
             throw new Error(
                 `creating the runner job answered ${response.status}: ${response.body.slice(0, 200)}`,
+            );
+        }
+
+        /*
+         * Step five: the claim must STILL be ours once the Job exists. The acquire and this
+         * verify bracket the whole creation, so the residual window in which a newer attempt
+         * could take over is closed deterministically: the attempt that loses the claim between
+         * its Job POST and this read deletes its own Job — BY NAME, its own attempt-scoped name,
+         * so its cleanup can never reach the winner's objects — and stands down. The read runs
+         * with the same bounded patience the status poll has: a blink or a 503 is not proof the
+         * claim moved, and standing down on a maybe would burn runs on apiserver flakiness. Only
+         * a definitive answer acts — a gone claim, or one held by another attempt. The one-API-
+         * round-trip window that remains costs a stood-down attempt its try, never a second
+         * writer on the checkout, and the heartbeat-409 kill (docs/jobs.md) stays the backstop.
+         */
+        const held = await readVerdict(claimPath(config.k8sNamespace, job), 'reading the checkout claim');
+        const claim = parse<K8sClaim>(held.body);
+        const readOurs = held.status >= 200 && held.status < 300;
+        if (
+            held.status === 404 ||
+            (readOurs && claim.data?.holder !== undefined && claim.data.holder !== job.leaseToken)
+        ) {
+            await request(
+                'DELETE',
+                `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Foreground`,
+            ).catch(() => undefined);
+            throw new Error(
+                `job ${job.id} stands down: the checkout claim was taken over before the runner could start`,
+            );
+        }
+        if (!readOurs || claim.data?.holder !== job.leaseToken) {
+            // Neither provably ours nor provably gone — fail loud rather than delete on a
+            // maybe. The Job is left for the next claimant's sweep, the same posture as a run
+            // that never reported.
+            throw new Error(
+                `the checkout claim of job ${job.id} could not be confirmed after creating the runner job ` +
+                    `(answered ${held.status})`,
             );
         }
     };
@@ -545,14 +755,18 @@ export function createKubernetesRunner(
         async run(job: BoardJob, session: RunSession, onOutput?: (tail: string) => void) {
             /*
              * Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed
-             * verdict read — must still reap the env Secret: the loop's catch never calls kill(),
-             * and when the job retires dead there is no next attempt to reap it. The cleanup is
-             * the OUTSIDE of the run, not a step in it. With the lease token in the name, both
-             * this and kill() can only ever remove their own attempt's Secret.
+             * verdict read — must still reap the env Secret AND release the checkout claim: the
+             * loop's catch never calls kill(), and when the job retires dead there is no next
+             * attempt to do either. The cleanup is the OUTSIDE of the run, not a step in it. The
+             * claim is released first, conditionally on this attempt still holding its exact
+             * incarnation (releaseClaim never touches a claim that moved on); the Secret is
+             * reaped last. With the lease token in the name, both this and kill() can only ever
+             * remove their own attempt's Secret.
              */
             try {
                 return await runner.run0(job, session, onOutput);
             } finally {
+                await releaseClaim(job);
                 await forgetSecretIfAny(job);
             }
         },
