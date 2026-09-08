@@ -154,6 +154,37 @@ describe('the installation token', () => {
         expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(1);
     });
 
+    it('abandons a mint that hangs rather than holding the caller forever', async () => {
+        /*
+         * The claim runs this request inside its transaction, holding a job-row lock and one of the
+         * pool's connections across it, so a GitHub that never answers would stall every other
+         * claim, heartbeat and completion behind it. The mint has to abort, and the claim's
+         * 503/retry path takes over from there. This stub only settles when its signal does.
+         */
+        const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason));
+            })) as typeof fetch;
+        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, mintTimeoutMs: 10 });
+
+        await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
+    });
+
+    it('mints once when two callers race a fresh mint', async () => {
+        /*
+         * Overlapping claims each ask for fresh, and the loser of a double mint is not invalidated —
+         * it stays live for an hour counting against the App. The fresh path must join the same
+         * single-flight as get, sharing one request, each caller still getting a full-hour token.
+         */
+        let serial = 0;
+        const { calls, fetchFn } = stubFetch({ token: () => `ghs_${++serial}` });
+        const tokens = installationTokenProvider({ github: appConfig(), fetchFn });
+
+        const [a, b] = await Promise.all([tokens.fresh(), tokens.fresh()]);
+        expect(a).toBe(b);
+        expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(1);
+    });
+
     it('trusts GitHub\'s expires_at rather than assuming an hour', async () => {
         let now = Date.parse('2026-08-21T12:00:00.000Z');
         // A ten-minute token: entirely inside what an assumed hour would consider fresh.

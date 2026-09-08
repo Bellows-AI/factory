@@ -125,9 +125,13 @@ each is answered in place:
 - **Each claim mints FRESH rather than reading the provider's cache.** The token the repo-read path
   uses is cached and refreshed five minutes before expiry, so a claim served from it could hand a
   runner a credential with minutes of life left — and a runner's env is written once, its run
-  capped at thirty minutes, with no refresh path. So the claim calls the provider's `fresh()`: one
-  GitHub call per claim (never per poll — an idle board mints nothing), a full hour of life every
-  time, and GitHub does not invalidate the token the mint replaced. A mint failure throws inside
+  capped at thirty minutes, with no refresh path. So the claim calls the provider's `fresh()`: at
+  most one GitHub call per claim — concurrent claims join the same single-flight mint (never per
+  poll: an idle board mints nothing) — a full hour of life every
+  time, and GitHub does not invalidate the token the mint replaced. The request itself is bounded
+  (`MINT_TIMEOUT_MS`): the mint runs inside the claim's transaction, so a GitHub that answers
+  slowly must abort rather than pin the job-row lock and a pool connection indefinitely. A mint
+  failure throws inside
   the claim transaction, and the same rollback that guards the env resolver leaves the job queued
   with its attempt unburned — the claim answers 503 and the driver retries, so a job is never
   handed out with half an environment.

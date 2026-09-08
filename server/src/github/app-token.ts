@@ -38,6 +38,16 @@ const JWT_CLOCK_SKEW_SECONDS = 60;
  */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
+/**
+ * How long a mint request may run before it is abandoned.
+ *
+ * A claim runs this request inside its transaction, so GitHub answering slowly holds that claim's
+ * job-row lock and one of the pool's connections for the duration — and unrelated claims,
+ * heartbeats and completions all stall behind a remote request. Aborting the mint bounds the hold;
+ * the claim surfaces the failure and its 503/retry path takes over.
+ */
+const MINT_TIMEOUT_MS = 5000;
+
 const base64url = (value: string | Buffer): string =>
     Buffer.from(value).toString('base64url');
 
@@ -61,6 +71,7 @@ export interface AppTokenOptions {
     readonly github: Extract<GitHubConfig, { mode: 'app' }>;
     readonly fetchFn?: typeof fetch;
     readonly now?: () => number;
+    readonly mintTimeoutMs?: number;
 }
 
 export class GitHubAppError extends Error {}
@@ -122,14 +133,16 @@ export interface InstallationTokenProvider extends TokenProvider {
     /**
      * A token minted NOW, never served from the cache — for a credential that has to outlive the
      * instant it is handed out. The claim path uses this: a runner's env is written once and the
-     * job outlives the claim, so a cached token's remaining five minutes would die mid-run. The
-     * mint also refreshes what `get` caches, and GitHub does not invalidate the tokens it replaced.
+     * job outlives the claim, so a cached token's remaining five minutes would die mid-run. A
+     * fresh mint joins any other mint in flight — concurrent claims share the one request and each
+     * still gets a full-hour token — and the mint refreshes what `get` caches; GitHub does not
+     * invalidate the tokens it replaced.
      */
     fresh(): Promise<string>;
 }
 
 export function installationTokenProvider(options: AppTokenOptions): InstallationTokenProvider {
-    const { github, fetchFn = fetch, now = Date.now } = options;
+    const { github, fetchFn = fetch, now = Date.now, mintTimeoutMs = MINT_TIMEOUT_MS } = options;
 
     // Parsed once, at construction. A well-shaped but invalid PEM then fails at boot, where
     // loadConfig's shape check left off, rather than at the first fetch minutes later.
@@ -160,6 +173,9 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
                 accept: 'application/vnd.github+json',
                 'user-agent': 'factory-ai',
             },
+            // The hold MINT_TIMEOUT_MS bounds: a hung GitHub aborts here instead of pinning the
+            // caller's transaction open.
+            signal: AbortSignal.timeout(mintTimeoutMs),
         });
         const body = (await json(response, 'installation token request')) as {
             token?: string;
@@ -188,7 +204,12 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         },
 
         async fresh() {
-            return mint();
+            // `get` without the cache check: the same single-flight, since a mint bypassing it
+            // would leave the loser live for an hour, counting against the App.
+            pending ??= mint().finally(() => {
+                pending = null;
+            });
+            return pending;
         },
 
         async installationId() {

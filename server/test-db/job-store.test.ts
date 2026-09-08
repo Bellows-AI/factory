@@ -830,11 +830,17 @@ describe.runIf(enabled)('attribution', () => {
         expect(claim?.attempts).toBe(1);
     });
 
+    /** Unique per run — a shared factory_test database must not let one suite's accounts collide with another's. */
+    const mintedAccountId = (() => {
+        let next = 50_000 + Math.floor(Math.random() * 100_000);
+        return () => ++next;
+    })();
+
     it('mints the installation token onto the claim, under the stacked environment', async () => {
         // Issue #28: executors orchestrate github workflows (PRs, commits, CI reads). Under an
         // app-mode board the installation token rides the claim's env, minted at claim time — the
         // seam docs/env.md reserved for exactly this.
-        const userId = await account(5010, 'minted-cat');
+        const userId = await account(mintedAccountId(), 'minted-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG });
         await sql`truncate env_var`;
         await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
@@ -856,7 +862,7 @@ describe.runIf(enabled)('attribution', () => {
          * A credential an operator configured in a scope is deliberate; the mint fills only the
          * gap. Silently replacing it with a different token would be a failure nobody notices.
          */
-        const userId = await account(5011, 'tokened-cat');
+        const userId = await account(mintedAccountId(), 'tokened-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG });
         await sql`truncate env_var`;
         await envStore.replaceOrg([{ name: 'GITHUB_TOKEN', value: 'operator-pat', isSecret: true }]);
@@ -877,7 +883,7 @@ describe.runIf(enabled)('attribution', () => {
          * The resolver-failure precedent, one layer down: the mint is a remote call on the claim
          * path, and a half-claim taken before it failed must roll back exactly the same way.
          */
-        const userId = await account(5012, 'flaky-mint');
+        const userId = await account(mintedAccountId(), 'flaky-mint');
         let fail = true;
         const flaky = createJobStore({
             sql,
@@ -903,7 +909,7 @@ describe.runIf(enabled)('attribution', () => {
     });
 
     it('mints the token even when the board has no env resolver', async () => {
-        const userId = await account(5013, 'bare-mint');
+        const userId = await account(mintedAccountId(), 'bare-mint');
         const bare = createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_example' } });
         await bare.create('echo hi', userId, { repo: null, executor: null });
 
@@ -917,7 +923,7 @@ describe.runIf(enabled)('attribution', () => {
          * a run capped at thirty minutes, and the runner has no refresh path — its env file is
          * written once. So each claim mints for itself, and the credential starts with a full hour.
          */
-        const userId = await account(5014, 'fresh-mint');
+        const userId = await account(mintedAccountId(), 'fresh-mint');
         let mints = 0;
         const counting = createJobStore({
             sql,
