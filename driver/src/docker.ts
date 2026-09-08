@@ -170,6 +170,92 @@ export function reportTail(logText: string): string {
 export const containerName = (job: BoardJob): string => `factory-job-${job.id}`;
 
 /**
+ * The gate environment container's identity: `<checkout key>` under a label, `factory-env-…` as a
+ * name. The KEY is the checkout the gates share with the coding agent — `<org>/<uuid>/<repo>` —
+ * and it is asserted before it is interpolated into argv or a container name, exactly like
+ * `workspacePathOf` above: it arrives from the board's claim plus a repo label, and a `..` in it
+ * would work the parent of every member's tree into a container that runs arbitrary commands.
+ *
+ * The segments mirror what the system legally produces: org ≤ 39 (ORG_ID_PATTERN) and repo ≤ 100
+ * (the create route's REPO_SEGMENT_LIMIT under the same first-char rules as `badSegment`) — a
+ * validator narrower than the input domain would fail every job on a legally-named checkout.
+ */
+const GATE_KEY =
+    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/i;
+
+/** Same shape the board's `.bellows.yaml` parser enforces; re-asserted here, before argv. */
+const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
+
+/**
+ * A container name this process will `docker exec` into: one token, no shell metacharacters. The
+ * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 177
+ * characters GATE_KEY allows ≈ 189) — a cap BELOW that would create containers every gate then
+ * refuses to exec into, a checkout that can never pass.
+ */
+const GATE_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/;
+
+/** The label an orphan sweep filters on — `docker ps --filter label=factory.gates`. */
+export const GATE_LABEL = 'factory.gates';
+
+export function gateEnvContainerName(key: string): string {
+    if (!GATE_KEY.test(key)) {
+        throw new Error(`refusing to name a gate environment container from "${key}"`);
+    }
+    return `factory-env-${key.replaceAll('/', '-')}`;
+}
+
+/**
+ * The full `docker run` argv for one gate environment container. Pure, and exported for the same
+ * pinning as dockerArgs.
+ *
+ * `-d` + `--entrypoint sleep <image> infinity`: the container's only job is to BE an environment.
+ * Gates enter it by `docker exec` (gateExecArgs), which is what keeps `npm install`'s state and
+ * any warm cache alive across gates — and across coding-task turns, for as long as the cooldown
+ * keeps the container up.
+ *
+ * The claim env rides the same way it rides into a runner: a 0600 `--env-file`, never `-e
+ * NAME=value` — the values are member-scoped secrets and argv is world-readable. No env file, no
+ * `--env-file`: the container then starts with the image's own environment.
+ */
+export function gateEnvArgs(config: DriverConfig, key: string, image: string, envFile?: string): string[] {
+    if (!GATE_KEY.test(key)) {
+        throw new Error(`refusing to run a gate environment from a checkout key that is not <org>/<uuid>/<repo>: ${key}`);
+    }
+    if (!GATE_IMAGE.test(image)) {
+        throw new Error(`refusing to run a gate environment from an image that is not a plain docker reference: "${image}"`);
+    }
+    const args = [
+        'run',
+        '-d',
+        '--name',
+        gateEnvContainerName(key),
+        '--label',
+        `${GATE_LABEL}=${key}`,
+        '-v',
+        `${config.workspaceVolume}:${config.workspaceMount}`,
+        // The checkout the coding agent works in is the checkout the gates run in.
+        '-w',
+        `${config.workspaceMount}/${key}`,
+    ];
+    if (envFile) args.push('--env-file', envFile);
+    if (config.network) args.push('--network', config.network);
+    args.push('--entrypoint', 'sleep', image, 'infinity');
+    return args;
+}
+
+/**
+ * One gate, inside the environment container. Pure and exported for the pinning; the command is
+ * authored by the repository that declared it — the same trust level as the job command itself —
+ * but it still travels as ONE argv element into `sh -c`, never through an interpolating shell.
+ */
+export function gateExecArgs(name: string, command: string): string[] {
+    if (!GATE_CONTAINER.test(name)) {
+        throw new Error(`refusing to exec into a container named "${name}"`);
+    }
+    return ['exec', name, 'sh', '-c', command];
+}
+
+/**
  * The session database opencode writes under XDG_DATA_HOME, as the runner sets it: one directory
  * per member, next to their checkouts, on the workspaces volume.
  */
@@ -253,11 +339,12 @@ function workspacePath(job: BoardJob): string {
 
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
- * sets, TRUST_WORKDIR is the Remote Control trust answer — which a claim env must never carry.
+ * sets, TRUST_WORKDIR is the Remote Control trust answer, and the two BELLOWS_GATE_ names are the
+ * ad-hoc gate credentials the loop mints per attempt — which a claim env must never carry.
  * Mirrored at the board (RESERVED_ENV_NAMES in server/src/routes/env.ts, where a PUT is refused);
  * copied rather than imported, per this package's zero-dependency rule.
  */
-export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR'] as const;
+export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR', 'BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'] as const;
 
 /**
  * The environment the board resolved for this job, minus the reserved names. Pure and exported for
@@ -294,6 +381,19 @@ export function envFileBody(job: BoardJob): string {
         }
         return `${name}=${value}`;
     });
+    // The driver's own gate credentials go LAST. Docker's --env-file is last-duplicate-wins, so
+    // the order is the precedence rule: a `BELLOWS_GATE_TOKEN` a member configured in any env
+    // scope was already dropped from the claim lines (reserved names), and the lines here are the
+    // driver's minted values — but keeping them visually and structurally after the claim's is
+    // what makes "the driver wins a collision" readable in one place.
+    for (const [name, value] of Object.entries(job.gateEnv ?? {})) {
+        if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) {
+            throw new Error(
+                `refusing to write env file for job ${job.id}: "${name}" contains a newline, which an env file cannot carry`,
+            );
+        }
+        lines.push(`${name}=${value}`);
+    }
     return lines.length ? `${lines.join('\n')}\n` : '';
 }
 
@@ -335,6 +435,14 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
     ];
+
+    // A gated job's runner reaches the driver's gate endpoint by the default
+    // `http://host.docker.internal:<port>`, which resolves only if the daemon is told what that
+    // name means — automatic on Docker Desktop, not on Linux. Mapped iff the job has gates, so
+    // an ungated runner's argv stays exactly what it always was.
+    if (job.gates?.gates?.length) {
+        args.push('--add-host', 'host.docker.internal:host-gateway');
+    }
 
     if (config.remoteControl) {
         // `-t` alone, and NOT `-i -t`. Remote Control is an interactive session and will not start

@@ -120,4 +120,34 @@ describe('the driver config', () => {
         // And the same combination is fine under docker, which is the only executor that has it.
         expect(() => loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' })).not.toThrow();
     });
+
+    // The gate environment cooldown: how long a container outlives the task that started it, so
+    // the task's NEXT turn does not pay startup again. The issue names ten minutes as the default.
+    it('keeps gate environments alive for a configurable cooldown, ten minutes by default', () => {
+        expect(loadDriverConfig({}).gateCooldownMs).toBe(600_000);
+        expect(loadDriverConfig({ GATE_COOLDOWN_MS: '0' }).gateCooldownMs).toBe(0);
+        expect(loadDriverConfig({ GATE_COOLDOWN_MS: '60000' }).gateCooldownMs).toBe(60_000);
+        expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: '-1' })).toThrow(/GATE_COOLDOWN_MS/);
+        expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: 'later' })).toThrow(/GATE_COOLDOWN_MS/);
+    });
+
+    // The ad-hoc gate channel binds loopback by default — the dashboard's rule: the bind address
+    // is the access control, and this endpoint runs shell commands.
+    it('binds the gate server to loopback unless told otherwise, and advertises nowhere by default', () => {
+        expect(loadDriverConfig({}).gateListenHost).toBe('127.0.0.1');
+        expect(loadDriverConfig({ GATE_LISTEN_HOST: '0.0.0.0' }).gateListenHost).toBe('0.0.0.0');
+        expect(loadDriverConfig({}).gateAdvertiseUrl).toBeNull();
+        expect(loadDriverConfig({ GATE_ADVERTISE_URL: 'http://driver:9099' }).gateAdvertiseUrl).toBe(
+            'http://driver:9099',
+        );
+    });
+
+    // The cap on ONE gate: the runner's timeout covers the agent, this covers a gate that hangs.
+    // A timed-out gate is a failed gate, not a stalled verdict.
+    it('bounds each gate with a configurable timeout, ten minutes by default', () => {
+        expect(loadDriverConfig({}).gateTimeoutMs).toBe(600_000);
+        expect(loadDriverConfig({ GATE_TIMEOUT_MS: '30000' }).gateTimeoutMs).toBe(30_000);
+        expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: '500' })).toThrow(/GATE_TIMEOUT_MS/);
+        expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: 'whenever' })).toThrow(/GATE_TIMEOUT_MS/);
+    });
 });

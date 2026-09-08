@@ -10,6 +10,7 @@ import { createUserRepoStore } from './db/user-repo-store.js';
 import { createUserExecutorStore } from './db/user-executor-store.js';
 import { createEnvVarStore } from './db/env-var-store.js';
 import { createCloneQueue } from './workspace/queue.js';
+import { readGatesFile } from './workspace/bellows.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { createGitHubClient } from './github/client.js';
@@ -115,6 +116,17 @@ const jobStore = createJobStore({
     hasWorkspaces: config.workspaceRoot !== null,
     ready,
     env: envVarStore,
+    // Gates are read off the server's own workspace mount, per claim, for the job's author and
+    // repo label. Without a workspace root nothing was ever checked out, so there is no reader
+    // and the claim simply carries no gates — the same shape `env` takes when its store is absent.
+    ...(config.workspaceRoot
+        ? {
+              gates: {
+                  readFor: (workspacePath: string, repo: string) =>
+                      readGatesFile({ root: config.workspaceRoot, workspacePath, repo }),
+              },
+          }
+        : {}),
     ...(tokens ? { githubToken: tokens } : {}),
 });
 

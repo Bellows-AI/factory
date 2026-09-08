@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Board, BoardJob, LeaseState } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { RunOutcome, RunSession, Runner } from '../src/docker.js';
-import { createLoop, type Loop } from '../src/loop.js';
+import type { GateManager, GateServer } from '../src/gates.js';
+import { createLoop, type GateStack, type Loop } from '../src/loop.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -24,6 +25,7 @@ interface BoardStub extends Board {
     progressed: { id: string; output: string }[];
     suspended: string[];
     beats: number;
+    gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
 }
 
 /**
@@ -53,6 +55,7 @@ function stubBoard(
         progressed: [],
         suspended: [],
         beats: 0,
+        gatesReported: [],
         async suspend(claimed) {
             board.suspended.push(claimed.id);
             return 'held';
@@ -85,6 +88,10 @@ function stubBoard(
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
             return 'held';
+        },
+        async gates(claimed, results) {
+            board.gatesReported.push({ id: claimed.id, results });
+            return options.lease ?? 'held';
         },
     };
 
@@ -129,12 +136,82 @@ const config = (env: NodeJS.ProcessEnv = {}): DriverConfig => loadDriverConfig(e
  */
 const sleep = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-async function drive(deps: { board: BoardStub; attach: (loop: Loop) => void; runner: Runner }, env = {}) {
-    const loop = createLoop({ board: deps.board, runner: deps.runner, config: config(env), sleep });
+async function drive(
+    deps: { board: BoardStub; attach: (loop: Loop) => void; runner: Runner; gates?: GateStack },
+    env = {},
+) {
+    const loop = createLoop({
+        board: deps.board,
+        runner: deps.runner,
+        config: config(env),
+        gates: deps.gates,
+        sleep,
+    });
     deps.attach(loop);
     await loop.start();
     return loop;
 }
+
+/**
+ * A gate stack whose manager and server record what the loop asked of them. The manager answers
+ * scripted exit codes; the server's listen answers a fixed port so the advertised URL is
+ * predictable.
+ */
+function stubGateStack(outcomes: Record<string, number> = {}) {
+    const stack = {
+        acquired: [] as string[],
+        released: [] as string[],
+        registered: 0,
+        unregistered: 0,
+        advertised: '',
+        ran: { key: '', names: [] as string[] },
+        manager: {
+            acquire: async (key: string) => {
+                stack.acquired.push(key);
+            },
+            runGate: async (key: string, name: string) => {
+                stack.ran = { key, names: [...stack.ran.names, name] };
+                const code = outcomes[name] ?? 0;
+                return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
+            },
+            release: (key: string) => {
+                stack.released.push(key);
+            },
+            stop: async () => {},
+        } as GateManager,
+        server: {
+            register: () => {
+                stack.registered += 1;
+            },
+            unregister: () => {
+                stack.unregistered += 1;
+            },
+            listen: async () => 9099,
+            close: async () => {},
+        } as GateServer,
+    };
+    const gates: GateStack = {
+        manager: stack.manager,
+        server: stack.server,
+        advertiseUrl: (port) => {
+            stack.advertised = `http://host.docker.internal:${port}`;
+            return stack.advertised;
+        },
+    };
+    return { stack, gates };
+}
+
+const gatedJob = (n: number): BoardJob => ({
+    ...job(n),
+    repo: 'Bellows-AI/factory',
+    gates: {
+        image: 'node:24',
+        gates: [
+            { name: 'test', command: 'npm test' },
+            { name: 'lint', command: 'npm run lint' },
+        ],
+    },
+});
 
 describe('the poll loop', () => {
     it('claims a job, runs it and reports success', async () => {
@@ -570,5 +647,242 @@ describe('an opencode runner', () => {
             { id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9', remoteSessionId: null },
         ]);
         expect(board.board.completed).toHaveLength(1);
+    });
+});
+
+describe('verification gates', () => {
+    it('runs every declared gate after the agent finishes, and only then reports success', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let ranBeforeOutcome = false;
+        const runner = stubRunner(async () => {
+            ranBeforeOutcome = stack.stack.acquired.length > 0;
+            return ok({ output: 'agent did the work' });
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        // The environment was ensured BEFORE the agent ran — the ad-hoc channel needs it live
+        // mid-run, not after it.
+        expect(ranBeforeOutcome).toBe(true);
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.gatesReported.map((r) => r.results.map((g) => g.status))).toEqual([
+            ['running'],
+            ['passed'],
+            ['passed', 'running'],
+            ['passed', 'passed'],
+        ]);
+        const complete = board.board.completed[0]!;
+        expect(complete.status).toBe('succeeded');
+        // The verdict lands after every gate report — a reader never sees a succeeded task whose
+        // checks are still shown as running.
+        expect(board.board.gatesReported.length).toBeGreaterThan(0);
+        // The environment goes back to its cooldown either way.
+        expect(stack.stack.released).toEqual([`bellows/${USER}/factory`]);
+        expect(stack.stack.unregistered).toBe(1);
+    });
+
+    it('fails the job with the first failing gate, and relays its output', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ lint: 3 });
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }));
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        const complete = board.board.completed[0]!;
+        expect(complete.status).toBe('failed');
+        expect(complete.exitCode).toBe(3);
+        expect(complete.output).toContain('lint');
+        expect(complete.output).toContain('lint failed badly');
+        expect(complete.output).toContain('agent did the work');
+    });
+
+    it('keeps the heartbeat beating while the gates run', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let beatsWhenRunnerResolved = 0;
+        const runner = stubRunner(async () => {
+            beatsWhenRunnerResolved = board.board.beats;
+            // The gates take real time; a lease could expire under them.
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        // settle() — the heartbeat's stop signal — waits until AFTER the gates have run, so the
+        // lease is kept alive through a gate phase that can outlast it. (This is what stopped a
+        // minutes-long suite from losing the lease mid-gates and double-running the job.)
+        expect(board.board.beats).toBeGreaterThan(beatsWhenRunnerResolved);
+    });
+
+    it('releases the environment when registration fails after the container came up', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        // The endpoint cannot bind — the container, however, is already up.
+        stack.gates.server.listen = async () => {
+            throw new Error('EADDRNOTAVAIL');
+        };
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        // The job fails with the reason — and the environment goes back to its cooldown instead
+        // of leaking, one live container per failed claim until the driver restarts.
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(board.board.completed[0]?.output).toContain('could not be started');
+        expect(stack.stack.released).toEqual([`bellows/${USER}/factory`]);
+    });
+
+    it('registers the ad-hoc token and releases it, and never leaves it registered', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.registered).toBe(1);
+        expect(stack.stack.unregistered).toBe(1);
+        expect(stack.stack.advertised).toBe('http://host.docker.internal:9099');
+    });
+
+    // A gate that cannot RUN at all — the harness failed, docker exec refused — is a failed gate
+    // with the reason, not a crash of the run and not a silent pass.
+    it('fails the gate, not the run, when the gate itself cannot be executed', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        stack.gates.manager.runGate = async () => {
+            throw Object.assign(new Error('Error response from daemon: No such container'), { code: 125 });
+        };
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }));
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 125 });
+        expect(board.board.completed[0]?.output).toContain('No such container');
+    });
+
+    // The report must fit the board's body however many gates declared and however verbose they
+    // were: the per-gate tail shrinks as the list grows.
+    it('bounds the total reported gate output', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        stack.gates.manager.runGate = async (_key, name) => ({
+            exitCode: 0,
+            output: 'x'.repeat(40_000),
+        });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        const last = board.board.gatesReported.at(-1)!.results;
+        expect(last).toHaveLength(2);
+        for (const gate of last) {
+            expect((gate.output ?? '').length).toBeLessThanOrEqual(16 * 1024 / 2);
+        }
+    });
+
+    it('fails a job whose gates file was broken, without running anything', async () => {
+        const broken: BoardJob = { ...job(1), repo: 'Bellows-AI/factory', gateError: '.bellows.yaml line 3: unknown key "timeout"' };
+        const board = stubBoard([broken]);
+        const stack = stubGateStack();
+        let ran = 0;
+        const runner = stubRunner(async () => {
+            ran += 1;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(ran).toBe(0);
+        expect(stack.stack.acquired).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
+        expect(board.board.completed[0]?.output).toContain('unknown key');
+    });
+
+    it('refuses gates under the kubernetes executor, with a reason, without running', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let ran = 0;
+        const runner = stubRunner(async () => {
+            ran += 1;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates }, { EXECUTOR: 'kubernetes' });
+
+        expect(ran).toBe(0);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
+        expect(board.board.completed[0]?.output).toContain('kubernetes');
+    });
+
+    // No gate stack configured (an operator who never asked for gates) but a repo declares them:
+    // the same refusal, because running the task WITHOUT its gates and calling it success would
+    // be exactly the lie the feature exists to stop.
+    it('refuses gates when the driver has no gate stack at all', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        let ran = 0;
+        const runner = stubRunner(async () => {
+            ran += 1;
+            return ok();
+        });
+
+        await drive({ ...board, runner });
+
+        expect(ran).toBe(0);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
+    });
+
+    // An idle park is not a finished run: the gates would run on a session somebody is still
+    // driving, and their verdict would mean nothing.
+    it('runs no gates for a parked, a never-started or a lost run', async () => {
+        const idleBoard = stubBoard([gatedJob(1)]);
+        const idleStack = stubGateStack();
+        await drive({ ...idleBoard, runner: stubRunner(async () => ok({ idled: true })), gates: idleStack.gates });
+        expect(idleStack.stack.ran.names).toEqual([]);
+        expect(idleBoard.board.completed).toEqual([]);
+
+        const unstartedBoard = stubBoard([gatedJob(2)]);
+        const unstartedStack = stubGateStack();
+        await drive({
+            ...unstartedBoard,
+            runner: stubRunner(async () => ok({ started: false })),
+            gates: unstartedStack.gates,
+        });
+        expect(unstartedStack.stack.ran.names).toEqual([]);
+        expect(unstartedBoard.board.completed).toEqual([]);
+
+        const lostBoard = stubBoard([gatedJob(3)], { lease: 'lost' });
+        const lostStack = stubGateStack();
+        await drive({
+            ...lostBoard,
+            // Let the heartbeat land its verdict before the run ends, as the lost-lease test above
+            // does — an instant run would finish before the first beat.
+            runner: stubRunner(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+                return ok();
+            }),
+            gates: lostStack.gates,
+        });
+        expect(lostStack.stack.ran.names).toEqual([]);
+    });
+
+    // An ordinary job must not pay for the feature: no container, no registration, no reports.
+    it('never touches the gate stack for a job without gates', async () => {
+        const board = stubBoard([job(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.acquired).toEqual([]);
+        expect(stack.stack.registered).toBe(0);
+        expect(stack.stack.released).toEqual([]);
+        expect(board.board.gatesReported).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 });

@@ -249,6 +249,16 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the gate credential the driver mints per run',
+            { vars: [{ name: 'BELLOWS_GATE_TOKEN', value: 'spoof', isSecret: true }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
+            'the gate endpoint the driver advertises per run',
+            { vars: [{ name: 'BELLOWS_GATE_URL', value: 'http://attacker', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'a null value on a non-secret',
             { vars: [{ name: 'PLAIN', value: null, isSecret: false }] },
             'BAD_VALUE',

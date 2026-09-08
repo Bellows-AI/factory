@@ -1,8 +1,18 @@
 import type { Sql, TransactionSql } from 'postgres';
+import type { BellowsConfig } from '../workspace/bellows.js';
 
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
 export type JobOutcome = 'succeeded' | 'failed';
+
+/** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
+export interface GateReport {
+    name: string;
+    status: 'running' | 'passed' | 'failed';
+    exitCode: number | null;
+    /** The gate's tail. Bounded by the driver's window; truncated again at the route. */
+    output: string | null;
+}
 
 export interface Job {
     id: string;
@@ -28,6 +38,14 @@ export interface Job {
     remoteSessionId: string | null;
     exitCode: number | null;
     output: string | null;
+    /**
+     * The verification gates this run has run or is running — the checks the job's checkout
+     * declares in `.bellows.yaml` and the driver executes in the declared environment image.
+     * Current/last state only, replaced on every worker report: the UI deliberately shows no
+     * history. Null on every job that predates gates and on any job whose repository declares
+     * none.
+     */
+    gates: GateReport[] | null;
     /**
      * The repository (`owner/name`) the task was queued against, and the member's executor name it
      * was stamped with. Grouping metadata for the tasks chat, nullable for every job that predates
@@ -112,6 +130,24 @@ export interface Claim {
      * feature exists to hold.
      */
     env?: Record<string, string>;
+    /**
+     * The job's `owner/name` label, repeated on the claim so the driver can key the gate
+     * environment container and resolve per-repo env without a second lookup. Absent on a board
+     * that predates gates, which the driver reads as "no repo".
+     */
+    repo?: string | null;
+    /**
+     * The `.bellows.yaml` a checkout declares, read at claim time — the environment image the
+     * gates run in and the named commands they run. Null when the repository declares none, which
+     * is the ordinary case. Absent on a board built without a gates reader, read as "no gates".
+     */
+    gates?: BellowsConfig | null;
+    /**
+     * Why the gates file could not be read or parsed, when it exists but is wrong. A VALUE and not
+     * a throw: one repository's typo must fail its own jobs loudly at the driver, never take down
+     * the claim route or pass silently as "no gates".
+     */
+    gateError?: string | null;
 }
 
 /**
@@ -192,6 +228,13 @@ export interface JobStore {
      */
     progress(id: string, leaseToken: string, output: string): Promise<LeaseResult>;
     /**
+     * Replaces the run's gate state — the checks `.bellows.yaml` declared, executed in the
+     * declared environment image. Lease-guarded like every other worker write, and REPLACE, never
+     * append: the issue's UI contract is current/last ran only, and this side cannot know where a
+     * previous report ended anyway.
+     */
+    gates(id: string, leaseToken: string, results: GateReport[]): Promise<LeaseResult>;
+    /**
      * Parks a running job: the container is gone, but the job is not finished and its session is
      * kept so it can be restored. Lease-guarded, like every other worker write.
      */
@@ -230,6 +273,8 @@ interface JobRow {
     remote_session_id: string | null;
     exit_code: number | null;
     output?: string | null;
+    /** Absent from the list() select — a list view shows no checks, and bounded is not free. */
+    gates?: GateReport[] | null;
     repo: string | null;
     executor: string | null;
     parent_job_id: string | null;
@@ -273,6 +318,7 @@ const toJob = (row: JobRow): Job => ({
     remoteSessionId: row.remote_session_id,
     exitCode: row.exit_code,
     output: row.output ?? null,
+    gates: row.gates ?? null,
     repo: row.repo,
     executor: row.executor,
     followUpTo: row.parent_job_id,
@@ -299,6 +345,7 @@ export function createJobStore({
     ready,
     env,
     githubToken,
+    gates: gatesReader,
 }: {
     sql: Sql;
     hasWorkspaces?: boolean;
@@ -329,6 +376,19 @@ export function createJobStore({
      */
     githubToken?: {
         fresh(): Promise<string>;
+    };
+    /**
+     * The gates reader, when the deployment has a workspace root to read checkouts from. Declared
+     * inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a claim
+     * hands it the workspace path and repo label, and gets the parsed `.bellows.yaml` or the
+     * reason the file could not be honoured. Present in index.ts, absent in the tests that
+     * predate gates — a claim then simply carries none.
+     */
+    gates?: {
+        readFor(
+            workspacePath: string,
+            repo: string,
+        ): Promise<{ config: BellowsConfig | null; error: string | null }>;
     };
 }): JobStore {
     const gate = async () => {
@@ -509,6 +569,19 @@ export function createJobStore({
                     githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
                         ? withMintedToken(await githubToken.fresh(), resolvedEnv)
                         : resolvedEnv;
+                // Read off the filesystem, inside the claim but OFF the transaction's tables: a
+                // broken `.bellows.yaml` travels to the driver as `gateError` — the job fails at
+                // the worker with the reason, where the run's author can see it — rather than as
+                // a 503 that would retry the claim forever. Gates ride only when the job has both
+                // a repo label (the checkout the file lives in) and a workspace to read it from.
+                let claimGates: BellowsConfig | null = null;
+                let gateError: string | null = null;
+                const claimPath = hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null;
+                if (gatesReader && row.repo && claimPath) {
+                    const read = await gatesReader.readFor(claimPath, row.repo);
+                    if (read.error) gateError = read.error;
+                    else claimGates = read.config;
+                }
                 return {
                     id: row.id,
                     command: row.command,
@@ -519,11 +592,15 @@ export function createJobStore({
                     // Built here rather than in the route, because this is where the org is bound. Null
                     // for an unattributed job — no member, so no workspace — and null when this
                     // deployment has no workspace root, where no directory exists to point at.
-                    workspacePath: hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null,
+                    workspacePath: claimPath,
                     // Survived the case above, so this claim is a resume.
                     resumeSessionId: row.session_id,
                     followUp: row.follow_up,
                     ...(claimEnv ? { env: claimEnv } : {}),
+                    ...(row.repo !== null ? { repo: row.repo } : {}),
+                    ...(claimGates || gateError
+                        ? { gates: claimGates, gateError: gateError }
+                        : {}),
                 };
             });
         },
@@ -565,6 +642,21 @@ export function createJobStore({
             // previous tail ended, and the driver already keeps the window bounded.
             const rows = await sql<{ id: string }[]>`
                 update job set output = ${output}
+                where org_id = ${orgId} and id = ${id}
+                  and status = 'running' and lease_token = ${leaseToken}
+                returning id
+            `;
+            if (rows[0]) return 'ok';
+            return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
+        },
+
+        async gates(id, leaseToken, results) {
+            await gate();
+            // The worker's list IS the gate state while the run is going — replaced whole on every
+            // report, the `progress` precedent. Lease-guarded like every other worker write: a
+            // superseded worker must not relabel the run that replaced it.
+            const rows = await sql<{ id: string }[]>`
+                update job set gates = ${sql.json(results as never)}
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
                 returning id
@@ -656,7 +748,7 @@ export function createJobStore({
                       where j.org_id = ${orgId}
                 )
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
-                       session_id, remote_session_id, exit_code, output, repo, executor,
+                       session_id, remote_session_id, exit_code, output, gates, repo, executor,
                        parent_job_id, done_at, created_at, started_at, finished_at
                 from chain
                 order by created_at, id
@@ -669,7 +761,7 @@ export function createJobStore({
             await gate();
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
-                       session_id, remote_session_id, exit_code, output, repo, executor,
+                       session_id, remote_session_id, exit_code, output, gates, repo, executor,
                        parent_job_id, done_at, created_at, started_at, finished_at
                 from job where org_id = ${orgId} and id = ${id}
             `;

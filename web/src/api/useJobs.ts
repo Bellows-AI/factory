@@ -9,6 +9,14 @@ import { reportUnauthenticated } from './useSession.js';
  */
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
 
+/** Where one declared verification gate stands. The board stores current/last only — no history. */
+export interface GateCheck {
+    name: string;
+    status: 'running' | 'passed' | 'failed';
+    exitCode: number | null;
+    output: string | null;
+}
+
 export interface Job {
     id: string;
     command: string;
@@ -16,6 +24,12 @@ export interface Job {
     attempts: number;
     exitCode: number | null;
     output: string | null;
+    /**
+     * The checks this run has run or is running, from the job's `.bellows.yaml`. Absent on list
+     * responses (the list select omits it, like `output`) and null on any run whose repository
+     * declares none.
+     */
+    gates?: GateCheck[] | null;
     /** The repository tab the task was queued from, or null for one queued before the chat. */
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */

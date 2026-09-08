@@ -27,7 +27,7 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * (RESERVED_ENV_NAMES in driver/src/docker.ts — copied, not imported, per that package's
  * zero-dependency rule).
  */
-export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR'] as const;
+export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR', 'BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'] as const;
 
 /**
  * A per-value ceiling. Far past any real variable, and the bound that keeps one value from being

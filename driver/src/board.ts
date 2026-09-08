@@ -43,6 +43,31 @@ export interface BoardJob {
      * runner's environment is then exactly what this process's own configuration forwards.
      */
     env?: Record<string, string>;
+    /**
+     * The job's `owner/name` label — the checkout the job's gates are declared in, and the key the
+     * gate environment container is filed under. Read defensively: a board that predates gates
+     * omits it.
+     */
+    repo?: string | null;
+    /**
+     * The gates the job's checkout declares in `.bellows.yaml`, read by the board at claim time:
+     * the environment image they run in and the named commands. Null when the repository declares
+     * none — the ordinary case. Absent on a board that predates gates, read as "no gates".
+     */
+    gates?: { image: string; gates: readonly { name: string; command: string }[] } | null;
+    /**
+     * Why the gates file exists but could not be honoured. The loop fails such a job outright —
+     * running the work while pretending its gates do not exist is the one outcome worse than the
+     * failure.
+     */
+    gateError?: string | null;
+    /**
+     * The ad-hoc gate credentials the LOOP mints for this attempt (`BELLOWS_GATE_URL` /
+     * `BELLOWS_GATE_TOKEN`) — set just before spawn, never by the board, which is why it sits
+     * beside `env` rather than inside it: the reserved-name filter that keeps a member's claim
+     * env from spoofing these names must not strip the driver's own.
+     */
+    gateEnv?: Record<string, string>;
 }
 
 /** Whether the board still recognises this worker as the holder of the job. */
@@ -58,6 +83,15 @@ export interface Board {
      * the run — the complete report carries the final tail.
      */
     progress(job: BoardJob, output: string): Promise<LeaseState>;
+    /**
+     * Replaces the job's gate state — what is running, what passed, what failed — so the task view
+     * can show the checks while they happen. Best-effort by contract, like `progress`: a failure
+     * costs freshness, never the run, and a `409` here is not a kill order.
+     */
+    gates(
+        job: BoardJob,
+        results: readonly { name: string; status: 'running' | 'passed' | 'failed'; exitCode: number | null; output: string | null }[],
+    ): Promise<LeaseState>;
     /**
      * Tells the board which agent session this attempt runs as. Called twice under Remote Control:
      * once at spawn with the local id alone, and again once the bridge has reported the remote one
@@ -140,6 +174,14 @@ export function createBoard({
             const response = await post(`/api/jobs/${job.id}/output`, {
                 leaseToken: job.leaseToken,
                 output,
+            });
+            return response.status === 409 ? 'lost' : 'held';
+        },
+
+        async gates(job, results) {
+            const response = await post(`/api/jobs/${job.id}/gates`, {
+                leaseToken: job.leaseToken,
+                gates: results,
             });
             return response.status === 409 ? 'lost' : 'held';
         },

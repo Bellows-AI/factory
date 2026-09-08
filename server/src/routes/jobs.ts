@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
-import type { JobOutcome, JobStatus, JobStore } from '../db/job-store.js';
+import type { GateReport, JobOutcome, JobStatus, JobStore } from '../db/job-store.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
 /**
@@ -225,6 +225,61 @@ export const jobRoutes =
 
             const result = await guard(reply, (e) => request.log.error({ err: e }, 'job output failed'), () =>
                 store.progress(id, leaseToken, output.slice(0, OUTPUT_LIMIT)),
+            );
+            if (!result.ok) return reply;
+            if (result.value === 'missing') {
+                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+            }
+            if (result.value === 'lost') {
+                return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
+            }
+            return reply.code(200).send({ id });
+        });
+
+        // The verification gates a job's checkout declares, executed by the driver in the
+        // declared environment image. Separate from /output because the run has not ended and
+        // there is no verdict here; the report REPLACES the stored list, which is what makes the
+        // UI's "current/last ran only" honest rather than a truncation somebody has to remember.
+        app.post('/api/jobs/:id/gates', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const { leaseToken, gates } = body(request.body);
+            if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+                return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+            }
+            if (!Array.isArray(gates)) {
+                return bad(reply, 'BAD_GATES', 'gates must be an array');
+            }
+            const results: GateReport[] = [];
+            for (const raw of gates) {
+                const entry = body(raw);
+                const name = entry.name;
+                const status = entry.status;
+                const exitCode = entry.exitCode;
+                const output = entry.output;
+                if (typeof name !== 'string' || !name.trim() || name.length > 64) {
+                    return bad(reply, 'BAD_GATES', 'every gate needs a name of at most 64 characters');
+                }
+                if (status !== 'running' && status !== 'passed' && status !== 'failed') {
+                    return bad(reply, 'BAD_GATES', "gate status must be 'running', 'passed' or 'failed'");
+                }
+                if (exitCode !== undefined && exitCode !== null && !Number.isInteger(exitCode)) {
+                    return bad(reply, 'BAD_GATES', 'gate exitCode must be an integer or null');
+                }
+                if (output !== undefined && output !== null && typeof output !== 'string') {
+                    return bad(reply, 'BAD_GATES', 'gate output must be a string or null');
+                }
+                results.push({
+                    name,
+                    status,
+                    exitCode: (exitCode as number | undefined) ?? null,
+                    output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
+                });
+            }
+
+            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job gates failed'), () =>
+                store.gates(id, leaseToken, results),
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {

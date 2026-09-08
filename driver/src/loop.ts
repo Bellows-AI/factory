@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Board, BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { workspacePathOf } from './docker.js';
+import { envFileBody, tailBytes, workspacePathOf } from './docker.js';
+import type { GateManager, GateServer } from './gates.js';
 import type { RunSession, Runner } from './docker.js';
 
 export interface Loop {
@@ -10,10 +11,24 @@ export interface Loop {
     stop(): void;
 }
 
+/**
+ * The gate machinery, wired once at startup and handed to the loop only when it exists — an
+ * operator who never asked for gates runs a loop that has never heard of them. The manager owns
+ * the environment containers; the server owns the ad-hoc endpoint; the loop owns WHEN gates run,
+ * because the loop is the only place that knows when the agent has finished talking.
+ */
+export interface GateStack {
+    manager: GateManager;
+    server: GateServer;
+    /** Builds the URL the runner's agent is told to call, from the server's bound port. */
+    advertiseUrl: (port: number) => string;
+}
+
 export interface LoopDeps {
     board: Board;
     runner: Runner;
     config: DriverConfig;
+    gates?: GateStack;
     log?: (message: string) => void;
     sleep?: (ms: number) => Promise<void>;
 }
@@ -35,6 +50,26 @@ interface JobState {
     wake: () => void;
 }
 
+/**
+ * One gated job's live registration: the checkout key its environment is filed under, the token
+ * the runner's agent presents to the ad-hoc endpoint, and the gates the job's `.bellows.yaml`
+ * declared. Lives from before the agent starts until the run's exit paths have all been walked.
+ */
+interface GateSession {
+    key: string;
+    token: string;
+    declared: readonly { name: string; command: string }[];
+}
+
+interface GateFailure {
+    name: string;
+    exitCode: number;
+    output: string;
+}
+
+/** What one gate looks like on the board, at one moment. */
+type GateReport = { name: string; status: 'running' | 'passed' | 'failed'; exitCode: number | null; output: string | null };
+
 function newJobState(): JobState {
     let wake = () => {};
     const woken = new Promise<void>((resolve) => {
@@ -43,7 +78,7 @@ function newJobState(): JobState {
     return { finished: false, lost: false, woken, wake };
 }
 
-export function createLoop({ board, runner, config, log = () => {}, sleep = wait }: LoopDeps): Loop {
+export function createLoop({ board, runner, config, gates, log = () => {}, sleep = wait }: LoopDeps): Loop {
     let running = true;
     const active = new Set<Promise<void>>();
 
@@ -163,6 +198,97 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
         };
     }
 
+    /**
+     * Ensures the job's gate environment and registers its ad-hoc token, or answers null for a
+     * job that has no gates. The token and URL ride the claim's env into the runner's env file —
+     * appended after the claim's own lines, where docker's last-wins rule keeps a member-scoped
+     * `BELLOWS_GATE_TOKEN` from minting itself a gate credential.
+     */
+    async function beginGates(job: BoardJob): Promise<GateSession | null> {
+        if (!gates || !job.gates || !job.gates.gates.length || job.gateError) return null;
+        // The repo label is `owner/name` at the board; the name is the segment that is a
+        // checkout directory. A label without one is not a gated job.
+        const repoName = (job.repo ?? '').split('/')[1];
+        if (!repoName) return null;
+        const key = `${job.workspacePath}/${repoName}`;
+        // The environment starts with the claim's own env — resolved for THIS author and repo —
+        // which is exactly what a test suite needs to reach the forge.
+        const envBody = envFileBody(job);
+        await gates.manager.acquire(key, job.gates.image, envBody);
+        try {
+            const port = await gates.server.listen();
+            const token = randomUUID();
+            gates.server.register(token, { key, image: job.gates.image, envBody, gates: job.gates.gates });
+            // Beside `env`, not inside it: the reserved-name filter keeps a member-configured
+            // BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
+            job.gateEnv = {
+                BELLOWS_GATE_URL: gates.advertiseUrl(port),
+                BELLOWS_GATE_TOKEN: token,
+            };
+            return { key, token, declared: job.gates.gates };
+        } catch (e) {
+            // The container came up but registration did not. Released — not stopped — so the
+            // cooldown owns it and the next turn reuses it, instead of leaking one live
+            // environment per failed claim until the driver restarts.
+            gates.manager.release(key);
+            throw e;
+        }
+    }
+
+    /**
+     * Runs every declared gate in order, reporting each state change to the board as it happens.
+     * The report REPLACES the stored list — every report carries the whole list so the task view
+     * always shows all gates at their current state, never a summary that arrived out of order.
+     *
+     * Both the reports and a gate whose exec itself throws are best-effort against the RUN, never
+     * against the VERDICT: a board hiccup costs the live view, not the gating. A gate that cannot
+     * run at all is a failed gate — an exit code of 125 is docker's "container not there", and
+     * treating it as a pass would be the one lie this loop must never tell.
+     */
+    async function runDeclaredGates(job: BoardJob, gateSession: GateSession, state: JobState): Promise<GateFailure | null> {
+        if (!gates) return null;
+        const results: GateReport[] = [];
+        const report = async (): Promise<void> => {
+            try {
+                // A copy, not the live array: the report is a state-at-a-moment, and a reader
+                // (or stub) holding it must not see gates move after the fact.
+                // A 409 here is not a kill order — the heartbeat is the one place that decides a
+                // superseded run must die (docs/jobs.md); this pump only ever loses freshness.
+                await board.gates(job, [...results]);
+            } catch (e) {
+                log(`job ${job.id}: could not report gate state, continuing: ${(e as Error).message}`);
+            }
+        };
+        // The report must fit the board's 128 KiB body however many gates declared and however
+        // verbose they were — JSON escaping can inflate bytes six-fold, so the raw budget per
+        // gate shrinks as the list grows (16 gates still get 1 KiB of tail each).
+        const perGate = Math.max(1024, Math.floor(16 * 1024 / gateSession.declared.length));
+        for (const gate of gateSession.declared) {
+            // The lease can be reclaimed mid-gates. Everything after that is dead work on a
+            // checkout another attempt owns, and the verdict will be refused anyway.
+            if (state.lost) return null;
+            results.push({ name: gate.name, status: 'running', exitCode: null, output: null });
+            await report();
+            const outcome = await gates.manager
+                .runGate(gateSession.key, gate.name, gate.command)
+                .catch((e: Error) => ({ exitCode: 125, output: e.message }));
+            const failed = outcome.exitCode !== 0;
+            // Replace the gate's own entry — one entry per declared gate, always, so the list the
+            // board stores IS the declared list at its current state.
+            results[results.length - 1] = {
+                name: gate.name,
+                status: failed ? 'failed' : 'passed',
+                exitCode: outcome.exitCode,
+                output: tailBytes(outcome.output, perGate),
+            };
+            await report();
+            if (failed) {
+                return { name: gate.name, exitCode: outcome.exitCode ?? 125, output: outcome.output };
+            }
+        }
+        return null;
+    }
+
     async function runJob(job: BoardJob): Promise<void> {
         const state = newJobState();
         const beating = heartbeat(job, state);
@@ -216,63 +342,120 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
                     log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
                 }
             }
-            const outcome = await runner.run(job, session, onOutput);
-            await settle();
-
-            if (state.lost) return;
 
             /*
-             * The runner, not this loop, knows what a refused start looks like on its platform,
-             * and stamps `started: false` for it — docker from its daemon-error signature, a
-             * container that never existed. This loop interprets no exit codes: a pod that
-             * genuinely exited 125 started and finished, and that is a verdict to report. Saying
-             * nothing here would rerun the job until attempts run out and retire it dead, blaming
-             * the command for infrastructure — the same rule the catch below applies to a spawn
-             * that never happened. The lease expires and the job is offered again.
+             * The gate environment comes up BEFORE the agent does, because the agent's ad-hoc
+             * gate calls land mid-run — "partially run tests" happens while the session is
+             * working, not after it. A failure here is the author's problem (an image the daemon
+             * cannot fetch, an env value no env file can carry), not the command's: the job is
+             * FAILED with that reason rather than left to a lease that would retry a typo
+             * forever.
              */
-            if (!outcome.started) {
-                log(`job ${job.id}: the runner reports the container never started, leaving it to the lease`);
+            let gateSession: GateSession | null = null;
+            try {
+                gateSession = await beginGates(job);
+            } catch (e) {
+                await settle();
+                log(`job ${job.id}: gate environment failed, failing with a reason: ${(e as Error).message}`);
+                await board
+                    .complete(job, {
+                        status: 'failed',
+                        exitCode: null,
+                        output: `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
+                    })
+                    .catch((err: Error) => log(`job ${job.id}: could not report the failure: ${err.message}`));
                 return;
             }
+            try {
+                const outcome = await runner.run(job, session, onOutput);
 
-            // Parked, not finished: the container is gone, the session is kept, and the job goes
-            // back on the board for somebody to pick up from the Claude UI. Reporting an exit code
-            // here would make an idle session indistinguishable from a run that ended.
-            if (outcome.idled) {
-                const verdict = await board.suspend(job);
+                if (state.lost) {
+                    await settle();
+                    return;
+                }
+
+                /*
+                 * The runner, not this loop, knows what a refused start looks like on its platform,
+                 * and stamps `started: false` for it — docker from its daemon-error signature, a
+                 * container that never existed. This loop interprets no exit codes: a pod that
+                 * genuinely exited 125 started and finished, and that is a verdict to report. Saying
+                 * nothing here would rerun the job until attempts run out and retire it dead, blaming
+                 * the command for infrastructure — the same rule the catch below applies to a spawn
+                 * that never happened. The lease expires and the job is offered again.
+                 */
+                if (!outcome.started) {
+                    await settle();
+                    log(`job ${job.id}: the runner reports the container never started, leaving it to the lease`);
+                    return;
+                }
+
+                // Parked, not finished: the container is gone, the session is kept, and the job goes
+                // back on the board for somebody to pick up from the Claude UI. Reporting an exit code
+                // here would make an idle session indistinguishable from a run that ended — and
+                // running the gates of a session somebody is still driving would report a verdict
+                // about a conversation that has not ended.
+                if (outcome.idled) {
+                    await settle();
+                    const verdict = await board.suspend(job);
+                    log(
+                        verdict === 'lost'
+                            ? `job ${job.id}: idle, but the board had already reclaimed it`
+                            : `job ${job.id}: idle for ${config.idleMs}ms, parked on standby`,
+                    );
+                    return;
+                }
+
+                // The session the run actually used, when the runner could only learn it after the
+                // fact (opencode scrapes it at close). Reported while the lease is still live, BEFORE
+                // the verdict — a follow-up can only be asked for once the task is finished, and it
+                // resumes exactly this. A 'lost' verdict is not acted on: the heartbeat is what kills
+                // a superseded run, and losing the link is not losing the job.
+                if (outcome.sessionId) {
+                    try {
+                        await board.session(job, outcome.sessionId, null);
+                        log(`job ${job.id}: session ${outcome.sessionId}`);
+                    } catch (e) {
+                        log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
+                    }
+                }
+
+                /*
+                 * The gates run HERE: after the agent has finished talking and before the verdict,
+                 * with the heartbeat still beating — settle() has deliberately NOT been called yet,
+                 * because a test suite can take minutes and it must not outrun the lease it runs
+                 * under. This is the "gates pass prior to push" enforcement this system can
+                 * honestly make: a run is never reported succeeded while a declared gate fails,
+                 * and the failing gate's output rides in the verdict the author reads.
+                 */
+                let failure: GateFailure | null = null;
+                if (gateSession) failure = await runDeclaredGates(job, gateSession, state);
+
+                // The last thing this attempt does, and the first moment the heartbeat may stop.
+                await settle();
+
+                const status = outcome.exitCode === 0 && !outcome.timedOut && !failure ? 'succeeded' : 'failed';
+                const exitCode = failure ? failure.exitCode : outcome.exitCode;
+                let output = outcome.timedOut
+                    ? `${outcome.output}\n[driver] killed after ${config.jobTimeoutMs}ms`
+                    : outcome.output;
+                if (failure) {
+                    output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
+                }
+
+                const verdict = await board.complete(job, { status, exitCode, output });
                 log(
                     verdict === 'lost'
-                        ? `job ${job.id}: idle, but the board had already reclaimed it`
-                        : `job ${job.id}: idle for ${config.idleMs}ms, parked on standby`,
+                        ? `job ${job.id}: finished ${status}, but the board had already reclaimed it`
+                        : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''})`,
                 );
-                return;
-            }
-
-            // The session the run actually used, when the runner could only learn it after the
-            // fact (opencode scrapes it at close). Reported while the lease is still live, BEFORE
-            // the verdict — a follow-up can only be asked for once the task is finished, and it
-            // resumes exactly this. A 'lost' verdict is not acted on: the heartbeat is what kills
-            // a superseded run, and losing the link is not losing the job.
-            if (outcome.sessionId) {
-                try {
-                    await board.session(job, outcome.sessionId, null);
-                    log(`job ${job.id}: session ${outcome.sessionId}`);
-                } catch (e) {
-                    log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
+            } finally {
+                // Either way the environment goes back to its cooldown, and the token dies with the
+                // attempt: a follow-up's claim registers its own.
+                if (gateSession) {
+                    gates?.server.unregister(gateSession.token);
+                    gates?.manager.release(gateSession.key);
                 }
             }
-
-            const status = outcome.exitCode === 0 && !outcome.timedOut ? 'succeeded' : 'failed';
-            const output = outcome.timedOut
-                ? `${outcome.output}\n[driver] killed after ${config.jobTimeoutMs}ms`
-                : outcome.output;
-
-            const verdict = await board.complete(job, { status, exitCode: outcome.exitCode, output });
-            log(
-                verdict === 'lost'
-                    ? `job ${job.id}: finished ${status}, but the board had already reclaimed it`
-                    : `job ${job.id}: ${status} (exit ${outcome.exitCode})`,
-            );
         } catch (e) {
             // The container never ran — docker is missing, or the daemon refused. Deliberately NOT
             // reported as a failed job: that would blame the command for the driver's problem. The
@@ -360,6 +543,43 @@ export function createLoop({ board, runner, config, log = () => {}, sleep = wait
                             exitCode: null,
                             output:
                                 'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
+                        })
+                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    continue;
+                }
+
+                /*
+                 * A gates file that exists but cannot be honoured is a FAILED job with the reason,
+                 * before anything runs. Reading it as "no gates" would run the task and call the
+                 * work verified when nothing checked it — the one outcome worse than the failure,
+                 * and the reason this is a refusal rather than a fallback.
+                 */
+                if (job.gateError) {
+                    log(`job ${job.id}: its gates file could not be read, failing`);
+                    await board
+                        .complete(job, {
+                            status: 'failed',
+                            exitCode: null,
+                            output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
+                        })
+                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    continue;
+                }
+
+                // Gates are a docker-exec feature. Under kubernetes — or on a driver built with
+                // no gate machinery at all — the honest answer is a named failure, never a run
+                // whose declared checks silently did not happen.
+                if (job.gates?.gates?.length && (config.executor === 'kubernetes' || !gates)) {
+                    const why =
+                        config.executor === 'kubernetes'
+                            ? 'gates run only under EXECUTOR=docker, and this driver runs on kubernetes'
+                            : 'this driver was started with no gate environment configured';
+                    log(`job ${job.id}: declares gates this driver cannot run, failing`);
+                    await board
+                        .complete(job, {
+                            status: 'failed',
+                            exitCode: null,
+                            output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a docker driver with the GATE_* configuration set.`,
                         })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
