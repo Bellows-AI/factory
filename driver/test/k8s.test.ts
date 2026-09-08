@@ -392,6 +392,7 @@ describe('the kubernetes runner', () => {
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
             `POST ${configmapsPath}`,
             `GET ${jobsPath(namespace)}`,
+            `GET ${claimPathFor(job.id)}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPathFor(job.id)}`,
             `GET ${jobPath(namespace, containerName(job))}`,
@@ -680,6 +681,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'DELETE',
             'GET',
+            'GET',
             'POST',
             'GET',
             'GET',
@@ -846,6 +848,7 @@ describe('the kubernetes runner', () => {
             `DELETE ${claimPath}`,
             `POST ${configmapsPath}`,
             `GET ${jobsPath(namespace)}`,
+            `GET ${claimPath}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPath}`,
             `GET ${jobPath(namespace, containerName(newerJob))}`,
@@ -1078,14 +1081,15 @@ describe('the kubernetes runner', () => {
             method: 'DELETE',
             path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
         });
-        // Claim, LIST (finds both), claim confirmed ours, two deletes, LIST (clean), create,
-        // claim verified, then the status poll.
+        // Claim, LIST (finds both), claim confirmed ours, two deletes, LIST (clean), claim
+        // re-verified before the create, create, claim verified again, then the status poll.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
             'GET',
             'DELETE',
             'DELETE',
+            'GET',
             'GET',
             'POST',
             'GET',
@@ -1161,12 +1165,13 @@ describe('the kubernetes runner', () => {
         });
         // ...and only once the claim is confirmed ours and the selector answers nothing does
         // this attempt create its own Job: claim, LIST (finds the predecessor), claim confirmed,
-        // DELETE, LIST (clean), POST, claim verified, then the status poll.
+        // DELETE, LIST (clean), claim re-verified, POST, claim verified, then the status poll.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
             'GET',
             'DELETE',
+            'GET',
             'GET',
             'POST',
             'GET',
@@ -1207,6 +1212,7 @@ describe('the kubernetes runner', () => {
         expect(outcome.exitCode).toBe(0);
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
+            'GET',
             'GET',
             'POST',
             'GET',
@@ -1254,6 +1260,7 @@ describe('the kubernetes runner', () => {
             'POST',
             'GET',
             'GET',
+            'GET',
             'POST',
             'GET',
             'GET',
@@ -1297,11 +1304,11 @@ describe('the kubernetes runner', () => {
             calls.push({ method, path, body });
             const claimAnswer = serve(method, path, body);
             if (claimAnswer) {
-                // The verify read (our claim, still held) succeeds; every later read — the
+                // The verify reads (our claim, still held) succeed; every later read — the
                 // release's — answers 404, as if another attempt took the claim over and
                 // finished its whole run in between.
                 reads += 1;
-                if (reads > 2) return { status: 404, body: '{"kind":"Status"}' };
+                if (reads > 3) return { status: 404, body: '{"kind":"Status"}' };
                 return claimAnswer;
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
@@ -1324,8 +1331,8 @@ describe('the kubernetes runner', () => {
         };
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        // The acquire POST, the sweep's verify and the post-create verify happened — reads 1
-        // and 2 — and the release read found the claim gone without deleting anything.
+        // The acquire POST and the two verifies around the Job POST happened — reads 1 through
+        // 3 — and the release read found the claim gone without deleting anything.
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
     });
 
@@ -1547,6 +1554,234 @@ describe('the kubernetes runner', () => {
         expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
     });
 
+    /*
+     * The bracket's first half: a takeover already visible BEFORE the Job POST must meet a
+     * create() that creates nothing — the older attempt never becomes a second writer on the
+     * checkout, not even briefly. The claim read that answers the takeover is the one between
+     * the sweep and the POST.
+     */
+    it('stands down before creating the runner job when the claim is taken over before the POST', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath && method === 'GET') {
+                // The takeover lands between the sweep and the Job POST.
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        metadata: { uid: 'claim-uid-7' },
+                        data: { holder: NEW_TOKEN, attempt: '2' },
+                    }),
+                });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/stands down/);
+        // The takeover was visible before the POST: no Job is ever created...
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
+        // ...and nothing on the jobs path is deleted — this attempt has nothing there to delete.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(jobsPath(namespace)))).toBe(
+            false,
+        );
+    });
+
+    // The pre-create verify carries the same bounded patience as every verdict-carrying read: a
+    // blink before the Job POST is waited out, not acted on — and the Job is posted exactly
+    // once, only after the claim is confirmed.
+    it('waits out a blink on the pre-create claim verify, and posts the Job only after it', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    // The apiserver blinks on the FIRST claim read of the run — the pre-create
+                    // verify's — and answers ours from then on.
+                    return Promise.resolve(
+                        reads === 1
+                            ? { status: 503, body: 'unavailable' }
+                            : {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
+        const firstClaimRead = calls.findIndex((call) => call.method === 'GET' && call.path === claimPath);
+        const jobPost = calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(firstClaimRead).toBeGreaterThanOrEqual(0);
+        expect(firstClaimRead).toBeLessThan(jobPost);
+    });
+
+    /*
+     * No runner stays on a checkout its driver cannot verify: when the post-create verify spends
+     * its whole patience without an answer, the loser best-effort deletes its OWN Job and burns
+     * the attempt — the alternative to two writers on one checkout, the fence's own rule.
+     */
+    it('removes its own Job when the post-create claim verify exhausts its patience', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    // The pre-create verify reads ours; every later read — the post-create
+                    // verify's — answers 503 until the patience is spent.
+                    return Promise.resolve(
+                        reads === 1
+                            ? {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              }
+                            : { status: 503, body: 'unavailable' },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /in a row|unavailable|checkout claim/i,
+        );
+        // The delete names only this attempt's own Job, Foreground — best-effort.
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+        });
+    });
+
+    // Same doctrine, other evidence: a post-create verify that DOES answer but cannot name a
+    // holder is neither provably ours nor a definitive loss — and still no runner stays behind.
+    it('removes its own Job when the post-create claim verify cannot name a holder', async () => {
+        const claimPath = claimPathFor(job.id);
+        const calls: Call[] = [];
+        let reads = 0;
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === claimPath) {
+                if (method === 'GET') {
+                    reads += 1;
+                    // The pre-create verify reads ours; every later read answers 200 with a
+                    // body that carries no holder at all.
+                    return Promise.resolve(
+                        reads === 1
+                            ? {
+                                  status: 200,
+                                  body: JSON.stringify({
+                                      metadata: { uid: 'claim-uid-1' },
+                                      data: { holder: job.leaseToken, attempt: '1' },
+                                  }),
+                              }
+                            : { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) },
+                    );
+                }
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not be confirmed/,
+        );
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+        });
+    });
+
     // The sweep deletes only when the claim verify answers definitively: a blink on the claim
     // read is 'unknown' — nothing is deleted that round, and the fence looks again within its
     // bound, because deleting on a maybe is what would reach the winner's Job.
@@ -1605,7 +1840,8 @@ describe('the kubernetes runner', () => {
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
         // LIST (leftover), verify 503 → no delete, LIST (leftover again), verify ours → DELETE,
-        // LIST (clean), create, verify, poll, pods, log, release, release-delete.
+        // LIST (clean), claim re-verified, create, verify, poll, pods, log, release,
+        // release-delete.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
@@ -1613,6 +1849,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            'GET',
             'GET',
             'POST',
             'GET',

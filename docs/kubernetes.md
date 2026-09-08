@@ -99,12 +99,17 @@ Job can be younger than any time-derived bound — its attempt's fencing waited 
 unbounded garbage collector — so the sweep still classifies nothing. What changed is that the
 claim is re-read before every deleting round: an attempt whose claim was taken over mid-sweep
 STANDS DOWN having deleted nothing — never the winner's Job, which a fence that only
-listed-then-deleted would kill on sight. And the Job POST is bracketed by a second claim verify:
-an attempt that loses the claim between creating its Job and re-reading it deletes its OWN
-attempt-scoped Job and stands down. The residual — a takeover landing in the one API round trip
-between a verify and the next call — costs the loser a burned attempt, the documented
-fenced-loser semantics; it can no longer produce two runners on one checkout, and it can no
-longer tear down a live replacement (issue #32, both races).
+listed-then-deleted would kill on sight. And the Job POST is bracketed by claim verifies on
+BOTH sides: a takeover already visible before the POST stands the attempt down having created
+nothing, and a takeover landing in the one-round-trip window between the verifies is caught by
+the one after the POST, where the loser removes its OWN attempt-scoped Job and stands down.
+That single round trip IS the residual — a brief, bounded overlap of two schedulable Jobs,
+never an unbounded one, and never a teardown of the winner; the cost is the loser's burned
+attempt, the documented fenced-loser semantics (issue #32, both races). A verify that cannot
+answer for the full patience leaves nothing behind either: the loser best-effort deletes its
+own Job and burns the attempt — burning an attempt is the alternative to two writers on one
+checkout, the fence's own rule — and only an apiserver that is truly gone leaves the Job to
+the kubelet's deadline.
 
 The docker runner's fence — sweep by label at execution time — keeps the old shape, deliberately:
 the docker API has no conditional delete and no unique-name arbitration, so this protocol cannot
