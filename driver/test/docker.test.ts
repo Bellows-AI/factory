@@ -1400,6 +1400,76 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
     });
 
+    // The kill() twin of the spawn-error test above: kill()'s entry gate is a snapshot, and
+    // the `docker kill` daemon call between it and the teardown is arbitrarily slow. A
+    // replacement claim landing inside that window supersedes this attempt — records itself
+    // as current, fences and stands its fleet up — so by the time the kill's teardown runs,
+    // the job-derived label and network name refer to the REPLACEMENT's fleet. Ownership
+    // must therefore be live at the teardown's execution time, and a superseded kill aborts
+    // at its first owns() boundary instead of removing anything.
+    it('aborts a kill teardown that a replacement supersedes while the docker kill is mid-flight', async () => {
+        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
+        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+        const { fn, fires, childAt } = gatedSpawns();
+        let releaseKill: (() => void) | null = null;
+        const killGate = new Promise<void>((resolve) => {
+            releaseKill = resolve;
+        });
+        let markKillParked: (() => void) | null = null;
+        const killParked = new Promise<void>((resolve) => {
+            markKillParked = resolve;
+        });
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'kill') {
+                // kill()'s `docker kill` is held mid-flight — the arbitrarily slow daemon
+                // call between the entry gate and the teardown, inside which B claims.
+                markKillParked!();
+                await killGate;
+                return { stdout: '' };
+            }
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            return { stdout: '' };
+        });
+        const runner = servicesRunner(exec, fn);
+
+        const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        await childAt(0); // A spawned; its runner and fleet stand
+        const pending = runner.kill(attemptA); // the entry gate passes: A is still current
+        await killParked; // the kill is parked inside its docker kill daemon call
+
+        // B re-claims the same job id with a fresh token and stands a fresh fleet up while
+        // A's kill is still awaiting the daemon.
+        const runB = runner.run(attemptB, { id: SESSION, resume: false });
+        await childAt(1); // B spawned; its network and service are live
+        const afterBCreation = exec.mock.calls.length;
+
+        releaseKill!(); // the kill resumes — straight into its teardown, over names B owns
+        await pending;
+
+        const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+        // The teardown was entered — its label ps ran — and then aborted at its first
+        // owns() boundary, before any removal.
+        expect(late).toContainEqual([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            'label=factory.service',
+        ]);
+        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+
+        // A still winds down by its own killed marker, and B is untouched, finishing under
+        // its own verdict.
+        fires[0]!('close', 137);
+        await runA;
+        fires[1]!('close', 0);
+        await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
+    });
+
     it('leaves the daemon alone when the switch is off', async () => {
         const exec = daemon(READOUT);
         const { fn, seen } = spawnRecording('ran\n', 0);

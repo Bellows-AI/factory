@@ -478,6 +478,17 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * never killed — yet it is no longer the attempt whose fleet lives under the job's names.
      */
     const currentAttempt = new Map<BoardJob['id'], BoardJob['leaseToken']>();
+    /*
+     * kill()'s ownership test, shared by its entry gate and the predicate handed to its
+     * teardown: the attempt owns the job's names while it is the newest one recorded for the
+     * id, and absence counts as owning — a kill for an attempt this process never ran has no
+     * replacement to protect. Only a recorded DIFFERENT token is a supersession; tokens
+     * never repeat, so the comparison can never alias an older attempt.
+     */
+    const ownsOrAbsent = (attempt: BoardJob): boolean => {
+        const live = currentAttempt.get(attempt.id);
+        return live === undefined || live === attempt.leaseToken;
+    };
     /**
      * Removes every service container this job labeled and the job's network. It runs twice with
      * the same body: as the re-claim FENCE before anything is created (a dead previous attempt
@@ -492,9 +503,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * Checked before each removal, the answer holds at the EXECUTION time of every daemon step,
      * and a flipped answer stops the teardown where it stands — whatever this attempt left
      * behind is the replacement's fence's business. The FENCE passes no predicate: it is the
-     * cleaner of stale fleets and cannot itself be stale; kill() and the verdict gate at their
-     * own entries, and the spawn-error path below is the one caller whose gate can flip
-     * mid-flight.
+     * cleaner of stale fleets and cannot itself be stale. kill() and the spawn-error path
+     * below pass a live predicate, because each of their entry gates is only a snapshot over
+     * daemon calls that are arbitrarily slow — kill()'s sits between its gate and this
+     * teardown — so ownership is re-checked here, at execution time; the verdict gates at
+     * its own entry, before this teardown is ever reached.
      */
     const serviceTeardown = async (job: BoardJob, owns: () => boolean = () => true): Promise<void> => {
         if (!config.servicesEnabled) return;
@@ -525,19 +538,25 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         // teardown, would destroy the live attempt out from under its runner, and the fence
         // that could reclaim the leftovers has already run. Whatever this attempt left behind
         // is the replacement's fence's business, the same doctrine the verdict's gate applies.
-        // (The entry is read with absence in mind: a kill for an attempt this process never
-        // ran has no replacement to protect and tears down as before.) Timeout, idle and
-        // ordinary lost-lease kills all fire while the attempt is still current, and take the
-        // path below unchanged.
-        const live = currentAttempt.get(job.id);
-        if (live !== undefined && live !== job.leaseToken) return;
+        // The test is ownsOrAbsent — absence-tolerant, because a kill for an attempt this
+        // process never ran has no replacement to protect. Timeout, idle and ordinary
+        // lost-lease kills all fire while the attempt is still current, and take the path
+        // below unchanged.
+        if (!ownsOrAbsent(job)) return;
         // Killing the `docker run` process would only detach the CLI; the container keeps running
         // and the workspace keeps being written to. The daemon has to be told. The declared
         // services go with it: a killed job's database has no reason to outlive the job, and the
         // close handler's teardown would catch them anyway — this is so a kill while nothing is
         // reading the outcome (lost lease, shutdown) still reclaims them.
         await execDocker(['kill', containerName(job)]).catch(() => undefined);
-        await serviceTeardown(job);
+        // The gate above is a snapshot, and the kill between it and this teardown is a daemon
+        // call of arbitrary length: a replacement claim landing inside that window supersedes
+        // this attempt and stands its fleet up under the same job-derived names, so by
+        // teardown time the label and the network name can already refer to the REPLACEMENT's
+        // fleet. The same test therefore travels into the teardown as a live predicate —
+        // ownership must hold at the teardown's EXECUTION time, and its first boundary stops
+        // a superseded kill before any removal.
+        await serviceTeardown(job, () => ownsOrAbsent(job));
     };
 
     return {
