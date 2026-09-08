@@ -138,12 +138,23 @@ close is classified by `docker inspect`, where a container that exists ran and `
 the verdict, and no container means nothing was ever accepted. The shared loop interprets no exit
 codes, so a kubernetes pod that genuinely exits 125 is reported as the failure it is.
 
-**Every spawn is fenced.** The runner container's name is the job id, and the kubernetes runner has
-always deleted a previous attempt's Job before creating its own; the docker runner now does the
-same with `docker rm -f`. Anything holding the name is a leftover of an attempt whose lease is
-gone — a driver that died before it could kill its runner, which is what a compose restart does.
-Without the fence the next attempt dies on the name conflict, docker exit 125, and the job
-terminal-fails blaming a command that never ran.
+**Every resource an attempt creates is scoped by its lease token.** The runner container's name,
+each service container's name, the services network's name and the `factory.lease` label beside
+`factory.job` are all derived from the lease token, which is regenerated on every claim and never
+repeats. A stale attempt is therefore structurally incapable of addressing a replacement's
+resources: its kill resolves its runner through its own label pair and kills by id (never by
+name), and its teardowns filter by its own lease — whatever they name can only be their own
+attempt's fleet. Correctness does not depend on any in-process ownership gate, so there is none.
+
+**The fence is the one job-scoped sweep, because it runs before anything is created.** The docker
+runner removes every container and network labeled `factory.job=<id>` before standing its own
+fleet up; the kubernetes runner deleteCollections the same label selector and lists until nothing
+answers it, before creating its Job. Everything a fence finds is a previous attempt's leftover —
+a driver that died before it could kill its runner, which is what a compose restart does — and
+this claim exists only because those attempts' leases are gone, so removing them delivers the
+same verdict their heartbeats would have, had the driver survived to receive it. The alternative
+to leaving a live leftover runner running is two writers on one checkout, which is the thing
+actually worth preventing.
 
 **The heartbeat is raced against the run finishing, not simply slept.** The beat period is a third
 of the lease — 100s by default — and awaiting it before reporting left every finished job sitting
@@ -233,14 +244,17 @@ connection and retry, which is what agents are for.
   the rest in place), an environment value is at most 8192 characters. A parse refusal fails the
   job terminally with the reason in the output, rather than burning attempts on a file that cannot
   change.
-- **The fleet is fenced like the runner.** Service containers are labeled `factory.job`, removed
-  by label before anything is created — a dead previous attempt's leftovers, the same fence the
-  runner container's `rm` is — and torn down after the run, on kill, on timeout: every path the
-  runner itself dies on. The per-job network (`factory-job-<id>-services`) is created and removed
-  with them. Teardown is the feature's own machinery, so a fleet from before a `RUNNER_SERVICES`
-  flip off survives until the flag is back on; reclaim it then with `docker rm`/`docker network
-  rm` — by the `factory.job` label and the `factory-job-<id>-services` name — since pruning the
-  workspaces volume removes neither.
+- **The fleet is fenced like the runner, and scoped like it too.** Service containers and the
+  network are labeled `factory.job` and `factory.lease`, and named after the job id AND the lease
+  token (`factory-job-<id>-<token>-svc-<name>`, `factory-job-<id>-<token>-services`). The
+  re-claim fence — the one job-scoped sweep, run before anything is created — removes every
+  leftover container and network of the job by the `factory.job` label, previous attempts'
+  services included; the teardown after the run, on kill, on timeout filters by `factory.lease`,
+  so it can only ever remove the attempt's own fleet. Teardown is the feature's own machinery,
+  but the fence runs regardless of the flag, so a fleet from before a `RUNNER_SERVICES` flip off
+  meets the next claim's fence all the same; reclaim a fleet that has no next claim by hand with
+  `docker rm`/`docker network rm` — by the `factory.job` label, since the names now carry the
+  attempt token, and pruning the workspaces volume removes neither.
 - **A refused read or a refused service start is infrastructure, not a verdict.** Thrown, so the
   job goes back to its lease instead of being reported failed — the distinction "a run that never
   started is not a failed job" draws, one layer out.
@@ -535,7 +549,9 @@ Lease expiry is simulated by ageing `lease_expires_at` with SQL, never by sleepi
 decided in that one array. The `.bellows.yaml` parser and the service argv builders are pinned the
 same way in `driver/test/services.test.ts`, and the service lifecycle is driven through the same
 injected daemon seam in `driver/test/docker.test.ts` — readout, network, fleet, teardown, fence,
-and the off-switch proving the daemon hears nothing new when `RUNNER_SERVICES` is unset.
+the off-switch proving the daemon hears nothing services-specific when `RUNNER_SERVICES` is
+unset, and the attempt-scoping pins: no stale attempt's argv may name a sibling attempt's
+resources, and the fence is the one sweep allowed to be job-scoped.
 
 `npm run test:jobs` (`scripts/test-jobs.sh`) is the end-to-end: a real board, a real database, a
 real driver and real containers, with no Claude and no credential. The runners are two stub images

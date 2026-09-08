@@ -491,19 +491,28 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
     ];
 }
 
-/** The per-job user-defined network services and the runner share. */
+/**
+ * The per-attempt user-defined network services and the runner share. Attempt-scoped by
+ * contract: the lease token is minted fresh on every claim and never repeats, so this name can
+ * only ever resolve to the network the attempt that computed it created — a stale attempt
+ * cannot name a replacement's, which is what makes its teardown safe without any ownership
+ * gate. The one job-scoped identifier is the `factory.job` label, and the only thing allowed to
+ * act on it is the re-claim fence, which runs before anything is created.
+ */
 export function networkName(job: BoardJob): string {
-    return `factory-job-${job.id}-services`;
+    return `factory-job-${job.id}-${job.leaseToken}-services`;
 }
 
+/** The service container's name — attempt-scoped for the same reason `networkName` is. */
 export function serviceContainerName(job: BoardJob, name: string): string {
-    return `factory-job-${job.id}-svc-${name}`;
+    return `factory-job-${job.id}-${job.leaseToken}-svc-${name}`;
 }
 
 /**
- * The `docker run` argv for one service: detached, on the job's network under the service's own
- * name as alias — which is the whole feature, `redis://cache:6379` resolving inside the job —
- * and labeled both by job (what teardown and the fence search for) and by service (what makes a
+ * The `docker run` argv for one service: detached, on the attempt's network under the service's
+ * own name as alias — which is the whole feature, `redis://cache:6379` resolving inside the job —
+ * and labeled by job (what the re-claim fence searches for), by lease (what makes every teardown
+ * and kill resolve to this attempt's fleet and nothing else), and by service (what makes a
  * leftover nameable in a log).
  *
  * Environment values go on the argv as `-e KEY=value`, unlike the runner's own credentials which
@@ -526,6 +535,8 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec): string[] {
         serviceContainerName(job, spec.name),
         '--label',
         `factory.job=${job.id}`,
+        '--label',
+        `factory.lease=${job.leaseToken}`,
         '--label',
         `factory.service=${spec.name}`,
         '--network',

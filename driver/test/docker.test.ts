@@ -5,7 +5,7 @@ import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claimEnv, containerName, createDockerRunner, dockerArgs, envFileBody, opencodeSessionReadoutArgs, parseOpencodeSessionId, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
-import { networkName, serviceRunArgs } from '../src/services.js';
+import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 
 /*
  * The env-file write is the one await between the setup's final kill-check and the spawn, and a
@@ -113,8 +113,19 @@ describe('the docker run arguments', () => {
     });
 
     it('labels the container so an orphan can be found after the driver dies', () => {
+        // The job label is what the fence sweeps and what finds an orphan after the driver dies;
+        // the lease label is what makes every per-attempt operation resolve to THIS attempt's
+        // containers only — the job label alone is shared by every attempt of the job, the lease
+        // label never repeats.
         expect(args()).toEqual(
-            expect.arrayContaining(['--name', containerName(job), '--label', `factory.job=${job.id}`]),
+            expect.arrayContaining([
+                '--name',
+                containerName(job),
+                '--label',
+                `factory.job=${job.id}`,
+                '--label',
+                `factory.lease=${job.leaseToken}`,
+            ]),
         );
     });
 
@@ -448,6 +459,8 @@ describe('an opencode runner', () => {
                 containerName(job),
                 '--label',
                 `factory.job=${job.id}`,
+                '--label',
+                `factory.lease=${job.leaseToken}`,
                 '-v',
                 'factory-ai_workspaces:/workspaces',
                 `WORKDIR=/workspaces/bellows/${USER}`,
@@ -754,14 +767,17 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     // A spawn stub whose children never emit on their own: each spawn hands the test a fire
     // function, so the interleaving — one attempt's error or close landing after another
-    // attempt's fleet is already up — is the test's to pace.
-    const gatedSpawns = () => {
+    // attempt's fleet is already up — is the test's to pace. `track`, when given, sees every
+    // spawned argv: it is how the cross-instance tests register the runner container on the
+    // scripted daemon, whose `docker run` goes through spawnFn and never through the exec seam.
+    const gatedSpawns = (track?: (argv: string[]) => void) => {
         const fires: ((what: 'error' | 'close', payload?: unknown) => void)[] = [];
         let resolveSpawn: (() => void) | null = null;
         const spawned = new Promise<void>((resolve) => {
             resolveSpawn = resolve;
         });
         const fn = ((command: string, argv: string[]) => {
+            track?.(argv);
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
                 const s = new EventEmitter();
@@ -778,6 +794,112 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return fires[index]!;
         };
         return { fn, fires, childAt };
+    };
+
+    /*
+     * The attempt-scoping helpers. Two attempts of one job — the stale-race cast, used by every
+     * test below that replays an interleaving between an attempt A and its replacement B. The
+     * lease-aware ps answer is what makes "A's removals never carry B's id" assertable: a `ps`
+     * whose filters carry a lease label answers with that attempt's own id only (idFor mints it
+     * from the token's first letter), while a job-scoped `ps` — the fence's — answers with both
+     * attempts'. touchesB is the blanket assertion: no argv element of a stale attempt may
+     * contain any of B's identifiers.
+     */
+    const ATTEMPT_A = 'aaaaaaa2-2222-4222-8222-222222222222';
+    const ATTEMPT_B = 'bbbbbbb3-3333-4333-8333-333333333333';
+    const attemptA: BoardJob = { ...job, leaseToken: ATTEMPT_A };
+    const attemptB: BoardJob = { ...job, leaseToken: ATTEMPT_B };
+    const idFor = (token: string): string => `${token.slice(0, 1)}-svc-id`;
+    const touchesB = (args: string[]): boolean => args.some((arg) => arg.includes(ATTEMPT_B) || arg === 'b-svc-id');
+    const psAnswer = (args: string[]): string => {
+        const lease = args.find((arg) => arg.startsWith('label=factory.lease='))?.split('=')[2];
+        // A lease-scoped ps answers with that attempt's own id; a job-scoped one — the fence's —
+        // answers with a neutral leftover, because the fence legitimately removes EVERYTHING the
+        // job label covers: that is its role, and it runs before anything is created.
+        return lease ? `${idFor(lease)}\n` : 'stale-leftover\n';
+    };
+
+    /*
+     * A stateful daemon for the cross-attempt tests: containers and networks live in maps keyed
+     * by id/name with their labels, `ps` and `network ls` honor `--filter label=` pairs, and rm /
+     * network rm remove exactly what they are told. Service containers and networks register
+     * through the exec seam itself; runner containers register through acceptRun, because the
+     * runner's own `docker run` goes through spawnFn. With this daemon the "B is untouched"
+     * assertions stop being argv-shaped and become state: B's entries are still in the maps
+     * after everything A did.
+     */
+    const scriptedDaemon = (readout: string) => {
+        const containers = new Map<string, Record<string, string>>();
+        const networks = new Map<string, Record<string, string>>();
+        const calls: string[][] = [];
+        const labelsOf = (args: string[]): Record<string, string> => {
+            const labels: Record<string, string> = {};
+            for (let i = 0; i < args.length; i += 1) {
+                if (args[i] === '--label') {
+                    const [key, value] = (args[i + 1] ?? '').split('=');
+                    if (key && value !== undefined) labels[key] = value;
+                }
+            }
+            return labels;
+        };
+        const filtersOf = (args: string[]): [string, string][] => {
+            const filters: [string, string][] = [];
+            for (let i = 0; i < args.length; i += 1) {
+                if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
+                    const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
+                    if (key && value !== undefined) filters.push([key, value]);
+                }
+            }
+            return filters;
+        };
+        const matches = (filters: [string, string][], labels: Record<string, string>): boolean =>
+            filters.every(([key, value]) => labels[key] === value);
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'ps') {
+                const filters = filtersOf(args);
+                return {
+                    stdout: [...containers.entries()]
+                        .filter(([, labels]) => matches(filters, labels))
+                        .map(([id]) => id)
+                        .join('\n'),
+                };
+            }
+            if (args[0] === 'rm' && args[1] === '-f') {
+                for (const id of args.slice(2)) containers.delete(id);
+                return { stdout: '' };
+            }
+            if (args[0] === 'kill') return { stdout: '' };
+            if (args[0] === 'network' && args[1] === 'ls') {
+                const filters = filtersOf(args);
+                return {
+                    stdout: [...networks.entries()]
+                        .filter(([, labels]) => matches(filters, labels))
+                        .map(([name]) => name)
+                        .join('\n'),
+                };
+            }
+            if (args[0] === 'network' && args[1] === 'rm') {
+                for (const name of args.slice(2)) networks.delete(name);
+                return { stdout: '' };
+            }
+            if (args[0] === 'network' && args[1] === 'create') {
+                networks.set(args[args.length - 1]!, labelsOf(args));
+                return { stdout: '' };
+            }
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: readout };
+            if (args[0] === 'run' && args.includes('--network-alias')) {
+                containers.set(args[args.indexOf('--name') + 1]!, labelsOf(args));
+                return { stdout: '' };
+            }
+            return { stdout: '' };
+        });
+        const acceptRun = (argv: string[]): void => {
+            calls.push(argv);
+            const name = argv[argv.indexOf('--name') + 1];
+            if (name) containers.set(name, labelsOf(argv));
+        };
+        return { containers, networks, calls, exec, acceptRun };
     };
 
     it('reads .bellows.yaml, creates the job network, starts the service, and joins the runner to it', async () => {
@@ -899,7 +1021,18 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const exec = daemon(READOUT);
         await servicesRunner(exec, spawnRecording('', 0).fn).kill(job);
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(['kill', containerName(job)]);
+        // The runner is resolved through this attempt's own labels and killed by ID — never by
+        // name, which a stale attempt's kill could otherwise compute against a replacement's
+        // container.
+        expect(calls).toContainEqual([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            `label=factory.lease=${job.leaseToken}`,
+        ]);
+        expect(calls).toContainEqual(['kill', 'svc-id-1']);
         expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
         expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
     });
@@ -940,8 +1073,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // id, one marker serves both attempts: B's claim would either be aborted by a kill meant
     // for A, or wipe the marker and revive A to compete for the same network and containers.
     it('aborts only the killed attempt when a sibling attempt of the same id claims the job', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, id: job.id, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
         const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
         let killedA = false;
         let releaseA: (() => void) | null = null;
@@ -960,7 +1091,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 return { stdout: READOUT };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
         const { fn, seen } = spawnRecording('ran\n', 0);
@@ -968,30 +1099,49 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         handle.kill = runner.kill;
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        // runA rejects as soon as its kill lands — before the test observes it — so mark it
+        // handled now; an interim unhandled-rejection state here derails the test worker.
+        runA.catch(() => undefined);
         await killRecorded;
+        // Everything issued so far is A's: the kill window closes here, before B starts.
+        const aEnd = exec.mock.calls.length;
         // B's claim lands while A is still between awaited steps — nothing stops it.
         const runB = runner.run(attemptB, { id: SESSION, resume: false });
 
         // A was the attempt the loop killed: it aborts.
         await expect(runA).rejects.toThrow(/killed while setting up services/);
-        // B was never killed, whatever happened to A: network, service, spawn all happen.
+        // And nothing A issued on its way out — kill and teardown included — named anything of
+        // B's: the ps filters carry A's lease, and B's token appears in no argv.
+        const aCalls = exec.mock.calls.slice(0, aEnd).map((call) => call[0]);
+        expect(aCalls.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(aCalls.every((a) => !touchesB(a))).toBe(true);
+
+        // B was never killed, whatever happened to A: network, service, spawn all happen —
+        // under B's OWN names, since every name carries B's token.
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
-        // Exactly one attempt got as far as creating the network and spawning the runner.
+        // Exactly one attempt got as far as creating the network, and it is B's network —
+        // created labeled, like everything the attempt stands up.
         const creates = exec.mock.calls.map((call) => call[0]).filter((a) => a[0] === 'network' && a[1] === 'create');
-        expect(creates).toEqual([['network', 'create', networkName(job)]]);
+        expect(creates).toEqual([
+            [
+                'network',
+                'create',
+                '--label',
+                `factory.job=${job.id}`,
+                '--label',
+                `factory.lease=${ATTEMPT_B}`,
+                networkName(attemptB),
+            ],
+        ]);
         expect(seen).toHaveLength(1);
     });
 
-    // The abort must be teardown-FREE, not merely stopped. kill() ran the job-scoped teardown
-    // when the lease was lost; whatever THIS attempt created after that point is a leftover only
-    // the NEXT attempt's fence may remove — the fence runs BEFORE the newer attempt creates
-    // anything, so it is the one component that can tell a dead attempt's leftovers from a live
-    // fleet. A teardown fired from the dying attempt has no such timing guarantee: overlapping a
-    // newer attempt's setup, it would delete the network and service containers the newer
-    // attempt is already using.
-    it('aborts without issuing any removals, so a sibling attempt\'s fleet survives', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+    // The abort must not disturb a sibling attempt's fleet. In the gated world that needed a
+    // teardown-FREE abort; in the scoped world the kill's teardown ISSUES its daemon calls and
+    // is safe because of what it names: every ps carries A's lease, every removal carries A's
+    // id or A's network name. B claims with a fresh token and stands its fleet up afterwards,
+    // untouched — nothing A issued could resolve to it.
+    it('scopes a killed attempt\'s teardown to its own lease, leaving a sibling attempt\'s fleet alone', async () => {
         const handle: { kill: ((j: BoardJob) => Promise<void>) | null } = { kill: null };
         let killedA = false;
         let releaseKill: (() => void) | null = null;
@@ -1010,7 +1160,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 return { stdout: READOUT };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
         const { fn, seen } = spawnRecording('ran\n', 0);
@@ -1018,14 +1168,21 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         handle.kill = runner.kill;
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
+        // runA rejects as soon as its kill lands — before the test observes it — so mark it
+        // handled now; an interim unhandled-rejection state here derails the test worker.
+        runA.catch(() => undefined);
         await killSettled;
-        // Everything A does from here to its rejection IS the abort path, and the pin is that
-        // it contains no removals at all.
-        const killEnd = exec.mock.calls.length;
         await expect(runA).rejects.toThrow(/killed while setting up services/);
-        const abortCalls = exec.mock.calls.slice(killEnd).map((call) => call[0]);
-        expect(abortCalls).not.toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(abortCalls).not.toContainEqual(['network', 'rm', networkName(job)]);
+
+        // Everything so far is A's: the kill and its teardown ran — and every call of them is
+        // scoped to A. The ps filters carry A's lease, the removals carry A's id and A's
+        // network name, and no argv element names anything of B's.
+        const aCalls = exec.mock.calls.map((call) => call[0]);
+        expect(aCalls.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(aCalls).toContainEqual(['kill', idFor(ATTEMPT_A)]);
+        expect(aCalls).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(aCalls).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(aCalls.every((a) => !touchesB(a))).toBe(true);
 
         // B, the newer attempt for the same job id: fence, network create, service start and
         // runner spawn all happen after A's abort — and nothing A did on the way out disturbed
@@ -1033,19 +1190,25 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const outcome = await runner.run(attemptB, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(['network', 'create', networkName(job)]);
+        expect(calls).toContainEqual([
+            'network',
+            'create',
+            '--label',
+            `factory.job=${job.id}`,
+            '--label',
+            `factory.lease=${ATTEMPT_B}`,
+            networkName(attemptB),
+        ]);
         expect(calls.some((a) => a.includes('--network-alias'))).toBe(true);
         expect(seen).toHaveLength(1);
     });
 
-    // A's close that lands LATE: A was killed — kill() tore the fleet down while it was still
-    // legitimately A's own — and the loop re-claimed the job as B before A's CLI client finally
-    // exited. A's close handler must not run the job-scoped teardown a second time: everything
-    // that teardown would find under the job label now belongs to B, and removing it strands
-    // B's runner mid-run.
-    it('skips the service teardown on a killed attempt whose close lands after the replacement stood its fleet up', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+    // A's close that lands LATE: A was killed — kill() tore A's own fleet down while it was
+    // still legitimately A's own — and the loop re-claimed the job as B before A's CLI client
+    // finally exited. A's verdict still runs its teardown, gate-free: the teardown is scoped to
+    // A's lease, so whatever it names is A's own, and B's live fleet is structurally
+    // unaddressable no matter how late the close lands.
+    it('scopes a killed attempt\'s late verdict teardown to its own lease when the replacement has stood its fleet up', async () => {
         // Both children hold their close until released, so the interleaving — A still alive
         // while B stands its fleet up, then A's close landing over it — is the test's to pace.
         const closers: (() => void)[] = [];
@@ -1070,13 +1233,18 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return closers[index]!;
         };
 
-        const exec = daemon(READOUT);
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: psAnswer(args) };
+            return { stdout: '' };
+        });
         const runner = servicesRunner(exec, gatedSpawn);
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
         const closeA = await closeOf(0); // A spawned; its CLI client is alive
-        // The loop loses A's lease and kills the attempt: token recorded, A's own fleet torn
-        // down while it is still legitimately A's.
+        // The loop loses A's lease and kills the attempt: A's own fleet torn down while it is
+        // still legitimately A's.
         await runner.kill(attemptA);
         // B re-claims the same job id and stands a fresh fleet up.
         const runB = runner.run(attemptB, { id: SESSION, resume: false });
@@ -1089,16 +1257,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await runA;
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late).not.toContainEqual([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            'label=factory.service',
-        ]);
-        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+        // The teardown ran — and every call of it is A's: the ps filters carry A's lease, the
+        // removals carry A's id and A's network name, and nothing names B.
+        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // B is untouched and still finishes under its own verdict.
         closers[1]!();
@@ -1108,12 +1272,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // The natural-close twin of the test above, with NO kill anywhere: the lease expires
     // server-side and the board re-claims the job as B before any heartbeat delivers 'lost' —
     // so the loop never kills A, and A's `killed` marker is never recorded. B's fence removes
-    // A's runner by name, which closes A's CLI client, and A's verdict then lands over B's live
-    // fleet. Not-killed is not the same as still-current: only the newest attempt for the job id
-    // may tear the shared-name fleet down.
-    it('skips the service teardown on a natural close that lands after a replacement claim stood its fleet up', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+    // A's leftovers, which closes A's CLI client, and A's verdict then lands over B's live
+    // fleet. Not-killed is not a free pass to skip the teardown — it runs unconditionally —
+    // and it is safe unconditionally: scoped to A's lease, it can only ever name A's own.
+    it('scopes a natural close\'s late verdict teardown to its own lease when a replacement claim has stood its fleet up', async () => {
+        // Both children hold their close until released, so the interleaving — A still alive
+        // while B stands its fleet up, then A's close landing over it — is the test's to pace.
         const closers: (() => void)[] = [];
         let resolveSpawn: (() => void) | null = null;
         const spawned = new Promise<void>((resolve) => {
@@ -1136,14 +1300,18 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return closers[index]!;
         };
 
-        const exec = daemon(READOUT);
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: psAnswer(args) };
+            return { stdout: '' };
+        });
         const runner = servicesRunner(exec, gatedSpawn);
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
         const closeA = await closeOf(0); // A spawned; its CLI client is alive — and never killed
         // B re-claims the same job id with no kill in between: the heartbeat has not yet told
-        // the loop A's lease is gone. B's fence removes A's runner by name; A's fleet follows
-        // through B's own entry fence.
+        // the loop A's lease is gone. B's fence removes A's leftovers by label.
         const runB = runner.run(attemptB, { id: SESSION, resume: false });
         await closeOf(1); // B spawned; its network and service are live
         const afterBCreation = exec.mock.calls.length;
@@ -1153,16 +1321,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await runA;
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late).not.toContainEqual([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            'label=factory.service',
-        ]);
-        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // B is untouched and still finishes under its own verdict.
         closers[1]!();
@@ -1171,15 +1333,18 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     // The late-kill twin of the two close tests above: the kill itself arrives AFTER the
     // replacement claimed the job and stood its fleet up — the heartbeat can be arbitrarily
-    // slow to deliver the lease loss, and the claim loop has no per-job dedupe. By then the
-    // job-derived container name and the service label already refer to B's runner and fleet,
-    // so a kill by that name or a job-scoped teardown would destroy the live attempt out from
-    // under its runner; B's fence has already run and cannot reclaim them back.
-    it('skips the daemon actions on a kill that lands after the replacement stood its fleet up', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+    // slow to deliver the lease loss, and the claim loop has no per-job dedupe. There is no
+    // gate to stop the kill, and none is needed: the kill resolves its target through A's own
+    // lease label and kills by id, so the only container it can name is A's, and its teardown
+    // is scoped the same way.
+    it('scopes a kill that lands after the replacement stood its fleet up to the killed attempt\'s own lease', async () => {
         const { fn, fires, childAt } = gatedSpawns();
-        const exec = daemon(READOUT);
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: psAnswer(args) };
+            return { stdout: '' };
+        });
         const runner = servicesRunner(exec, fn);
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
@@ -1190,21 +1355,17 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await childAt(1); // B spawned; its network and service are live
         const afterBCreation = exec.mock.calls.length;
 
-        // Only now does the loop's kill for A fire — over names B already owns.
+        // Only now does the loop's kill for A fire — over a daemon where B's fleet is live.
         await runner.kill(attemptA);
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late).not.toContainEqual(['kill', containerName(job)]);
-        expect(late).not.toContainEqual([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            'label=factory.service',
-        ]);
-        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+        // The kill resolved its runner through A's lease label and killed by id — never by
+        // name — and the teardown behind it is A-scoped too. Nothing names B.
+        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(late).toContainEqual(['kill', idFor(ATTEMPT_A)]);
+        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // A still winds down by its own killed marker, and B is untouched, finishing under
         // its own verdict.
@@ -1275,9 +1436,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') {
                 psCount++;
-                // ps #1 is the entry fence; ps #2 is the error-path teardown, held so the
-                // close handler gets its turn while the teardown is still in flight.
-                if (psCount === 2) await teardownPsGate;
+                // ps #1 is the entry fence; ps #2 is the fence's own service half; ps #3 is the
+                // error-path teardown, held so the close handler gets its turn while the
+                // teardown is still in flight.
+                if (psCount === 3) await teardownPsGate;
                 return { stdout: 'svc-id-1\n' };
             }
             return { stdout: '' };
@@ -1301,14 +1463,16 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     // The spawn-error twin: A's runner spawn fails, but the failure is delivered only after B
     // claimed the same job id and stood its fleet up. The error path tears the attempt's
-    // services down before rejecting — but the label ps and the network rm run at teardown
-    // time, when they would find and delete B's live fleet. Superseded, the path must reject
-    // without touching the daemon: whatever A left behind is B's fence's business.
-    it('rejects a superseded spawn error without tearing the replacement fleet down', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+    // services down before rejecting — unconditionally now, and safe unconditionally: the
+    // teardown's filters carry A's lease, so the only fleet it can find and remove is A's own.
+    it('scopes a superseded spawn error\'s teardown to the failing attempt\'s own lease', async () => {
         const { fn, fires, childAt } = gatedSpawns();
-        const exec = daemon(READOUT);
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: psAnswer(args) };
+            return { stdout: '' };
+        });
         const runner = servicesRunner(exec, fn);
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
@@ -1320,36 +1484,30 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const afterBCreation = exec.mock.calls.length;
 
         fires[0]!('error', new Error('spawn docker ENOENT'));
-        // The rejection still surfaces — but nothing may be removed behind it.
+        // The rejection still surfaces — and the teardown it waited for addressed only A's own
+        // resources. Marked handled at once: the rejection lands while the teardown is still in
+        // flight, before the await below observes it.
+        runA.catch(() => undefined);
         await expect(runA).rejects.toThrow(/ENOENT/);
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late).not.toContainEqual([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            'label=factory.service',
-        ]);
-        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // B is untouched and still finishes under its own verdict.
         fires[1]!('close', 0);
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
     });
 
-    // The twin the entry-time snapshot cannot see: the spawn error lands while A is STILL
-    // current — the gate passes and the teardown starts — and B claims the job id only while
-    // that teardown sits mid-flight, between its label ps and its removals. A check made once
-    // at entry cannot catch B: the ps has already listed what to remove and the network rm is
-    // still to come, so by execution time they delete B's live fleet. Daemon calls are
-    // arbitrarily slow, so ownership must hold at the EXECUTION time of each daemon step — the
-    // gate the teardown carries must be re-armed between its awaited steps.
-    it('aborts a spawn-error teardown that a replacement supersedes mid-flight', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+    // The mid-flight twin: the spawn error lands while A is STILL current, the teardown starts,
+    // and B claims the job id only while that teardown sits mid-flight, between its ps and its
+    // removals. In the gated world this interleaving needed a live ownership predicate
+    // re-armed at every step; in the scoped world it needs nothing: the removals were chosen by
+    // a ps that filtered on A's lease, and releasing them late removes exactly what that ps
+    // found — A's own resources — whatever B stood up in between.
+    it('keeps a teardown scoped to its own lease even when the replacement stands its fleet up while it is mid-flight', async () => {
         const { fn, fires, childAt } = gatedSpawns();
         let releaseTeardownPs: (() => void) | null = null;
         const teardownPsGate = new Promise<void>((resolve) => {
@@ -1365,14 +1523,14 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
             if (args[0] === 'ps') {
                 psCount++;
-                // ps #1 is A's entry fence; ps #2 is the error-path teardown, parked so B can
-                // stand its fleet up while the teardown sits between its ps and its removals;
-                // ps #3 is B's entry fence.
-                if (psCount === 2) {
+                // ps #1 is A's entry fence; ps #2 is A's fence-half teardown; ps #3 is A's
+                // error-path teardown, parked so B can stand its fleet up while it sits
+                // between its ps and its removals; ps #4 and #5 are B's fence and fence-half.
+                if (psCount === 3) {
                     markTeardownPs!();
                     await teardownPsGate;
                 }
-                return { stdout: 'svc-id-1\n' };
+                return { stdout: psAnswer(args) };
             }
             return { stdout: '' };
         });
@@ -1388,28 +1546,27 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await childAt(1); // B spawned; its network and service are live
         const afterBCreation = exec.mock.calls.length;
 
-        releaseTeardownPs!(); // the teardown resumes — over names B now owns
+        releaseTeardownPs!(); // the teardown resumes — and names only what its own ps found
+        // Marked handled at once: the rejection lands as soon as the teardown settles, before
+        // the await below observes it.
+        runA.catch(() => undefined);
         await expect(runA).rejects.toThrow(/ENOENT/); // the rejection still surfaces
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // B is untouched and still finishes under its own verdict.
         fires[1]!('close', 0);
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
     });
 
-    // The kill() twin of the spawn-error test above: kill()'s entry gate is a snapshot, and
-    // the `docker kill` daemon call between it and the teardown is arbitrarily slow. A
-    // replacement claim landing inside that window supersedes this attempt — records itself
-    // as current, fences and stands its fleet up — so by the time the kill's teardown runs,
-    // the job-derived label and network name refer to the REPLACEMENT's fleet. Ownership
-    // must therefore be live at the teardown's execution time, and a superseded kill aborts
-    // at its first owns() boundary instead of removing anything.
-    it('aborts a kill teardown that a replacement supersedes while the docker kill is mid-flight', async () => {
-        const attemptA = { ...job, leaseToken: 'aaaaaaa2-2222-4222-8222-222222222222' };
-        const attemptB = { ...job, leaseToken: 'bbbbbbb3-3333-4333-8333-333333333333' };
+    // The kill() twin: kill()'s `docker kill` daemon call is arbitrarily slow, and a
+    // replacement claim lands inside that window and stands its fleet up — under its own
+    // names. When the kill resumes, its teardown addresses only what A's lease filters resolve
+    // to; B's fleet was never nameable by any of it, so there is nothing to re-check.
+    it('keeps a kill scoped to its own lease even when the replacement stands its fleet up while the docker kill is mid-flight', async () => {
         const { fn, fires, childAt } = gatedSpawns();
         let releaseKill: (() => void) | null = null;
         const killGate = new Promise<void>((resolve) => {
@@ -1422,22 +1579,27 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'kill') {
                 // kill()'s `docker kill` is held mid-flight — the arbitrarily slow daemon
-                // call between the entry gate and the teardown, inside which B claims.
+                // call inside which B claims.
                 markKillParked!();
                 await killGate;
                 return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            if (args[0] === 'ps') return { stdout: psAnswer(args) };
             return { stdout: '' };
         });
         const runner = servicesRunner(exec, fn);
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
         await childAt(0); // A spawned; its runner and fleet stand
-        const pending = runner.kill(attemptA); // the entry gate passes: A is still current
-        await killParked; // the kill is parked inside its docker kill daemon call
+        const pending = runner.kill(attemptA); // resolves its target, then parks in `docker kill`
+        await killParked;
+
+        // The kill by id was issued before B existed, and it was A's id — resolved through
+        // A's lease label — not a name.
+        const killCall = exec.mock.calls.map((call) => call[0]).find((a) => a[0] === 'kill');
+        expect(killCall).toEqual(['kill', idFor(ATTEMPT_A)]);
 
         // B re-claims the same job id with a fresh token and stands a fresh fleet up while
         // A's kill is still awaiting the daemon.
@@ -1445,22 +1607,14 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await childAt(1); // B spawned; its network and service are live
         const afterBCreation = exec.mock.calls.length;
 
-        releaseKill!(); // the kill resumes — straight into its teardown, over names B owns
+        releaseKill!(); // the kill resumes into its teardown
         await pending;
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        // The teardown was entered — its label ps ran — and then aborted at its first
-        // owns() boundary, before any removal.
-        expect(late).toContainEqual([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            'label=factory.service',
-        ]);
-        expect(late).not.toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(late).not.toContainEqual(['network', 'rm', networkName(job)]);
+        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late).toContainEqual(['network', 'rm', networkName(attemptA)]);
+        expect(late.every((a) => !touchesB(a))).toBe(true);
 
         // A still winds down by its own killed marker, and B is untouched, finishing under
         // its own verdict.
@@ -1468,6 +1622,152 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await runA;
         fires[1]!('close', 0);
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
+    });
+
+    /*
+     * The three pins of the attempt-scoping redesign itself. The race tests above replay
+     * interleavings; these three state the structural invariant they all follow from: names
+     * are attempt-scoped and never repeat, the fence is the only job-scoped sweep, and a stale
+     * attempt's every daemon call resolves to its own lease or nothing.
+     */
+
+    // The flagship: two RUNNER INSTANCES share one daemon, the way two driver processes hold
+    // two attempts of the same job with no in-process state between them. B's fence is
+    // job-scoped and removes A's live fleet — that is its role, and it runs before B creates
+    // anything; A's runner dying to it is the accepted re-claim semantics. The pin is the LATE
+    // kill: fired from A's own runner after B stands its fleet up, every call it issues
+    // carries A's lease, B's names appear in no argv, and B finishes its run untouched.
+    it('keeps a replacement attempt unaddressable to a stale attempt\'s late kill across two runner instances', async () => {
+        const d = scriptedDaemon(READOUT);
+        const spawnA = gatedSpawns((argv) => d.acceptRun(argv));
+        const spawnB = gatedSpawns((argv) => d.acceptRun(argv));
+        const runner1 = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            spawnA.fn,
+            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+        );
+        const runner2 = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            spawnB.fn,
+            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+        );
+
+        const runA = runner1.run(attemptA, { id: SESSION, resume: false });
+        await spawnA.childAt(0); // A's fleet and runner stand on the daemon
+        expect(d.containers.has(containerName(attemptA))).toBe(true);
+        expect(d.containers.has(serviceContainerName(attemptA, 'stub'))).toBe(true);
+        expect(d.networks.has(networkName(attemptA))).toBe(true);
+
+        // B claims the same job id with a different token. Its fence is job-scoped and removes
+        // A's live fleet before creating anything of its own.
+        const runB = runner2.run(attemptB, { id: SESSION, resume: false });
+        // Indexes are per instance: B is spawnB's FIRST spawn, not the second of a shared one.
+        await spawnB.childAt(0);
+        expect(d.containers.has(containerName(attemptA))).toBe(false);
+        expect(d.containers.has(serviceContainerName(attemptA, 'stub'))).toBe(false);
+        expect(d.networks.has(networkName(attemptA))).toBe(false);
+        expect(d.containers.has(containerName(attemptB))).toBe(true);
+        expect(d.containers.has(serviceContainerName(attemptB, 'stub'))).toBe(true);
+        expect(d.networks.has(networkName(attemptB))).toBe(true);
+        const afterBCreation = d.calls.length;
+
+        // A's late kill fires from its own runner, over a daemon where B's fleet is live.
+        await runner1.kill(attemptA);
+
+        const late = d.calls.slice(afterBCreation);
+        // Every call kill() issues is scoped to A: the ps filters carry A's lease, and nothing
+        // in any argv names B — not B's token, names, or ids.
+        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(late.every((a) => !touchesB(a))).toBe(true);
+        // B's fleet survives on the daemon: containers and network all still there.
+        expect(d.containers.has(containerName(attemptB))).toBe(true);
+        expect(d.containers.has(serviceContainerName(attemptB, 'stub'))).toBe(true);
+        expect(d.networks.has(networkName(attemptB))).toBe(true);
+
+        // B finishes its run under its own verdict — and A's runner child winds down too:
+        // its run never settles otherwise, and the job-timeout timer armed at its spawn would
+        // hold the worker's event loop open for the full timeout.
+        spawnB.fires[0]!('close', 0);
+        await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
+        spawnA.fires[0]!('close', 137);
+        await expect(runA).resolves.toMatchObject({ exitCode: 137, started: true });
+    });
+
+    // Same job id, different attempts: every name either attempt computes carries its own
+    // token, so no name conflicts and no attempt can compute another's names. The fence is
+    // what removes a previous attempt's leftovers when it runs — here seeded as A's leftover
+    // runner and service container, still existing when B starts.
+    it('computes disjoint names per attempt for the same job id, and fences the previous attempt\'s leftovers by label', async () => {
+        // The pure argv half: the names differ for the same job id.
+        expect(containerName(attemptB)).not.toBe(containerName(attemptA));
+        expect(networkName(attemptB)).not.toBe(networkName(attemptA));
+        expect(serviceContainerName(attemptB, 'stub')).not.toBe(serviceContainerName(attemptA, 'stub'));
+
+        // A's leftovers still exist on the daemon when B's run starts.
+        const d = scriptedDaemon(READOUT);
+        d.containers.set(containerName(attemptA), { 'factory.job': job.id, 'factory.lease': ATTEMPT_A });
+        d.containers.set(serviceContainerName(attemptA, 'stub'), {
+            'factory.job': job.id,
+            'factory.lease': ATTEMPT_A,
+            'factory.service': 'stub',
+        });
+
+        const { fn, seen } = spawnRecording('ran\n', 0);
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            fn,
+            d.exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+        );
+        await runner.run(attemptB, { id: SESSION, resume: false });
+
+        // The fence removed both of A's leftovers by label.
+        expect(d.containers.has(containerName(attemptA))).toBe(false);
+        expect(d.containers.has(serviceContainerName(attemptA, 'stub'))).toBe(false);
+        // And B's own spawn argv is B-scoped: no name A could have been holding.
+        const spawnedArgv = seen[0]!;
+        expect(spawnedArgv[spawnedArgv.indexOf('--name') + 1]).toBe(containerName(attemptB));
+    });
+
+    // The fence is the only job-scoped sweep, and this is its full inventory: every labeled
+    // container of the job regardless of which attempt made it, every labeled network, and —
+    // transitional — the legacy unlabeled network the pre-redesign name scheme left behind.
+    // Anything not this job's is left alone.
+    it('fences every leftover of the job by label — containers, networks, and the legacy network — and nothing else', async () => {
+        const oldA = { ...job, leaseToken: 'aaaaaaaa-1111-4111-8111-111111111111' };
+        const oldB = { ...job, leaseToken: 'bbbbbbbb-2222-4222-8222-222222222222' };
+        const d = scriptedDaemon(READOUT);
+        d.containers.set(containerName(oldA), { 'factory.job': job.id, 'factory.lease': oldA.leaseToken });
+        d.containers.set(serviceContainerName(oldB, 'stub'), {
+            'factory.job': job.id,
+            'factory.lease': oldB.leaseToken,
+            'factory.service': 'stub',
+        });
+        d.containers.set('someone-elses-runner', { 'factory.job': '99999999-9999-4999-8999-999999999999' });
+        d.networks.set(networkName(oldA), { 'factory.job': job.id, 'factory.lease': oldA.leaseToken });
+        // The legacy name: created before the token joined the name, carrying no labels at all.
+        d.networks.set(`factory-job-${job.id}-services`, {});
+
+        // The fence runs before anything is created; the readout is the first call after it,
+        // so snapshotting there is snapshotting the fence's outcome.
+        let afterFence: { containers: string[]; networks: string[] } | null = null;
+        const exec = async (args: string[]) => {
+            const answer = await d.exec(args);
+            if (!afterFence && args[0] === 'run' && args.includes('--entrypoint')) {
+                afterFence = { containers: [...d.containers.keys()], networks: [...d.networks.keys()] };
+            }
+            return answer;
+        };
+        const { fn } = spawnRecording('ran\n', 0);
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            fn,
+            exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+        );
+        await runner.run(attemptB, { id: SESSION, resume: false });
+
+        // All four leftovers are gone; the other job's container is not this fence's business.
+        expect(afterFence!.containers.sort()).toEqual(['someone-elses-runner']);
+        expect(afterFence!.networks).toEqual([]);
     });
 
     it('leaves the daemon alone when the switch is off', async () => {
@@ -1481,7 +1781,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls.every((a) => a[0] !== 'ps' && a[0] !== 'network')).toBe(true);
+        // The fence is the runner's, not the services feature's, so its label and network
+        // sweeps still run — but nothing services-specific happens: no readout, no network
+        // create, no service containers, byte-identical runner argv.
+        expect(calls.every((a) => !(a[0] === 'network' && a[1] === 'create'))).toBe(true);
+        expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
+        expect(calls.every((a) => !(a[0] === 'run' && a.includes('--entrypoint')))).toBe(true);
         expect(seen[0]).toEqual(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }));
     });
 });

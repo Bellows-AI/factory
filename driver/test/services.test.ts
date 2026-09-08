@@ -404,19 +404,29 @@ describe('the bellows readout arguments', () => {
 });
 
 describe('the service container arguments', () => {
-    it('names the per-job network after the job', () => {
-        expect(networkName(job)).toBe('factory-job-11111111-1111-4111-8111-111111111111-services');
+    /*
+     * The naming contract every helper here obeys: a name is derived from the job id AND the
+     * lease token, and the token is minted fresh on every claim and never repeats. So a stale
+     * attempt can compute the names it used, but those names can only ever resolve to the
+     * resources its own attempt created — structurally, no ownership gate needed.
+     */
+    it('names the network after the job and the attempt', () => {
+        expect(networkName(job)).toBe(
+            'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-services',
+        );
     });
 
-    it('names the service container after the job and the service', () => {
+    it('names the service container after the job, the attempt, and the service', () => {
         expect(serviceContainerName(job, 'cache')).toBe(
-            'factory-job-11111111-1111-4111-8111-111111111111-svc-cache',
+            'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-svc-cache',
         );
     });
 
     it('starts a detached container on the job network, aliased by service name', () => {
         // The alias is the whole point: inside the job's network, `cache` resolves to this
-        // container, which is what makes `redis://cache:6379` work in the author's tests.
+        // container, which is what makes `redis://cache:6379` work in the author's tests. The
+        // lease label beside the job label is what scopes every teardown and kill to this
+        // attempt's fleet — the job label alone is shared by every attempt of the job.
         const line = serviceRunArgs(job, {
             name: 'cache',
             image: 'redis',
@@ -429,6 +439,8 @@ describe('the service container arguments', () => {
             serviceContainerName(job, 'cache'),
             '--label',
             `factory.job=${job.id}`,
+            '--label',
+            `factory.lease=${job.leaseToken}`,
             '--label',
             'factory.service=cache',
             '--network',

@@ -169,7 +169,16 @@ export function reportTail(logText: string): string {
     return tailBytes(logText, REPORT_BYTE_LIMIT);
 }
 
-export const containerName = (job: BoardJob): string => `factory-job-${job.id}`;
+/**
+ * The runner container's name — one per ATTEMPT. The naming contract every per-attempt
+ * operation in this file relies on: the lease token is minted fresh on every claim and never
+ * repeats, so a name can only ever resolve to the container the attempt that computed it
+ * created. A stale attempt can compute the name it used, but that name is structurally incapable
+ * of addressing a replacement attempt's runner — which is why its kill, its verdict cleanup and
+ * its teardown need no ownership gate. The one job-scoped identifier is the `factory.job` label,
+ * and the only thing allowed to act on it is the re-claim fence.
+ */
+export const containerName = (job: BoardJob): string => `factory-job-${job.id}-${job.leaseToken}`;
 
 /**
  * The session database opencode writes under XDG_DATA_HOME, as the runner sets it: one directory
@@ -321,9 +330,16 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         'run',
         '--name',
         containerName(job),
-        // Lets `docker ps --filter label=factory.job` find a runner that outlived its driver.
+        // Two labels, two jobs. `factory.job` is shared by every attempt of the job: it is what
+        // `docker ps --filter label=factory.job` finds a runner that outlived its driver by, and
+        // what the re-claim fence sweeps by — the one identifier every attempt shares.
+        // `factory.lease` is this attempt's alone, and it is what scopes every per-attempt
+        // operation (kill, teardown, cleanup) to this attempt's containers: a stale attempt's
+        // filters can only ever resolve its own fleet, never a replacement's.
         '--label',
         `factory.job=${job.id}`,
+        '--label',
+        `factory.lease=${job.leaseToken}`,
         '-e',
         // The AUTHOR's checkouts sit one directory down. A command-only job names no repo, so the
         // agent starts at the root of that person's workspace and can see everything they selected
@@ -467,60 +483,46 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * sibling claim would either be aborted by a kill meant for the other, or — wiping the marker
      * on entry, as this once did — revive the killed attempt to compete for the same network and
      * containers. Tokens never repeat, so the set only ever grows, by one entry per lost lease.
+     *
+     * This set is EFFICIENCY and early abort, not correctness: every daemon call any path issues
+     * is scoped to its own attempt — by the lease label in its filters and the token in its
+     * names — so a dying setup could issue every call it has and still never touch a sibling
+     * attempt's resources. What the checks buy is that a dying setup stops CREATING: it does not
+     * go on building a network, starting services and spawning a runner over a lease that is
+     * already gone.
      */
     const killed = new Set<BoardJob['leaseToken']>();
-    /*
-     * The newest attempt's lease token per job id. Like `killed`, it is never cleaned: a newer
-     * attempt for the same job SUPERSEDES the older one, so the older entry can never become
-     * current again — only a fresh claim writes here, and tokens never repeat. This is the
-     * natural-close complement of the `killed` set: after a lease expires the board re-claims
-     * the job before any heartbeat has told the loop the lease is lost, so the older attempt is
-     * never killed — yet it is no longer the attempt whose fleet lives under the job's names.
-     */
-    const currentAttempt = new Map<BoardJob['id'], BoardJob['leaseToken']>();
-    /*
-     * kill()'s ownership test, shared by its entry gate and the predicate handed to its
-     * teardown: the attempt owns the job's names while it is the newest one recorded for the
-     * id, and absence counts as owning — a kill for an attempt this process never ran has no
-     * replacement to protect. Only a recorded DIFFERENT token is a supersession; tokens
-     * never repeat, so the comparison can never alias an older attempt.
-     */
-    const ownsOrAbsent = (attempt: BoardJob): boolean => {
-        const live = currentAttempt.get(attempt.id);
-        return live === undefined || live === attempt.leaseToken;
-    };
     /**
-     * Removes every service container this job labeled and the job's network. It runs twice with
-     * the same body: as the re-claim FENCE before anything is created (a dead previous attempt
-     * leaves its fleet behind — the same leftover the runner container's rm catches, one layer
-     * out) and as the TEARDOWN after a run. Idempotent by construction: every removal tolerates
-     * the thing already being gone.
+     * Tears down THIS attempt's services and network — and, by construction, nothing else. The
+     * `ps` filters carry this attempt's lease token beside the job id, and the network it removes
+     * is named after the token too, so every call here resolves only to resources this attempt
+     * created. That is what makes it safe to run UNCONDITIONALLY, from every closing path: a
+     * close that lands late, a kill that lands after a replacement claim stood its own fleet up,
+     * a spawn error racing a newer attempt's setup — none of them can NAME anything but this
+     * attempt's own fleet, so none of them needs an ownership gate. Daemon calls are arbitrarily
+     * slow and attempts can supersede each other mid-call; attempt scoping is what holds at
+     * execution time, because it is not a snapshot but a property of the argv itself.
      *
-     * `owns` re-arms the entry gate between the awaited steps. Daemon calls are arbitrarily
-     * slow, so a gate checked once at entry is only a snapshot: a replacement claim can
-     * supersede this attempt while the teardown sits between its `ps` and its removals, and by
-     * then the job-derived label and network name already refer to the REPLACEMENT's fleet.
-     * Checked before each removal, the answer holds at the EXECUTION time of every daemon step,
-     * and a flipped answer stops the teardown where it stands — whatever this attempt left
-     * behind is the replacement's fence's business. The FENCE passes no predicate: it is the
-     * cleaner of stale fleets and cannot itself be stale. kill() and the spawn-error path
-     * below pass a live predicate, because each of their entry gates is only a snapshot over
-     * daemon calls that are arbitrarily slow — kill()'s sits between its gate and this
-     * teardown — so ownership is re-checked here, at execution time; the verdict gates at
-     * its own entry, before this teardown is ever reached.
+     * Every removal tolerates the thing already being gone, which makes the whole teardown
+     * idempotent — it runs twice per attempt by design, as the fence's service half before the
+     * run and as the teardown after it.
      */
-    const serviceTeardown = async (job: BoardJob, owns: () => boolean = () => true): Promise<void> => {
+    const serviceTeardown = async (job: BoardJob): Promise<void> => {
         if (!config.servicesEnabled) return;
-        const found = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`, '--filter', 'label=factory.service']).catch(
-            () => ({ stdout: '' }),
-        );
-        if (!owns()) return;
+        const found = await execDocker([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            `label=factory.lease=${job.leaseToken}`,
+            '--filter',
+            'label=factory.service',
+        ]).catch(() => ({ stdout: '' }));
         const ids = found.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
         for (const id of ids) {
-            if (!owns()) return;
             await execDocker(['rm', '-f', id]).catch(() => undefined);
         }
-        if (!owns()) return;
         await execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
     };
 
@@ -531,32 +533,30 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         // is recorded — a sibling attempt of the same job carries a different token and must
         // not read this one's cancellation.
         killed.add(job.leaseToken);
-        // A SUPERSEDED attempt — a replacement claim has already run its fence and stood its
-        // own fleet up — must not touch the daemon at all. The container name and the service
-        // label are derived from the job id, so by the time this kill fires they can only
-        // refer to the REPLACEMENT's runner and fleet: a kill by that name, or a job-scoped
-        // teardown, would destroy the live attempt out from under its runner, and the fence
-        // that could reclaim the leftovers has already run. Whatever this attempt left behind
-        // is the replacement's fence's business, the same doctrine the verdict's gate applies.
-        // The test is ownsOrAbsent — absence-tolerant, because a kill for an attempt this
-        // process never ran has no replacement to protect. Timeout, idle and ordinary
-        // lost-lease kills all fire while the attempt is still current, and take the path
-        // below unchanged.
-        if (!ownsOrAbsent(job)) return;
         // Killing the `docker run` process would only detach the CLI; the container keeps running
-        // and the workspace keeps being written to. The daemon has to be told. The declared
-        // services go with it: a killed job's database has no reason to outlive the job, and the
-        // close handler's teardown would catch them anyway — this is so a kill while nothing is
-        // reading the outcome (lost lease, shutdown) still reclaims them.
-        await execDocker(['kill', containerName(job)]).catch(() => undefined);
-        // The gate above is a snapshot, and the kill between it and this teardown is a daemon
-        // call of arbitrary length: a replacement claim landing inside that window supersedes
-        // this attempt and stands its fleet up under the same job-derived names, so by
-        // teardown time the label and the network name can already refer to the REPLACEMENT's
-        // fleet. The same test therefore travels into the teardown as a live predicate —
-        // ownership must hold at the teardown's EXECUTION time, and its first boundary stops
-        // a superseded kill before any removal.
-        await serviceTeardown(job, () => ownsOrAbsent(job));
+        // and the workspace keeps being written to. The daemon has to be told — by ID, resolved
+        // through this attempt's own lease label, never by name: a kill that resolved a
+        // job-derived name would address whatever owns that name at daemon-execution time, and
+        // names are attempt-scoped now precisely so no such ambiguity exists. The label pair
+        // (job, lease) resolves to this attempt's containers alone; a stale kill that finds
+        // nothing has nothing of its own left to kill.
+        const found = await execDocker([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            `label=factory.lease=${job.leaseToken}`,
+        ]).catch(() => ({ stdout: '' }));
+        for (const id of found.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
+            await execDocker(['kill', id]).catch(() => undefined);
+        }
+        // The declared services go with the runner: a killed job's database has no reason to
+        // outlive the job, and the close handler's teardown would catch them anyway — this is so
+        // a kill while nothing is reading the outcome (lost lease, shutdown) still reclaims them.
+        // Attempt-scoped, like every teardown: whatever a replacement attempt is running is
+        // invisible to these filters.
+        await serviceTeardown(job);
     };
 
     return {
@@ -570,25 +570,46 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         },
 
         async run(job, session, onOutput) {
-            // Recorded at entry, before the fence: from here on, this attempt is the newest one
-            // for the job id, and any older attempt still closing learns it in its verdict. See
-            // currentAttempt above.
-            currentAttempt.set(job.id, job.leaseToken);
-
             // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
             // token that was never recorded, so nothing recorded for an earlier attempt can
             // reach this one — and clearing by id would revive exactly the dead attempt the
             // token keying exists to keep down. See the killed set above.
 
-            // The re-claim fence, the docker twin of the kubernetes runner's delete-before-create:
-            // the container name is derived from the job id, so anything already holding it is a
-            // leftover of a previous attempt — a driver that died before it could kill its runner,
-            // which is what a compose restart does. This claim exists only because that attempt's
-            // lease is gone, so removing the leftover delivers the same verdict its heartbeat would
-            // have, had the driver survived to receive it. Without this the next attempt dies on
-            // the name conflict (docker exit 125) and the job terminal-fails blaming a command
-            // that never ran.
-            await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+            /*
+             * The re-claim fence — the ONLY job-scoped sweep this runner performs, and the one
+             * component allowed to be job-scoped: it runs BEFORE this attempt creates anything,
+             * so whatever it finds is by construction a previous attempt's leftover. Names are
+             * attempt-scoped now, so no name can find a previous attempt's leftovers — the
+             * `factory.job` label is the one identifier every attempt of the job shares, and the
+             * sweep is by label: every leftover container (runners and services alike), then
+             * every leftover network. This claim exists only because those attempts' leases are
+             * gone, so removing them delivers the same verdict their heartbeats would have, had
+             * the driver survived to receive it — and the alternative to leaving a live leftover
+             * runner running is two writers on one checkout, which is the thing actually worth
+             * preventing.
+             */
+            const leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]).catch(
+                () => ({ stdout: '' }),
+            );
+            for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
+                await execDocker(['rm', '-f', id]).catch(() => undefined);
+            }
+            const staleNetworks = await execDocker([
+                'network',
+                'ls',
+                '--filter',
+                `label=factory.job=${job.id}`,
+                '--format',
+                '{{.Name}}',
+            ]).catch(() => ({ stdout: '' }));
+            for (const name of staleNetworks.stdout.split('\n').map((name) => name.trim()).filter(Boolean)) {
+                await execDocker(['network', 'rm', name]).catch(() => undefined);
+            }
+            // TRANSITIONAL: networks created before the lease token joined the name carry no
+            // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
+            // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
+            // can exist any more.
+            await execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
 
             /*
              * Auxiliary services (issue #6): read the checkouts' .bellows.yaml, then network and
@@ -609,27 +630,33 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             /*
              * A kill that lands while this setup is awaiting the daemon must stop the attempt.
              * Throwing loses nothing: the loop discards a lost-lease outcome, and the next
-             * attempt's fence removes whatever was already created — what it must not do is go
-             * on creating the network, starting services and spawning the runner for a lease
-             * this driver no longer holds, colliding with the next attempt. So the flag is
-             * checked after every awaited step below, and once more after the claim-env file
-             * write — the last await before the spawn — so the gap between that final check
-             * and spawnFn is synchronous, and nothing can land inside it unobserved.
+             * attempt's fence removes whatever was already created. Correctness does not depend
+             * on these checks — every daemon call this setup could go on to issue is scoped to
+             * this attempt's own lease, so running to completion could not touch a sibling
+             * attempt's resources. What they buy is that a dying attempt stops CREATING: it does
+             * not go on to the network, the services and the runner spawn over a lease this
+             * driver no longer holds. So the flag is checked after every awaited step below, and
+             * once more after the claim-env file write — the last await before the spawn — so
+             * the gap between that final check and spawnFn is synchronous, and nothing can land
+             * inside it unobserved.
              *
-             * The abort is deliberately teardown-FREE. kill() ran the job-scoped teardown when
-             * the lease was lost; anything THIS attempt created after that point is a leftover,
-             * and leftovers belong to the NEXT attempt's fence — the one component that can
-             * safely distinguish them from a live fleet, because it runs BEFORE the newer
-             * attempt creates anything. A teardown fired from this dying attempt has no such
-             * timing guarantee: overlapping a newer attempt's setup, it would delete the
-             * network and service containers the newer attempt is already using, and its
-             * runner spawn would fail with its fleet gone.
+             * The abort is deliberately teardown-FREE. kill() ran the attempt-scoped teardown
+             * when the lease was lost; anything THIS attempt created after that point is a
+             * leftover, and leftovers belong to the NEXT attempt's fence — the one sweep that
+             * runs BEFORE the newer attempt creates anything, so it can tell a dead attempt's
+             * leftovers from a live fleet. A teardown fired from this dying attempt would be
+             * harmless (attempt-scoped) but redundant, and it would only hold up the rejection
+             * the loop is waiting for.
              */
             const assertNotKilled = async (): Promise<void> => {
                 if (!killed.has(job.leaseToken)) return;
                 throw new Error(`job ${job.id}: killed while setting up services`);
             };
             if (config.servicesEnabled) {
+                // The fence's service half. Everything job-scoped is already gone, and this
+                // attempt has created nothing yet, so this is a no-op by construction — kept
+                // because it makes "the fleet starts clean" hold by the same attempt-scoped code
+                // that enforces it at teardown, not by the fence's special-casing.
                 await serviceTeardown(job);
                 let raw: string;
                 try {
@@ -647,10 +674,21 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 }
                 if (specs.length) {
                     servicesNetwork = networkName(job);
-                    // The fence already removed a stale network; a create over the fresh name
-                    // cannot collide.
+                    // The fence already swept the job's stale networks, and this name carries
+                    // this attempt's own token — a create here cannot collide with anything.
                     try {
-                        await execDocker(['network', 'create', servicesNetwork]);
+                        // Labeled like everything else the attempt creates: factory.job is
+                        // what the next attempt's fence sweeps networks by, factory.lease
+                        // what scopes the teardown's removal to this attempt's own.
+                        await execDocker([
+                            'network',
+                            'create',
+                            '--label',
+                            `factory.job=${job.id}`,
+                            '--label',
+                            `factory.lease=${job.leaseToken}`,
+                            servicesNetwork,
+                        ]);
                     } catch (e) {
                         throw new Error(`could not create the services network: ${(e as Error).message}`);
                     }
@@ -722,19 +760,14 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
                     // The services outlive the runner by one teardown: the author's tests may
                     // have left their database mid-write, and nothing reads the workspace after
-                    // the runner is gone, so nothing needs them anymore. SKIPPED when this
-                    // attempt is no longer the live one under the job's names. Two ways there:
-                    // its kill() already fired — kill ran this job-scoped teardown while the
-                    // fleet was still legitimately this attempt's own — or a replacement claim
-                    // started WITHOUT any kill, which is the ordinary lease-expiry race: the
-                    // heartbeat has not delivered 'lost' yet, so `killed` holds nothing, but the
-                    // newer attempt owns the job-scoped names now. Either way, everything the
-                    // label finds now was created by the replacement, and a close that lands
-                    // late (daemon slowness makes them arbitrarily late) must not delete that
-                    // live fleet out from under its runner; the leftovers rule is the next
-                    // attempt's fence, and the fence has already run by the time this close
-                    // lands.
-                    if (!killed.has(job.leaseToken) && currentAttempt.get(job.id) === job.leaseToken) await serviceTeardown(job);
+                    // the runner is gone, so nothing needs them anymore. UNCONDITIONAL, and safe
+                    // unconditionally: the teardown is scoped to this attempt's lease, so a
+                    // close that lands arbitrarily late — after a kill, after a replacement
+                    // claim stood its own fleet up — can only ever name and remove what THIS
+                    // attempt created. No knowledge of who claimed what in between is needed,
+                    // and none would be reliable anyway: daemon calls are arbitrarily slow, and
+                    // any snapshot of "who is current" is stale by the time it is checked.
+                    await serviceTeardown(job);
                     return { exitCode: code, output, timedOut, idled, started };
                 };
 
@@ -799,31 +832,18 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 child.on('error', (error) => {
                     spawnFailed = true;
                     done();
-                    // The spawn itself failed (docker missing, exec blew up). When this attempt
-                    // is still the live one under the job's names, whatever services were
-                    // started before it are torn down BEFORE the rejection lands: teardown
+                    // The spawn itself failed (docker missing, exec blew up). Whatever services
+                    // were started before it are torn down BEFORE the rejection lands — teardown
                     // tolerates absence, so either way a rejection means cleanup is as done as
-                    // it gets — a rejection that raced an unobserved teardown would let process
-                    // shutdown or the next lifecycle step run while the removals are still in
-                    // flight. SUPERSEDED — a replacement claim has already stood its fleet up
-                    // under the same job-derived label and network name — the teardown is
-                    // skipped and the rejection is immediate: the label ps and the network rm
-                    // run at teardown time and would delete the replacement's live fleet, and
-                    // whatever this attempt left behind is the replacement's fence's business.
-                    // The same race exists MID-TEARDOWN, which the entry check alone cannot
-                    // see: B can claim while the teardown sits between its ps and its removals.
-                    // So the gate travels into the teardown as a live predicate, re-armed
-                    // before every daemon step (see serviceTeardown) — ownership must hold at
-                    // the execution time of each removal, because daemon calls are arbitrarily
-                    // slow — and either way the rejection waits for the teardown's verdict.
-                    if (currentAttempt.get(job.id) === job.leaseToken) {
-                        serviceTeardown(job, () => currentAttempt.get(job.id) === job.leaseToken).then(
-                            () => reject(error),
-                            () => reject(error),
-                        );
-                    } else {
-                        reject(error);
-                    }
+                    // it gets, and the rejection waits for the teardown's verdict. The teardown
+                    // is attempt-scoped, so no supersession check is needed: even if a
+                    // replacement claim landed while this attempt was failing, the filters carry
+                    // this attempt's lease and the network is named after it — the teardown
+                    // cannot reach the replacement's fleet.
+                    serviceTeardown(job).then(
+                        () => reject(error),
+                        () => reject(error),
+                    );
                 });
                 child.on('close', (code) => {
                     // The error handler owns this failure and its rejection is already deferred

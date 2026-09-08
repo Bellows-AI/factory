@@ -194,11 +194,19 @@ describe('the runner job spec', () => {
         expect(spec().spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 
-    // The same label the docker runner passes as --label: what lets `kubectl get jobs -l
-    // factory.job=<id>` find a runner that outlived its driver.
+    // The same labels the docker runner passes as --label: factory.job is what lets `kubectl
+    // get jobs -l factory.job=<id>` find a runner that outlived its driver — and what the
+    // re-claim fence sweeps by; factory.lease scopes every per-attempt operation to its own
+    // attempt's objects, the same split as the docker runner's two labels.
     it('labels the pod so an orphan can be found after the driver dies', () => {
-        expect(spec().spec.template.metadata.labels).toMatchObject({ 'factory.job': job.id });
-        expect(spec().metadata.labels).toMatchObject({ 'factory.job': job.id });
+        expect(spec().spec.template.metadata.labels).toMatchObject({
+            'factory.job': job.id,
+            'factory.lease': job.leaseToken,
+        });
+        expect(spec().metadata.labels).toMatchObject({
+            'factory.job': job.id,
+            'factory.lease': job.leaseToken,
+        });
     });
 
     // Every runner pod would otherwise auto-mount the driver's own ServiceAccount token — the
@@ -250,6 +258,9 @@ const podName = `${containerName(job)}-xxxxx`;
 
 const FAKE: Record<string, unknown> = {
     create: { status: 201, body: '{}' },
+    // The fence: a deleteCollection over the job's label, then a list that answers empty.
+    fenceDelete: { status: 200, body: '{}' },
+    fenceList: { status: 200, body: '{"items":[]}' },
     job: { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) },
     failed: {
         status: 200,
@@ -279,12 +290,18 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     const request: K8sRequest = (method, path, body) => {
         calls.push({ method, path, body });
         if (path === jobsPath(namespace) && method === 'POST') return Promise.resolve(answers.create as K8sResponse);
+        if (path.startsWith(`${jobsPath(namespace)}?`)) {
+            if (method === 'DELETE') return Promise.resolve(answers.fenceDelete as K8sResponse);
+            return Promise.resolve(answers.fenceList as K8sResponse);
+        }
         if (path === secretsPath) {
             if (method === 'DELETE') return Promise.resolve(answers.secretDelete as K8sResponse);
             return Promise.resolve(answers.secretCreate as K8sResponse);
         }
         if (path.startsWith(`${secretsPath}/`)) return Promise.resolve(answers.secretDelete as K8sResponse);
-        if (path === jobPath(namespace, containerName(job))) return Promise.resolve(answers.job as K8sResponse);
+        // Any attempt's Job: names carry the lease token now, so a run's own status poll targets
+        // a path built from ITS token, not the fixture job's.
+        if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.resolve(answers.job as K8sResponse);
         if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
             return Promise.resolve(answers.pods as K8sResponse);
         }
@@ -299,12 +316,23 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
 const runner = (request: K8sRequest) => createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), request, async () => {});
 
 describe('the kubernetes runner', () => {
-    it('creates the job in the configured namespace and reports success', async () => {
+    it('sweeps the job label, then creates the job in the configured namespace and reports success', async () => {
         const { request, calls } = fakeRequest();
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
-        expect(calls[0]).toEqual({ method: 'POST', path: jobsPath(namespace), body: expect.anything() });
-        expect(calls.some((call) => call.path === jobPath(namespace, containerName(job)))).toBe(true);
+        // The fence is the first thing the run does: a label sweep of the job's previous
+        // attempts, before this one creates anything.
+        expect(calls[0]).toEqual({ method: 'DELETE', path: expect.stringContaining(jobsPath(namespace)) });
+        expect(calls[0].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
+        expect(calls[0].path).toContain('propagationPolicy=Foreground');
+        expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
+            `DELETE ${jobsPath(namespace)}`,
+            `GET ${jobsPath(namespace)}`,
+            `POST ${jobsPath(namespace)}`,
+            `GET ${jobPath(namespace, containerName(job))}`,
+            'GET /api/v1/namespaces/factory/pods',
+            `GET /api/v1/namespaces/factory/pods/${podName}/log`,
+        ]);
         expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
     });
 
@@ -445,6 +473,12 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
             if (path === jobPath(namespace, containerName(job))) {
                 gets += 1;
                 // First poll: still running, and worth a look at the log. Second: done.
@@ -482,6 +516,12 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
             if (path === jobPath(namespace, containerName(job))) {
                 gets += 1;
                 return Promise.resolve(
@@ -506,27 +546,32 @@ describe('the kubernetes runner', () => {
     });
 
     /*
-     * A job id is only reused when a lease expired and the row was reclaimed — and the leftover Job
-     * object from the first attempt may still exist. Replacing it is the fencing mechanism: two
-     * writers on one checkout is the thing actually worth preventing (docs/jobs.md).
+     * A job id is only reused when a lease expired and the row was reclaimed — and the leftover
+     * Job objects of the previous attempts may still exist. Sweeping them by label before
+     * creating is the fencing mechanism: two writers on one checkout is the thing actually
+     * worth preventing (docs/jobs.md). The sweep is by LABEL, not by name — attempt-scoped Job
+     * names would make a name-targeted delete miss every previous attempt.
      */
-    it('replaces a leftover job object on a re-claim, waiting for the name to free', async () => {
+    it('sweeps leftover jobs by label before creating, and waits for the sweep to land', async () => {
         const calls: Call[] = [];
-        let posts = 0;
-        let jobGets = 0;
-        const request: K8sRequest = (method, path, body) => {
-            calls.push({ method, path, body });
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                posts += 1;
-                return Promise.resolve(posts === 1 ? { status: 409, body: '{}' } : { status: 201, body: '{}' });
+        let lists = 0;
+        const request: K8sRequest = (method, path) => {
+            calls.push({ method, path });
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
             }
-            if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                lists += 1;
+                // First read after the delete: the old Jobs are still being reaped. Second:
+                // the empty list that frees the checkout. Everything after is the NEW Job's
+                // own status poll.
+                if (lists === 1) return Promise.resolve({ status: 200, body: JSON.stringify({ items: [{}] }) });
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             if (path === jobPath(namespace, containerName(job))) {
-                jobGets += 1;
-                // First read after the delete: the old Job is still being reaped. Second: the 404
-                // that frees the name. Everything after is the NEW Job's own status poll.
-                if (jobGets === 1) return Promise.resolve({ status: 200, body: JSON.stringify({ status: {} }) });
-                if (jobGets === 2) return Promise.resolve({ status: 404, body: '{}' });
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
@@ -539,11 +584,10 @@ describe('the kubernetes runner', () => {
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
         expect(outcome.exitCode).toBe(0);
-        // DELETE, then GETs until the object is really gone, and only then the re-POST. Foreground
-        // propagation starts the teardown; the 404 is what proves the old pods are off the
-        // checkout — the delete's own response does not wait for them.
+        // DELETE by label, then LISTs until nothing answers the selector, and only then the
+        // create. Foreground propagation starts the teardown; the empty list is what proves the
+        // old pods are off the checkout — the delete's own response does not wait for them.
         expect(calls.map((call) => call.method)).toEqual([
-            'POST',
             'DELETE',
             'GET',
             'GET',
@@ -552,27 +596,43 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
         ]);
-        expect(calls[1].path).toContain(`jobs/${containerName(job)}`);
-        expect(calls[1].path).toContain('propagationPolicy=Foreground');
+        expect(calls[0].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
+        expect(calls[0].path).toContain('propagationPolicy=Foreground');
     });
 
-    // A re-claim that never gets its 404 — an apiserver losing deletes, say — must not loop
-    // forever heartbeating a lease around a create that keeps 409ing. Bounded, then thrown: the
-    // job goes back to the board rather than two writers racing one checkout.
-    // The env Secret this run creates precedes its first Job POST — and must SURVIVE the 409
-    // fence: the replacement Job references it by name, and a deleted one would start the pod
-    // silently without its claim env. The fence deletes the leftover JOB and nothing else — with
-    // the lease token in the Secret's name, there is no previous attempt's Secret at this name.
-    it('keeps the freshly created Secret across the 409 fence', async () => {
+    // A re-claim whose sweep never lands — an apiserver losing deletes, say — must not loop
+    // forever heartbeating a lease around a create that would run alongside leftovers. Bounded,
+    // then thrown: the job goes back to the board rather than two writers racing one checkout.
+    it('gives up when the swept leftover jobs never disappear', async () => {
+        const request: K8sRequest = (method, path) => {
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [{}] }) });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /never disappeared/,
+        );
+    });
+
+    // The env Secret this run creates precedes its first Job POST — and must SURVIVE the fence:
+    // the Job references it by name, and a deleted one would start the pod silently without its
+    // claim env. The fence sweeps JOBS by label and nothing else — and the Secret's name carries
+    // this attempt's own lease token, so there is no previous attempt's Secret at this name.
+    it('keeps the freshly created Secret across the label fence', async () => {
         const calls: Call[] = [];
-        let posts = 0;
-        let jobGets = 0;
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
             if (method === 'POST' && path === jobsPath(namespace)) {
-                posts += 1;
-                return Promise.resolve(posts === 1 ? { status: 409, body: '{}' } : { status: 201, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             if (path === secretsPath) {
                 if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
@@ -580,10 +640,10 @@ describe('the kubernetes runner', () => {
             }
             if (path.startsWith(`${secretsPath}/`)) return Promise.resolve({ status: 200, body: '{}' });
             if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
             if (path === jobPath(namespace, containerName(job))) {
-                jobGets += 1;
-                if (jobGets === 1) return Promise.resolve({ status: 200, body: JSON.stringify({ status: {} }) });
-                if (jobGets === 2) return Promise.resolve({ status: 404, body: '{}' });
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
@@ -601,16 +661,14 @@ describe('the kubernetes runner', () => {
         ).run(envJob, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
-        // Created once, before the FIRST Job POST.
+        // Created once, before the Job POST.
         const secretPosts = calls.filter((c) => c.method === 'POST' && c.path === secretsPath);
         expect(secretPosts).toHaveLength(1);
         expect(
             calls.findIndex((c) => c.method === 'POST' && c.path === secretsPath),
         ).toBeLessThan(calls.findIndex((c) => c.method === 'POST' && c.path === jobsPath(namespace)));
-        // And NOT deleted between the fence's Job delete and the replacement Job's POST.
-        const fenceDelete = calls.findIndex(
-            (c) => c.method === 'DELETE' && c.path?.includes('propagationPolicy=Foreground'),
-        );
+        // And NOT deleted between the fence's sweep and the Job POST.
+        const fenceDelete = calls.findIndex((c) => c.method === 'DELETE' && c.path?.includes('labelSelector='));
         const rePost = calls.findIndex(
             (c, i) => i > fenceDelete && c.method === 'POST' && c.path === jobsPath(namespace),
         );
@@ -618,23 +676,6 @@ describe('the kubernetes runner', () => {
             .slice(fenceDelete, rePost)
             .filter((c) => c.method === 'DELETE' && c.path?.includes('/secrets'));
         expect(secretDeletesInTheFence).toHaveLength(0);
-    });
-
-    it('gives up when the replaced job object never disappears', async () => {
-        const request: K8sRequest = (method, path) => {
-            if (method === 'POST' && path === jobsPath(namespace)) {
-                return Promise.resolve({ status: 409, body: '{}' });
-            }
-            if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-            if (path === jobPath(namespace, containerName(job))) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ status: {} }) });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
-
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /never disappeared/,
-        );
     });
 
     // The board refuses a complete POST that does not fit its body limit — an oversized report
@@ -671,6 +712,12 @@ describe('the kubernetes runner', () => {
             if (path === jobsPath(namespace) && method === 'POST') {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
             if (path === jobPath(namespace, containerName(job))) {
                 gets += 1;
                 if (gets <= 2) return Promise.resolve({ status: 503, body: 'unavailable' });
@@ -696,6 +743,12 @@ describe('the kubernetes runner', () => {
         const request: K8sRequest = (method, path) => {
             if (path === jobsPath(namespace) && method === 'POST') {
                 return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
             if (path === jobPath(namespace, containerName(job))) {
                 gets += 1;
@@ -750,6 +803,12 @@ describe('the kubernetes runner', () => {
         const request: K8sRequest = (method, path) => {
             if (path === jobsPath(namespace) && method === 'POST') {
                 return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(script[served++] ?? outage());
@@ -849,6 +908,12 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+            }
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
@@ -875,6 +940,12 @@ describe('the kubernetes runner', () => {
         const request: K8sRequest = (method, path) => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);

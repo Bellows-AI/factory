@@ -23,7 +23,7 @@ The two implementations decide the same things and are pinned the same way:
 | Workspace | `-v factory-ai_workspaces:/workspaces`, `WORKDIR=<mount>/<org>/<uuid>` | PVC `<claim>` mounted at `<mount>`, same `WORKDIR` env |
 | Credentials | `-e NAME`, value read from the driver's own env | `valueFrom.secretKeyRef` against `RUNNER_CREDENTIALS_SECRET`, one key per `RUNNER_ENV` name |
 | Claim env | `-e NAME` merged in, value in the child env | `secretKeyRef` against a per-attempt Secret (`factory-job-<id>-<lease token>-env`), created before the Job, reaped with it |
-| Orphan visibility | `--label factory.job=<id>` | the same label on the Job and its pod template |
+| Orphan visibility | `--label factory.job=<id>` plus `--label factory.lease=<token>` | the same two labels on the Job and its pod template — job for the fence's sweep, lease to scope every per-attempt operation |
 | Timeout | the driver kills the container after `DRIVER_JOB_TIMEOUT_MS` | `activeDeadlineSeconds` = that value, enforced by the kubelet |
 | A failed run | the container exits, `--rm` cleans it | the pod terminates, `restartPolicy: Never`, `backoffLimit: 0`, object reaped by `ttlSecondsAfterFinished` |
 | What a runner must never hold | the docker socket (it does not) | a ServiceAccount token (`automountServiceAccountToken: false`) |
@@ -61,11 +61,15 @@ docker socket riding along with the dashboard, which `docs/security.md` refuses 
 reason. Runner pods set `automountServiceAccountToken: false`; the driver's own pod keeps its
 token and its namespace-scoped Role.
 
-**Re-claims fence by replacing.** A job id is only reused when a lease expired and the row was
-reclaimed, so a `409 AlreadyExists` on create means the previous attempt's Job object still
-exists. The runner deletes it and creates its own — the same rule the docker runner obeys when a
-409 heartbeat says *kill the container*: two writers on one checkout is the thing actually worth
-preventing. `docs/jobs.md` calls that the single most important line in the board contract.
+**Re-claims fence by sweeping.** Job names carry the lease token now, so a previous attempt's
+leftover Jobs sit under other names no delete of this attempt's could reach — the runner sweeps
+them by LABEL instead: a Foreground deleteCollection over `factory.job=<id>`, then a bounded
+list-until-empty, and only then the create. The sweep is the one job-scoped write this runner
+does, and it is safe because of when it runs: before this attempt creates anything, so everything
+it finds is a previous attempt's leftover. The alternative to leaving a live leftover Job running
+is two writers on one checkout, the thing actually worth preventing — the same rule the docker
+runner obeys with its label sweep. `docs/jobs.md` calls that the single most important line in
+the board contract.
 
 **Live output here is the pod log, re-read per poll.** The docker runner sees output as stream
 chunks; this platform has no equivalent attach, so the runner reads the pod log's tail on each
