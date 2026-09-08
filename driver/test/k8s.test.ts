@@ -258,7 +258,8 @@ const podName = `${containerName(job)}-xxxxx`;
 
 const FAKE: Record<string, unknown> = {
     create: { status: 201, body: '{}' },
-    // The fence: a deleteCollection over the job's label, then a list that answers empty.
+    // The fence: a label LIST that answers empty (nothing left to delete). fenceDelete stays
+    // only so an unexpected collection DELETE still gets an answer instead of a route miss.
     fenceDelete: { status: 200, body: '{}' },
     fenceList: { status: 200, body: '{"items":[]}' },
     job: { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) },
@@ -320,13 +321,11 @@ describe('the kubernetes runner', () => {
         const { request, calls } = fakeRequest();
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
-        // The fence is the first thing the run does: a label sweep of the job's previous
-        // attempts, before this one creates anything.
-        expect(calls[0]).toEqual({ method: 'DELETE', path: expect.stringContaining(jobsPath(namespace)) });
+        // The fence is the first thing the run does: a label LIST of the job's previous
+        // attempts — nothing deletable answers — before this one creates anything.
+        expect(calls[0]).toEqual({ method: 'GET', path: expect.stringContaining(jobsPath(namespace)) });
         expect(calls[0].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
-        expect(calls[0].path).toContain('propagationPolicy=Foreground');
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
-            `DELETE ${jobsPath(namespace)}`,
             `GET ${jobsPath(namespace)}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${jobPath(namespace, containerName(job))}`,
@@ -554,19 +553,34 @@ describe('the kubernetes runner', () => {
      */
     it('sweeps leftover jobs by label before creating, and waits for the sweep to land', async () => {
         const calls: Call[] = [];
+        const leftover = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
         let lists = 0;
         const request: K8sRequest = (method, path) => {
             calls.push({ method, path });
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 lists += 1;
-                // First read after the delete: the old Jobs are still being reaped. Second:
-                // the empty list that frees the checkout. Everything after is the NEW Job's
-                // own status poll.
-                if (lists === 1) return Promise.resolve({ status: 200, body: JSON.stringify({ items: [{}] }) });
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
+                // First read: the old Job is still listed. Second: gone. Everything after is
+                // the NEW Job's own status poll.
+                return Promise.resolve(
+                    lists === 1
+                        ? {
+                              status: 200,
+                              body: JSON.stringify({
+                                  items: [
+                                      {
+                                          metadata: {
+                                              name: leftover,
+                                              creationTimestamp: new Date(Date.now() - 10 * 60_000).toISOString(),
+                                          },
+                                      },
+                                  ],
+                              }),
+                          }
+                        : { status: 200, body: JSON.stringify({ items: [] }) },
+                );
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve({ status: 200, body: '{}' });
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
@@ -584,32 +598,33 @@ describe('the kubernetes runner', () => {
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
 
         expect(outcome.exitCode).toBe(0);
-        // DELETE by label, then LISTs until nothing answers the selector, and only then the
-        // create. Foreground propagation starts the teardown; the empty list is what proves the
-        // old pods are off the checkout — the delete's own response does not wait for them.
-        expect(calls.map((call) => call.method)).toEqual([
-            'DELETE',
-            'GET',
-            'GET',
-            'POST',
-            'GET',
-            'GET',
-            'GET',
-        ]);
+        // LIST finds the leftover by label, deletes it BY NAME with Foreground propagation,
+        // LISTs again — nothing deletable answers — and only then the create. Foreground
+        // propagation starts the teardown; the next list is what proves the old pods are off
+        // the checkout — the delete's own response does not wait for them.
+        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
         expect(calls[0].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
-        expect(calls[0].path).toContain('propagationPolicy=Foreground');
+        expect(calls[1].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // A re-claim whose sweep never lands — an apiserver losing deletes, say — must not loop
     // forever heartbeating a lease around a create that would run alongside leftovers. Bounded,
     // then thrown: the job goes back to the board rather than two writers racing one checkout.
-    it('gives up when the swept leftover jobs never disappear', async () => {
+    it('gives up when a deletable leftover job never disappears', async () => {
+        const leftover = {
+            metadata: {
+                name: 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner',
+                creationTimestamp: new Date(Date.now() - 10 * 60_000).toISOString(),
+            },
+        };
         const request: K8sRequest = (method, path) => {
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [leftover] }) });
             }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [{}] }) });
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                // Answered, and yet the object never leaves the list — the failure mode the
+                // bound exists for.
+                return Promise.resolve({ status: 200, body: '{}' });
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
@@ -667,15 +682,86 @@ describe('the kubernetes runner', () => {
         expect(
             calls.findIndex((c) => c.method === 'POST' && c.path === secretsPath),
         ).toBeLessThan(calls.findIndex((c) => c.method === 'POST' && c.path === jobsPath(namespace)));
-        // And NOT deleted between the fence's sweep and the Job POST.
-        const fenceDelete = calls.findIndex((c) => c.method === 'DELETE' && c.path?.includes('labelSelector='));
+        // And NOT deleted between the fence and the Job POST.
+        const fenceList = calls.findIndex((c) => c.method === 'GET' && c.path?.includes('labelSelector='));
         const rePost = calls.findIndex(
-            (c, i) => i > fenceDelete && c.method === 'POST' && c.path === jobsPath(namespace),
+            (c, i) => i > fenceList && c.method === 'POST' && c.path === jobsPath(namespace),
         );
         const secretDeletesInTheFence = calls
-            .slice(fenceDelete, rePost)
+            .slice(fenceList, rePost)
             .filter((c) => c.method === 'DELETE' && c.path?.includes('/secrets'));
         expect(secretDeletesInTheFence).toHaveLength(0);
+    });
+
+    /*
+     * The reported race: attempt A's fence DELETE is still in flight when A's lease expires and
+     * the board reclaims the job; replacement attempt B creates its Job under the same
+     * `factory.job` label. Kubernetes evaluates a selector at PROCESSING time, so A's delayed
+     * collection DELETE would foreground-delete B's active Job, and B's runner would abort on
+     * the vanished object. The fence therefore deletes BY NAME, and only objects whose
+     * creationTimestamp proves they predate the fence: a Job created after the fence began —
+     * the replacement's own — is never deleted and never waited on.
+     */
+    it("deletes only leftover jobs older than the fence, never a replacement's fresh Job", async () => {
+        const now = Date.now();
+        const oldName = 'factory-job-11111111-1111-4111-8111-111111111111-oldlease-runner';
+        const freshName = 'factory-job-11111111-1111-4111-8111-111111111111-newlease-runner';
+        const oldJob = { metadata: { name: oldName, creationTimestamp: new Date(now - 10 * 60_000).toISOString() } };
+        const freshJob = { metadata: { name: freshName, creationTimestamp: new Date(now).toISOString() } };
+        let old = true;
+        let fresh = true;
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path) => {
+            calls.push({ method, path });
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({ items: [old ? oldJob : null, fresh ? freshJob : null].filter(Boolean) }),
+                });
+            }
+            // The API server evaluates a selector at processing time: a collection DELETE would
+            // take BOTH jobs — the genuine leftover and the replacement's fresh one. That is
+            // the bug this fence must make unreachable.
+            if (method === 'DELETE' && path.includes('labelSelector=')) {
+                old = false;
+                fresh = false;
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                if (path.startsWith(`${jobPath(namespace, oldName)}`)) old = false;
+                if (path.startsWith(`${jobPath(namespace, freshName)}`)) fresh = false;
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.resolve(FAKE.pods as K8sResponse);
+            }
+            if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        // No collection DELETE anywhere in the run: one whose selector would match the
+        // replacement's fresh Job is exactly the delete this fence must never issue.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes('labelSelector='))).toBe(false);
+        // The old leftover goes by NAME, Foreground.
+        expect(calls).toContainEqual({
+            method: 'DELETE',
+            path: `${jobPath(namespace, oldName)}?propagationPolicy=Foreground`,
+        });
+        // The fresh Job — created after this fence began, the replacement's own — is never
+        // deleted at all.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(freshName))).toBe(false);
+        // And the fence did not wait for it: the LIST after the deletes found only fresh
+        // objects, which do not block — the create went straight ahead.
+        expect(calls.map((call) => call.method)).toEqual(['GET', 'DELETE', 'GET', 'POST', 'GET', 'GET', 'GET']);
     });
 
     // The board refuses a complete POST that does not fit its body limit — an oversized report

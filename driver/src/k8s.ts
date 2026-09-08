@@ -84,10 +84,20 @@ const POLL_MS = 2_000;
 export const POLL_MAX_CONSECUTIVE_FAILURES = 15;
 
 /**
+ * How old an object must be before the fence may delete it. The fence may only delete objects
+ * that PROVABLY predate it: a replacement attempt's Job, created after this fence began, carries
+ * the same `factory.job` label and must be untouchable — the selector cannot tell the two apart.
+ * The 60s guard dwarfs plausible driver↔apiserver clock skew and only delays leftover cleanup
+ * by a minute.
+ */
+const FENCE_MIN_AGE_MS = 60_000;
+
+/**
  * How long create() will wait for label-swept leftover Jobs to actually vanish — about five
- * minutes at POLL_MS, the same patience the status poll has. The empty list that ends the wait
- * is what frees the checkout for the replacement; exceeding the bound is a throw, which leaves
- * the job to its lease — burning an attempt is the alternative to two writers on one checkout.
+ * minutes at POLL_MS, the same patience the status poll has. A list with no deletable objects
+ * left is what frees the checkout for the replacement; exceeding the bound is a throw, which
+ * leaves the job to its lease — burning an attempt is the alternative to two writers on one
+ * checkout.
  */
 const REPLACE_MAX_POLLS = 150;
 
@@ -391,6 +401,9 @@ export function createKubernetesRunner(
         Object.keys(claimEnv(job)).length ? forgetSecret(job) : Promise.resolve();
 
     const create = async (job: BoardJob, spec: RunnerJobSpec): Promise<void> => {
+        // Before any I/O: everything the fence deletes is dated against this instant, so an
+        // object must have been created before the fence even began to be deletable at all.
+        const cutoff = Date.now() - FENCE_MIN_AGE_MS;
         const env = claimEnv(job);
         const post = async (): Promise<K8sResponse> => request('POST', jobsPath(config.k8sNamespace), spec);
         if (Object.keys(env).length) {
@@ -410,25 +423,24 @@ export function createKubernetesRunner(
          * The re-claim fence, and the only job-scoped write this runner does: Job names carry the
          * lease token now, so a name-targeted delete could never find a previous attempt's
          * leftovers — they are swept by LABEL instead, the one identifier every attempt of the
-         * job shares. This is the kubernetes twin of the docker runner's label sweep, and it is
-         * safe for the same reason: it runs BEFORE this attempt creates anything, so whatever it
-         * finds is a previous attempt's leftover, and the alternative to leaving a live leftover
-         * Job running is two writers on one checkout (docs/jobs.md).
+         * job shares. This is the kubernetes twin of the docker runner's label sweep.
          *
-         * The fence is the empty list, not the delete's response. A Foreground DELETE answers
-         * once the deletion is marked; the objects stay listed until the garbage collector has
-         * torn the old pods down — tens of seconds of termination grace. Creating at once would
-         * put this attempt's pod onto a checkout somebody is still writing. So the delete is
-         * awaited: LIST until the selector answers nothing, bounded, then create — the closest
-         * kubernetes gets to `docker kill`.
+         * The safety is the AGE bound (the cutoff above), not the ordering: the label selector
+         * cannot distinguish a previous attempt's leftover from a replacement attempt's live
+         * Job, and a selector evaluated at API-server processing time is how a superseded
+         * worker's collection DELETE left in flight would foreground-delete the replacement's
+         * Job. So this fence deletes BY NAME, and only objects whose creationTimestamp predates
+         * the cutoff — anything created after the fence began, this attempt's replacement
+         * included, is untouchable. The "runs BEFORE this attempt creates anything" ordering
+         * still holds, but it is defense in depth now, not the load-bearing argument.
+         *
+         * The fence is "no deletable objects remain", not the empty list: fresh objects in a
+         * list may be a replacement's own Job, so they are never deleted and never waited on —
+         * they neither block the create nor consume the bound. Creating before the leftovers
+         * are truly off the checkout would put this attempt's pod onto a directory somebody is
+         * still writing, so the deletable ones are awaited: delete by name, LIST, bounded — the
+         * closest kubernetes gets to `docker kill`.
          */
-        const fence = await request(
-            'DELETE',
-            `${jobsSelectorPath(config.k8sNamespace, job)}&propagationPolicy=Foreground`,
-        );
-        if (fence.status >= 300 && fence.status !== 404) {
-            throw new Error(`deleting the leftover runners answered ${fence.status}: ${fence.body.slice(0, 200)}`);
-        }
         let waits = 0;
         for (;;) {
             let probe: K8sResponse;
@@ -439,9 +451,38 @@ export function createKubernetesRunner(
                 // polling within the same bound.
                 probe = { status: 0, body: '' };
             }
-            const items = parse<{ items?: unknown[] }>(probe.body).items ?? [];
-            const gone = probe.status === 404 || (probe.status >= 200 && probe.status < 300 && items.length === 0);
-            if (gone) break;
+            // Nothing answers the selector at all — no leftover, no replacement, nothing to wait for.
+            if (probe.status === 404) break;
+            if (probe.status >= 200 && probe.status < 300) {
+                const items =
+                    parse<{ items?: { metadata?: { name?: string; creationTimestamp?: string } }[] }>(probe.body)
+                        .items ?? [];
+                const deletable: string[] = [];
+                for (const item of items) {
+                    const created = Date.parse(item.metadata?.creationTimestamp ?? '');
+                    // Undatable objects are left alone with the fresh ones: the fence may only
+                    // delete what it can prove predates it, and a missing or malformed timestamp
+                    // proves nothing.
+                    if (item.metadata?.name && Number.isFinite(created) && created < cutoff) {
+                        deletable.push(item.metadata.name);
+                    }
+                }
+                if (deletable.length === 0) break;
+                for (const leftover of deletable) {
+                    const response = await request(
+                        'DELETE',
+                        `${jobPath(config.k8sNamespace, leftover)}?propagationPolicy=Foreground`,
+                    );
+                    // A 404 is the ordinary end of an object another fence got to first; a 409
+                    // is a concurrent replacement's fence deleting the same genuine leftover.
+                    // Both mean the object is being removed. Anything else fails loud, as ever.
+                    if (response.status >= 300 && response.status !== 404 && response.status !== 409) {
+                        throw new Error(
+                            `deleting the leftover runners answered ${response.status}: ${response.body.slice(0, 200)}`,
+                        );
+                    }
+                }
+            }
             if (++waits > REPLACE_MAX_POLLS) {
                 throw new Error(
                     `the leftover runner jobs of job ${job.id} never disappeared after their delete ` +

@@ -61,15 +61,19 @@ docker socket riding along with the dashboard, which `docs/security.md` refuses 
 reason. Runner pods set `automountServiceAccountToken: false`; the driver's own pod keeps its
 token and its namespace-scoped Role.
 
-**Re-claims fence by sweeping.** Job names carry the lease token now, so a previous attempt's
-leftover Jobs sit under other names no delete of this attempt's could reach — the runner sweeps
-them by LABEL instead: a Foreground deleteCollection over `factory.job=<id>`, then a bounded
-list-until-empty, and only then the create. The sweep is the one job-scoped write this runner
-does, and it is safe because of when it runs: before this attempt creates anything, so everything
-it finds is a previous attempt's leftover. The alternative to leaving a live leftover Job running
-is two writers on one checkout, the thing actually worth preventing — the same rule the docker
-runner obeys with its label sweep. `docs/jobs.md` calls that the single most important line in
-the board contract.
+**Re-claims fence by sweeping, and the sweep is age-bounded.** Job names carry the lease token
+now, so a previous attempt's leftover Jobs sit under other names no delete of this attempt's could
+reach — the runner sweeps them by LABEL instead: it lists `factory.job=<id>`, Foreground-deletes
+only the objects whose `creationTimestamp` predates a 60-second cutoff, by NAME, and creates only
+once no deletable object remains. The age bound is the safety, not the ordering: the selector
+cannot tell a previous attempt's leftover from a replacement attempt's live Job — a superseded
+worker's collection DELETE left in flight past its lease would otherwise foreground-delete the
+replacement's Job — so objects the fence cannot prove predate it are never deleted and never
+waited on, and the fence running before this attempt creates anything is defense in depth rather
+than the load-bearing argument. The alternative to leaving a live leftover Job running is two
+writers on one checkout, the thing actually worth preventing — the same rule the docker runner
+obeys with its label sweep. `docs/jobs.md` calls that the single most important line in the board
+contract.
 
 **Live output here is the pod log, re-read per poll.** The docker runner sees output as stream
 chunks; this platform has no equivalent attach, so the runner reads the pod log's tail on each
