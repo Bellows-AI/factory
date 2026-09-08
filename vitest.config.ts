@@ -14,6 +14,18 @@ export default defineConfig({
             'web/test/**/*.test.ts',
         ],
         pool: 'forks',
+        poolOptions: {
+            forks: {
+                // Default is one fork per core; watch idles hot without a cap.
+                minWorkers: 1,
+                maxWorkers: 2,
+            },
+        },
+        // Suites inject their own state, so sharing one worker costs nothing.
+        isolate: false,
+        // A core watch build rewrites core/dist while vitest watches; re-running
+        // on it invalidates the module graph for every server/web test.
+        watchExclude: ['**/node_modules/**', '**/dist/**'],
         coverage: {
             provider: 'v8',
             // 'lcov' is what Sonar ingests; 'text' is for reading here. Both, or CI is silent.

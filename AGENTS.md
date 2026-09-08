@@ -135,6 +135,13 @@ npx vitest run core/test/metrics.invariants.test.ts
 npx vitest run -t 'matches the measured headline figures'
 ```
 
+Watch mode is tuned for low idle CPU: `isolate: false`, forks capped at `minWorkers: 1` /
+`maxWorkers: 2`, and `watchExclude` covers `**/dist/**` so a core watch build does not invalidate
+the module graph for every server/web test. Do not undo these to chase a flaky-looking failure.
+Prefer watching one package (`npx vitest watch core/test`) over the whole suite. If CPU pins
+again, look for orphaned `node (vitest N)` workers (parent = 1) left by a killed session —
+`pkill -f 'node (vitest'` clears them.
+
 There is no linter or formatter configured. Match existing style: 4-space indent, single quotes,
 semicolons.
 
