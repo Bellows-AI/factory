@@ -46,13 +46,14 @@ whose keys the pod references non-optionally, so a missing Secret fails loud ins
 silently without its env. The runner reaps the Secret with the run's own exit — once the verdict
 and log have been read, on a throw, or on the kill-induced Job 404 — and never by `kill()` itself,
 which can interleave the run's create() between the Secret POST and the Job POST; the re-claim
-fence deletes only Jobs, never a Secret — it is the mutex described below. Stated honestly: a stale attempt whose Job was deleted before
-it existed runs to its natural end with its env intact and its report refused by the board — the
-pre-feature semantics — rather than sitting in `CreateContainerConfigError`. The tradeoff:
+fence deletes only Jobs, never a Secret. Stated honestly: a stale attempt whose Job was deleted
+before it existed runs to its natural end with its env intact and its report refused by the board
+— the pre-feature semantics — rather than sitting in `CreateContainerConfigError`. The tradeoff:
 a driver that crashes before cleanup leaks its attempt's Secret (Secrets have no TTL), and the
 `factory.job: <id>` label is what a cleanup job would select. The chart's Role grows
-`secrets: ['create', 'delete']` and nothing else — no `get`, no `list`; the driver writes values it
-was handed and never reads one back.
+`secrets: ['create', 'delete']` and nothing more on secrets — no `get`, no `list`; the driver
+writes values it was handed and never reads one back. (The fence's checkout claim adds a
+`configmaps` rule with `get` — see below for why that read is safe there and only there.)
 
 **The runner gets no ServiceAccount token.** Pods automount one by default, and a driver-spawned
 pod would automount the *driver's own* identity — the identity that may create Jobs. A Claude
@@ -61,23 +62,62 @@ docker socket riding along with the dashboard, which `docs/security.md` refuses 
 reason. Runner pods set `automountServiceAccountToken: false`; the driver's own pod keeps its
 token and its namespace-scoped Role.
 
-**Re-claims fence by sweeping, and the sweep is a mutex.** Job names carry the lease token now,
-so a previous attempt's leftover Jobs sit under other names no delete of this attempt's could
-reach — the runner sweeps them by LABEL instead: it lists `factory.job=<id>`, Foreground-deletes
-EVERY Job the selector answers, by NAME, and creates only once the selector answers nothing. No
-age filter and no cutoff: a predecessor's Job can be younger than any time-derived bound — its
-attempt's Secret creation and its own fencing wait on the kubelet's garbage collector, which is
-unbounded — while a Job created after this fence began must not be deleted, so no clock-derived
-predicate can classify correctly and the fence classifies nothing at all. Making that
-unconditional is safe for two reasons: this attempt's own Job cannot exist yet (its name carries
-this attempt's lease token, and nothing has posted it), and a superseded attempt whose live Job
-is fenced away STANDS DOWN — its status poll answers 404 ("the runner job ... no longer
-exists"), its run reaps its own Secret, and the loop leaves the job to its lease. The fenced
-loser burns its attempt — strictly lesser than the harm the fence exists to prevent, two writers
-on one checkout, which `docs/jobs.md` calls the single most important line in the board contract
-— and attempt-scoped names are why the loser's cleanup can never reach the winner: everything
-its kill and its Secret reaping address carries its own lease token. This is parity with the
-docker runner's fence, which sweeps by job label at execution time.
+**Re-claims fence by claiming the checkout, atomically.** A job id is only reused when a lease
+expired and the row was reclaimed, so a re-claim means two attempts contending for one writable
+checkout — and the fence that keeps them from ever running side by side is a creation-based
+mutex, not a check-then-act sequence. Each attempt POSTs a ConfigMap named
+`factory-job-<id>-claim` — one per JOB id, the one job-scoped name this runner writes; everything
+else stays attempt-scoped, which is what keeps a superseded attempt's cleanup from ever reaching
+the winner's objects — and the apiserver's name uniqueness arbitrates: `201` and the checkout is
+ours; `409` and somebody holds it, so the claim is read. `data.attempt` is the board's per-job
+attempt counter, and it orders the contenders with no clock anywhere — against a live claim it
+only moves forward: every claim increments it, and the one decrement in the board (`suspend`'s
+give-back) belongs to docker-side idle parking, which a kubernetes attempt can never reach
+(Remote Control is refused under this executor, and this runner reports `idled: false` always);
+even if an equal number ever arose, the rule below is the conservative direction — stand down and
+burn one attempt, and the claim after that carries a strictly higher number. A claim whose
+attempt is at or ahead of ours belongs to our own replacement, and this attempt STANDS DOWN
+— it creates nothing, deletes nothing, and the loop leaves the job to its lease. A burned attempt
+is the documented cost, and the heartbeat-409 kill (`docs/jobs.md`'s single most important line)
+remains the backstop that bounds anything unaccounted for. A claim whose attempt is behind ours —
+or that carries no attempt number at all, since garbage is never proof of a newer writer — is a
+leftover from a driver that died holding it, and the next claimant RELEASES it: DELETE with a
+`metadata.uid` precondition, so a stale attempt's release can only ever reach the exact
+incarnation it read, never a newer one — then POST again. A driver that dies holding the claim
+leaks the object (labeled `factory.job`, the same accepted-leak posture as the env Secret);
+release-by-next-claimant is what makes the leak self-healing. It is a ConfigMap and not the
+canonical Lease because the protocol needs `get` — granted here and never on secrets, whose
+values the driver must never read back — and because a Lease's expiry semantics are
+clock-derived, which this fence refuses by construction: the board's attempt counter is the
+ordering, and the board's lease is the authority on liveness.
+
+The label sweep survives as the janitor UNDER the claim: every Job the `factory.job=<id>`
+selector answers is deleted by name, Foreground, until the selector answers nothing — safe to
+sweep "everything" exactly because the claim is held (this attempt's own Job cannot exist yet;
+its name carries its own lease token). No age filter and no cutoff, as before: a predecessor's
+Job can be younger than any time-derived bound — its attempt's fencing waited on the kubelet's
+unbounded garbage collector — so the sweep still classifies nothing. What changed is that the
+claim is re-read before every deleting round: an attempt whose claim was taken over mid-sweep
+STANDS DOWN having deleted nothing — never the winner's Job, which a fence that only
+listed-then-deleted would kill on sight. And the Job POST is bracketed by claim verifies on
+BOTH sides: a takeover already visible before the POST stands the attempt down having created
+nothing, and a takeover landing in the one-round-trip window between the verifies is caught by
+the one after the POST, where the loser removes its OWN attempt-scoped Job and stands down.
+That single round trip IS the residual — a brief, bounded overlap of two schedulable Jobs,
+never an unbounded one, and never a teardown of the winner; the cost is the loser's burned
+attempt, the documented fenced-loser semantics (issue #32, both races). A verify that cannot
+answer for the full patience leaves nothing behind either: the loser best-effort deletes its
+own Job and burns the attempt — burning an attempt is the alternative to two writers on one
+checkout, the fence's own rule. When that best-effort delete itself fails, the Job is left
+to the kubelet's deadline AND the claim stays held — the checkout is never handed over
+voluntarily while this attempt's runner may still be on it; the next claimant takes over via
+the stale-holder path.
+
+The docker runner's fence — sweep by label at execution time — keeps the old shape, deliberately:
+the docker API has no conditional delete and no unique-name arbitration, so this protocol cannot
+be ported there without reintroducing the race it exists to close, and the one-driver-per-daemon
+topology leaves the loop's own heartbeat-409 kill as the arbiter between writers. The divergence
+is stated, not hidden.
 
 **Live output here is the pod log, re-read per poll.** The docker runner sees output as stream
 chunks; this platform has no equivalent attach, so the runner reads the pod log's tail on each

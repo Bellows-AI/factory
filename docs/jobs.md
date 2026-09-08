@@ -148,13 +148,19 @@ attempt's fleet. Correctness does not depend on any in-process ownership gate, s
 
 **The fence is the one job-scoped sweep, because it runs before anything is created.** The docker
 runner removes every container and network labeled `factory.job=<id>` before standing its own
-fleet up; the kubernetes runner deleteCollections the same label selector and lists until nothing
-answers it, before creating its Job. Everything a fence finds is a previous attempt's leftover —
-a driver that died before it could kill its runner, which is what a compose restart does — and
-this claim exists only because those attempts' leases are gone, so removing them delivers the
-same verdict their heartbeats would have, had the driver survived to receive it. The alternative
-to leaving a live leftover runner running is two writers on one checkout, which is the thing
-actually worth preventing.
+fleet up. Everything a fence finds is a previous attempt's leftover — a driver that died before it
+could kill its runner, which is what a compose restart does — and this claim exists only because
+those attempts' leases are gone, so removing them delivers the same verdict their heartbeats
+would have, had the driver survived to receive it. The alternative to leaving a live leftover
+runner running is two writers on one checkout, which is the thing actually worth preventing. On
+kubernetes the fence is stronger than a sweep: the runner first takes a per-job **checkout
+claim** (a ConfigMap POST the apiserver's name uniqueness arbitrates — `409` means held), and the
+sweep of leftover Jobs runs only under it, re-verified before every deleting round; a superseded
+attempt stands down from the claim itself and burns its attempt, never the winner's objects. The
+docker runner keeps the plain sweep because the docker API has no conditional delete or
+name-uniqueness primitive to build that claim from — one driver per daemon, and the heartbeat's
+409-kill below, is what bounds writers there (the full protocol in
+[kubernetes.md](kubernetes.md)).
 
 **The heartbeat is raced against the run finishing, not simply slept.** The beat period is a third
 of the lease — 100s by default — and awaiting it before reporting left every finished job sitting
