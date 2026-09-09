@@ -263,6 +263,18 @@ export interface JobStore {
      */
     gates(id: string, leaseToken: string, results: GateReport[]): Promise<LeaseResult>;
     /**
+     * Re-reads what the job's checkout declares in `.bellows.yaml` — the same read the claim
+     * made, made again because the driver's startup sync has just brought the checkout up to the
+     * remote default, and the claim's answer predates that. Lease-guarded like every worker
+     * route: a worker that lost the job must not steer the run that replaced it. A deployment
+     * with no gates reader (or a job with no repo label or author) answers no gates, exactly as
+     * its claim did.
+     */
+    rereadGates(
+        id: string,
+        leaseToken: string,
+    ): Promise<{ result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | { result: 'lost' | 'missing' }>;
+    /**
      * Parks a running job: the container is gone, but the job is not finished and its session is
      * kept so it can be restored. Lease-guarded, like every other worker write.
      */
@@ -714,6 +726,27 @@ export function createJobStore({
             `;
             if (rows[0]) return 'ok';
             return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
+        },
+
+        async rereadGates(id, leaseToken) {
+            await gate();
+            // Lease-guarded like every worker route: the freshness answer goes only to the worker
+            // that holds the run, and only while it still does.
+            const rows = await sql<{ created_by: string | null; repo: string | null }[]>`
+                select created_by, repo
+                from job
+                where org_id = ${orgId} and id = ${id}
+                  and status = 'running' and lease_token = ${leaseToken}
+            `;
+            const row = rows[0];
+            if (!row) return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
+            // The claim's own derivation: `<orgId>/<author>`, gated on having somewhere to read.
+            const workspacePath = hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null;
+            if (!gatesReader || !row.repo || !workspacePath) {
+                return { result: 'ok', gates: null, gateError: null };
+            }
+            const read = await gatesReader.readFor(workspacePath, row.repo);
+            return { result: 'ok', gates: read.config, gateError: read.error };
         },
 
         async suspend(id, leaseToken) {

@@ -4,6 +4,7 @@ import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { RunSession, Runner, RuntimeSample } from './docker.js';
+import type { PublishResult } from './publish.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -490,17 +491,50 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 const premature =
                     typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost;
 
+                /*
+                 * The deterministic end of a task. A run that succeeded — clean exit, no timeout,
+                 * no premature stop, gates passed — may not report success while its work exists
+                 * only in a local checkout: published here, AFTER the gates, so nothing is ever
+                 * pushed past a failing check and no author was ever asked. The executor's
+                 * AGENTS.md tells the agent this is the shape of a finished task; this call is
+                 * what makes it enforcement rather than hope. A publish failure fails the
+                 * verdict — a green badge over work that landed nowhere is the exact lie this
+                 * exists to prevent — and the reason rides the output the author reads.
+                 */
+                let published: PublishResult | null = null;
+                if (
+                    outcome.exitCode === 0 &&
+                    !outcome.timedOut &&
+                    !premature &&
+                    !failure &&
+                    runner.publishGit
+                ) {
+                    published = await runner.publishGit(job);
+                }
+
                 // The last thing this attempt does, and the first moment the heartbeat may stop.
                 await settle();
 
+                const publishUnlanded = published !== null && !published.ok;
                 const status =
-                    outcome.exitCode === 0 && !outcome.timedOut && !outcome.cacheLost && !failure && !premature
+                    outcome.exitCode === 0 &&
+                    !outcome.timedOut &&
+                    !outcome.cacheLost &&
+                    !failure &&
+                    !premature &&
+                    !publishUnlanded
                         ? 'succeeded'
                         : 'failed';
                 const exitCode = failure ? failure.exitCode : outcome.exitCode;
                 let output = outcome.timedOut
                     ? `${outcome.output}\n[driver] killed after ${config.jobTimeoutMs}ms`
                     : outcome.output;
+                if (published?.published) {
+                    output = `${output}\n[driver] published ${published.branch}${published.prUrl ? ` — ${published.prUrl}` : ''}`;
+                }
+                if (publishUnlanded) {
+                    output = `${output}\n[driver] publish failed — the work did not land: ${published?.reason}`;
+                }
                 if (outcome.cacheLost) {
                     output =
                         `${output}\n[driver] killed — the model provider stopped serving prompt cache: ` +
@@ -624,6 +658,45 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
+                }
+
+                /*
+                 * Before anything reads the tree — the gates refusal just below, the agent this
+                 * run — the checkout is brought up to the remote default: fetch, default
+                 * hard-reset to origin, task branch rebased onto it. Checkouts are cloned once
+                 * and otherwise left untouched by the workspace reconcile, so without this every
+                 * task after a main update starts from stale code and a stale gates file. A sync
+                 * failure fails the attempt with the reason (the tree's state is unknown enough
+                 * that running on it would compound whatever went wrong), the same
+                 * author's-problem channel the gates refusal below uses.
+                 */
+                const synced = await runner.syncCheckout(job);
+                if (!synced.ok) {
+                    log(`job ${job.id}: checkout sync failed: ${synced.reason}`);
+                    await board
+                        .complete(job, {
+                            status: 'failed',
+                            exitCode: null,
+                            output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
+                        })
+                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    continue;
+                }
+
+                /*
+                 * The claim's gates decision was read from the tree BEFORE the sync freshened
+                 * it — a repository whose `.bellows.yaml` just arrived would run ungated for its
+                 * whole first task if the stale answer stood. Re-read now that the tree is
+                 * current, and let the refusals below act on what the tree actually holds. Null
+                 * (a refused or lost answer) keeps the claim's decision; nothing here is worth a
+                 * second writer on the verdict.
+                 */
+                const fresh = await board.rereadGates(job);
+                if (fresh) {
+                    job.gates = fresh.gates ?? null;
+                    job.gateError = fresh.gateError ?? null;
+                } else {
+                    log(`job ${job.id}: gates re-read refused, keeping the claim's decision`);
                 }
 
                 /*

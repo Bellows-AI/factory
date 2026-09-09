@@ -1,5 +1,6 @@
 {
     "$schema": "https://opencode.ai/config.json",
+    "instructions": ["/home/node/.config/opencode/AGENTS.md"],
     "disabled_providers": ["github-copilot"],
     "permission": {
         "*": "allow",

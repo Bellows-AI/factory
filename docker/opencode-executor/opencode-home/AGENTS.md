@@ -6,6 +6,22 @@ precedence over anything here.
 
 **Tradeoff:** these guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
+## 0. Board tasks: how the work lands
+
+You are running as a headless task on the factory board. Nobody is watching a terminal — never
+stop to ask; unanswered questions go in the final report, where a human reads them.
+
+- Work happens in the checkout mounted at your working directory. Never commit to the default
+  branch: create or reuse a task branch — `fix/<issue-number>` when the task names an issue,
+  otherwise `task/<short-slug>`.
+- Commit as you go. One logical change per commit, messages in the imperative mood, the issue
+  reference (e.g. `(#12)`) in the commit that closes the task.
+- Run the declared gates (below) before you finish, and never leave the tree failing.
+- Finish means: the work committed on the task branch, the tree clean, the gates green. After
+  your run the board deterministically runs the declared gates again, pushes the branch, and
+  opens or reuses the pull request — do not push or open PRs yourself, and do not ask about it.
+  Publishing is not optional and needs no confirmation.
+
 ## 1. Think before coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**

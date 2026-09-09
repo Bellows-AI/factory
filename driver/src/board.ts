@@ -113,6 +113,14 @@ export interface Board {
      * the Claude UI addresses the session by.
      */
     session(job: BoardJob, sessionId: string, remoteSessionId: string | null): Promise<LeaseState>;
+    /**
+     * Re-reads the gates the job's checkout declares NOW. The claim read the file before the
+     * driver's startup sync freshened the checkout, so a repository whose gates file just arrived
+     * would run ungated for its whole first task if the stale answer stood. Null — a refused,
+     * lost, or failed answer — keeps the claim's decision; freshness is worth a request, not a
+     * error path.
+     */
+    rereadGates(job: BoardJob): Promise<{ gates: BoardJob['gates']; gateError: string | null } | null>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
@@ -220,6 +228,17 @@ export function createBoard({
                 remoteSessionId,
             });
             return response.status === 409 ? 'lost' : 'held';
+        },
+
+        async rereadGates(job) {
+            try {
+                const response = await post(`/api/jobs/${job.id}/gates-reread`, { leaseToken: job.leaseToken });
+                if (!response.ok) return null;
+                const body = (await response.json()) as { gates?: BoardJob['gates']; gateError?: string | null };
+                return { gates: body.gates ?? null, gateError: body.gateError ?? null };
+            } catch {
+                return null;
+            }
         },
 
         async suspend(job) {

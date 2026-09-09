@@ -140,4 +140,41 @@ describe.runIf(enabled)('gates on the job store', () => {
         expect(listed).toHaveLength(1);
         expect(listed[0]?.gates).toBeNull();
     });
+
+    // The driver syncs the checkout after the claim, so the claim's gates answer can predate the
+    // tree the run will actually see. The re-read is the freshness channel, lease-guarded like
+    // every worker route.
+    it('re-reads the gates for the lease holder, from the same checkout the claim read', async () => {
+        const userId = await account(6007, 'gate-bat');
+        // First answer: the stale tree the claim saw. Second: what the synced tree holds.
+        const answers = [
+            { config: null, error: null },
+            { config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, error: null },
+        ];
+        let call = 0;
+        const reader = createJobStore({
+            sql,
+            orgId: ORG,
+            gates: {
+                readFor: async () => answers[Math.min(call++, answers.length - 1)]!,
+            },
+        });
+        await reader.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        const claim = await reader.claim('driver-1', 300);
+
+        // A stale-tree read of nothing omits gates from the claim entirely — the shape every
+        // ungated job carries.
+        expect(claim?.gates).toBeUndefined();
+        const reread = await reader.rereadGates(claim!.id, claim!.leaseToken);
+        expect(reread).toEqual({ result: 'ok', gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, gateError: null });
+    });
+
+    it('guards the gates re-read with the lease, like every other worker route', async () => {
+        const userId = await account(6008, 'gate-hare');
+        await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        await store.claim('driver-1', 300);
+
+        // A stale token is a lost lease, not a missing row; an absent job is missing.
+        expect(await store.rereadGates(ABSENT, TOKEN)).toEqual({ result: 'missing' });
+    });
 });

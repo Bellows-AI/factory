@@ -7,6 +7,19 @@ import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
+import {
+    CREDENTIAL_HELPER,
+    gitProbeScript,
+    gitSyncScript,
+    isBranchName,
+    parseGitState,
+    publishFailed,
+    publishNothing,
+    publishPlan,
+    repoPath,
+    type PublishResult,
+    type SyncResult,
+} from './publish.js';
 
 const run = promisify(execFile);
 
@@ -104,6 +117,22 @@ export interface Runner {
     sampleRuntime(job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
+    /**
+     * Publishes the work the run produced: task branch (when the checkout sits on the default
+     * one), commit, push, and a PR. The deterministic end of a task — a succeeded verdict may not
+     * describe work that exists only in a local checkout. The loop decides WHEN this is called (a
+     * succeeded run, gates passed, and nothing else); a runner that cannot publish answers the
+     * refusal in the result rather than throwing.
+     */
+    publishGit(job: BoardJob): Promise<PublishResult>;
+    /**
+     * Brings the checkout up to the remote default before the run: fetch, then hard-reset the
+     * default branch to origin (stray uncommitted edits there are leftovers, not work) or rebase
+     * the task branch onto the new default, keeping its commits. Called before the runner spawns,
+     * so a task starts from the code — and the declared gates — that main actually has. Answers
+     * { ok: false, reason } rather than throwing; the loop turns that into the verdict.
+     */
+    syncCheckout(job: BoardJob): Promise<SyncResult>;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -977,6 +1006,192 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
 
     return {
         kill,
+
+        /*
+         * The startup sync is one container, one script: fetch (credential by env-file, the same
+         * as every step that touches the remote), then default branch hard-reset to origin or
+         * task branch rebased onto it. A conflicting rebase aborts itself in the script and
+         * answers { ok: false } with the reason — the loop fails the run before it starts rather
+         * than leaving the checkout mid-rebase for every later turn to trip over.
+         */
+        async syncCheckout(job: BoardJob): Promise<SyncResult> {
+            const repo = repoPath(config, job);
+            if (!repo) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+            let file: string | null = null;
+            try {
+                file = envFilePath(job);
+                await writeFile(file, envFileBody(job), { mode: 0o600 });
+            } catch (e) {
+                return { ok: false, reason: `could not write the sync env file: ${(e as Error).message}` };
+            }
+            try {
+                const out = await execDocker([
+                    '-v',
+                    `${config.workspaceVolume}:${config.workspaceMount}`,
+                    '-w',
+                    repo,
+                    '--env-file',
+                    file,
+                    '--entrypoint',
+                    'node',
+                    config.image,
+                    '-e',
+                    gitSyncScript,
+                ]);
+                const line = out.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+                try {
+                    return JSON.parse(line) as SyncResult;
+                } catch {
+                    return { ok: false, reason: 'the checkout sync answered nothing readable' };
+                }
+            } catch (e) {
+                return { ok: false, reason: `the checkout sync container failed: ${(e as Error).message}` };
+            } finally {
+                if (file) await rm(file).catch(() => undefined);
+            }
+        },
+
+        /*
+         * Publishing is attempt-scoped like everything else here: the env file is named after the
+         * lease token, every container is a throwaway over the workspaces volume (this process has
+         * no host path into it), and the credential travels by --env-file — GITHUB_TOKEN from the
+         * claim env is in no argv anywhere, only inside the container's environment where the
+         * credential helper reads it. The steps are separate daemon round-trips rather than one
+         * shell script, so a failure names its step, and no board-supplied or checkout-supplied
+         * value ever passes through a shell.
+         */
+        async publishGit(job: BoardJob): Promise<PublishResult> {
+            const repo = repoPath(config, job);
+            if (!repo) return publishFailed('the job names no checkout this driver can publish');
+            let file: string | null = null;
+            try {
+                file = envFilePath(job);
+                await writeFile(file, envFileBody(job), { mode: 0o600 });
+            } catch (e) {
+                return publishFailed(`could not write the publish env file: ${(e as Error).message}`);
+            }
+            try {
+                const plan = publishPlan(job);
+                const vol = ['-v', `${config.workspaceVolume}:${config.workspaceMount}`];
+                const inRepo = [...vol, '-w', repo];
+
+                // What is there to publish? A checkout that was never cloned and a clean,
+                // fully-pushed tree are the two ordinary no-ops; everything else flows.
+                const probe = await execDocker([
+                    ...vol,
+                    '-e',
+                    `REPO=${repo}`,
+                    '--entrypoint',
+                    'node',
+                    config.image,
+                    '-e',
+                    gitProbeScript,
+                ]).catch(() => null);
+                const state = parseGitState(probe?.stdout ?? '');
+                if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
+                if (!state.dirty && state.unpushed === 0) {
+                    return publishNothing('no uncommitted changes and nothing unpushed');
+                }
+
+                // A task never lands on the default branch. An existing task branch is reused —
+                // `switch -c` only when the branch is not there yet, so earlier attempts' commits
+                // survive.
+                const onDefault = !state.branch || state.branch === state.defaultBranch;
+                const branch = onDefault ? plan.branch : state.branch;
+                if (!isBranchName(branch)) {
+                    return publishFailed(`refusing to publish a branch named "${branch}"`);
+                }
+                if (onDefault) {
+                    const switched = await execDocker([
+                        ...inRepo,
+                        '--entrypoint',
+                        'git',
+                        config.image,
+                        'switch',
+                        branch,
+                    ]).catch(() => null);
+                    if (!switched) {
+                        await execDocker([...inRepo, '--entrypoint', 'git', config.image, 'switch', '-c', branch]);
+                    }
+                }
+
+                if (state.dirty) {
+                    await execDocker([...inRepo, '--entrypoint', 'git', config.image, 'add', '-A']);
+                    // The checkout usually has no committer identity (the agent does not need one
+                    // to edit); a fallback is applied only when the probe found none, so a
+                    // member-configured identity is never overridden.
+                    const identity = state.hasIdentity
+                        ? []
+                        : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
+                    await execDocker([...inRepo, '--entrypoint', 'git', config.image, ...identity, 'commit', '-m', plan.title]);
+                }
+
+                await execDocker([
+                    ...inRepo,
+                    '--env-file',
+                    file,
+                    '--entrypoint',
+                    'git',
+                    config.image,
+                    '-c',
+                    `credential.helper=${CREDENTIAL_HELPER}`,
+                    'push',
+                    '-u',
+                    '--force-with-lease',
+                    'origin',
+                    'HEAD',
+                ]);
+
+                // Reuse the branch's PR when one exists — a task that already shipped its PR gets
+                // idempotent publishes, not duplicates.
+                let prUrl: string | null = null;
+                const existing = await execDocker([
+                    ...inRepo,
+                    '--env-file',
+                    file,
+                    '--entrypoint',
+                    'gh',
+                    config.image,
+                    'pr',
+                    'view',
+                    branch,
+                    '--json',
+                    'url',
+                    '-q',
+                    '.url',
+                ]).catch(() => null);
+                if (existing) {
+                    prUrl = existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
+                }
+                if (!prUrl) {
+                    const body = plan.issueNumber
+                        ? `Closes #${plan.issueNumber}.\n\nPublished by the factory board after the declared gates passed.`
+                        : 'Published by the factory board after the declared gates passed.';
+                    const created = await execDocker([
+                        ...inRepo,
+                        '--env-file',
+                        file,
+                        '--entrypoint',
+                        'gh',
+                        config.image,
+                        'pr',
+                        'create',
+                        '--head',
+                        branch,
+                        '--title',
+                        plan.title,
+                        '--body',
+                        body,
+                    ]);
+                    prUrl = created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
+                }
+                return { ok: true, published: true, branch, prUrl, reason: null };
+            } catch (e) {
+                return publishFailed(`${(e as Error).message}`.slice(0, 400));
+            } finally {
+                if (file) await rm(file).catch(() => undefined);
+            }
+        },
 
         async remoteSessionId(job, sessionId) {
             // Every failure here is the ordinary case, not an error: the container may have exited,

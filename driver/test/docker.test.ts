@@ -6,6 +6,7 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
+import { CREDENTIAL_HELPER, gitProbeScript, gitSyncScript, isBranchName, parseGitState, publishPlan, repoPath } from '../src/publish.js';
 
 /*
  * The env-file write is the one await between the setup's final kill-check and the spawn, and a
@@ -2399,5 +2400,223 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
         expect(calls.every((a) => !(a[0] === 'run' && a.includes('--entrypoint')))).toBe(true);
         expect(seen[0]).toEqual(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }));
+    });
+});
+
+describe('publishing the produced work', () => {
+    const ISSUE_JOB: BoardJob = {
+        ...job,
+        command: '/fix https://github.com/Bellows-AI/factory/issues/10',
+        repo: 'Bellows-AI/factory',
+        env: { GITHUB_TOKEN: 't0k-3n' },
+    };
+    const NOW = new Date('2026-09-09T12:00:00Z');
+    const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
+
+    it('plans the branch, title and issue from the command', () => {
+        expect(publishPlan(ISSUE_JOB, NOW)).toEqual({
+            branch: 'fix/10',
+            title: '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)',
+            issueNumber: 10,
+        });
+        // No issue named: a dated task branch, no closed issue.
+        const plain = publishPlan({ ...job, command: 'tidy the docs' }, NOW);
+        expect(plain.branch).toBe('task/20260909');
+        expect(plain.issueNumber).toBeNull();
+        expect(plain.title).toBe('tidy the docs');
+    });
+
+    it('builds the checkout path from the workspace and repo label, asserting both', () => {
+        expect(repoPath(loadDriverConfig({}), ISSUE_JOB)).toBe(`/workspaces/bellows/${USER}/factory`);
+        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, workspacePath: null })).toBeNull();
+        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, workspacePath: '../etc' })).toBeNull();
+        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'just-a-name' })).toBeNull();
+        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'o/..' })).toBeNull();
+        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'o/.' })).toBeNull();
+    });
+
+    it('refuses branch names that could read as something else', () => {
+        expect(isBranchName('fix/10')).toBe(true);
+        expect(isBranchName('task/20260909')).toBe(true);
+        expect(isBranchName('')).toBe(false);
+        expect(isBranchName('../etc')).toBe(false);
+        expect(isBranchName('-oProxyCommand')).toBe(false);
+        expect(isBranchName('a b')).toBe(false);
+    });
+
+    it('probes without a shell and reads the credential from the environment, never argv', () => {
+        // Every git call in the probe is execFileSync — no value can become a command.
+        expect(gitProbeScript).toContain('execFileSync');
+        expect(gitProbeScript).not.toContain('execSync(');
+        // "Unpushed" is counted against the remote default branch, never `@{u}`: a branch that
+        // was never pushed has no upstream, and the fatal rev-list would read its local-only
+        // commits as fully landed — which once reported a two-commit task branch as "nothing to
+        // publish".
+        expect(gitProbeScript).toContain('origin/"+out.defaultBranch+"..HEAD');
+        expect(gitProbeScript).not.toContain('@{u}');
+        // The helper reads the token from the container's environment — the env file's job —
+        // and the literal appears in no argv the publisher builds.
+        expect(CREDENTIAL_HELPER).toContain('$GITHUB_TOKEN');
+    });
+
+    it('syncs by fetch, default hard-reset, task-branch rebase — aborting a conflicted rebase', () => {
+        // The remote is reached with the env file's credential; nothing on a command line.
+        expect(gitSyncScript).toContain('fetch');
+        expect(gitSyncScript).toContain('"--prune"');
+        // A task branch keeps its commits by rebasing onto the new default; the default branch
+        // itself is reset hard, because stray uncommitted edits there are leftovers, not work.
+        expect(gitSyncScript).toContain('"rebase","origin/"+def');
+        expect(gitSyncScript).toContain('"reset","--hard","origin/"+def');
+        // A conflicted rebase aborts itself — the checkout must never sit mid-rebase — and the
+        // failure names what happened.
+        expect(gitSyncScript).toContain('"rebase","--abort"');
+        expect(gitSyncScript).toContain('rebased onto');
+    });
+
+    it('parses the probe’s answer, defaulting anything missing', () => {
+        expect(parseGitState('{"cloned":true,"branch":"fix/10","defaultBranch":"main","dirty":true,"unpushed":2,"hasIdentity":false}')).toEqual({
+            cloned: true,
+            branch: 'fix/10',
+            defaultBranch: 'main',
+            dirty: true,
+            unpushed: 2,
+            hasIdentity: false,
+        });
+        expect(parseGitState('')).toEqual({
+            cloned: false,
+            branch: '',
+            defaultBranch: 'main',
+            dirty: false,
+            unpushed: 0,
+            hasIdentity: false,
+        });
+    });
+
+    /**
+     * A stateful daemon: the probe answers from `state`, git steps mutate nothing, and every
+     * call is recorded so the flow — what ran, in which order, and what was skipped — is the
+     * assertion. The runner's own `docker run` never happens; only publish argv reaches the
+     * exec seam here.
+     */
+    const publishRunner = (state: Record<string, unknown>, opts: { prExists?: boolean; fail?: (args: string[]) => boolean } = {}) => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            // The probe's marker rides INSIDE the -e script string; the git steps carry their
+            // subcommand as a standalone argv element.
+            if (args.some((a) => typeof a === 'string' && a.includes('execFileSync'))) {
+                return { stdout: JSON.stringify(state) };
+            }
+            if (opts.fail?.(args)) throw new Error('step refused');
+            if (args.includes('pr') && args.includes('view')) {
+                if (opts.prExists) return { stdout: `${PR_URL}\n` };
+                throw new Error('no pull requests');
+            }
+            if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({ RUNNER_CLI: 'opencode' }), (() => fakeChild('')) as unknown as typeof spawn, exec);
+        return { calls, runner };
+    };
+
+    const DIRTY_ON_MAIN = {
+        cloned: true,
+        branch: 'main',
+        defaultBranch: 'main',
+        dirty: true,
+        unpushed: 0,
+        hasIdentity: false,
+    };
+
+    it('branches, commits, pushes and opens the PR — in that order', async () => {
+        // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
+        // branch), and `-c` creates it — both calls are part of the expected shape.
+        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('switch') && !a.includes('-c') });
+        const result = await runner.publishGit(ISSUE_JOB);
+
+        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        const shapes = calls.map((a) => {
+            if (a.some((x) => typeof x === 'string' && x.includes('execFileSync'))) return 'probe';
+            if (a.includes('switch')) return 'switch';
+            if (a.includes('add')) return 'add';
+            if (a.includes('commit')) return 'commit';
+            if (a.includes('push')) return 'push';
+            if (a.includes('view')) return 'pr-view';
+            if (a.includes('create')) return 'pr-create';
+            return 'other';
+        });
+        expect(shapes).toEqual(['probe', 'switch', 'switch', 'add', 'commit', 'push', 'pr-view', 'pr-create']);
+        // The first switch finds no branch; the second creates it. Commits carry the plan title,
+        // and the fallback identity rides only the commit.
+        const switchCreate = calls.find((a) => a.includes('switch') && a.includes('-c'));
+        expect(switchCreate).toContain('fix/10');
+        const commit = calls.find((a) => a.includes('commit'));
+        expect(commit).toContain('-m');
+        expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
+        expect(commit).toContain('user.name=factory-ai');
+        // Push and PR steps carry the env file; the credential helper reads the token from it.
+        // The push is force-with-lease: the startup sync may have rewritten the task branch's
+        // base, and the lease refuses to clobber a remote that moved under us.
+        const push = calls.find((a) => a.includes('push'));
+        expect(push).toContain('--env-file');
+        expect(push).toContain('--force-with-lease');
+        expect(push.join(' ')).toContain('credential.helper=');
+        expect(push.join(' ')).not.toContain('t0k-3n');
+        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
+        expect(create).toContain('--head');
+        expect(create).toContain('fix/10');
+    });
+
+    it('reuses an existing task branch and an existing PR', async () => {
+        const { calls, runner } = publishRunner(
+            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false },
+            { prExists: true },
+        );
+        const result = await runner.publishGit(ISSUE_JOB);
+
+        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        const shapes = calls.map((a) => {
+            if (a.some((x) => typeof x === 'string' && x.includes('execFileSync'))) return 'probe';
+            if (a.includes('switch')) return 'switch';
+            if (a.includes('add')) return 'add';
+            if (a.includes('commit')) return 'commit';
+            if (a.includes('push')) return 'push';
+            if (a.includes('view')) return 'pr-view';
+            if (a.includes('create')) return 'pr-create';
+            return 'other';
+        });
+        // On a task branch already: no switch, no commit (clean tree), push of the unpushed
+        // commit, PR found and reused.
+        expect(shapes).toEqual(['probe', 'push', 'pr-view']);
+    });
+
+    it('answers the ordinary no-ops without touching the daemon further', async () => {
+        const clean = publishRunner({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 });
+        expect(await clean.runner.publishGit(ISSUE_JOB)).toEqual({
+            ok: true,
+            published: false,
+            branch: null,
+            prUrl: null,
+            reason: 'no uncommitted changes and nothing unpushed',
+        });
+        expect(clean.calls).toHaveLength(1);
+
+        const uncloned = publishRunner({ cloned: false });
+        expect(await uncloned.runner.publishGit(ISSUE_JOB)).toEqual({
+            ok: true,
+            published: false,
+            branch: null,
+            prUrl: null,
+            reason: 'the checkout has not been cloned yet',
+        });
+        expect(uncloned.calls).toHaveLength(1);
+    });
+
+    it('fails with the step’s reason when a git step refuses', async () => {
+        const { runner } = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('push') });
+        const result = await runner.publishGit(ISSUE_JOB);
+
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('step refused');
     });
 });

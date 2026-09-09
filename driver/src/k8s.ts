@@ -1046,6 +1046,27 @@ export function createKubernetesRunner(
             // pod read it by now, and the wrapper's finally has removed it.
             return { exitCode, output, timedOut, idled: false, started: true };
         },
+
+        // The publish steps are sibling containers over a named docker volume, machinery this
+        // runner does not have — the same refusal shape every docker-only feature gives the
+        // kubernetes executor. The loop does not call it here (an armed publish on this executor
+        // would answer this), and the answer still names the limit rather than pretending.
+        async publishGit() {
+            return {
+                ok: false,
+                published: false,
+                branch: null,
+                prUrl: null,
+                reason: 'publishing is not supported under EXECUTOR=kubernetes: the publish steps are sibling containers over a docker volume, which this runner cannot start',
+            };
+        },
+
+        async syncCheckout() {
+            return {
+                ok: false,
+                reason: 'the checkout sync is not supported under EXECUTOR=kubernetes: it is a sibling container over a docker volume, which this runner cannot start',
+            };
+        },
     };
     return runner;
 }

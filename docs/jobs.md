@@ -25,6 +25,7 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
   (claude-code mints and reports a session uuid; opencode reports the id it used, scraped at close — see below)
   POST /api/jobs/:id/heartbeat {leaseToken}     every leaseSeconds/3, while it runs
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
+  POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
 POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
   ... or, if the runner went quiet:
 POST /api/jobs/:id/suspend  {leaseToken}        -> standby, session kept
@@ -563,6 +564,56 @@ registration, no reports, byte-identical argv. One honest ambiguity remains: a m
 task on a just-connected repository whose gates file was written by the agent itself can run and
 succeed before the file exists. Every later turn of that task is gated; the first is the race,
 and it is the same race every CI-on-first-commit system lives with.
+
+## Publishing: a task ends on a remote branch
+
+**The checkout is synced before anything reads it.** The workspace reconcile clones a repository
+once and otherwise leaves the checkout untouched, so without a sync every task after a main
+update would start from stale code — a stale gates file included, which is exactly how a
+repository's declared gates go unnoticed. At the start of each attempt, before the runner spawns,
+one container fetches the remote (credential by the same env file) and then: the default branch
+is hard-reset to origin — stray uncommitted edits there are pre-publish leftovers, not work, and
+the publish commits everything a run actually produced — while a task branch is rebased onto the
+new default, keeping its own commits, so the current turn sees the current tree. A conflicting
+rebase aborts itself (the checkout must never sit mid-rebase) and fails the attempt with the
+conflict named: running on a tree of unknown state would only compound whatever went wrong.
+
+**The claim's gates answer is re-read after the sync.** The board reads `.bellows.yaml` at CLAIM
+time, which is before the sync — so the claim's answer can predate the tree the run will see,
+and a repository whose gates file just arrived would run ungated for its whole first task. After
+the sync, the driver calls `POST /api/jobs/:id/gates-reread` and the refusals (a broken file, a
+gates-this-driver-cannot-run check) act on what the tree holds NOW. Lease-guarded like every
+worker route; a refused or failed re-read keeps the claim's decision, because freshness is worth
+a request, not an error path.
+
+**A succeeded run whose work exists only in a local checkout is not a success.** After the agent
+finishes and the gates pass — and only then — the driver deterministically publishes: task branch
+(when the checkout sits on the default one), commit, push, and a PR, each step a separate
+throwaway container over the workspaces volume. The executor's baked `AGENTS.md` tells the agent
+this is the shape of a finished task (branch, commit as you go, gates green, never ask); the
+driver-side publish is what makes it enforcement rather than hope — instructions are what the
+model follows, and this is what happens regardless. Nothing is ever pushed past a failing gate,
+because the publish runs after `runDeclaredGates` returns null and never otherwise; a run that
+failed, timed out, was cache-killed, or stopped talking early publishes nothing — its tree may be
+mid-thought, and pushing it would publish work no verdict was ever given on.
+
+**A publish failure fails the verdict.** The work did not land; a green badge over a tree that
+exists on one machine only is the exact lie this exists to prevent. The reason (which git step,
+what it said) rides the output the author reads. No credential passes through an argv: the claim
+env rides the same 0600 env file the runner got, and the push credential helper reads
+`GITHUB_TOKEN` from the container's environment.
+
+**Idempotence and limits.** An existing task branch is reused, never reset (`switch -c` only when
+the branch is absent — earlier attempts' commits survive); an existing PR is reused, never
+duplicated. "Unpushed" counts commits the remote default branch does not have — never `@{u}..HEAD`,
+which is fatal for a never-pushed branch and once read a two-commit task branch as "nothing to
+publish". The push is `--force-with-lease`: the startup sync legitimately rewrites a task branch's
+base, and the lease refuses to clobber a remote that moved under us. No uncommitted changes and
+nothing unpushed is the ordinary no-op; a checkout that was never cloned is the other one.
+`EXECUTOR=kubernetes` cannot publish or sync (the steps are sibling containers over a docker
+volume) and its methods answer that refusal; the loop does not call them there. Under
+`AUTH_MODE=none` a board with no `GITHUB_TOKEN` in any env scope will fail the publish at push
+with the daemon's authentication error — the work stays local, loudly.
 
 ## Decisions
 

@@ -3,6 +3,7 @@ import type { Board, BoardJob, LeaseState, RuntimeReport } from '../src/board.js
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/docker.js';
 import type { GateManager, GateServer } from '../src/gates.js';
+import type { PublishResult, SyncResult } from '../src/publish.js';
 import { createLoop, type GateStack, type Loop } from '../src/loop.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -26,6 +27,7 @@ interface BoardStub extends Board {
     suspended: string[];
     beats: number;
     gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
+    gatesReread: number;
 }
 
 /**
@@ -42,6 +44,7 @@ function stubBoard(
         idleBeforeStop?: number;
         failClaims?: number;
         failSession?: boolean;
+        rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
     } = {},
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -56,6 +59,7 @@ function stubBoard(
         suspended: [],
         beats: 0,
         gatesReported: [],
+        gatesReread: 0,
         async suspend(claimed) {
             board.suspended.push(claimed.id);
             return 'held';
@@ -85,6 +89,10 @@ function stubBoard(
             board.beats += 1;
             return options.lease ?? 'held';
         },
+        async rereadGates(claimed) {
+            board.gatesReread += 1;
+            return options.rereadGates ?? null;
+        },
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
             return 'held';
@@ -102,11 +110,15 @@ function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
     remote: string | null = null,
     sample: Omit<RuntimeSample, 'sampledAt'> | null = null,
-): Runner & { killed: string[]; lookups: number; samples: number } {
+    publish: PublishResult | null = null,
+    sync: SyncResult | null = null,
+): Runner & { killed: string[]; lookups: number; samples: number; published: BoardJob[]; synced: BoardJob[] } {
     const runner = {
         killed: [] as string[],
         lookups: 0,
         samples: 0,
+        published: [] as BoardJob[],
+        synced: [] as BoardJob[],
         run: outcome,
         async remoteSessionId() {
             runner.lookups += 1;
@@ -118,6 +130,14 @@ function stubRunner(
         },
         async kill(killedJob: BoardJob) {
             runner.killed.push(killedJob.id);
+        },
+        async publishGit(publishedJob: BoardJob) {
+            runner.published.push(publishedJob);
+            return publish ?? { ok: true, published: false, branch: null, prUrl: null, reason: null };
+        },
+        async syncCheckout(syncedJob: BoardJob) {
+            runner.synced.push(syncedJob);
+            return sync ?? { ok: true, reason: null };
         },
     };
     return runner;
@@ -309,6 +329,123 @@ describe('the poll loop', () => {
 
         expect(board.board.completed[0]?.status).toBe('failed');
         expect(board.board.completed[0]?.output).toContain('killed after 60000ms');
+    });
+
+    // Instructions are not enforcement: the deterministic publish runs after a succeeded run,
+    // and its result changes the verdict — work that landed nowhere is not a success.
+    it('publishes a succeeded run and says where the work landed', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(
+            async () => ok(),
+            null,
+            null,
+            { ok: true, published: true, branch: 'fix/10', prUrl: 'https://github.com/Bellows-AI/factory/pull/42', reason: null },
+        );
+
+        await drive({ ...board, runner });
+
+        expect(runner.published).toHaveLength(1);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(board.board.completed[0]?.output).toContain('[driver] published fix/10 — https://github.com/Bellows-AI/factory/pull/42');
+    });
+
+    it('fails the verdict when the publish does not land', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(
+            async () => ok(),
+            null,
+            null,
+            { ok: false, published: false, branch: null, prUrl: null, reason: 'git step failed: authentication refused' },
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('[driver] publish failed — the work did not land: git step failed: authentication refused');
+    });
+
+    // Only a succeeded run publishes: a failed or truncated run's tree may be mid-thought, and
+    // pushing it would publish work the author never saw a verdict on.
+    it('does not publish a run that did not succeed', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ exitCode: 2, output: 'boom' }));
+
+        await drive({ ...board, runner });
+
+        expect(runner.published).toHaveLength(0);
+    });
+
+    it('does not publish a run that stopped talking early', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ finishReason: 'length' }));
+
+        await drive({ ...board, runner });
+
+        expect(runner.published).toHaveLength(0);
+        expect(board.board.completed[0]?.status).toBe('failed');
+    });
+
+    // The checkout is synced before anything reads it — the run itself included. A sync failure
+    // is the author's environment naming itself, and the run never starts on a tree of unknown
+    // state.
+    it('syncs the checkout before the run', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toEqual([job(1)]);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    it('fails the attempt with the reason when the checkout sync fails', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(
+            async () => ok(),
+            null,
+            null,
+            null,
+            { ok: false, reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts' },
+        );
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(1);
+        // The run never started on an unknown tree.
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('could not be synced with the remote');
+        expect(board.board.completed[0]?.output).toContain('conflict in driver/src/loop.ts');
+    });
+
+    // The claim read the gates file before the sync freshened the checkout — the re-read is what
+    // makes a gates file that just arrived gate THIS run instead of the next one.
+    it('gates the run on the re-read answer when the sync surfaced a gates file', async () => {
+        const board = stubBoard([job(1)], {
+            rereadGates: {
+                gates: null,
+                gateError: '.bellows.yaml line 3: unknown key "ports"',
+            },
+        });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.gatesReread).toBe(1);
+        // The run never started: a broken gates file is a failed job, now and not next task.
+        expect(runner.synced).toHaveLength(1);
+        expect(runner.published).toHaveLength(0);
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('could not be read as a gate declaration');
+    });
+
+    it('keeps the claim’s gates when the re-read is refused', async () => {
+        const board = stubBoard([job(1)], { rereadGates: null });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.gatesReread).toBe(1);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
     // The cache watch killed the run mid-tool-call, so the scrape reads finish `tool-calls` — the

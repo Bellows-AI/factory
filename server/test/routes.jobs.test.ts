@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
+import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type { Claim, FollowUpRefusal, GateReport, Job, JobStatus, JobStore, LeaseResult, RuntimeVitals } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import { stubClient, stubTelemetryClient, testConfig } from './helpers.js';
@@ -25,6 +26,7 @@ interface StoreStub extends JobStore {
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     markedDone: string[];
     gatesReported: { id: string; results: GateReport[] }[];
+    gatesReread: { id: string }[];
 }
 
 /**
@@ -43,6 +45,7 @@ function stubStore(
         resume?: 'ok' | 'missing' | 'conflict';
         followUp?: FollowUpRefusal;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
+        reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
     } = {},
 ): StoreStub {
     const boom = () => {
@@ -56,6 +59,7 @@ function stubStore(
         sessions: [],
         progressed: [],
         suspended: [],
+        gatesReread: [],
         followUps: [],
         markedDone: [],
         gatesReported: [],
@@ -117,6 +121,12 @@ function stubStore(
             boom();
             stub.gatesReported.push({ id, results });
             return options.verdict ?? 'ok';
+        },
+        async rereadGates(id, _token) {
+            boom();
+            stub.gatesReread.push({ id });
+            const answer = options.reread ?? { result: 'ok' as const, gates: null, gateError: null };
+            return typeof answer === 'string' ? { result: answer } : answer;
         },
         async get() {
             boom();
@@ -967,4 +977,51 @@ it('does not register the board when there is no job store', async () => {
     const instance = await harnessWith();
     const response = await post(instance, '/api/jobs', { command: 'echo hi' });
     expect(response.statusCode).toBe(404);
+});
+
+describe('POST /api/jobs/:id/gates-reread', () => {
+    it('re-reads the gates for the lease holder and answers what the tree holds now', async () => {
+        const gates = { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] };
+        const store = stubStore({ reread: { result: 'ok', gates, gateError: null } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: TOKEN });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ gates, gateError: null });
+        expect(store.gatesReread).toEqual([{ id: ID }]);
+    });
+
+    it('carries a broken gates file as gateError, not as an error status', async () => {
+        const store = stubStore({ reread: { result: 'ok', gates: null, gateError: '.bellows.yaml line 3: unknown key' } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: TOKEN });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ gates: null, gateError: '.bellows.yaml line 3: unknown key' });
+    });
+
+    it.each([
+        ['a lost lease', 'lost', 409, 'LEASE_LOST'],
+        ['a missing job', 'missing', 404, 'NOT_FOUND'],
+    ])('maps %s', async (_label, result, status, code) => {
+        const store = stubStore({ reread: result as 'lost' | 'missing' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: TOKEN });
+
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('refuses a bad lease token', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: 'not-a-uuid' });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_TOKEN');
+    });
 });
