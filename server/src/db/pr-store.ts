@@ -50,11 +50,11 @@ export interface PrStore {
     /**
      * Every repo this organization has rows for, as "owner/name".
      *
-     * The repo list normally comes from the GitHub App installation, but a deployment running
-     * `GITHUB_MODE=none` has no installation to ask — and every other read below is scoped BY the
-     * repo list, so without an answer a warm database renders as an empty dashboard. That is not a
-     * hypothetical: `npm run seed` plus `npm run verify:ui` is exactly that shape, and so is any
-     * deployment whose credential was removed.
+     * The repo list normally comes from the GitHub App installation, but a credential-less process
+     * (the offline tooling's code-only `none` arm) has no installation to ask — and every other
+     * read below is scoped BY the repo list, so without an answer a warm database renders as an
+     * empty dashboard. That is not a hypothetical: `npm run seed` plus `npm run verify:ui` is
+     * exactly that shape.
      *
      * "Whatever is stored" is also the honest answer there. A process that cannot fetch has no way
      * to know about a repo it holds no rows for, so reporting one would be a claim it cannot make.

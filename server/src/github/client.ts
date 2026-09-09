@@ -68,9 +68,10 @@ export interface ClientDeps {
     /** Which repositories to walk. Reported by the App installation, so it is read per call. */
     repos: RepoSource;
     /**
-     * Absent under GITHUB_MODE=none, and then every method here refuses before building a request.
-     * An optional dependency rather than a provider that throws: a process with no credential
-     * cannot fetch, and saying so in the type is stronger than saying it in an error message.
+     * Absent only when the process was built with the code-only `none` arm — the offline
+     * tooling — and then every method here refuses before building a request. An optional
+     * dependency rather than a provider that throws: a process with no credential cannot fetch,
+     * and saying so in the type is stronger than saying it in an error message.
      */
     tokens?: TokenProvider | undefined;
     fetch?: typeof globalThis.fetch;
@@ -90,11 +91,12 @@ export function createGitHubClient({ config, repos, tokens, fetch = globalThis.f
         attempts = 3,
     ): Promise<T> {
         if (!tokens) {
-            // Before any request is built, which is what makes GITHUB_MODE=none a mode rather than
-            // a failure: nothing reaches the network, the stored figures still render, and `meta`
-            // carries this sentence instead of a network error nobody can act on.
+            // Before any request is built, which is what makes the offline tooling a distinct
+            // process rather than a misconfigured one: nothing reaches the network, the stored
+            // figures still render, and `meta` carries this sentence instead of a network error
+            // nobody can act on.
             throw new GitHubError(
-                'GITHUB_MODE is "none", so this deployment has no GitHub credential and serves only what is already stored',
+                'this process was built with no GitHub credential, so it serves only what is already stored',
                 'TOKEN_REJECTED',
             );
         }

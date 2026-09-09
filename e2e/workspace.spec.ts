@@ -10,8 +10,8 @@ import type { Page } from '@playwright/test';
  *
  * The auth server runs with a real ORG_WORKSPACE_ROOT under artifacts/, so this drives real
  * provisioning: a directory is created on disk by the sign-in callback. It does NOT drive a clone —
- * there is no GitHub App here (GITHUB_MODE=none), so the picker reports an empty installation,
- * which is itself a state worth pinning.
+ * the server here is the offline entry, with no GitHub App credential, so the picker reports an
+ * empty installation, which is itself a state worth pinning.
  */
 
 const SHOTS = 'artifacts/ui';
@@ -92,10 +92,10 @@ test('the picker opens by itself when nothing is selected, and is genuinely moda
     await expect(dialog).toBeVisible();
 
     /*
-     * GITHUB_MODE=none here, so there is no App installation to ask — and the repo source falls
-     * back to the repositories the seeded database already holds rows for. That fallback is what
-     * keeps a credential-less deployment usable at all, and this is where it is visible: the picker
-     * offers exactly what the dashboard is reporting on.
+     * The offline entry runs with no GitHub App credential, so there is no installation to ask —
+     * and the repo source falls back to the repositories the seeded database already holds rows
+     * for. That fallback is what keeps a credential-less run usable at all, and this is where it
+     * is visible: the picker offers exactly what the dashboard is reporting on.
      */
     await expect(dialog).toContainText('Bellows-AI/bellows.ai');
 

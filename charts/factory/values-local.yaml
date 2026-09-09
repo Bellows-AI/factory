@@ -17,6 +17,9 @@
 dashboard:
     image: factory-ai
     workspaceRoot: /workspaces
+    # The offline profile: the code-only no-fetch entry. There is no GitHub App credential in this
+    # cluster, so the dashboard serves whatever the database holds and clones nothing.
+    offline: true
 
 auth:
     # Open, because the cluster is local and the perimeter is the ClusterIP — the k8s analogue of
@@ -25,9 +28,6 @@ auth:
     mode: none
     # The bind is 0.0.0.0 inside the container, so loadConfig demands this hatch for an open mode.
     allowPublicBind: '1'
-
-github:
-    mode: none
 
 # One node, so the claim is ReadWriteOnce: the local provisioner cannot serve ReadWriteMany.
 workspaces:

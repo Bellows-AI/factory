@@ -45,12 +45,12 @@ export const INSTALLATION_REPOS_TTL_MS = 10 * 60 * 1000;
 export { fullName };
 
 export interface RepoSourceDeps {
-    /** Absent under GITHUB_MODE=none, where `stored` answers instead. */
+    /** Absent under the code-only `none` arm (the offline tooling), where `stored` answers instead. */
     readonly client?: GitHubAppClient | undefined;
     /**
      * The repos this organization already has rows for, as "owner/name".
      *
-     * Used only when there is no App client. Without it a `none`-mode deployment reports no repos,
+     * Used only when there is no App client. Without it a credential-less process reports no repos,
      * and since every stored read is scoped by the repo list, a warm database would render as an
      * empty dashboard — which is what `npm run seed` followed by `npm run verify:ui` is.
      */

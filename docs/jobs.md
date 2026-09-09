@@ -651,8 +651,10 @@ Two things it does that are not decoration:
 - **It truncates `job` before the board phase.** The queue is FIFO, so a job left by an earlier run
   hands the claim a different job than the one under test — which reads as a broken lease rather
   than a dirty fixture. That misdiagnosis cost real time the first time this script ran.
-- **It exports `GITHUB_MODE=none` on every boot.** The default `app` makes `loadConfig` refuse a
-  `*_test` database outright, and a fetching board would start cloning repositories.
+- **Both boards boot the offline entry** (`server/dist/offline.js`): the same server built with
+  the code-only no-fetch arm, which is what lets them run with no App credential against a
+  `*_test` database — the App is the only env-reachable configuration, and it would refuse the
+  database name outright, and a fetching board would start cloning repositories.
 
 The reclaim and fencing checks age `lease_expires_at` with `psql` rather than waiting a lease out,
 so the script stays a few seconds rather than a few minutes.

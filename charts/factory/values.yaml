@@ -38,9 +38,8 @@ auth:
     oauthClientId: ''
 
 github:
-    # `app` is the default and is fatal without an id and a private key; `none` serves whatever the
-    # database already holds and fetches nothing.
-    mode: app
+    # The id and the key are required: without them the server refuses to boot — there is no
+    # no-fetch mode to fall back to.
     appId: ''
     installationId: ''
     # The PEM (or its base64) lands in the chart's Secret, never in the pod spec or a command line.

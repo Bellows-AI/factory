@@ -25,10 +25,10 @@ import { parseArgs, value } from './args.js';
  */
 const PREFIX = 'fwt_';
 
-// GITHUB_MODE=none, for the same reason as invite.ts: this mints one credential against the
-// database and never reads GitHub, so App credentials are not its business — and requiring them
-// would stop it running against the disposable database scripts/test-jobs.sh uses.
-const { config } = resolveConfig({ env: { ...process.env, GITHUB_MODE: 'none' } });
+// No fetch credential, said in code, for the same reason as invite.ts: this mints one credential
+// against the database and never reads GitHub, so App credentials are not its business — and
+// requiring them would stop it running against the disposable database scripts/test-jobs.sh uses.
+const { config } = resolveConfig({ env: process.env, github: { mode: 'none' } });
 const args = parseArgs(process.argv.slice(2));
 
 const orgId = value(args, 'org') ?? config.orgId;

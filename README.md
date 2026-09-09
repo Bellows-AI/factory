@@ -20,20 +20,19 @@ simplifying one silently makes the number wrong.
 
 ## Running it
 
-A database is required: it is the only source the dashboard reads. A GitHub App is required too,
-unless you say otherwise — `GITHUB_MODE` defaults to `app` and is fatal without an App id and
-private key. `GITHUB_MODE=none` fetches nothing and renders whatever is already stored. That is a
-supported way to run, but one you have to ask for: a dashboard that silently fetches nothing looks
-like data loss rather than like a missing credential.
+A database is required: it is the only source the dashboard reads. A GitHub App is required too:
+the id and the private key are the only configuration there is, and either one missing refuses to
+boot — a dashboard that silently fetches nothing looks like data loss rather than like a missing
+credential.
 
 ```bash
 npm install
 docker compose up -d timescale        # required; there is no in-memory mode
 
-# No credential: fill a disposable database with synthetic data and browse that.
+# No credential: fill a disposable database with synthetic data and browse that offline.
 docker compose exec timescale psql -U factory -d postgres -c 'create database factory_seed'
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run seed
-GITHUB_MODE=none DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run dev
+npm run verify:ui                     # boots server/dist/offline.js against the seeded database
 
 # Live, via the environment
 cp .env.example .env   # set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY

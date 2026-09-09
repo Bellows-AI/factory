@@ -295,7 +295,7 @@ const iso = (value: Date | null): string | null => (value === null ? null : valu
  * The mint is the BASE layer. A `GITHUB_TOKEN` configured in any env scope (org, workspace, repo)
  * wins over it, because that value is something an operator deliberately chose and silently
  * replacing a credential with a different one is a failure nobody notices; the mint fills only the
- * gap. No mint (`GITHUB_MODE=none` builds no provider) changes nothing at all, so a board that
+ * gap. No mint (the offline tooling builds no provider) changes nothing at all, so a board that
  * cannot fetch still reads exactly as it did.
  */
 export function withMintedToken(
@@ -366,8 +366,9 @@ export function createJobStore({
     };
     /**
      * The GitHub App's installation-token provider, laid under the resolved env as the base layer
-     * (`withMintedToken`). Present in index.ts under `GITHUB_MODE=app`, absent under `none` and in
-     * the tests that predate it — a board that cannot fetch mints nothing. Declared inline, like
+     * (`withMintedToken`). Present in index.ts under the App — which is every env-booted process —
+     * and absent in the offline tooling and the tests that predate it: a board that cannot fetch
+     * mints nothing. Declared inline, like
      * `env`, because `db/` must not import from `github/`. Each claim mints FRESH rather than
      * reading the provider's cache, because the credential has to outlive the claim: a runner's
      * env is written once and a run is capped at thirty minutes, so a cached token's remaining

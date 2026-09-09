@@ -50,9 +50,10 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     return {
         orgId: 'test-org',
         orgName: 'Test Org',
-        // `none`, so the offline suite never constructs a token provider or an App client. The repo
-        // list reaches the service through `staticRepoSource` in `harness` instead — which is the
-        // same seam `npm run seed` and `verify:ui` use, rather than a test-only one.
+        // `none` — the code-only no-fetch arm — so the offline suite never constructs a token
+        // provider or an App client. The repo list reaches the service through `staticRepoSource`
+        // in `harness` instead — which is the same seam `npm run seed` and `verify:ui` use, rather
+        // than a test-only one.
         github: { mode: 'none' },
         baseBranch: 'dev',
         bots: ['claude', 'claude[bot]', 'github-actions', 'github-actions[bot]', 'bellows-frontend-fix-bot'],

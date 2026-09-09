@@ -20,9 +20,9 @@ export const fullName = (repo: Repo): string => `${repo.owner}/${repo.name}`;
  * The credential the repo-read path uses, and the source of the repo list itself.
  *
  * A union for the same reason AuthConfig is one: "half-configured App" is unrepresentable rather
- * than merely rejected, and the mode is an EXPLICIT enum never inferred from whether an app id
- * happens to be set. `GITHUB_APP_IDD` must leave a deployment loudly unconfigured, not silently
- * reading nothing.
+ * than merely rejected. The environment can only ever produce the `app` arm — `loadGitHub`
+ * requires the id and the key — so a deployment cannot arrive at "fetches nothing", by forgetting
+ * a variable or by any variable at all.
  *
  * This replaced a personal access token. The App is not just a different credential: an installation
  * also *reports* which repositories it can see, which is what removed ORG_REPOS. There is no longer
@@ -31,14 +31,14 @@ export const fullName = (repo: Repo): string => `${repo.owner}/${repo.name}`;
 export type GitHubConfig =
     | {
           /**
-           * Nothing is fetched from GitHub and nothing is cloned; the dashboard serves whatever is
-           * already in the database. Four things depend on this — `npm run seed`,
-           * `npm run verify:ui`, `npm run test:jobs` and the route-test harness — and there is no
-           * offline way to obtain an App private key, so requiring one would make
-           * `git clone && npm run dev` impossible.
+           * Nothing is fetched from GitHub and nothing is cloned; whatever is already in the
+           * database still renders.
            *
-           * It is NOT the default, and nothing degrades into it: an incomplete `app` is fatal. This
-           * is a sentence an operator types, and index.ts logs it unconditionally.
+           * Reachable ONLY IN CODE, never from the environment: the offline tooling constructs it
+           * directly, because there is no offline way to obtain an App private key. `npm run seed`
+           * and the admin CLIs pass it to `resolveConfig`, the route-test harness builds it into
+           * its own `AppConfig`, and the env-booted harnesses (`npm run verify:ui`,
+           * `npm run test:jobs`) run the compiled offline entry, `server/dist/offline.js`.
            */
           readonly mode: 'none';
       }
@@ -296,19 +296,14 @@ function workspaceRootOf(env: NodeJS.ProcessEnv): string | null {
 }
 
 /**
- * `[github]`, or the one field `none` mode has.
+ * The one GitHub configuration there is: the App, which is what every process reaching the
+ * environment builds.
  *
  * Pure, like the rest of loadConfig. In particular the private key arrives here already read:
  * GITHUB_APP_PRIVATE_KEY_FILE is resolved by resolveConfig, so this validator never learns that a
  * file exists — the same rule that keeps `loadConfig({})` meaning one thing on every machine.
  */
-function loadGitHub(env: NodeJS.ProcessEnv): GitHubConfig {
-    const mode = env.GITHUB_MODE?.trim() || 'app';
-    if (mode !== 'none' && mode !== 'app') {
-        throw new Error(`GITHUB_MODE must be "app" or "none", got "${env.GITHUB_MODE}"`);
-    }
-    if (mode === 'none') return Object.freeze({ mode });
-
+function loadGitHub(env: NodeJS.ProcessEnv): Extract<GitHubConfig, { mode: 'app' }> {
     // Named individually rather than as "the App is incomplete": the operator has one key to fix
     // and should not have to diff the example file to find out which.
     const appId = env.GITHUB_APP_ID?.trim();
@@ -319,7 +314,7 @@ function loadGitHub(env: NodeJS.ProcessEnv): GitHubConfig {
     ] as const) {
         if (!value) {
             throw new Error(
-                `GITHUB_MODE is "app" but ${label} is not set. A half-configured App is fatal rather than falling back to fetching nothing, which would present as an empty dashboard rather than as a missing credential. Set GITHUB_MODE=none to serve stored data deliberately.`,
+                `${label} is not set. Every deployment fetches through the GitHub App, so the id and the private key are required — a process without them would render an empty dashboard that reads as data loss rather than as a missing credential. See docs/configuration.md.`,
             );
         }
     }
@@ -343,7 +338,7 @@ function loadGitHub(env: NodeJS.ProcessEnv): GitHubConfig {
     }
 
     return Object.freeze({
-        mode,
+        mode: 'app' as const,
         appId: appId!,
         installationId,
         privateKeyPem: pem,
@@ -471,7 +466,13 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
     });
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+/**
+ * The second parameter is the code-only injection point: the offline tooling passes the `none`
+ * arm here, in code, because the environment must not be able to select it. Defaults to reading
+ * the environment, which always yields the App — deliberately evaluated in the body, after the
+ * retired-variable refusals.
+ */
+export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?: GitHubConfig): AppConfig {
     // DATA_SOURCE selected between the live API and a replayed 203-PR payload. It is gone, and
     // fatal rather than ignored for the same reason GITHUB_REPOS is: it used to change what the
     // whole page was made of, so an ignored one would boot a dashboard the operator believes is
@@ -494,7 +495,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
      */
     if (env.GITHUB_TOKEN) {
         throw new Error(
-            'GITHUB_TOKEN is no longer supported: the repo-read credential is a GitHub App installation now, which also reports which repositories it can see. Set GITHUB_MODE=app with GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY, or GITHUB_MODE=none to serve stored data. See docs/configuration.md.',
+            'GITHUB_TOKEN is no longer supported: the repo-read credential is a GitHub App installation now, which also reports which repositories it can see. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_FILE). See docs/configuration.md.',
         );
     }
     if (env.GITHUB_REPOS || env.ORG_REPOS) {
@@ -557,30 +558,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const databaseUrl = env.DATABASE_URL;
     if (!databaseUrl) {
         throw new Error(
-            'DATABASE_URL is required: the database is the only source the dashboard reads. Start one with `docker compose up -d timescale`, then either let it sync from GitHub or seed it with `npm run seed`.',
+            'DATABASE_URL is required: the database is the only source the dashboard reads. Start one with `docker compose up -d timescale`, then let it sync from GitHub, or fill a disposable one with `npm run seed`.',
         );
     }
 
-    const github = loadGitHub(env);
+    // The App, unless the caller injected the code-only none arm — the offline tooling's seam.
+    const github = injectedGitHub ?? loadGitHub(env);
 
     /*
-     * `GITHUB_MODE=none` is a supported state, not an error.
+     * The disposable-database guard.
      *
-     * It means this process does not fetch: it serves whatever is already in the database. That is
-     * what lets the browser check and a seeded demo run with no credentials and no network, and it
-     * is honest on the page — nothing is constructed to fetch with, and the persisted figures still
-     * render with the reason named in `meta`.
-     *
-     * The pairing below is the one combination that must stay impossible. A disposable database is
-     * one that `npm run test:db` truncates and `npm run seed` fills with invented pull requests;
-     * pointing a *fetching* process at one means real history is either destroyed on the next test
-     * run or interleaved with synthetic rows that no later query can tell apart. Re-keyed from
-     * GITHUB_TOKEN to the mode: same guard, same reasoning, new name for "this process fetches".
+     * Every process that reaches the environment fetches — the App is the only configuration
+     * there is — so the pairing below is simply refused. A disposable database is one that
+     * `npm run test:db` truncates and `npm run seed` fills with invented pull requests; pointing
+     * a fetching process at one means real history is either destroyed on the next test run or
+     * interleaved with synthetic rows that no later query can tell apart. The offline tooling is
+     * exempt by construction, because it never reaches here: its config carries the code-only
+     * `none` arm, which is what "this process does not fetch" means now.
      */
     const name = databaseName(databaseUrl) ?? '';
     if (github.mode === 'app' && DISPOSABLE_DATABASE.test(name)) {
         throw new Error(
-            `DATABASE_URL points at "${name}", which is disposable: the db suite truncates it and \`npm run seed\` writes synthetic pull requests into it. Refusing to persist real fetched history there. Use a database without a _test/_seed/_synthetic/_demo/_e2e suffix, or set GITHUB_MODE=none to read what is already stored.`,
+            `DATABASE_URL points at "${name}", which is disposable: the db suite truncates it and \`npm run seed\` writes synthetic pull requests into it. Refusing to persist real fetched history there. Use a database without a _test/_seed/_synthetic/_demo/_e2e suffix.`,
         );
     }
 
@@ -622,10 +621,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
  * argument and never learns that a file exists. An inline key wins over a FILE path, and an
  * explicit path that cannot be read is fatal and says why; the usual cause is a host file at mode
  * 600 bind-mounted into a container running as `node`.
+ *
+ * `github` is the tooling's injection point: the offline CLIs pass the code-only `none` arm so
+ * they never need a credential and never trip the disposable-database guard. Nothing env-reachable
+ * can produce it.
  */
-export function resolveConfig(options: { env?: NodeJS.ProcessEnv } = {}): { readonly config: AppConfig } {
+export function resolveConfig(options: { env?: NodeJS.ProcessEnv; github?: GitHubConfig } = {}): {
+    readonly config: AppConfig;
+} {
     const env = options.env ?? process.env;
     const path = env.GITHUB_APP_PRIVATE_KEY_FILE?.trim();
+    if (options.github) return { config: loadConfig(env, options.github) };
     if (!path || env.GITHUB_APP_PRIVATE_KEY) return { config: loadConfig(env) };
     try {
         return { config: loadConfig({ ...env, GITHUB_APP_PRIVATE_KEY: readFileSync(path, 'utf8').trim() }) };

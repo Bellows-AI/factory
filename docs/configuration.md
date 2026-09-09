@@ -12,23 +12,23 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   `GITHUB_OWNER`, `ORG_REPOS`, `GITHUB_REPOS`, `DATA_SOURCE` and `CACHE_TTL_SECONDS` are fatal
   rather than ignored: every one of them *was* meaningful, so ignoring one now would change
   behaviour silently. Each message names what replaced it rather than reporting a typo.
-- **`DATABASE_URL` is required, and so is a decision about GitHub.** The database is the only source
-  the dashboard reads, so there is no configuration without one. `GITHUB_MODE` is an explicit enum
-  defaulting to `app`, and `app` with `GITHUB_APP_ID` or `GITHUB_APP_PRIVATE_KEY` missing is fatal
-  and names the missing key. `none` is a supported state — nothing is constructed to fetch with, and
-  the persisted figures still render — but it is a sentence an operator types, never somewhere a
-  deployment lands by forgetting a variable, because a dashboard that silently fetches nothing
-  presents as data loss rather than as a missing credential.
-  - **This is the opposite default from `AUTH_MODE`, on purpose.** There, `none` keeps
-    `git clone && npm run dev` working and the cost of the wrong default is a locked-out developer.
-    Here the cost runs the other way. The price is paid explicitly in four places: `npm run seed`,
-    `npm run verify:ui`, `scripts/test-jobs.sh` and the config suites all set `GITHUB_MODE=none`.
-- **A process in `app` mode refuses a disposable database** (`_test`, `_seed`, `_synthetic`,
-  `_demo`, `_e2e`). `npm run test:db` truncates one and `npm run seed` fills one with invented pull
-  requests, so real fetched history put there is destroyed or made indistinguishable from
-  synthetic. In `none` mode the same pairing is *allowed*, because nothing is fetched to lose —
-  which is exactly how the seeding CLI and the browser check run. The guard used to key on
-  `GITHUB_TOKEN`; same guard, same reasoning, new name for "this process fetches".
+- **`DATABASE_URL` is required, and so are the App id and key.** The database is the only source
+  the dashboard reads, and the GitHub App is the only credential there is: the environment can
+  produce nothing else. `app` with `GITHUB_APP_ID` or `GITHUB_APP_PRIVATE_KEY` missing is fatal
+  and names the missing key. There is no mode to select, and no offline way to obtain a private
+  key — so the tooling that must run without one (`npm run seed`, `npm run verify:ui`,
+  `scripts/test-jobs.sh`, the route-test harness) says so in CODE, by passing the code-only
+  `none` arm of `GitHubConfig` to `resolveConfig` or by booting the compiled offline entry,
+  `server/dist/offline.js`. An environment variable that selects it does not exist, and a
+  dashboard that silently fetches nothing presents as data loss rather than as a missing
+  credential.
+- **A process that fetches refuses a disposable database** (`_test`, `_seed`, `_synthetic`,
+  `_demo`, `_e2e`). `npm run test:db` truncates one and `npm run seed` fills one with invented
+  pull requests, so real fetched history put there is destroyed or made indistinguishable from
+  synthetic. The code-only `none` arm is exempt by construction, because nothing is fetched to
+  lose — which is exactly how the seeding CLI and the browser check run. The guard used to key on
+  `GITHUB_TOKEN`, then on a mode; now every env-booted process fetches, so the guard is simply
+  refused.
 - **There is no repo list to configure.** It is whatever the GitHub App installation reports. A
   configured copy beside it would be a second roster to keep in step with the credential — and a
   repo in one but not the other used to fail every sync with a 404 that read as a deleted

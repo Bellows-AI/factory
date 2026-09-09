@@ -43,11 +43,8 @@ services:
         # the host's DATABASE_URL, pointing at a different database, cannot take hold.
         environment:
             # The repo-read credential AND the repo list, both from one GitHub App installation.
-            # `app` is the default, and it is fatal without an id and a key — so a stack with no App
-            # registered has to say `none`, where the dashboard serves whatever is already in the
-            # database. That is a supported way to run, but it is not one you arrive at by
-            # forgetting a variable.
-            GITHUB_MODE: ${GITHUB_MODE:-app}
+            # There is no mode to select: the id and the key are required, and a stack without them
+            # refuses to boot saying which one is missing.
             GITHUB_APP_ID: ${GITHUB_APP_ID:-}
             # Optional: discovered from the App when the App is installed in exactly one place.
             GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
