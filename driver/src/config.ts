@@ -144,6 +144,14 @@ export interface DriverConfig {
      * A timed-out gate is a failed gate, exit 124 — the convention `timeout` itself uses.
      */
     gateTimeoutMs: number;
+    /**
+     * Honors `.bellows.yaml` in the author's checkouts: before a run, the driver reads the file
+     * (through a throwaway container over the workspaces volume — it has no host path), starts
+     * each declared service as a sibling container on a per-job network, and joins the runner to
+     * it, so `redis://cache:6379` resolves for the duration of one job. Off by default, so that
+     * turning repo-defined containers on is something somebody typed — see docs/jobs.md.
+     */
+    servicesEnabled: boolean;
 }
 
 const DEFAULTS = {
@@ -257,6 +265,20 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         );
     }
 
+    // Auxiliary services are docker networks and sibling containers, created and torn down around
+    // each run — machinery only the docker runner has. Refused at startup rather than silently
+    // absent, for the same reason Remote Control is: a driver that claimed jobs and quietly never
+    // started a declared service would read as a broken feature instead of the configuration
+    // error it is.
+    const servicesEnabled = flag(env.RUNNER_SERVICES);
+    if (servicesEnabled && executor === 'kubernetes') {
+        throw new Error(
+            'RUNNER_SERVICES is not supported under EXECUTOR=kubernetes: auxiliary services from ' +
+                '.bellows.yaml are docker networks and sibling containers the kubernetes runner does ' +
+                'not create. Run service-backed workloads on EXECUTOR=docker.',
+        );
+    }
+
     // And the last impossible pair. The kubernetes runner speaks claude-code only — its Job spec is
     // `--session-id`/`--resume` argv — while an opencode job arrives with no session at all.
     // Allowed, the first claim would burn an attempt on the runner's own refusal, and the job would
@@ -306,5 +328,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         gateListenHost: text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1'),
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
         gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', 600_000, 1_000, 24 * 3600_000),
+        servicesEnabled,
     };
 }

@@ -4,8 +4,15 @@ ClusterRole, because its reach is exactly the runner Jobs it creates, in the nam
 installed it to. The verbs are the calls the kubernetes runner makes and nothing more: create a
 Job, read its status, delete it (kill and the re-claim fence), list its pods, read a pod's log.
 `secrets` is the claim env's per-job Secret: create it before the Job, read nothing back, delete it
-with the runner. No `get` on secrets list is granted and no wildcard, so the driver can only ever
+with the runner. No `get` on secrets is granted and no wildcard, so the driver can only ever
 address the Secret named after a job id it is already running.
+`configmaps` is the checkout claim that makes the re-claim fence atomic (issue #32): one ConfigMap
+per job id, POSTed to take the checkout (409 means another attempt holds it), read to order the
+contenders, deleted to release or take over. `get` is safe HERE and only here — the claim carries
+a holder token and an attempt number, both already known to the driver, and never secret material,
+which is exactly why the claim is not a Secret. The grant is namespace-wide on ConfigMaps — RBAC
+cannot scope it to `factory-job-*-claim` names — so a compromised driver can read the namespace's
+configuration, not its credentials: the line this Role has always drawn.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -27,6 +34,9 @@ rules:
     - apiGroups: ['']
       resources: ['secrets']
       verbs: ['create', 'delete']
+    - apiGroups: ['']
+      resources: ['configmaps']
+      verbs: ['create', 'get', 'delete']
     - apiGroups: ['']
       resources: ['pods']
       verbs: ['list']

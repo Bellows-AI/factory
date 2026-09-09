@@ -118,6 +118,12 @@ expect_contains     'the driver role grants the runner calls' "$rbac" \
 expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
     "resources: ['secrets']
       verbs: ['create', 'delete']"
+# The checkout claim that makes the re-claim fence atomic: POSTed to take the checkout, read to
+# order the contenders, deleted to release or take over. `get` is safe on ConfigMaps and would
+# not be on secrets — the claim carries no secret material.
+expect_contains     'the driver role manages the checkout claim' "$rbac" \
+    "resources: ['configmaps']
+      verbs: ['create', 'get', 'delete']"
 expect_contains     'the driver role lists pods, only to find them' "$rbac" "verbs: ['list']"
 expect_not_contains 'the driver role never watches'         "$rbac" 'watch'
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
