@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
+import { cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 
 /*
@@ -672,6 +672,155 @@ describe('scraping the session opencode used', () => {
     });
 });
 
+describe('the cache watch', () => {
+    const DEATH = '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","turns":[' +
+        '{"input":84000,"cacheRead":0,"ms":250000},' +
+        '{"input":80000,"cacheRead":0,"ms":200000},' +
+        '{"input":63000,"cacheRead":0,"ms":150000}]}';
+
+    /**
+     * The probe is a throwaway container over the workspaces volume, entrypoint swapped for node
+     * — the live-run twin of the close-time readout. Pure and pinned for the same reason.
+     */
+    it('probes the newest root session of the member’s data directory, read-only', () => {
+        const line = opencodeCacheProbeArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
+        expect(line.slice(0, 8)).toEqual([
+            'run',
+            '--rm',
+            '-v',
+            'factory-ai_workspaces:/workspaces',
+            '--entrypoint',
+            'node',
+            'opencode-executor',
+            '-e',
+        ]);
+        expect(line[8]).toContain(`/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`);
+        // Newest-first, so the probe can answer from the run's last handful of messages without
+        // reading the session whole.
+        expect(line[8]).toContain('order by id desc');
+        expect(line[8]).toContain('parent_id is null');
+        expect(line[8]).toContain('d.role!=="assistant"');
+        expect(line[8]).toContain('readOnly');
+        expect(line[8]).toContain('{error:');
+    });
+
+    it('parses the probe’s answer, error lines included', () => {
+        expect(parseOpencodeCacheProbe(`${DEATH}\n`)).toEqual({
+            sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9',
+            turns: [
+                { input: 84000, cacheRead: 0, ms: 250000 },
+                { input: 80000, cacheRead: 0, ms: 200000 },
+                { input: 63000, cacheRead: 0, ms: 150000 },
+            ],
+            error: null,
+        });
+        // Not yet: no session, no turns, no error.
+        expect(parseOpencodeCacheProbe('')).toEqual({ sessionId: null, turns: [], error: null });
+        expect(parseOpencodeCacheProbe('{"error":"database is locked"}')).toEqual({
+            sessionId: null,
+            turns: [],
+            error: 'database is locked',
+        });
+        // Malformed turns are not turns.
+        expect(parseOpencodeCacheProbe('{"id":"ses_x1","turns":[{"input":-1},{"input":5}]}').turns).toEqual([]);
+    });
+
+    it('fires only on three consecutive dead, real-context, slow turns', () => {
+        const turn = (over: Partial<{ input: number; cacheRead: number; ms: number }> = {}) => ({
+            input: 80000,
+            cacheRead: 0,
+            ms: 200000,
+            ...over,
+        });
+        // Fewer than three: not yet, whatever the turns look like.
+        expect(cacheCollapse([turn(), turn()])).toBeNull();
+        // The collapse itself, with the observed shape of the first incident.
+        const verdict = cacheCollapse([turn({ ms: 250000 }), turn({ ms: 200000 }), turn({ ms: 150000 })]);
+        expect(verdict).toContain('3 consecutive turns with no prompt-cache reads');
+        expect(verdict).toContain('80k/80k/80k');
+        expect(verdict).toContain('150-250s');
+        // Cache hits, fast turns, or a tiny context each break the chain — the watch fires on a
+        // provider that stopped CACHING INTO A WALL, not on a model that never cached and answers
+        // quickly anyway.
+        expect(cacheCollapse([turn({ cacheRead: 5000 }), turn(), turn()])).toBeNull();
+        expect(cacheCollapse([turn({ ms: 1000 }), turn(), turn()])).toBeNull();
+        expect(cacheCollapse([turn({ input: 500 }), turn(), turn()])).toBeNull();
+        expect(cacheCollapse([turn(), turn({ ms: 1000 }), turn()])).toBeNull();
+    });
+
+    // A controllable child: stays open while the probe interval ticks, closed by the test once
+    // the daemon has seen what the assertions need. The runner's own `docker run` goes through
+    // spawnFn; every daemon call goes through the exec seam below.
+    const openChild = () => {
+        const c = new EventEmitter() as ChildProcess;
+        c.stdout = new EventEmitter();
+        c.stderr = new EventEmitter();
+        return {
+            spawn: (() => c) as unknown as typeof spawn,
+            close: (code: number | null) => {
+                process.nextTick(() => c.emit('close', code));
+            },
+        };
+    };
+
+    it('kills the run when the probe reports a dead cache, and carries the reason', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: DEATH };
+            // The kill resolves its runner through its own label pair; the lease filter marks
+            // this attempt's ps, and answering it with a container id is what lets the mock see
+            // the `docker kill` itself.
+            if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease'))) {
+                return { stdout: 'runner-1\n' };
+            }
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const { spawn: childSpawn, close } = openChild();
+        const runner = createDockerRunner(
+            loadDriverConfig({
+                RUNNER_CLI: 'opencode',
+                RUNNER_CACHE_WATCH: '1',
+                RUNNER_CACHE_WATCH_POLL_MS: '250',
+            }),
+            childSpawn,
+            exec,
+        );
+
+        const pending = runner.run({ ...job, followUp: false }, null);
+        while (!calls.some((a) => a[0] === 'kill')) await new Promise((r) => setTimeout(r, 5));
+        close(137);
+        const outcome = await pending;
+
+        expect(outcome.exitCode).toBe(137);
+        expect(outcome.cacheLost).toContain('3 consecutive turns with no prompt-cache reads');
+        expect(outcome.timedOut).toBe(false);
+    });
+
+    it('leaves the daemon alone while the watch is off', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const { spawn: childSpawn, close } = openChild();
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            childSpawn,
+            exec,
+        );
+
+        const pending = runner.run({ ...job, followUp: false }, null);
+        // Two poll periods of a live run, had the watch been armed at the same 250ms the armed
+        // test uses — then an ordinary clean exit.
+        await new Promise((r) => setTimeout(r, 500));
+        close(0);
+        await pending;
+
+        // The close-time readout does run; the mid-run probe never does.
+        expect(calls.some((a) => a[0] === 'run' && a.includes('order by id desc'))).toBe(false);
+    });
+});
 
 /**
  * The gate environment container: one long-lived `docker run -d` per member+repo, a `docker exec`

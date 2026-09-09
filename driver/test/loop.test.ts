@@ -311,6 +311,30 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('killed after 60000ms');
     });
 
+    // The cache watch killed the run mid-tool-call, so the scrape reads finish `tool-calls` — the
+    // cache note must tell the whole story on its own, without the premature-stop note stacking a
+    // second suspected cause on top.
+    it('says so when the cache watch killed the run, and only says that', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({
+                exitCode: 137,
+                output: 'partial',
+                finishReason: 'tool-calls',
+                cacheLost: '3 consecutive turns with no prompt-cache reads (input 84k/80k/63k tokens, 150-250s each)',
+            }),
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('failed');
+        const output = board.board.completed[0]?.output ?? '';
+        expect(output).toContain('[driver] killed — the model provider stopped serving prompt cache');
+        expect(output).toContain('3 consecutive turns with no prompt-cache reads');
+        expect(output).toContain('Retry when the cache is healthy again');
+        expect(output).not.toContain('ended before it finished');
+    });
+
     // The whole reason the heartbeat exists: two containers must not go on writing to one checkout.
     it('kills the container and reports nothing once the lease is lost', async () => {
         const board = stubBoard([job(1)], { lease: 'lost' });

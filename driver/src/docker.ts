@@ -62,6 +62,12 @@ export interface RunOutcome {
      * Undefined for claude-code and kubernetes, which never scrape.
      */
     readoutError?: string | null;
+    /**
+     * Why the cache watch killed the run, when it did — the observed turns, so the verdict the
+     * author reads names what the provider stopped doing instead of just "failed". Undefined
+     * when the watch is off or never fired; never set by claude-code or kubernetes.
+     */
+    cacheLost?: string | null;
 }
 
 /**
@@ -487,6 +493,127 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
             typeof parsed.cost === 'number' && Number.isFinite(parsed.cost) && parsed.cost >= 0 ? parsed.cost : null;
         const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
         return { sessionId, finishReason, contextTokens, costUsd, error };
+    } catch {
+        return nothing;
+    }
+}
+
+/*
+ * The cache watch. A model provider that silently stops serving prompt-cache hits mid-run turns
+ * every following turn into a full re-ingestion of the context at a fraction of the speed — the
+ * first observed case went from ~25s turns to 2.5-4.5 minute turns and ground into the job
+ * timeout having explored and edited nothing. The watch reads the same session database the
+ * close-time readout does, but WHILE the run is live, and kills the job when enough turns have
+ * completed with no cache reads over a real context and each of them itself slow — the point
+ * where "no cache" has become "no progress". Killing early reports the cause; the timeout
+ * reports only a corpse.
+ */
+
+/** Completed assistant turns the watch inspects, as the session database records them. */
+export interface OpencodeCacheTurn {
+    /** Input tokens that were NOT served from cache — the whole context, when the cache is dead. */
+    input: number;
+    /** Input tokens served from cache. Zero on every turn is the signature of a dead cache. */
+    cacheRead: number;
+    /** How long the turn took, wall clock. A dead cache is only a problem when it costs time. */
+    ms: number;
+}
+
+/** The numbers the trigger fires on, each named for the test that pins it. */
+export const CACHE_WATCH_TURNS = 3;
+export const CACHE_WATCH_MIN_INPUT_TOKENS = 20_000;
+export const CACHE_WATCH_MIN_TURN_MS = 60_000;
+
+/**
+ * The cache watch's verdict over the newest completed turns: a human-readable reason when they
+ * show a provider that has stopped caching, null otherwise. Every turn must fail on all three
+ * axes — no cached input, a real context, and a slow turn — so a provider that never cached but
+ * answers quickly is left alone, and one fluke turn cannot kill a job. The reason carries the
+ * observed numbers, because "failed" alone would send its reader down the wrong path.
+ */
+export function cacheCollapse(turns: OpencodeCacheTurn[]): string | null {
+    if (turns.length < CACHE_WATCH_TURNS) return null;
+    const dead = turns.every(
+        (t) => t.cacheRead === 0 && t.input >= CACHE_WATCH_MIN_INPUT_TOKENS && t.ms >= CACHE_WATCH_MIN_TURN_MS,
+    );
+    if (!dead) return null;
+    const inputs = turns.map((t) => `${Math.round(t.input / 1000)}k`).join('/');
+    const seconds = turns.map((t) => Math.round(t.ms / 1000));
+    const span = Math.min(...seconds) === Math.max(...seconds)
+        ? `${Math.min(...seconds)}s`
+        : `${Math.min(...seconds)}-${Math.max(...seconds)}s`;
+    return (
+        `${turns.length} consecutive turns with no prompt-cache reads ` +
+        `(input ${inputs} tokens, ${span} each)`
+    );
+}
+
+/** What the probe answers: the session it found, its newest completed turns, and any failure. */
+export interface OpencodeCacheProbe {
+    sessionId: string | null;
+    turns: OpencodeCacheTurn[];
+    error: string | null;
+}
+
+const isTurn = (value: unknown): value is OpencodeCacheTurn => {
+    if (typeof value !== 'object' || value === null) return false;
+    const t = value as Record<string, unknown>;
+    const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+    return num(t.input) && num(t.cacheRead) && num(t.ms);
+};
+
+/**
+ * The full `docker run` argv that reads the cache health of a LIVE run — pure, and exported,
+ * because it is the part worth pinning: one throwaway container over the workspaces volume,
+ * entrypoint swapped for node, read-only query for the newest root session's newest completed
+ * assistant turns. Runs every CACHE_WATCH_POLL_MS of the run's life; the same
+ * concurrent-reader-with-a-live-writer property the close-time readout relies on, and the same
+ * one-error-line rule — an answer that parses to no session is "not yet", not a verdict.
+ */
+export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): string[] {
+    const db = opencodeDbPath(config, job);
+    return [
+        'run',
+        '--rm',
+        '-v',
+        `${config.workspaceVolume}:${config.workspaceMount}`,
+        '--entrypoint',
+        'node',
+        config.image,
+        '-e',
+        `const {DatabaseSync}=require("node:sqlite");` +
+            `try{` +
+            `const db=new DatabaseSync(${JSON.stringify(db)},{readOnly:true});` +
+            `const s=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
+            `if(s&&s.id){` +
+            `const msgs=db.prepare("select data from message where session_id=? order by id desc limit 12").all(s.id);` +
+            `const turns=[];` +
+            `for(const m of msgs){` +
+            `const d=JSON.parse(m.data);` +
+            `if(d.role!=="assistant")continue;` +
+            `const t=d.time||{};` +
+            `if(!t.completed)continue;` +
+            `const tk=d.tokens||{};` +
+            `turns.push({input:tk.input||0,cacheRead:(tk.cache||{}).read||0,ms:t.completed-(t.created||t.completed)});` +
+            `if(turns.length>=${CACHE_WATCH_TURNS})break;` +
+            `}` +
+            `console.log(JSON.stringify({id:s.id,turns}));` +
+            `}` +
+            `}catch(e){console.log(JSON.stringify({error:e instanceof Error?e.message:String(e)}));}`,
+    ];
+}
+
+/** Pulls the session id and turns out of the probe's answer, tolerating anything else. */
+export function parseOpencodeCacheProbe(stdout: string): OpencodeCacheProbe {
+    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+    const nothing = { sessionId: null, turns: [], error: null };
+    try {
+        const parsed = JSON.parse(line) as { id?: unknown; turns?: unknown; error?: unknown };
+        const sessionId =
+            typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
+        const turns = Array.isArray(parsed.turns) ? parsed.turns.filter(isTurn).slice(0, CACHE_WATCH_TURNS) : [];
+        const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
+        return { sessionId, turns, error };
     } catch {
         return nothing;
     }
@@ -1070,7 +1197,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // and none would be reliable anyway: daemon calls are arbitrarily slow, and
                     // any snapshot of "who is current" is stale by the time it is checked.
                     await serviceTeardown(job);
-                    return { exitCode: code, output, timedOut, idled, started };
+                    return { exitCode: code, output, timedOut, idled, started, cacheLost };
                 };
 
                 const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork, file ?? undefined), {
@@ -1078,6 +1205,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 });
                 let timedOut = false;
                 let idled = false;
+                let cacheLost: string | null = null;
 
                 // Armed only under Remote Control, where a session sits waiting for a human and
                 // silence means nobody is driving it. A headless run has nobody to come back to
@@ -1118,9 +1246,35 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                           void kill(job);
                       }, config.jobTimeoutMs);
 
+                /*
+                 * The cache watch polls on a period while the run is live. Each tick is one
+                 * throwaway probe container; a probe that fails once (the daemon is busy, the
+                 * session is not there yet) just waits for the next tick, and the trigger itself
+                 * needs three consecutive damning turns, so no single answer — or no single fluke —
+                 * kills anything. The kill is this attempt's own, label-scoped like every other;
+                 * config guarantees the watch is only armed for opencode on docker, headless.
+                 */
+                let cacheTimer: NodeJS.Timeout | null = null;
+                if (config.cacheWatch) {
+                    cacheTimer = setInterval(() => {
+                        void (async () => {
+                            const probe = await execDocker(opencodeCacheProbeArgs(config, job))
+                                .then((read) => parseOpencodeCacheProbe(read.stdout))
+                                .catch(() => null);
+                            if (!probe || !probe.sessionId || cacheLost) return;
+                            const collapse = cacheCollapse(probe.turns);
+                            if (collapse) {
+                                cacheLost = collapse;
+                                void kill(job);
+                            }
+                        })();
+                    }, config.cacheWatchPollMs);
+                }
+
                 const done = () => {
                     if (timer) clearTimeout(timer);
                     if (idleTimer) clearTimeout(idleTimer);
+                    if (cacheTimer) clearInterval(cacheTimer);
                 };
 
                 /*

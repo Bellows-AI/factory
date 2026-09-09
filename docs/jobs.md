@@ -67,6 +67,8 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `DRIVER_LEASE_SECONDS` | `300` | Heartbeat is a third of this. |
 | `DRIVER_JOB_TIMEOUT_MS` | `1800000` | The container is `docker kill`ed and the job reported failed, with a note. **Not armed under Remote Control.** |
 | `RUNNER_IDLE_MS` | `3600000` | Remote Control only: silence for this long parks the job on standby. |
+| `RUNNER_CACHE_WATCH` | off | Kills a job whose provider stopped serving prompt cache: three consecutive completed turns with no cached input over ≥20k tokens, each turn over a minute. Opencode only — see the section below. |
+| `RUNNER_CACHE_WATCH_POLL_MS` | `30000` | How often the watch probes the session database. One throwaway container per poll. |
 | `RUNNER_SKIP_PERMISSIONS` | off | Appends `--dangerously-skip-permissions`. Read the paragraph below. |
 | `RUNNER_ENV` | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names forwarded to the runner. Ignored under Remote Control. A name the claim also carries is shadowed by it — under an app-mode board that is now always `GITHUB_TOKEN` — see [env.md](env.md). |
 | `RUNNER_REMOTE_CONTROL` | off | Runs the job as a drivable session instead of a headless prompt. Read the section below. |
@@ -196,6 +198,24 @@ instant fake clock cannot see it, so `loop.test.ts` models a period that never e
   last good one stays; the claim clears the column (`started_at`'s precedent — the sample
   describes the attempt that took it), and the kubernetes runner reports none at all, the same
   honest refusal its gates make.
+
+**`RUNNER_CACHE_WATCH` kills a run whose provider stopped caching, before the timeout reports
+only a corpse.** Off by default — arming a kill switch over provider quality is something somebody
+types. Armed, a throwaway container probes the session database (the close-time readout's source,
+read while the run is LIVE — sqlite's WAL serves a reader beside a writer) every
+`RUNNER_CACHE_WATCH_POLL_MS`, and three consecutive completed turns with **no cached input over
+≥20k tokens of real context, each turn itself slower than a minute**, kill the job. The verdict is
+failed with the observed numbers in the output, so its reader does not have to re-derive why
+30 minutes bought nothing. Every axis of the trigger is deliberate: cache-read-zero is the cause,
+the input floor is what makes it matter, and the duration floor is what makes it a problem — a
+provider that never cached but answers quickly is left alone, and no single fluke turn kills
+anything. The kill burns the attempt, and that is honest: it is a failed attempt, and the
+provider state it names usually outlives a re-queue. First observed 2026-09-09 on a free-tier
+model: cache served for fourteen turns, then stopped — turns went from ~25s to 2.5-4.5 minutes
+re-reading 63-84k tokens, and the run died on the timeout having explored and edited nothing.
+The watch is opencode-only (the message rows record per-turn cache tokens; a claude-code
+transcript answers nothing to the query), refused at startup under claude-code, docker-only and
+headless by composition — opencode refuses the kubernetes executor and Remote Control itself.
 
 **`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own

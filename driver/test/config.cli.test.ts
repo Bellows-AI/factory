@@ -71,3 +71,58 @@ describe('RUNNER_CLI', () => {
         expect(() => loadDriverConfig({ EXECUTOR: 'kubernetes' })).not.toThrow();
     });
 });
+
+/**
+ * RUNNER_CACHE_WATCH arms a mid-run kill switch over provider quality: the watch polls the
+ * opencode session database for turns whose prompt cache stopped hitting, and kills the run when
+ * enough consecutive turns have completed slow and uncached. Its own file, like RUNNER_CLI's,
+ * because every combination it cannot survive is a decision to state at startup rather than a
+ * surprise to discover mid-job.
+ */
+describe('RUNNER_CACHE_WATCH', () => {
+    // Off by default, like every switch that kills work: arming it is something somebody typed.
+    it('defaults to off, and the poll period keeps its default', () => {
+        const off = loadDriverConfig({ RUNNER_CLI: 'opencode' });
+        expect(off.cacheWatch).toBe(false);
+        expect(off.cacheWatchPollMs).toBe(30_000);
+    });
+
+    it('accepts an explicit poll period', () => {
+        expect(
+            loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '5000' })
+                .cacheWatchPollMs,
+        ).toBe(5_000);
+    });
+
+    // The probe reads opencode's session database — a claude-code transcript answers nothing to
+    // the query, and a watch that could never fire would read as a broken feature.
+    it('refuses claude-code, where there is nothing to read', () => {
+        expect(() => loadDriverConfig({ RUNNER_CACHE_WATCH: '1' })).toThrow(/RUNNER_CACHE_WATCH.*RUNNER_CLI|RUNNER_CLI.*RUNNER_CACHE_WATCH/s);
+        expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1' })).not.toThrow();
+    });
+
+    // No kubernetes refusal of its own: the watch requires opencode, and opencode under the
+    // kubernetes executor is already refused — the fundamental pair is the truer diagnosis, and
+    // an armed watch is docker by composition. Pinned so that composition survives a reorder.
+    it('stays unrepresentable under the kubernetes executor', () => {
+        expect(() =>
+            loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1', EXECUTOR: 'kubernetes' }),
+        ).toThrow(/RUNNER_CLI=opencode is not supported under EXECUTOR=kubernetes/);
+    });
+
+    // Remote Control needs no refusal of its own: it requires claude-code, and the claude-code
+    // refusal above already fires — an armed watch is headless by construction. Pinned here so
+    // that invariant survives a later reorder of the checks.
+    it('is unrepresentable under Remote Control', () => {
+        expect(() =>
+            loadDriverConfig({ RUNNER_CACHE_WATCH: '1', RUNNER_REMOTE_CONTROL: '1' }),
+        ).toThrow(/RUNNER_CLI=claude-code/);
+        expect(() =>
+            loadDriverConfig({
+                RUNNER_CLI: 'opencode',
+                RUNNER_CACHE_WATCH: '1',
+                RUNNER_REMOTE_CONTROL: '1',
+            }),
+        ).toThrow(/RUNNER_REMOTE_CONTROL is not supported under RUNNER_CLI=opencode/);
+    });
+});

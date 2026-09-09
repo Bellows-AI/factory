@@ -152,6 +152,23 @@ export interface DriverConfig {
      * turning repo-defined containers on is something somebody typed — see docs/jobs.md.
      */
     servicesEnabled: boolean;
+    /**
+     * Watches the run's prompt-cache health and kills the job when the provider stops serving
+     * cache hits: N consecutive completed turns with no cached input, over a real context, each
+     * turn itself slow. The observed failure mode is a model provider that silently drops its
+     * cache mid-run — every turn then re-ingests the whole context at a fraction of the speed,
+     * and the run grinds into the job timeout having done a fraction of the work. Killing early
+     * names the cause while the timeout would have reported only a corpse. Off by default, so
+     * that arming a kill switch over provider quality is something somebody typed.
+     */
+    cacheWatch: boolean;
+    /**
+     * How often the cache watch polls the session database. Each poll is one throwaway container
+     * over the workspaces volume, so the period keeps the same order as the poll interval —
+     * frequent enough to catch a collapse minutes into the turns that reveal it, rare enough
+     * that the daemon never notices.
+     */
+    cacheWatchPollMs: number;
 }
 
 const DEFAULTS = {
@@ -299,6 +316,20 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         throw new Error(`RUNNER_IMAGE_PULL_POLICY must be one of ${PULL_POLICIES.join(', ')}, got "${pullPolicyRaw}"`);
     }
 
+    // The cache watch is opencode's — refused at startup rather than discovered mid-job. The
+    // probe reads the opencode session database, whose message rows record per-turn input and
+    // cache tokens; a claude-code transcript answers nothing to the query. No kubernetes refusal
+    // is needed: the watch requires opencode, and opencode under the kubernetes executor is
+    // already refused above — an armed watch is docker by composition.
+    const cacheWatch = flag(env.RUNNER_CACHE_WATCH);
+    if (cacheWatch && cli === 'claude-code') {
+        throw new Error(
+            'RUNNER_CACHE_WATCH is not supported under RUNNER_CLI=claude-code: the watch reads the ' +
+                'opencode session database, which records per-turn input and cache tokens. Only ' +
+                'RUNNER_CLI=opencode runs can be watched.',
+        );
+    }
+
     return {
         boardUrl,
         boardToken: (env.JOB_BOARD_TOKEN ?? '').trim(),
@@ -329,5 +360,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
         gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', 600_000, 1_000, 24 * 3600_000),
         servicesEnabled,
+        cacheWatch,
+        cacheWatchPollMs: int(env.RUNNER_CACHE_WATCH_POLL_MS, 'RUNNER_CACHE_WATCH_POLL_MS', 30_000, 250, 300_000),
     };
 }

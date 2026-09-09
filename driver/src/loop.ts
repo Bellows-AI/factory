@@ -484,17 +484,29 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  * charge.
                  */
                 const finish = outcome.finishReason;
-                const premature = typeof finish === 'string' && finish !== 'stop';
+                // A cache-killed run was cut mid-tool-call, so its finish reason reads as one more
+                // premature stop — the cache note already says the whole story, and stacking
+                // "ended before it finished" on top would send its reader chasing a second cause.
+                const premature =
+                    typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost;
 
                 // The last thing this attempt does, and the first moment the heartbeat may stop.
                 await settle();
 
                 const status =
-                    outcome.exitCode === 0 && !outcome.timedOut && !failure && !premature ? 'succeeded' : 'failed';
+                    outcome.exitCode === 0 && !outcome.timedOut && !outcome.cacheLost && !failure && !premature
+                        ? 'succeeded'
+                        : 'failed';
                 const exitCode = failure ? failure.exitCode : outcome.exitCode;
                 let output = outcome.timedOut
                     ? `${outcome.output}\n[driver] killed after ${config.jobTimeoutMs}ms`
                     : outcome.output;
+                if (outcome.cacheLost) {
+                    output =
+                        `${output}\n[driver] killed — the model provider stopped serving prompt cache: ` +
+                        `${outcome.cacheLost}. Every turn was re-reading the whole context, so the run was ` +
+                        'burning its time budget without progressing. Retry when the cache is healthy again, or on another model.';
+                }
                 if (premature) {
                     output = `${output}\n[driver] the agent's run ended before it finished (opencode finish reason: "${finish}") — exit 0, but no completed final message. Re-queue the task, or follow up to continue the session.`;
                 }
