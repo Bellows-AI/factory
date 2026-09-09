@@ -75,6 +75,10 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `K8S_NAMESPACE` | `default` | Where runner Jobs are created. Meaningless under docker. The chart sets it via the downward API. |
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials under `EXECUTOR=kubernetes`, one key per `RUNNER_ENV` name — the k8s form of `-e NAME`: names travel, values stay in the Secret. Unset forwards nothing. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy under `EXECUTOR=kubernetes`. Kubernetes defaults an untagged or `:latest` image to `Always` and would ignore the node's own images; the docker runner has no equivalent problem, so the docker behavior has to be stated. |
+| `GATE_COOLDOWN_MS` | `600000` | How long a gate environment container outlives the task that started it, so the task's next turn does not pay startup again. `0` tears it down the moment the run's exits are walked. |
+| `GATE_LISTEN_HOST` | `127.0.0.1` | Where the ad-hoc gate endpoint binds. Loopback by default — it runs shell commands, and the bind address is the access control. |
+| `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver. |
+| `GATE_TIMEOUT_MS` | `600000` | The wall-clock cap on one gate run. A gate that outlives it is a failed gate, exit 124 — the runner's own timeout covers the agent, this covers a gate that hangs. |
 | `RUNNER_SERVICES` | off | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service as a sibling container on a per-job network and joins the runner to it, so `postgres://db:5432` resolves for exactly that job. Read the section below before turning it on. |
 
 **The workspace is passed as a volume name, not a path.** The driver's runners are *siblings*, not
@@ -452,6 +456,78 @@ cleared.** The claim's keep predicate ("kept when parked", below) extends to row
 clearing it would throw the thread away with the attempt. The command re-delivers on that re-claim,
 which is the ordinary retry semantics for a headless run — and unreachable for Remote Control in
 practice, since a drivable job parks on silence before its lease can expire.
+
+## Gates: verification checks declared by `.bellows.yaml`
+
+A repository may ship a `.bellows.yaml` at its checkout root declaring an environment image and
+named gate commands:
+
+```yaml
+environment:
+    image: node:24
+    gates:
+         - name: test
+           command: "npm test"
+```
+
+The board reads it **at claim time, off its own workspace mount** — the driver cannot open a path
+on the volume it only names, and the claim is the one place the author, repo label and workspace
+path are all in hand. Missing file means no gates; a file that exists but is outside the accepted
+strict-YAML subset travels as `gateError` on the claim, and the driver **fails the job with that
+reason before anything runs** — running the work while pretending its gates do not exist is the
+one outcome worse than the failure. The parser accepts no YAML package: one `environment:` block,
+`image:` plus a `- name:`/`- command:` list, bare or quoted scalars, comments and blank lines.
+Anything else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — is a named error
+with the line number.
+
+**One environment container per member+repo checkout, a `docker exec` per gate.** The container
+(`factory-env-…`, labelled `factory.gates=<key>`) runs the declared image as a `sleep infinity`
+sleeper over the workspaces volume, working directory at the checkout — the same tree the coding
+agent edits, so gates see exactly what the agent wrote. It comes up **before** the agent runs,
+because the agent calls gates mid-run: the claim's env rides into it by 0600 env file, and the
+runner gets `BELLOWS_GATE_URL` / `BELLOWS_GATE_TOKEN` (minted per attempt, delivered after the
+claim's env lines in the same file — docker's last-wins rule is the precedence rule; both names
+are reserved from member configuration at the board and in the driver's own copy of the list).
+The endpoint runs **declared gate names only** — never an arbitrary command — and answers the
+exit code plus an output tail. A reused container keeps the env resolved at its start: a turn
+within the cooldown inherits the earlier turn's resolution, which the token's lifetime (one
+attempt) comfortably outlives.
+
+**The cooldown, and where it ends.** On every exit path the loop releases the environment rather
+than killing it: it stays up for `GATE_COOLDOWN_MS` (ten minutes by default), so a follow-up turn
+reuses the warm container instead of paying startup again. Any activity — a new turn's acquire,
+an ad-hoc gate run — cancels the pending teardown and re-arms it. A driver that exits takes its
+environments with it; the cooldown is for turns that arrive while the driver lives. A teardown
+already run is not an error: the next acquire re-fences and recreates, the same fence every
+spawn here does.
+
+**The gates run between the agent finishing and the verdict**, with the heartbeat still beating —
+a test suite can take minutes, and it must not outrun the lease it runs under. Each state change
+is reported to `POST /api/jobs/:id/gates`, which **replaces** the stored list: the job row's
+`gates` jsonb holds the current/last state only, which is what makes the task view's "no history"
+honest (the report is bounded so the whole list always fits the board's body limit, whatever the
+gates printed). The first failing gate fails the job: `complete` carries `failed`, the gate's
+exit code, and the agent output plus the gate's name and output tail — the output relayed back to
+the author is the fix-next-time channel. What this cannot do is stop the agent pushing from
+inside its own container: enforcement is at the verdict level, and a task is never reported
+`succeeded` while a declared gate fails.
+
+Two exit codes mean more than the gate's own verdict, and the conflation is accepted rather than
+solved: a gate command that genuinely exits **125** is read as docker's "the container is not
+there" — the ad-hoc endpoint answers it with a retryable 409, and the verdict path reports a
+failed gate either way (125 ≠ 0), so the worst case is a wrong *reason*, never a wrong verdict.
+A gate outliving `GATE_TIMEOUT_MS` fails with exit **124** (the convention `timeout` uses); the
+kill stops the docker CLI, and a stubborn in-container process outlives the gate only until the
+container's own teardown.
+
+**Gates are refused, never silently skipped, where they cannot run.** `EXECUTOR=kubernetes` (the
+exec model has no docker twin there) and a driver started with no gate configuration both fail a
+gated job at claim with a named reason; an ungated job's run is untouched — no container, no
+registration, no reports, byte-identical argv. One honest ambiguity remains: a missing
+`.bellows.yaml` is indistinguishable from a checkout that has not been cloned yet, so the first
+task on a just-connected repository whose gates file was written by the agent itself can run and
+succeed before the file exists. Every later turn of that task is gated; the first is the race,
+and it is the same race every CI-on-first-commit system lives with.
 
 ## Decisions
 

@@ -285,6 +285,59 @@ describe('TaskDetail', () => {
         });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
+
+    /**
+     * The checks a run performed or is performing: a collapsible list per run, expandable to the
+     * gate's output. Current/last ran only — the board stores exactly that, so the UI has no
+     * history control to offer.
+     */
+    describe('checks', () => {
+        const gates = [
+            { name: 'test', status: 'passed' as const, exitCode: 0, output: 'all green' },
+            { name: 'lint', status: 'failed' as const, exitCode: 1, output: '2 problems' },
+        ];
+
+        it('renders the checks list with a name and status per gate', () => {
+            const html = renderDetail({ jobs: [job({ gates })] });
+            expect(html).toContain('Checks');
+            expect(html).toContain('test');
+            expect(html).toContain('lint');
+            expect(html).toContain('passed');
+            expect(html).toContain('failed');
+            expect(html).toContain('<details');
+        });
+
+        it('expands to the gate output, rendered as text', () => {
+            const html = renderDetail({ jobs: [job({ gates })] });
+            expect(html).toContain('2 problems');
+            expect(html).toContain('<pre');
+        });
+
+        it('labels each summary count with its meaning and status color', () => {
+            // "Checks 1 1 0" tells nobody which number is which; each count is labelled and wears
+            // the same status class the per-gate pill does.
+            const html = renderDetail({ jobs: [job({ gates: [...gates, { name: 'build', status: 'running' as const, exitCode: null, output: null }] })] });
+            const summary = html.slice(html.indexOf('Checks'), html.indexOf('</summary>'));
+            expect(summary).toContain('pill gate-passed');
+            expect(summary).toContain('pill gate-failed');
+            expect(summary).toContain('pill gate-running');
+            expect(summary).toMatch(/1(<!-- -->)? passed/);
+            expect(summary).toMatch(/1(<!-- -->)? failed/);
+            expect(summary).toMatch(/1(<!-- -->)? running/);
+        });
+
+        it('renders no checks section for a run without gates', () => {
+            expect(renderDetail({ jobs: [job()] })).not.toContain('Checks');
+            expect(renderDetail({ jobs: [job({ gates: [] })] })).not.toContain('Checks');
+        });
+
+        it('never emits a placeholder value for a gate that has not exited', () => {
+            const html = renderDetail({
+                jobs: [job({ gates: [{ name: 'test', status: 'running', exitCode: null, output: null }] })],
+            });
+            for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        });
+    });
 });
 
 describe('isTerminal', () => {

@@ -1,0 +1,18 @@
+-- Verification gates for a running job — the checks `.bellows.yaml` declares and the driver
+-- executes in the declared environment image.
+--
+-- ONE JSONB COLUMN ON THE JOB ROW, not a table. Two decisions reuse precedents:
+--
+-- - The `output` precedent (006): the column holds the CURRENT/LAST state only, replaced on every
+--   report by a lease-guarded worker write (POST /api/jobs/:id/gates). The issue is explicit that
+--   the UI shows no history — "only current running/last ran checks" — so nothing queries across
+--   runs and no index is needed; a table would put the replace rule in a second place and grow a
+--   history nobody reads.
+-- - The `remote_session_id`/`repo` precedent (009, 014): nullable plain data with no foreign key,
+--   because every job queued before this migration has no gates and `job` is an audit record of
+--   what RAN — the verdict, not the checks it performed along the way.
+--
+-- Per-gate output is truncated at the route (the OUTPUT_LIMIT backstop) and bounded by the
+-- driver's tail window before that; the column is therefore bounded by gates × limit, like the
+-- output column is bounded by the same limit.
+alter table job add column if not exists gates jsonb;

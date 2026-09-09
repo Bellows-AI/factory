@@ -741,6 +741,62 @@ button.primary {
     margin-top: 8px;
 }
 
+/* The verification gates a run has run or is running — current/last only, never history. */
+
+.chat-gates {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+}
+
+.chat-gates > summary {
+    cursor: pointer;
+    display: flex;
+    gap: 6px;
+    padding: 6px 10px;
+}
+
+.chat-gate-list {
+    border-top: 1px solid var(--border);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.chat-gate-list li + li {
+    border-top: 1px solid var(--border);
+}
+
+.chat-gate-list summary {
+    cursor: pointer;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 10px;
+}
+
+.chat-gate-list .chat-output {
+    border: none;
+    border-radius: 0;
+    border-top: 1px solid var(--border);
+    max-height: 200px;
+}
+
+.gate-passed {
+    background: none;
+    color: var(--ok);
+}
+
+.gate-failed {
+    background: none;
+    color: var(--bad);
+}
+
+.gate-running {
+    background: none;
+    color: var(--muted);
+}
+
 .chat-output {
     background: var(--bg);
     border: 1px solid var(--border);

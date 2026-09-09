@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { Claim, FollowUpRefusal, Job, JobStatus, JobStore, LeaseResult } from '../src/db/job-store.js';
+import type { Claim, FollowUpRefusal, GateReport, Job, JobStatus, JobStore, LeaseResult } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import { stubClient, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -24,6 +24,7 @@ interface StoreStub extends JobStore {
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     markedDone: string[];
+    gatesReported: { id: string; results: GateReport[] }[];
 }
 
 /**
@@ -57,6 +58,7 @@ function stubStore(
         suspended: [],
         followUps: [],
         markedDone: [],
+        gatesReported: [],
         async suspend(id) {
             boom();
             stub.suspended.push(id);
@@ -109,6 +111,11 @@ function stubStore(
         async complete(id, _token, { output }) {
             boom();
             stub.completed.push({ id, output });
+            return options.verdict ?? 'ok';
+        },
+        async gates(id, _token, results) {
+            boom();
+            stub.gatesReported.push({ id, results });
             return options.verdict ?? 'ok';
         },
         async get() {
@@ -273,6 +280,25 @@ describe('POST /api/jobs/claim', () => {
         const response = await post(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response.statusCode).toBe(200);
         expect(response.json().env).toEqual({ CORE: 'value', SECRET: 'value' });
+    });
+
+    // Same rule for the gate declaration: read in the store, relayed untouched. The driver
+    // decides what a null `gates` or a `gateError` means; the route is a pipe.
+    it('passes the repo label and the gate declaration through verbatim', async () => {
+        const withGates: Claim = {
+            ...claim,
+            repo: 'Bellows-AI/factory',
+            gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+        };
+        const instance = await harnessWith(stubStore({ claim: withGates }));
+        const response = await post(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(withGates);
+
+        const withError: Claim = { ...claim, repo: 'Bellows-AI/factory', gateError: '.bellows.yaml line 2: nope' };
+        const instance2 = await harnessWith(stubStore({ claim: withError }));
+        const response2 = await post(instance2, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response2.json()).toEqual(withError);
     });
 
     // The idle poll is the common case: it must be recognisable without parsing a body.
@@ -470,6 +496,68 @@ describe('POST /api/jobs/:id/output', () => {
         await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'x'.repeat(100_000) });
 
         expect(store.progressed[0]?.output).toHaveLength(64 * 1024);
+    });
+});
+
+describe('POST /api/jobs/:id/gates', () => {
+    const results: GateReport[] = [
+        { name: 'test', status: 'passed', exitCode: 0, output: 'all green' },
+        { name: 'lint', status: 'failed', exitCode: 1, output: '2 problems' },
+    ];
+
+    // REPLACE, not append — the progress precedent. "Current/last ran only" is the whole UI
+    // contract, and the driver re-reports a gate's state as it moves.
+    it('records the current gate state, replacing whatever was stored', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates: results });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.gatesReported).toEqual([{ id: ID, results }]);
+    });
+
+    it('truncates per-gate output before it reaches the store', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const long = 'x'.repeat(100_000);
+        await post(instance, `/api/jobs/${ID}/gates`, {
+            leaseToken: TOKEN,
+            gates: [{ name: 'test', status: 'failed', exitCode: 1, output: long }],
+        });
+
+        expect(store.gatesReported[0]?.results[0]?.output).toHaveLength(64 * 1024);
+    });
+
+    it.each([
+        ['a malformed lease token', { leaseToken: 'nope', gates: results }, 'BAD_TOKEN'],
+        ['a missing gate list', { leaseToken: TOKEN }, 'BAD_GATES'],
+        ['a non-array gate list', { leaseToken: TOKEN, gates: 'test' }, 'BAD_GATES'],
+        ['an unknown status', { leaseToken: TOKEN, gates: [{ name: 'test', status: 'queued', exitCode: null, output: '' }] }, 'BAD_GATES'],
+        ['a gate without a name', { leaseToken: TOKEN, gates: [{ status: 'passed', exitCode: 0, output: '' }] }, 'BAD_GATES'],
+        ['a non-integer exit code', { leaseToken: TOKEN, gates: [{ name: 'test', status: 'passed', exitCode: 1.5, output: '' }] }, 'BAD_GATES'],
+        ['a non-string output', { leaseToken: TOKEN, gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 7 }] }, 'BAD_GATES'],
+    ])('refuses %s', async (_label, payload, code) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/gates`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe(code);
+    });
+
+    // Same rule as every other worker write, same codes as /output: a superseded worker's
+    // telemetry is refused, and the driver stops talking rather than acting on it.
+    it('rejects a report from a worker whose lease was reclaimed', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
+        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates: results });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('LEASE_LOST');
+    });
+
+    it('answers 404 for a job that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'missing' }));
+        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates: results });
+        expect(response.statusCode).toBe(404);
     });
 });
 

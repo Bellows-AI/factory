@@ -1,6 +1,41 @@
 import { useEffect, useRef, useState } from 'react';
-import { isTerminal, type Job } from '../api/useJobs.js';
+import { isTerminal, type GateCheck, type Job } from '../api/useJobs.js';
 import { taskTime } from '../format.js';
+
+/**
+ * One run's verification gates, as the reader meets them: a collapsible "Checks" list, one row per
+ * gate with its status, each row expanding to the gate's output.
+ *
+ * Native `<details>`, deliberately: collapsible with zero JavaScript, and visible to the
+ * render-to-string suite. There is deliberately no history control — the board stores the
+ * current/last state only, so the list is exactly what this run last reported.
+ */
+function Checks({ gates }: { gates: GateCheck[] }) {
+    return (
+        <details className="chat-gates">
+            <summary>
+                Checks{' '}
+                <span className="pill gate-passed">{gates.filter((g) => g.status === 'passed').length} passed</span>
+                <span className="pill gate-failed">{gates.filter((g) => g.status === 'failed').length} failed</span>
+                <span className="pill gate-running">{gates.filter((g) => g.status === 'running').length} running</span>
+            </summary>
+            <ul className="chat-gate-list">
+                {gates.map((gate) => (
+                    <li key={gate.name}>
+                        <details>
+                            <summary>
+                                <span>{gate.name}</span>
+                                <span className={`pill gate-${gate.status}`}>{gate.status}</span>
+                                {gate.exitCode !== null ? <span className="chat-exit">exit {gate.exitCode}</span> : null}
+                            </summary>
+                            {gate.output !== null ? <pre className="chat-output">{gate.output}</pre> : null}
+                        </details>
+                    </li>
+                ))}
+            </ul>
+        </details>
+    );
+}
 
 /**
  * One task, whole: the follow-up chain rendered as ONE conversation — the root command first,
@@ -157,6 +192,9 @@ export function TaskDetail({
                             ) : null}
                         </p>
                         <div className="chat-detail">
+                            {task.gates !== undefined && task.gates !== null && task.gates.length > 0 ? (
+                                <Checks gates={task.gates} />
+                            ) : null}
                             {task.output !== null ? (
                                 <pre ref={task.id === latestTask.id ? outputRef : undefined} className="chat-output">
                                     {task.output}

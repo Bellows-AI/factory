@@ -118,6 +118,33 @@ export interface DriverConfig {
      */
     imagePullPolicy: string;
     /**
+     * How long a gate environment container outlives the task that started it. The issue's
+     * cooldown: a container that stays up across a coding task's turns saves each turn the
+     * environment's startup, and ten minutes is the default because that is what the issue
+     * names. Zero tears the container down as soon as the task ends.
+     */
+    gateCooldownMs: number;
+    /**
+     * Where the ad-hoc gate server binds. Loopback by default — this endpoint runs shell
+     * commands, and the bind address is the access control, exactly as it is for the dashboard.
+     */
+    gateListenHost: string;
+    /**
+     * The URL the runner is told to reach the gate server by, when loopback will not do — the
+     * driver in a container, the runner on the host network, or any split like that. Null builds
+     * `http://host.docker.internal:<port>` from the bound port, which the runner reaches through
+     * the `--add-host` dockerArgs adds for gated jobs. Never defaulted to something reachable:
+     * a wrong guess is a gate that hangs, which reads as a broken test rather than as
+     * configuration.
+     */
+    gateAdvertiseUrl: string | null;
+    /**
+     * The wall-clock cap on ONE gate run. The runner's own timeout covers the agent; a gate that
+     * outlives it (a watch-mode test, a dev server) would otherwise stall the verdict forever.
+     * A timed-out gate is a failed gate, exit 124 — the convention `timeout` itself uses.
+     */
+    gateTimeoutMs: number;
+    /**
      * Honors `.bellows.yaml` in the author's checkouts: before a run, the driver reads the file
      * (through a throwaway container over the workspaces volume — it has no host path), starts
      * each declared service as a sibling container on a per-job network, and joins the runner to
@@ -297,6 +324,10 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         k8sNamespace: text(env.K8S_NAMESPACE, 'K8S_NAMESPACE', 'default'),
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw as (typeof PULL_POLICIES)[number],
+        gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', 600_000, 0, 24 * 3600_000),
+        gateListenHost: text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1'),
+        gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
+        gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', 600_000, 1_000, 24 * 3600_000),
         servicesEnabled,
     };
 }

@@ -44,3 +44,21 @@ state what you changed, what you verified, and anything you could not do.
 - Reach for `acli` for Jira work items rather than improvising HTTP against Atlassian.
 - Both start unauthenticated; they read credentials from the environment or config the caller
   provides. If a credential is missing, say so instead of working around it.
+
+## Verification gates
+
+The repository may declare CI-style checks in `.bellows.yaml` — named commands (`test`, `lint`,
+build) that run in a separate container sharing this workspace. When `BELLOWS_GATE_URL` and
+`BELLOWS_GATE_TOKEN` are set, run one with `node`:
+
+```bash
+node -e 'fetch(process.env.BELLOWS_GATE_URL+"/run",{method:"POST",headers:{
+"authorization":"Bearer "+process.env.BELLOWS_GATE_TOKEN,"content-type":"application/json"},
+body:JSON.stringify({gate:"test"})}).then(r=>r.json()).then(j=>{console.log("exit",j.exitCode);
+console.log(j.output)})'
+```
+
+`exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
+Only gates `.bellows.yaml` declares can run — the request carries a gate NAME, never a command.
+If `BELLOWS_GATE_URL` is unset there are no gates here: verify with your own commands instead. Do
+not finish a task while a declared gate is failing.

@@ -38,7 +38,10 @@ real value.
   the row (`env_var_name_ck`, the same regex), and the driver (`claimEnv` drops what it cannot
   stand). `WORKDIR` and `TRUST_WORKDIR` are refused outright (`400 RESERVED_ENV_NAME`) — those are
   the driver's own contract with the runner, and a claim env carrying them would be two different
-  paths to one working directory.
+  paths to one working directory. `BELLOWS_GATE_URL` and `BELLOWS_GATE_TOKEN` are reserved the
+  same way: they are the ad-hoc gate credentials the DRIVER mints per attempt (see
+  [jobs.md](jobs.md)), and a member-configured value for either would be a claim telling the
+  runner to send its gate calls somewhere else.
 
 ## Secrets are write-only, not encrypted
 

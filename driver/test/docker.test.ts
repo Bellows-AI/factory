@@ -1,10 +1,10 @@
 import { describe, expect, it, vitest } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claimEnv, containerName, createDockerRunner, dockerArgs, envFileBody, opencodeSessionReadoutArgs, parseOpencodeSessionId, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
+import { claimEnv, containerName, createDockerRunner, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeSessionReadoutArgs, parseOpencodeSessionId, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 
 /*
@@ -219,6 +219,21 @@ describe('the board\'s environment', () => {
         expect(() =>
             envFileBody({ ...job, env: { BROKEN: 'line1\nline2' } }),
         ).toThrow(/newline/);
+    });
+
+    // The refusal must name WHICH half carries the newline: blaming the name for the value's
+    // offence sends a reader hunting through the env scopes for a variable that is fine.
+    it('names the newline offender, the name or the value', () => {
+        expect(() => envFileBody({ ...job, env: { BROKEN: 'line1\nline2' } })).toThrow(
+            /the value of "BROKEN" contains a newline/,
+        );
+        expect(() => envFileBody({ ...job, env: { 'BRO\nKEN': 'fine' } })).toThrow(
+            /the name of "BRO\nKEN" contains a newline/,
+        );
+        // The gate lines are checked by the same rule.
+        expect(() =>
+            envFileBody({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok\ntok' } }),
+        ).toThrow(/the value of "BELLOWS_GATE_TOKEN" contains a newline/);
     });
 
     it('never forwards a name the runner itself claims', () => {
@@ -507,6 +522,180 @@ describe('scraping the session opencode used', () => {
     });
 });
 
+/**
+ * The gate environment container: one long-lived `docker run -d` per member+repo, a `docker exec`
+ * per gate. Pure and pinned for the same reason dockerArgs is — everything security-relevant about
+ * the environment runner is decided in these arrays, and the values they interpolate arrive from
+ * the board and from a file in a member's checkout.
+ */
+describe('the gate environment container', () => {
+    const KEY = `bellows/${USER}/factory`;
+    const config = loadDriverConfig({});
+
+    it('names the container after the checkout key, exec-able and orphan-findable', () => {
+        expect(gateEnvContainerName(KEY)).toBe(`factory-env-bellows-${USER}-factory`);
+        expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
+            expect.arrayContaining([
+                '-d',
+                '--name',
+                `factory-env-bellows-${USER}-factory`,
+                '--label',
+                `factory.gates=${KEY}`,
+            ]),
+        );
+    });
+
+    it('mounts the checkouts volume and works inside the checkout, like the coding agent does', () => {
+        expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
+            expect.arrayContaining([
+                '-v',
+                'factory-ai_workspaces:/workspaces',
+                '-w',
+                `/workspaces/${KEY}`,
+            ]),
+        );
+    });
+
+    // sleep infinity: the container's only job is to BE an environment. Gates enter it by exec,
+    // which is what keeps npm install's state alive across gates and turns.
+    it('runs the declared image as a detached sleeper', () => {
+        const line = gateEnvArgs(config, KEY, 'node:24');
+        expect(line.slice(-4)).toEqual(['--entrypoint', 'sleep', 'node:24', 'infinity']);
+        expect(line[line.length - 1]).toBe('infinity');
+    });
+
+    it('joins a network only when one is configured, and takes an env file only when given one', () => {
+        expect(gateEnvArgs(config, KEY, 'node:24')).not.toContain('--network');
+        expect(gateEnvArgs(config, KEY, 'node:24')).not.toContain('--env-file');
+        expect(gateEnvArgs(loadDriverConfig({ RUNNER_NETWORK: 'factory-ai_default' }), KEY, 'node:24')).toEqual(
+            expect.arrayContaining(['--network', 'factory-ai_default']),
+        );
+        expect(gateEnvArgs(config, KEY, 'node:24', '/tmp/gate.env')).toEqual(
+            expect.arrayContaining(['--env-file', '/tmp/gate.env']),
+        );
+    });
+
+    it('never puts a value on the command line — the env file is the only carrier', () => {
+        const line = gateEnvArgs(config, KEY, 'node:24', '/tmp/gate.env');
+        expect(line.filter((arg) => arg === '-e')).toHaveLength(0);
+    });
+
+    it('refuses an image that smuggles a flag, whitespace or expansion', () => {
+        for (const image of ['-v /:/host', 'node:24 alpine', 'node:$TAG', '']) {
+            expect(() => gateEnvArgs(config, KEY, image), image).toThrow(/image/);
+        }
+    });
+
+    // The key is interpolated into argv (-w) and into a container NAME. It arrives from the
+    // board's claim plus a repo label — asserted, not trusted, the WORKSPACE_PATH posture.
+    it('refuses a checkout key that is not <org>/<uuid>/<repo>', () => {
+        for (const key of [
+            '../../etc',
+            `bellows/${USER}`,
+            `bellows/not-a-uuid/factory`,
+            `bellows/${USER}/../..`,
+            `bellows/${USER}/-rf`,
+            '',
+        ]) {
+            expect(() => gateEnvArgs(config, key, 'node:24'), key).toThrow();
+        }
+    });
+
+    it('execs gates as sh -c inside the named container, and refuses a strange container name', () => {
+        const name = gateEnvContainerName(KEY);
+        expect(gateExecArgs(name, 'npm test')).toEqual(['exec', name, 'sh', '-c', 'npm test']);
+        expect(() => gateExecArgs('bad name; rm -rf', 'x')).toThrow();
+    });
+
+    // The name validator and the name generator must agree: a long org + long repo produces the
+    // longest key the pattern allows (org 39 + uuid 36 + repo 100), and every gate of that
+    // checkout must still be exec-able.
+    it('accepts the longest container name the checkout-key pattern can produce', () => {
+        const key = `${'a'.repeat(39)}/${USER}/${'r'.repeat(100)}`;
+        const name = gateEnvContainerName(key);
+        expect(() => gateExecArgs(name, 'npm test')).not.toThrow();
+        expect(gateEnvArgs(config, key, 'node:24')).toEqual(expect.arrayContaining(['--name', name]));
+    });
+});
+
+/**
+ * The runner-side plumbing for gated jobs: the env file carries the ad-hoc gate credentials AFTER
+ * the claim's own lines, and the runner can resolve the default gate URL on a Linux daemon.
+ */
+describe('the runner env for a gated job', () => {
+    const gated: BoardJob = {
+        ...job,
+        repo: 'Bellows-AI/factory',
+        gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+        env: { CLAIM_TOKEN: 'board-secret' },
+        gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
+    };
+
+    it('carries the gate credentials after the claim env, so the claim cannot spoof them', () => {
+        // docker's --env-file is last-duplicate-wins: the gate lines are appended after the
+        // claim's, so a member-configured BELLOWS_GATE_TOKEN in any scope loses to the driver's.
+        const body = envFileBody(gated).split('\n').filter(Boolean);
+        expect(body).toEqual([
+            'CLAIM_TOKEN=board-secret',
+            'BELLOWS_GATE_URL=http://host.docker.internal:9099',
+            'BELLOWS_GATE_TOKEN=tok',
+        ]);
+    });
+
+    /**
+     * A claim can resolve to nothing — no env configured in any scope — while the job still
+     * declares gates. The loop mints BELLOWS_GATE_URL/TOKEN for exactly such a job, and a runner
+     * that keyed the env file on the claim alone would spawn with neither: no ad-hoc gate call
+     * possible, and the run's own verification unreadable to the agent.
+     */
+    const gateOnly: BoardJob = {
+        ...job,
+        repo: 'Bellows-AI/factory',
+        gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+        gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
+    };
+
+    it('mounts the env file when the only env is the gate credentials', () => {
+        expect(envFileBody(gateOnly)).toBe(
+            'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n',
+        );
+        const line = dockerArgs(loadDriverConfig({}), gateOnly, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
+    });
+
+    it('refuses to run a job whose only env is gate credentials with no env file to carry them', () => {
+        // The same silent drop the claim-env refusal prevents — the credentials it was spawned
+        // against never reach the container.
+        expect(() => dockerArgs(loadDriverConfig({}), gateOnly, { id: SESSION, resume: false })).toThrow(
+            /no env file/,
+        );
+    });
+
+    it('adds the host gateway mapping so the default gate URL resolves on Linux daemons', () => {
+        expect(
+            dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, null, '/tmp/env-file'),
+        ).toEqual(expect.arrayContaining(['--add-host', 'host.docker.internal:host-gateway']));
+        // ... and only for a gated job: an ungated runner's argv must stay byte-identical.
+        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false })).not.toContain(
+            'host.docker.internal:host-gateway',
+        );
+    });
+
+    it('never puts a gate value on the command line', () => {
+        const line = dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        expect(line.some((arg) => arg.includes('tok'))).toBe(false);
+        expect(line.some((arg) => arg.includes('host.docker.internal:9099'))).toBe(false);
+    });
+
+    // Regression pin for the feature boundary: a claim without gates builds exactly the argv it
+    // always did.
+    it('builds byte-identical argv for a job without gates', () => {
+        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false })).toEqual(
+            dockerArgs(loadDriverConfig({}), { ...job, gates: undefined }, { id: SESSION, resume: false }),
+        );
+    });
+});
+
 /*
  * The report has to fit the board's 128 KiB body limit whatever the log contained — a refused
  * report leaves the job to its lease and re-runs finished work, which is worse than a short log.
@@ -675,6 +864,45 @@ describe('the docker runner', () => {
 
         expect(outcome.exitCode).toBe(0);
         expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
+    });
+
+    // A gated job whose claim resolves to no variables still needs the minted gate credentials:
+    // keyed on the claim alone, the file would not exist and the runner could never call a gate.
+    it('writes the gate credentials into the env file of a job whose claim env is empty', async () => {
+        let fileBody: string | null = null;
+        const spawnFn = vitest.fn((_cmd: unknown, argv: unknown) => {
+            // Read at spawn time, through the argv: what the CLI could see is what counts.
+            const args = argv as string[];
+            const fileArg = args[args.indexOf('--env-file') + 1];
+            fileBody = readFileSync(fileArg, 'utf8');
+            return fakeChild('', '', 0);
+        });
+        const runner = createDockerRunner(loadDriverConfig({}), spawnFn as unknown as typeof spawn, noContainer);
+
+        const outcome = await runner.run(
+            { ...job, gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' } },
+            { id: SESSION, resume: false },
+        );
+
+        expect(outcome).toMatchObject({ exitCode: 0 });
+        const [, argv] = spawnFn.mock.calls[0]!;
+        expect(argv).toContain('--env-file');
+        expect(fileBody).toBe('BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n');
+    });
+
+    // The Remote Control posture is untouched: no forwarded credential of any kind, the volume
+    // login is the only one — so gate credentials make no env file appear either.
+    it('writes no env file for a Remote Control runner, gate credentials included', async () => {
+        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }),
+            spawnFn as unknown as typeof spawn,
+            noContainer,
+        );
+        await runner.run({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok' } }, { id: SESSION, resume: false });
+
+        const [, argv] = spawnFn.mock.calls[0]!;
+        expect(argv).not.toContain('--env-file');
     });
 
     // The lease lost DURING the env-file write: the kill-check just above the write has already
