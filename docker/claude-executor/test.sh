@@ -55,6 +55,34 @@ check 'trust is opt-in'   'false' run --entrypoint sh "$IMAGE" -c \
 check 'TRUST_WORKDIR opts in' 'true' run -e TRUST_WORKDIR=1 --entrypoint sh "$IMAGE" -c \
     'claude-executor --version >/dev/null; node -e "const c=require(process.env.CLAUDE_CONFIG_DIR+\"/.claude.json\"); console.log(Boolean(c.projects[\"/workspace\"].hasTrustDialogAccepted))"'
 
+# The driver's RUNNER_OTEL_ENDPOINT override arrives as OTEL_EXPORTER_OTLP_ENDPOINT. Claude Code's
+# settings.json env block overrides the container environment, so the forwarded value would be
+# silently defeated by the baked http://collector:4318 — the entrypoint rewrites the settings value
+# when it is set, the same way the opencode executor patches otel.json. The config directory is
+# bind-mounted so the patched file can be read back on the host; `--version` runs the entrypoint's
+# rewrite then exits the CLI with no credential needed.
+CNF="$(mktemp -d)"
+cp "$HERE/claude-home/settings.json" "$CNF/settings.json"
+printf '{"hasCompletedOnboarding":true,"theme":"dark"}\n' > "$CNF/.claude.json"
+chmod -R a+rwX "$CNF"
+docker run --rm \
+    -e CLAUDE_CONFIG_DIR=/claude-otel-test \
+    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
+    -v "$CNF:/claude-otel-test" \
+    -v "$REPO:/workspace" \
+    "$IMAGE" --version >/dev/null 2>&1
+patched="$(cat "$CNF/settings.json")"
+rm -rf "$CNF"
+if node -e \
+    'const c = JSON.parse(process.argv[1]); process.exit(c?.env?.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector.example:4318" ? 0 : 1)' \
+    "$patched" >/dev/null 2>&1; then
+    printf 'ok   %s\n' 'the entrypoint rewrites settings.json from OTEL_EXPORTER_OTLP_ENDPOINT'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     patched settings: %s\n' 'the entrypoint rewrites settings.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
+    fail=$((fail + 1))
+fi
+
 # A volume at CLAUDE_CONFIG_DIR is what makes a Remote Control login survive the container, and it
 # mounts empty over the baked configuration. Seeding is therefore load-bearing, not a nicety.
 VOL="claude-executor-test-$$"
