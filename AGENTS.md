@@ -5,6 +5,11 @@ commands, build coupling, and the map below. Everything else lives in `docs/`, o
 concern. **Read the matching `docs/` file before you touch the code it covers**; each one is a list
 of decisions that look like cruft and are not, and most are guarded by a test that fails obscurely.
 
+This application is under initial construction. Do not provide backward compatibility — no
+deprecation shims, no migration aliases, no preserving old payloads or config shapes. When a
+change breaks something, update the callers and delete the old path in the same change.
+Prioritize speed and cleanliness over compatibility.
+
 ## Read before you touch
 
 | Touching | Read |
