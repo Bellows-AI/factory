@@ -14,6 +14,26 @@ export interface GateReport {
     output: string | null;
 }
 
+/**
+ * The running attempt's vitals, sampled by the driver off its runner container and reported beside
+ * the output tail: whether the container is actually doing work (CPU, memory) and what the agent
+ * says it is doing right now (the stream's last line, its tool call most often). Current/last
+ * state only — this is the "is it stuck or working" answer, not a sampling history. Null on every
+ * job with no sample yet (a fresh attempt, or a kubernetes runner, which reports none).
+ */
+export interface RuntimeVitals {
+    /** Whole-container CPU, percent of one host core; can exceed 100 on multi-core hosts. */
+    cpuPercent: number;
+    /** Resident memory, in MiB. */
+    memUsedMb: number;
+    /** Resident memory against the container's limit, percent; null when the daemon reports none. */
+    memPercent: number | null;
+    /** The agent's newest output line, ANSI-stripped and capped — the current tool call, usually. */
+    activity: string | null;
+    /** When the driver took the sample. A reader can see staleness from this alone. */
+    sampledAt: string;
+}
+
 export interface Job {
     id: string;
     command: string;
@@ -46,6 +66,12 @@ export interface Job {
      * none.
      */
     gates: GateReport[] | null;
+    /**
+     * The attempt's last sampled vitals — CPU, memory and the agent's current activity line — as
+     * the driver reports them beside the output tail. Null until the first sample lands; left on
+     * the row when the run ends, where "was it doing anything when it died" reads off `sampledAt`.
+     */
+    runtime: RuntimeVitals | null;
     /**
      * The repository (`owner/name`) the task was queued against, and the member's executor name it
      * was stamped with. Grouping metadata for the tasks chat, nullable for every job that predates
@@ -221,12 +247,14 @@ export interface JobStore {
     ): Promise<LeaseResult>;
     /**
      * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
-     * while it happens instead of a silent spinner. Lease-guarded like every other worker write,
-     * and REPLACE, never append: the driver owns the tail window, and an unbounded append would
-     * grow the row for as long as a session runs. The final complete report overwrites whatever
-     * this last stored.
+     * while it happens instead of a silent spinner — with the attempt's last sampled vitals riding
+     * beside it when the driver has one. Lease-guarded like every other worker write, and REPLACE,
+     * never append: the driver owns the tail window, and an unbounded append would grow the row for
+     * as long as a session runs. The final complete report overwrites whatever this last stored.
+     * A null `runtime` leaves the stored vitals alone — a missed sample costs freshness, not the
+     * last good answer.
      */
-    progress(id: string, leaseToken: string, output: string): Promise<LeaseResult>;
+    progress(id: string, leaseToken: string, output: string, runtime: RuntimeVitals | null): Promise<LeaseResult>;
     /**
      * Replaces the run's gate state — the checks `.bellows.yaml` declared, executed in the
      * declared environment image. Lease-guarded like every other worker write, and REPLACE, never
@@ -247,7 +275,20 @@ export interface JobStore {
     complete(
         id: string,
         leaseToken: string,
-        result: { status: JobOutcome; exitCode: number | null; output: string | null },
+        result: {
+            status: JobOutcome;
+            exitCode: number | null;
+            output: string | null;
+            /**
+             * The context the run reached — token total and cost, scraped by the runner from the
+             * session database at close. Null when the runner scraped none (claude-code,
+             * kubernetes, a failed readout). Merged into the `runtime` vitals, creating them when
+             * no sample ever landed, so the finished row carries the context stats even with no
+             * CPU sample beside them.
+             */
+            contextTokens?: number | null;
+            contextCostUsd?: number | null;
+        },
     ): Promise<LeaseResult>;
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
@@ -275,6 +316,8 @@ interface JobRow {
     output?: string | null;
     /** Absent from the list() select — a list view shows no checks, and bounded is not free. */
     gates?: GateReport[] | null;
+    /** Absent from the list() select, like `gates` — a list view shows no vitals either. */
+    runtime?: RuntimeVitals | null;
     repo: string | null;
     executor: string | null;
     parent_job_id: string | null;
@@ -319,6 +362,7 @@ const toJob = (row: JobRow): Job => ({
     exitCode: row.exit_code,
     output: row.output ?? null,
     gates: row.gates ?? null,
+    runtime: row.runtime ?? null,
     repo: row.repo,
     executor: row.executor,
     followUpTo: row.parent_job_id,
@@ -530,6 +574,9 @@ export function createJobStore({
                         when status = 'queued' or parent_job_id is not null then remote_session_id
                         else null
                     end,
+                    -- The previous attempt's vitals are not this attempt's, and a new container
+                    -- starts unsampled: the started_at reset, one row down.
+                    runtime          = null,
                     lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
                 where org_id = ${orgId} and id = (
                     select id from job
@@ -636,13 +683,16 @@ export function createJobStore({
             return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
         },
 
-        async progress(id, leaseToken, output) {
+        async progress(id, leaseToken, output, runtime: RuntimeVitals | null = null) {
             await gate();
             // The tail the driver sent IS the output while the run is going — stored verbatim,
             // replaced on every report. No append, no merge: this side cannot know where the
-            // previous tail ended, and the driver already keeps the window bounded.
+            // previous tail ended, and the driver already keeps the window bounded. The vitals
+            // ride the same statement: replaced when the driver sampled one this round, left alone
+            // when it did not (coalesce) — a missed sample must not erase the last good answer.
             const rows = await sql<{ id: string }[]>`
-                update job set output = ${output}
+                update job set output = ${output},
+                               runtime = coalesce(${runtime === null ? null : sql.json(runtime as never)}, runtime)
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
                 returning id
@@ -706,15 +756,28 @@ export function createJobStore({
             return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
         },
 
-        async complete(id, leaseToken, { status, exitCode, output }) {
+        async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd }) {
             await gate();
+            // The context stats ride the verdict and merge into the runtime vitals — the row keeps
+            // its last CPU sample AND gains the context the run reached. A run with no sample at
+            // all gets a vitals object holding the stats alone, so "died at a full window" is
+            // visible even where no container sample ever landed. Neither stat present → the
+            // column is left exactly as the samples left it.
+            const context =
+                typeof contextTokens === 'number' || typeof contextCostUsd === 'number'
+                    ? sql.json({
+                          ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
+                          ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
+                      } as never)
+                    : null;
             const rows = await sql<{ id: string }[]>`
                 update job set
                     status      = ${status},
                     exit_code   = ${exitCode},
                     output      = ${output},
                     finished_at = now(),
-                    lease_token = null
+                    lease_token = null,
+                    runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
                 returning id
@@ -749,7 +812,7 @@ export function createJobStore({
                       where j.org_id = ${orgId}
                 )
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
-                       session_id, remote_session_id, exit_code, output, gates, repo, executor,
+                       session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
                        parent_job_id, done_at, created_at, started_at, finished_at
                 from chain
                 order by created_at, id
@@ -762,7 +825,7 @@ export function createJobStore({
             await gate();
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
-                       session_id, remote_session_id, exit_code, output, gates, repo, executor,
+                       session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
                        parent_job_id, done_at, created_at, started_at, finished_at
                 from job where org_id = ${orgId} and id = ${id}
             `;

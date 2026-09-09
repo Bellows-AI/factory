@@ -1,10 +1,10 @@
 import { describe, expect, it, vitest } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
-import type { ChildProcess } from 'node:child_process';
+import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claimEnv, containerName, createDockerRunner, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeSessionReadoutArgs, parseOpencodeSessionId, parseRemoteSessionId, remoteSessionArgs, reportTail, tailBytes } from '../src/docker.js';
+import { claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 
 /*
@@ -448,6 +448,102 @@ describe('an opencode runner', () => {
         ]);
     });
 
+    /**
+     * The close path reads what the run left behind — the session id AND how the run's last
+     * message ended. A zero exit code with finish `length` is the model's context limit cutting
+     * the task short, and the outcome must carry that; only a reason the daemon's read actually
+     * produced lands, a failed readout costing neither.
+     */
+    it('scrapes the finish reason beside the session id when an opencode run closes', async () => {
+        const exec = vitest.fn((args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                return Promise.resolve({
+                    stdout: '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"length","tokens":90433,"cost":0.31}\n',
+                });
+            }
+            return Promise.resolve({ stdout: '' });
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        const outcome = await runner.run({ ...job, followUp: false }, null);
+        expect(outcome).toMatchObject({
+            exitCode: 0,
+            sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9',
+            finishReason: 'length',
+            contextTokens: 90433,
+            costUsd: 0.31,
+        });
+    });
+
+    /**
+     * The readout answers one of three ways — a session line, an error line, or nothing — and the
+     * retries must fire on ALL but the first: the WAL-mid-checkpoint read that fails outright and
+     * succeeds milliseconds later presents as an error or as silence, never as a session. A run
+     * whose scrape never lands carries WHY on the outcome, because a lost session presents later
+     * as "this task cannot take a follow-up" and the reason is the only way to tell a broken
+     * query from an empty database.
+     */
+    it('retries a readout that answers nothing, and takes the session when a later try answers', async () => {
+        let calls = 0;
+        const exec = vitest.fn((args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                calls += 1;
+                return Promise.resolve({ stdout: calls === 1 ? '' : '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"stop"}\n' });
+            }
+            return Promise.resolve({ stdout: '' });
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        const outcome = await runner.run({ ...job, followUp: false }, null);
+        expect(calls).toBe(2);
+        expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
+        expect(outcome.readoutError).toBeUndefined();
+    });
+
+    it('carries the readout’s error on the outcome when every try fails', async () => {
+        let calls = 0;
+        const exec = vitest.fn((args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                calls += 1;
+                return Promise.resolve({ stdout: '{"error":"no such column: role"}\n' });
+            }
+            return Promise.resolve({ stdout: '' });
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        const outcome = await runner.run({ ...job, followUp: false }, null);
+        expect(calls).toBe(3);
+        expect(outcome.sessionId ?? null).toBeNull();
+        expect(outcome.readoutError).toBe('no such column: role');
+    });
+
+    it('carries a refused readout container on the outcome too', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) throw new Error('daemon refused the readout');
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        const outcome = await runner.run({ ...job, followUp: false }, null);
+        expect(outcome.readoutError).toBe('the readout container failed: daemon refused the readout');
+    });
+
     // Standby is a Remote Control feature and opencode cannot be configured for it, so a resume
     // with nothing to deliver means board state from before a RUNNER_CLI flip. The loop refuses
     // it first; the runner refuses it too, because a headless run restoring a session without a
@@ -507,20 +603,75 @@ describe('scraping the session opencode used', () => {
         ]);
         expect(line[8]).toContain(`/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`);
         expect(line[8]).toContain('parent_id is null');
+        // The role is a field INSIDE the message's data JSON, not a column — a SQL role filter
+        // throws "no such column: role" on every read and the scrape answers nothing. Filtered in
+        // JS instead, where the parsed role actually is.
+        expect(line[8]).not.toContain("role='assistant'");
+        expect(line[8]).toContain('d.role!=="assistant"');
         expect(line[8]).toContain('readOnly');
+        // A failure prints one parseable error line — the empty output of a broken query is
+        // otherwise indistinguishable from an empty database.
+        expect(line[8]).toContain('{error:');
     });
 
-    it('pulls the session id out of the readout’s answer, and nothing that is not one', () => {
-        expect(parseOpencodeSessionId('ses_f86188c3dffeZGYO4yZq4atba9\n')).toBe(
-            'ses_f86188c3dffeZGYO4yZq4atba9',
-        );
-        expect(parseOpencodeSessionId('')).toBeNull();
+    it('pulls the session id, finish reason and context stats out of the readout’s answer', () => {
+        expect(
+            parseOpencodeRunOutcome('{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"length","tokens":90433.4,"cost":0.31}\n'),
+        ).toEqual({
+            sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9',
+            finishReason: 'length',
+            contextTokens: 90433,
+            costUsd: 0.31,
+            error: null,
+        });
+        // A healthy run's closing word, and a free-tier cost of zero.
+        expect(parseOpencodeRunOutcome('{"id":"ses_x1","finish":"stop","tokens":1200,"cost":0}')).toEqual({
+            sessionId: 'ses_x1',
+            finishReason: 'stop',
+            contextTokens: 1200,
+            costUsd: 0,
+            error: null,
+        });
+        // A message that never reported a finish or tokens reads as none, not as a reason.
+        expect(parseOpencodeRunOutcome('{"id":"ses_x1","finish":null,"tokens":null,"cost":null}')).toEqual({
+            sessionId: 'ses_x1',
+            finishReason: null,
+            contextTokens: null,
+            costUsd: null,
+            error: null,
+        });
+        // The readout's own failure line: carried through as the reason, with no stats.
+        expect(parseOpencodeRunOutcome('{"error":"no such column: role"}')).toEqual({
+            sessionId: null,
+            finishReason: null,
+            contextTokens: null,
+            costUsd: null,
+            error: 'no such column: role',
+        });
+        expect(parseOpencodeRunOutcome('')).toEqual({
+            sessionId: null,
+            finishReason: null,
+            contextTokens: null,
+            costUsd: null,
+            error: null,
+        });
         // Not a session id: a path, an error line, or a uuid that would read as claude's.
-        expect(parseOpencodeSessionId('/workspaces/bellows/x/.opencode')).toBeNull();
-        expect(parseOpencodeSessionId('Error: Session not found')).toBeNull();
-        expect(parseOpencodeSessionId('33333333-3333-4333-8333-333333333333')).toBeNull();
+        expect(parseOpencodeRunOutcome('ses_f86188c3dffeZGYO4yZq4atba9\n').sessionId).toBeNull();
+        expect(parseOpencodeRunOutcome('Error: Session not found').sessionId).toBeNull();
+        expect(
+            parseOpencodeRunOutcome('{"id":"33333333-3333-4333-8333-333333333333","finish":"stop"}').sessionId,
+        ).toBeNull();
+        // Negative or non-numeric context stats are not stats.
+        expect(parseOpencodeRunOutcome('{"id":"ses_x1","tokens":-5,"cost":"free"}')).toEqual({
+            sessionId: 'ses_x1',
+            finishReason: null,
+            contextTokens: null,
+            costUsd: null,
+            error: null,
+        });
     });
 });
+
 
 /**
  * The gate environment container: one long-lived `docker run -d` per member+repo, a `docker exec`
@@ -865,6 +1016,89 @@ describe('the docker runner', () => {
         expect(outcome.exitCode).toBe(0);
         expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
     });
+
+    /**
+     * The vitals sample goes through the same daemon seam as everything else, named by this
+     * attempt's lease token — a sample can only ever resolve its own attempt's runner. A daemon
+     * that refuses (the container exited between the ask and the read) is null, never a throw:
+     * a missed sample costs freshness, not the run.
+     */
+    it('samples the runner container vitals through the daemon seam', async () => {
+        const exec = vitest.fn((args: string[]) => {
+            expect(args[0]).toBe('stats');
+            expect(args.slice(1, 4)).toEqual(['--no-stream', '--format', '{{json .}}']);
+            expect(args[4]).toBe(containerName(job));
+            return Promise.resolve({
+                stdout: '{"CPUPerc":"93.00%","MemPerc":"7.02%","MemUsage":"544MiB / 7.754GiB","Name":"x"}\n',
+            });
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+
+        await expect(runner.sampleRuntime(job)).resolves.toEqual({
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7.02,
+        });
+    });
+
+    it('answers null when the vitals sample cannot be taken', async () => {
+        const exec = vitest.fn(() => Promise.reject(new Error('daemon refused'))) as unknown as (
+            args: string[],
+        ) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+
+        await expect(runner.sampleRuntime(job)).resolves.toBeNull();
+    });
+
+    describe('parseDockerStats', () => {
+        // The stats fields are display strings; the parse is worth its own pin.
+        it('reads the JSON line the daemon prints', () => {
+            expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}')).toEqual({
+                cpuPercent: 93,
+                memUsedMb: 544,
+                memPercent: 7.02,
+            });
+        });
+
+        it('converts every memory unit to MiB, binary and decimal spellings alike', () => {
+            expect(parseDockerStats('{"CPUPerc":"0.00%","MemUsage":"1.5GiB / 8GiB"}')).toMatchObject({
+                memUsedMb: 1536,
+            });
+            expect(parseDockerStats('{"CPUPerc":"0.00%","MemUsage":"512KiB / 8GiB"}')).toMatchObject({
+                memUsedMb: 0.5,
+            });
+            expect(parseDockerStats('{"CPUPerc":"0.00%","MemUsage":"2000kB / 8GiB"}')).toMatchObject({
+                memUsedMb: 2,
+            });
+        });
+
+        it('takes null for a percentage the daemon did not report, and null for garbage', () => {
+            expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB"}')).toMatchObject({
+                memPercent: null,
+            });
+            expect(parseDockerStats('')).toBeNull();
+            expect(parseDockerStats('not json')).toBeNull();
+            expect(parseDockerStats('{"MemUsage":"544MiB / 7.754GiB"}')).toBeNull();
+            expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"? / 8GiB"}')).toBeNull();
+        });
+    });
+
+    describe('currentActivity', () => {
+        // The activity line is the stream's last non-empty line with its escapes stripped — the
+        // tool call most of the time. A heuristic on purpose: the stream is the CLI's to format.
+        it('strips ANSI escapes and takes the last non-empty line', () => {
+            expect(currentActivity('$ npm test\n\x1b[32m→ Read src/x.ts\x1b[0m\n')).toBe('→ Read src/x.ts');
+            expect(currentActivity('one\n\n  \ntwo')).toBe('two');
+        });
+
+        it('caps the line and takes null for a tail that says nothing', () => {
+            expect(currentActivity('x'.repeat(500)).length).toBe(200);
+            expect(currentActivity(null)).toBeNull();
+            expect(currentActivity('\n\n')).toBeNull();
+            expect(stripAnsi('\x1b]0;title\x07after')).toBe('after');
+        });
+    });
+
 
     // A gated job whose claim resolves to no variables still needs the minted gate credentials:
     // keyed on the claim alone, the file would not exist and the runner could never call a gate.

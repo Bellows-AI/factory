@@ -103,18 +103,25 @@ describe('TaskComposer', () => {
         expect(html).toContain('Retry');
     });
 
-    it('offers one repository option per selection plus none, none by default', () => {
-        // The tabs are gone; the composer stamps the task with a repo instead, and the default is
-        // no repository at all — the old All tab's exact semantics.
+    it('offers one repository option per selection plus none, first repository selected by default', () => {
+        // The tabs are gone; the composer stamps the task with a repo instead. The default is the
+        // FIRST selected repository — a member who picked repositories means their tasks to be
+        // stamped with one, not with nothing — and `none` stays available for a deliberate
+        // unlabelled run. Same rule, and same default, as the executor select.
         const html = renderComposer({
             repos: [
                 { owner: 'acme', name: 'web' },
                 { owner: 'acme', name: 'api' },
             ],
         });
-        expect(html).toContain('<option value="acme/web">');
+        expect(html).toContain('<option value="acme/web"');
         expect(html).toContain('<option value="acme/api">');
-        expect(html).toContain('<option value="" selected');
+        expect(html).toContain('value="acme/web" selected');
+        // The `none` option is still offered first — just not the selected one.
+        const repoSelect = html.slice(html.indexOf('Repository'), html.indexOf('Executor'));
+        expect(repoSelect).not.toContain('value="" selected');
+        const none = renderComposer({ repos: [] });
+        expect(none).toContain('<option value="" selected');
     });
 
     // A member who configured executors means their tasks to run on one: the FIRST is the
@@ -336,6 +343,73 @@ describe('TaskDetail', () => {
                 jobs: [job({ gates: [{ name: 'test', status: 'running', exitCode: null, output: null }] })],
             });
             for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        });
+    });
+
+    /**
+     * The attempt's sampled vitals — the "is it stuck or working" strip: CPU, memory, and the
+     * agent's current activity line. Rendered while the run is going ONLY: the sample is a
+     * liveness signal, and a stale "cpu 167%" beside a finished run's verdict lies about a run
+     * that is no longer going.
+     */
+    describe('runtime', () => {
+        const runtime = { cpuPercent: 93.4, memUsedMb: 544.2, memPercent: 7, activity: '→ Read src/x.ts', sampledAt: '2026-09-09T10:00:00.000Z' };
+
+        it('renders cpu, memory and the current activity above the output', () => {
+            const html = renderDetail({ jobs: [job({ status: 'running', runtime })] });
+            expect(html).toMatch(/cpu (<!-- -->)?93(<!-- -->)?%/);
+            expect(html).toMatch(/mem (<!-- -->)?544(<!-- -->)? MiB \((<!-- -->)?7(<!-- -->)?%\)/);
+            expect(html).toContain('chat-activity');
+            expect(html).toContain('→ Read src/x.ts');
+        });
+
+        it('renders no strip once the run has ended, whatever it sampled last', () => {
+            for (const status of ['succeeded', 'failed', 'dead', 'standby'] as const) {
+                const html = renderDetail({ jobs: [job({ status, runtime })] });
+                expect(html, status).not.toContain('chat-runtime');
+            }
+        });
+
+        it('renders no strip until the driver has sampled one', () => {
+            expect(renderDetail({ jobs: [job({ status: 'running' })] })).not.toContain('chat-runtime');
+        });
+
+        it('omits the activity and percentage the sample does not carry', () => {
+            const html = renderDetail({
+                jobs: [job({ status: 'running', runtime: { ...runtime, activity: null, memPercent: null } })],
+            });
+            expect(html).toMatch(/mem (<!-- -->)?544(<!-- -->)? MiB</);
+            expect(html).not.toContain('chat-activity');
+        });
+
+        it('never emits a placeholder value', () => {
+            const html = renderDetail({
+                jobs: [job({ status: 'running', runtime: { ...runtime, activity: null, memPercent: null } })],
+            });
+            for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        });
+
+        /**
+         * The context the run reached rides the close-time scrape and is shown on the FINISHED
+         * task — where "died at 90k tokens" is legible — next to the stamp. Cost shows only once
+         * it is money.
+         */
+        it('shows the context a finished run reached, and its cost once it costs something', () => {
+            const html = renderDetail({
+                jobs: [job({ runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } })],
+            });
+            expect(html).toContain('ctx 90,433 tok');
+            expect(html).toContain('$0.3100');
+
+            const free = renderDetail({
+                jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
+            });
+            expect(free).toContain('ctx 1,200 tok');
+            expect(free).not.toContain('$0.0000');
+        });
+
+        it('shows nothing where the runner scraped no context', () => {
+            expect(renderDetail({ jobs: [job()] })).not.toContain('ctx ');
         });
     });
 });

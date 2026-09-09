@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
-import type { GateReport, JobOutcome, JobStatus, JobStore } from '../db/job-store.js';
+import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals } from '../db/job-store.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
 /**
@@ -46,6 +46,55 @@ function executorReason(value: string): string | null {
  * job's tail is for debugging, not archival — the OTLP pipeline is where logs belong.
  */
 const OUTPUT_LIMIT = 64 * 1024;
+
+/**
+ * The runtime vitals a worker may report beside the tail. Numbers are bounded past anything a
+ * real container reaches (a busy multi-core container exceeds 100% CPU; ten petabytes of RAM does
+ * not exist), the activity line is capped because it is one CLI line and not a log, and the
+ * timestamp must parse — the UI reads its staleness off it.
+ *
+ * Returns the validated value, null for "no sample this round", or the reason the object is bad.
+ */
+const CPU_PERCENT_MAX = 10_000;
+const MEM_MB_MAX = 10_000_000;
+const RUNTIME_ACTIVITY_LIMIT = 512;
+
+/** The context stats a verdict may carry: a token count no real window reaches, a cost no run hits. */
+const CONTEXT_TOKENS_MAX = 100_000_000;
+const CONTEXT_COST_MAX = 1_000_000;
+
+function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== 'object' || Array.isArray(raw)) return 'runtime must be an object';
+    const fields = raw as Record<string, unknown>;
+    const { cpuPercent, memUsedMb, memPercent, activity, sampledAt } = fields;
+    if (typeof cpuPercent !== 'number' || !Number.isFinite(cpuPercent) || cpuPercent < 0 || cpuPercent > CPU_PERCENT_MAX) {
+        return `runtime.cpuPercent must be a number 0..${CPU_PERCENT_MAX}`;
+    }
+    if (typeof memUsedMb !== 'number' || !Number.isFinite(memUsedMb) || memUsedMb < 0 || memUsedMb > MEM_MB_MAX) {
+        return `runtime.memUsedMb must be a number 0..${MEM_MB_MAX}`;
+    }
+    if (
+        memPercent !== undefined &&
+        memPercent !== null &&
+        (typeof memPercent !== 'number' || !Number.isFinite(memPercent) || memPercent < 0 || memPercent > 100)
+    ) {
+        return 'runtime.memPercent must be a number 0..100 or null';
+    }
+    if (activity !== undefined && activity !== null && (typeof activity !== 'string' || !activity.trim())) {
+        return 'runtime.activity must be a non-empty string or null';
+    }
+    if (typeof sampledAt !== 'string' || !sampledAt.trim() || Number.isNaN(Date.parse(sampledAt))) {
+        return 'runtime.sampledAt must be a parseable timestamp';
+    }
+    return {
+        cpuPercent,
+        memUsedMb,
+        memPercent: (memPercent as number | null | undefined) ?? null,
+        activity: typeof activity === 'string' ? activity.trim().slice(0, RUNTIME_ACTIVITY_LIMIT) : null,
+        sampledAt: sampledAt.slice(0, 64),
+    };
+}
 
 const LEASE_SECONDS_DEFAULT = 300;
 const LEASE_SECONDS_MAX = 3600;
@@ -210,21 +259,26 @@ export const jobRoutes =
         // happens. Separate from complete because the run has not ended — there is no verdict
         // here, and the final complete report overwrites whatever this last stored. The driver
         // owns the window: this stores the tail it is sent, replacing the previous one, truncated
-        // by the same rule complete applies.
+        // by the same rule complete applies. An optional `runtime` object rides beside the tail —
+        // the driver's latest sample of the runner container's CPU/memory plus the agent's current
+        // activity line, the dashboard's "is it stuck or working" answer. Absent (or null) means
+        // no fresh sample: the last stored one stays. Replaced, never appended, like the tail.
         app.post('/api/jobs/:id/output', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const { leaseToken, output } = body(request.body);
+            const { leaseToken, output, runtime } = body(request.body);
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
                 return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
             }
             if (typeof output !== 'string') {
                 return bad(reply, 'BAD_OUTPUT', 'output must be a string');
             }
+            const vitals = runtimeVitals(runtime);
+            if (typeof vitals === 'string') return bad(reply, 'BAD_RUNTIME', vitals);
 
             const result = await guard(reply, (e) => request.log.error({ err: e }, 'job output failed'), () =>
-                store.progress(id, leaseToken, output.slice(0, OUTPUT_LIMIT)),
+                store.progress(id, leaseToken, output.slice(0, OUTPUT_LIMIT), vitals),
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -404,7 +458,7 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const { leaseToken, status, exitCode, output } = body(request.body);
+            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd } = body(request.body);
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
                 return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
             }
@@ -417,12 +471,31 @@ export const jobRoutes =
             if (output !== undefined && output !== null && typeof output !== 'string') {
                 return bad(reply, 'BAD_OUTPUT', 'output must be a string or null');
             }
+            if (
+                contextTokens !== undefined &&
+                contextTokens !== null &&
+                (!Number.isInteger(contextTokens) || (contextTokens as number) < 0 || (contextTokens as number) > CONTEXT_TOKENS_MAX)
+            ) {
+                return bad(reply, 'BAD_CONTEXT', `contextTokens must be an integer 0..${CONTEXT_TOKENS_MAX}`);
+            }
+            if (
+                contextCostUsd !== undefined &&
+                contextCostUsd !== null &&
+                (typeof contextCostUsd !== 'number' ||
+                    !Number.isFinite(contextCostUsd) ||
+                    (contextCostUsd as number) < 0 ||
+                    (contextCostUsd as number) > CONTEXT_COST_MAX)
+            ) {
+                return bad(reply, 'BAD_CONTEXT', `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}`);
+            }
 
             const result = await guard(reply, (e) => request.log.error({ err: e }, 'job complete failed'), () =>
                 store.complete(id, leaseToken, {
                     status: status as JobOutcome,
                     exitCode: (exitCode as number | undefined) ?? null,
                     output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
+                    contextTokens: (contextTokens as number | undefined) ?? null,
+                    contextCostUsd: (contextCostUsd as number | undefined) ?? null,
                 }),
             );
             if (!result.ok) return reply;

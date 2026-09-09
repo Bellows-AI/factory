@@ -73,16 +73,31 @@ export interface BoardJob {
 /** Whether the board still recognises this worker as the holder of the job. */
 export type LeaseState = 'held' | 'lost';
 
+/**
+ * The runner container's vitals at one sample, plus the agent's current activity line — what the
+ * board stores beside the output tail and the task view renders as the "is it working" answer.
+ * Shapes the board's own validation; the driver sends only samples it took.
+ */
+export interface RuntimeReport {
+    cpuPercent: number;
+    memUsedMb: number;
+    memPercent: number | null;
+    activity: string | null;
+    sampledAt: string;
+}
+
 export interface Board {
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
     heartbeat(job: BoardJob): Promise<LeaseState>;
     /**
      * Streams a rolling tail of the runner's output while the job runs, so the dashboard shows the
-     * work instead of a spinner. Best-effort by contract: a failure here costs freshness, never
-     * the run — the complete report carries the final tail.
+     * work instead of a spinner. `runtime` rides beside it when the driver has a fresh sample of
+     * the container's vitals; absent means none this round, and the board keeps the last one.
+     * Best-effort by contract: a failure here costs freshness, never the run — the complete report
+     * carries the final tail.
      */
-    progress(job: BoardJob, output: string): Promise<LeaseState>;
+    progress(job: BoardJob, output: string, runtime?: RuntimeReport): Promise<LeaseState>;
     /**
      * Replaces the job's gate state — what is running, what passed, what failed — so the task view
      * can show the checks while they happen. Best-effort by contract, like `progress`: a failure
@@ -100,9 +115,20 @@ export interface Board {
     session(job: BoardJob, sessionId: string, remoteSessionId: string | null): Promise<LeaseState>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
+    /**
+     * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
+     * scraped them out of the session database — the context the run reached and what it cost,
+     * stored beside the attempt's vitals on the board.
+     */
     complete(
         job: BoardJob,
-        result: { status: 'succeeded' | 'failed'; exitCode: number | null; output: string },
+        result: {
+            status: 'succeeded' | 'failed';
+            exitCode: number | null;
+            output: string;
+            contextTokens?: number | null;
+            contextCostUsd?: number | null;
+        },
     ): Promise<LeaseState>;
 }
 
@@ -170,10 +196,11 @@ export function createBoard({
             return response.status === 409 ? 'lost' : 'held';
         },
 
-        async progress(job, output) {
+        async progress(job, output, runtime) {
             const response = await post(`/api/jobs/${job.id}/output`, {
                 leaseToken: job.leaseToken,
                 output,
+                ...(runtime ? { runtime } : {}),
             });
             return response.status === 409 ? 'lost' : 'held';
         },
@@ -200,12 +227,14 @@ export function createBoard({
             return response.status === 409 ? 'lost' : 'held';
         },
 
-        async complete(job, { status, exitCode, output }) {
+        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd }) {
             const response = await post(`/api/jobs/${job.id}/complete`, {
                 leaseToken: job.leaseToken,
                 status,
                 exitCode,
                 output,
+                ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
+                ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
             });
             return response.status === 409 ? 'lost' : 'held';
         },

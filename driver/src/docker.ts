@@ -36,6 +36,32 @@ export interface RunOutcome {
      * before the container starts, and for every run whose scrape found nothing.
      */
     sessionId?: string | null;
+    /**
+     * The finish reason opencode recorded for the run's LAST root assistant message — `stop` for
+     * a run that ended itself, `length` for one that hit the model's context limit mid-task.
+     * Undefined when no scrape happened (claude-code, kubernetes); null when the scrape ran but
+     * read nothing. A zero exit code with a finish reason that is not `stop` is a run that
+     * STOPPED TALKING, not one that finished — the loop reports it failed rather than letting
+     * the exit code call a truncated run a success.
+     */
+    finishReason?: string | null;
+    /**
+     * The context the run reached, read from the same session database as `finishReason`: the
+     * last root assistant message's token total — the model's window fill at the run's end — and
+     * the sum of the per-message costs. Undefined when no scrape happened; null when the scrape
+     * read nothing. Reported with the verdict and stored beside the attempt's vitals, where a
+     * run that died at a full window tells its own story.
+     */
+    contextTokens?: number | null;
+    costUsd?: number | null;
+    /**
+     * Why the post-run session scrape failed, when it failed: the readout's own error line, the
+     * docker rejection, or null when it answered nothing at all. The loop logs it beside the
+     * empty-scrape notice, because a lost session presents later as "this task cannot take a
+     * follow-up" and the reason is the only way to tell a broken query from an empty database.
+     * Undefined for claude-code and kubernetes, which never scrape.
+     */
+    readoutError?: string | null;
 }
 
 /**
@@ -64,6 +90,12 @@ export interface Runner {
      * permanent one for a headless job.
      */
     remoteSessionId(job: BoardJob, sessionId: string): Promise<string | null>;
+    /**
+     * The runner container's vitals right now — the liveness signal the dashboard renders — or
+     * null when none can be taken. Sampling failures are the ordinary case (the container can be
+     * gone between the ask and the read), so null is "no fresh sample", never an error.
+     */
+    sampleRuntime(job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
 }
@@ -167,6 +199,99 @@ export function tailBytes(text: string, limit: number): string {
 /** The tail of a runner's log that fits a complete POST, whatever the log contained. */
 export function reportTail(logText: string): string {
     return tailBytes(logText, REPORT_BYTE_LIMIT);
+}
+
+/**
+ * The runner container's vitals at one sample: the "is it actually doing anything" answer the
+ * dashboard renders beside the output tail. Taken with `docker stats --no-stream` — the same
+ * daemon access every other per-attempt operation here uses.
+ */
+export interface RuntimeSample {
+    /** Whole-container CPU, percent of one host core; can exceed 100 on multi-core hosts. */
+    cpuPercent: number;
+    /** Resident memory, in MiB. */
+    memUsedMb: number;
+    /** Resident memory against the container's limit, percent; null when the daemon reports none. */
+    memPercent: number | null;
+    /** When the sample was taken, stamped by the sampler. A reader sees staleness from this. */
+    sampledAt: string;
+}
+
+/** How many characters of one output line the activity report may carry. */
+const ACTIVITY_LIMIT = 200;
+
+/** Strips ANSI/OSC escapes — the stream is a CLI's, and the board renders it as text. */
+export function stripAnsi(text: string): string {
+    // CSI sequences, OSC sequences (BEL- or ST-terminated), and any other lone escape.
+    return text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./g, '');
+}
+
+/**
+ * The agent's current activity, read off the newest output tail: its last non-empty line, escapes
+ * stripped and capped. That line is the tool call most of the time (`→ Read src/x.ts`,
+ * `$ npm test`), which is exactly the "is it working, and on what" answer wanted here. A heuristic
+ * by design — the stream is the CLI's to format, and parsing deeper would couple this process to
+ * one renderer's redraws.
+ */
+export function currentActivity(tail: string | null): string | null {
+    if (tail === null) return null;
+    const lines = stripAnsi(tail).split('\n');
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i]!.trim();
+        if (line) return line.slice(0, ACTIVITY_LIMIT);
+    }
+    return null;
+}
+
+const PERCENT = /^([0-9.]+)%/;
+const MEMORY = /^([0-9.]+)\s*([A-Za-z]+)/;
+
+/** Docker's stats units, to MiB. Both the binary and the decimal spellings are seen in the wild. */
+const TO_MIB: Record<string, number> = {
+    B: 1 / 1048576,
+    kB: 1e-3,
+    KB: 1e-3,
+    KiB: 1 / 1024,
+    MB: 1,
+    MiB: 1,
+    GB: 1e3,
+    GiB: 1024,
+    TB: 1e6,
+    TiB: 1048576,
+};
+
+const percentOf = (field: unknown): number | null => {
+    const match = typeof field === 'string' ? PERCENT.exec(field.trim()) : null;
+    return match ? Number.parseFloat(match[1]!) : null;
+};
+
+const memMbOf = (field: string | undefined): number | null => {
+    const match = field === undefined ? null : MEMORY.exec(field.trim());
+    if (!match) return null;
+    const factor = TO_MIB[match[2]!];
+    return factor === undefined ? null : Number.parseFloat(match[1]!) * factor;
+};
+
+/**
+ * Pulls the vitals out of `docker stats --no-stream --format '{{json .}}'` output. Pure and
+ * exported for the pinning: the fields are display strings ("93.00%", "544MiB / 7.754GiB") and
+ * their parse deserves its own test. Null for anything it cannot read — a missed sample costs
+ * freshness, never the run.
+ */
+export function parseDockerStats(stdout: string): Omit<RuntimeSample, 'sampledAt'> | null {
+    const line = stdout.trim().split('\n').filter(Boolean).pop();
+    if (!line) return null;
+    let fields: Record<string, unknown>;
+    try {
+        fields = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+        return null;
+    }
+    const cpuPercent = percentOf(fields.CPUPerc);
+    const usage = typeof fields.MemUsage === 'string' ? fields.MemUsage.split('/') : [];
+    const memUsedMb = memMbOf(usage[0]);
+    if (cpuPercent === null || memUsedMb === null) return null;
+    return { cpuPercent, memUsedMb, memPercent: percentOf(fields.MemPerc) };
 }
 
 /**
@@ -275,14 +400,16 @@ export function opencodeDbPath(config: DriverConfig, job: BoardJob): string {
 }
 
 /**
- * The full `docker run` argv that reads the session id a finished opencode run left behind —
- * pure, and exported, because it is the part worth pinning: the readout is a throwaway container
- * over the workspaces volume, entrypoint swapped for node, whose only work is one read-only
- * query for the newest root session.
+ * The full `docker run` argv that reads what a finished opencode run left behind — pure, and
+ * exported, because it is the part worth pinning: the readout is a throwaway container over the
+ * workspaces volume, entrypoint swapped for node, whose only work is one read-only query pair for
+ * the newest root session and the finish reason of its last assistant message.
  *
  * It runs AFTER the job container exits (docker exec cannot), and against the volume rather than
- * inside any container, which is why the run may be over before the id is known and why the
- * runner reports it in the outcome instead of mid-run.
+ * inside any container, which is why the run may be over before any of this is known and why the
+ * runner reports both in the outcome instead of mid-run. The finish reason is what tells a run
+ * that ended itself (`stop`) from one the model's context limit cut short (`length`) — the exit
+ * code reads 0 for both, and only one of them is a success.
  */
 export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob): string[] {
     const db = opencodeDbPath(config, job);
@@ -295,24 +422,74 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob):
         'node',
         config.image,
         '-e',
-        // CommonJS: `node -e` is CommonJS unless told otherwise. The query takes the newest ROOT
+        // CommonJS: `node -e` is CommonJS unless told otherwise. The session takes the newest ROOT
         // session — subagents create children under a parent_id, and the conversation a follow-up
-        // continues is the run's own root.
+        // continues is the run's own root. The finish reason comes from the last ASSISTANT
+        // message of that session — the run's own closing word — and its token total is the
+        // context the run reached; cost sums across every assistant message of the session. The
+        // role is a field INSIDE the message's data JSON, not a column: filtering it in SQL
+        // throws "no such column: role" on every read, and the failure reads as an empty
+        // database. A failure prints one parseable error line — an empty answer and a broken
+        // query are otherwise indistinguishable to the parse.
         `const {DatabaseSync}=require("node:sqlite");` +
             `try{` +
             `const db=new DatabaseSync(${JSON.stringify(db)},{readOnly:true});` +
-            `const row=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
-            `if(row&&row.id)console.log(row.id);` +
-            `}catch{}`,
+            `const s=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
+            `if(s&&s.id){` +
+            `const msgs=db.prepare("select data from message where session_id=? order by id").all(s.id);` +
+            `let finish=null,tokens=0,cost=0;` +
+            `for(const m of msgs){` +
+            `const d=JSON.parse(m.data);` +
+            `if(d.role!=="assistant")continue;` +
+            `if(d.finish)finish=d.finish;` +
+            `if(d.tokens&&typeof d.tokens.total==="number")tokens=Math.max(tokens,d.tokens.total);` +
+            `if(typeof d.cost==="number")cost+=d.cost;` +
+            `}` +
+            `console.log(JSON.stringify({id:s.id,finish,tokens,cost}));` +
+            `}` +
+            `}catch(e){console.log(JSON.stringify({error:e instanceof Error?e.message:String(e)}));}`,
     ];
 }
 
-/** Pulls a session id out of the readout's stdout, tolerating anything that is not one. */
-export function parseOpencodeSessionId(stdout: string): string | null {
-    const id = stdout.trim().split('\n')[0]?.trim() ?? '';
-    // The shape opencode mints (`ses_…`), and the shape SESSION_ID in dockerArgs will re-assert
-    // before the id is handed to a runner argv on the follow-up claim.
-    return /^ses_[A-Za-z0-9._-]+$/.test(id) ? id : null;
+/** What the readout answers: the session the run used, how it ended, and the context it reached. */
+export interface OpencodeRunOutcome {
+    sessionId: string | null;
+    finishReason: string | null;
+    contextTokens: number | null;
+    costUsd: number | null;
+    /**
+     * What the readout says went wrong, when it says anything. The script prints one on every
+     * failure it can name; a readout that answers nothing at all parses with this null.
+     */
+    error: string | null;
+}
+
+/** Pulls the session id, finish reason and context stats out of the readout, tolerating anything else. */
+export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
+    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+    const nothing = { sessionId: null, finishReason: null, contextTokens: null, costUsd: null, error: null };
+    try {
+        const parsed = JSON.parse(line) as {
+            id?: unknown;
+            finish?: unknown;
+            tokens?: unknown;
+            cost?: unknown;
+            error?: unknown;
+        };
+        const sessionId =
+            typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
+        const finishReason = typeof parsed.finish === 'string' && parsed.finish ? parsed.finish : null;
+        const contextTokens =
+            typeof parsed.tokens === 'number' && Number.isFinite(parsed.tokens) && parsed.tokens >= 0
+                ? Math.round(parsed.tokens)
+                : null;
+        const costUsd =
+            typeof parsed.cost === 'number' && Number.isFinite(parsed.cost) && parsed.cost >= 0 ? parsed.cost : null;
+        const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
+        return { sessionId, finishReason, contextTokens, costUsd, error };
+    } catch {
+        return nothing;
+    }
 }
 
 /**
@@ -681,6 +858,17 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             return read ? parseRemoteSessionId(read.stdout) : null;
         },
 
+        // The container is named by this attempt's lease token, so a sample can only ever resolve
+        // its own attempt's runner — the same attempt-scoping every per-attempt operation here
+        // leans on. A refused read (the container exited between the ask and the stats round-trip,
+        // the daemon is busy) answers null, which the loop reads as "report no vitals this round".
+        async sampleRuntime(job) {
+            const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
+                () => null,
+            );
+            return read ? parseDockerStats(read.stdout) : null;
+        },
+
         async run(job, session, onOutput) {
             // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
             // token that was never recorded, so nothing recorded for an earlier attempt can
@@ -972,15 +1160,59 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                              * opencode mints its own session id, so the loop had none to report at
                              * spawn — this is where it comes from instead: one throwaway container
                              * over the workspaces volume, one read-only query against the
-                             * database the run just closed. A failed read is not a failed run:
-                             * it costs the task its follow-ups, not its verdict.
+                             * database the run just closed. The same read answers HOW the run's
+                             * last message ended — a zero exit code with a finish reason that is
+                             * not `stop` is the model's context limit (or an abort) cutting a
+                             * task short, which only the session database knows. A failed read is
+                             * not a failed run: it costs the task its follow-ups and this
+                             * verdict-check, not its verdict.
                              */
                             if (config.cli === 'opencode') {
-                                const read = await execDocker(opencodeSessionReadoutArgs(config, job)).catch(
-                                    () => null,
-                                );
-                                const id = read ? parseOpencodeSessionId(read.stdout) : null;
-                                if (id) outcome.sessionId = id;
+                                /*
+                                 * NOT single-shot, and not only when the container fails. The CLI
+                                 * exited a moment ago, and its session database may still be
+                                 * mid-checkpoint — a read-only open of a WAL that needs recovery
+                                 * fails outright, then succeeds milliseconds later. The readout
+                                 * script answers one of three ways — a session line, an error
+                                 * line, or nothing — and ALL but the first read as "no session
+                                 * yet", so the retries fire on the session being missing,
+                                 * whatever the reason. One failed readout silently cost a run its
+                                 * session, its finish reason and its context stats: a task that
+                                 * could never be followed up, with nothing in any log saying why.
+                                 * Three tries, half a second apart; a failed read is still not a
+                                 * failed run.
+                                 */
+                                let scraped: OpencodeRunOutcome = {
+                                    sessionId: null,
+                                    finishReason: null,
+                                    contextTokens: null,
+                                    costUsd: null,
+                                    error: null,
+                                };
+                                let reason: string | null = null;
+                                for (let attempt = 0; attempt < 3 && !scraped.sessionId; attempt += 1) {
+                                    if (attempt > 0) await new Promise((r) => setTimeout(r, 500));
+                                    scraped = await execDocker(opencodeSessionReadoutArgs(config, job)).then(
+                                        (read) => parseOpencodeRunOutcome(read.stdout),
+                                        (err: Error): OpencodeRunOutcome => ({
+                                            sessionId: null,
+                                            finishReason: null,
+                                            contextTokens: null,
+                                            costUsd: null,
+                                            error: `the readout container failed: ${err.message}`,
+                                        }),
+                                    );
+                                    reason = scraped.error ?? reason;
+                                }
+                                if (scraped.sessionId) {
+                                    outcome.sessionId = scraped.sessionId;
+                                    if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
+                                    if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
+                                    if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+                                } else {
+                                    outcome.readoutError =
+                                        reason ?? 'the readout answered nothing (no session in the database)';
+                                }
                             }
                             return outcome;
                         })

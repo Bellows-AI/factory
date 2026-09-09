@@ -817,6 +817,13 @@ export function createKubernetesRunner(
             return null;
         },
 
+        // No vitals here: `docker stats` has no kubernetes twin, and a pod's metrics come from the
+        // metrics-server the cluster may not run. The dashboard renders nothing rather than a
+        // wrong number, the same way gates are refused here rather than skipped.
+        async sampleRuntime() {
+            return null;
+        },
+
         // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing
         // is the ordinary end of a finished run, and one that fails is the kubelet's deadline doing
         // this function's work. No Secret delete here: the run() wrapper below owns the Secret's

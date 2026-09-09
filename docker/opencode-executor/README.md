@@ -69,14 +69,16 @@ outlives the container.
 ## Permissions are baked, not flagged
 
 `opencode-home/opencode.json` holds the permission policy, because opencode reads policy from
-config and `ask` is unusable headless — a run that stops to ask hangs until its deadline. The baked
-policy is the executor spec's acceptEdits mapping:
+config and `ask` is unusable headless — a run that stops to ask hangs until its deadline, and an
+unanswered ask auto-rejects. The baked policy is **permissionless inside the workspace, hard-gated
+outside it**:
 
-| Permission | Value |
-| --- | --- |
-| `edit` | `allow` |
-| `bash` | `allow` |
-| `webfetch` | `deny` |
+| Rule | Value | Why |
+| --- | --- | --- |
+| `*` | `allow` | Nothing inside the working directory prompts. Per-tool asks (`doom_loop`, `question`, …) resolve to this too. |
+| `read` | `{"*": "allow"}` | Explicit, because opencode seeds a default `*.env.*` read deny (a secrets-file rule) that matches any filename with `.env.` in it — it once auto-rejected a read of `routes.env.test.ts` and broke a run mid-investigation. |
+| `webfetch` | `deny` | A hard refusal, never a prompt: the agent sees "denied" and routes around it. |
+| `external_directory` | `deny` everything, then `allow` `/tmp/*` and `/home/node/*` | The fence, enforced by config rather than agent instructions. Everything outside the working directory is refused — the rest of the shared workspaces volume (other members' trees) and system folders included — except the runner's own scratch space, so a run can still use `/tmp` for throwaway clones. |
 
 To run another policy, mount your own over the baked file:
 `-v "$HOME/opencode.json:/home/node/.config/opencode/opencode.json:ro"` — it resolves outside

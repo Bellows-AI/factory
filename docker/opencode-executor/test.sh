@@ -44,12 +44,14 @@ case "$got" in
 *) bad "the CLI is the pinned $VERSION" "got: $got" ;;
 esac
 
-# The baked policy, exactly: allow/allow/deny — the executor spec's acceptEdits mapping. "ask" is
-# unusable headless, so its absence is the point.
+# The baked policy, exactly: permissionless inside the workspace, hard gates outside. "ask" is
+# unusable headless — an unanswered ask auto-rejects — so nothing may resolve to it. The read
+# allow-all is pinned because opencode seeds a default `*.env.*` deny that once matched a test
+# file's name (routes.env.test.ts) and broke a run mid-investigation.
 policy="$(docker run --rm --entrypoint sh "$IMAGE" -c 'cat "$OPENCODE_CONFIG"')"
-expect_exact() { # expect_exact <name> <json> <key> <want>
+expect_exact() { # expect_exact <name> <json> <dotted.key.path> <want>
     local got
-    got="$(node -e 'try { const o = JSON.parse(process.argv[1]); process.stdout.write(String(o?.permission?.[process.argv[2]] ?? "")); } catch { process.stdout.write("<unparseable>"); }' \
+    got="$(node -e 'try { let o = JSON.parse(process.argv[1]); for (const k of process.argv[2].split(".")) o = o?.[k]; process.stdout.write(String(o ?? "")); } catch { process.stdout.write("<unparseable>"); }' \
         "$2" "$3")"
     if [ "$got" = "$4" ]; then ok "$1"; else bad "$1" "$3 wanted '$4', got '$got'"; fi
 }
@@ -58,9 +60,12 @@ if node -e 'JSON.parse(process.argv[1])' "$policy" >/dev/null 2>&1; then
 else
     bad 'the baked opencode.json parses' "$policy"
 fi
-expect_exact 'edit is allowed'   "$policy" edit allow
-expect_exact 'bash is allowed'   "$policy" bash allow
-expect_exact 'webfetch is denied' "$policy" webfetch deny
+expect_exact 'everything is allowed by default' "$policy" 'permission.*' allow
+expect_exact 'read allows every path'           "$policy" 'permission.read.*' allow
+expect_exact 'webfetch is denied'               "$policy" 'permission.webfetch' deny
+expect_exact 'external paths are denied by default' "$policy" 'permission.external_directory.*' deny
+expect_exact 'the runner scratch is reachable'  "$policy" 'permission.external_directory./tmp/*' allow
+expect_exact 'home scratch is reachable'        "$policy" 'permission.external_directory./home/node/*' allow
 
 # A missing WORKDIR must refuse in place, not start an agent in the wrong directory.
 docker run --rm -e WORKDIR=/nope "$IMAGE" run 'hi' >/dev/null 2>&1

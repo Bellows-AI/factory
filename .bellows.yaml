@@ -1,0 +1,5 @@
+environment:
+    image: node:24-alpine
+    gates:
+         - name: test
+           command: "npm test"

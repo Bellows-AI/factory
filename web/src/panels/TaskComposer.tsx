@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react';
 
+/** `owner/name` of the first selected repository, or `''` for none — the select's value shape. */
+const firstRepo = (repos: readonly { owner: string; name: string }[] | null): string => {
+    const first = repos?.[0];
+    return first ? `${first.owner}/${first.name}` : '';
+};
+
 /**
  * The new-task composer, the default right pane of the tasks area.
  *
@@ -8,7 +14,8 @@ import { useEffect, useState } from 'react';
  * effects, the page hands it finished props and the suite asserts markup.
  *
  * The repository is a stamp the member chooses per task — the old repo tabs collapsed into this
- * select, with `none` (null) carrying the same meaning the All tab had.
+ * select, with `none` (null) carrying the same meaning the All tab had. The first selected
+ * repository is the default, exactly like the first configured executor.
  */
 export function TaskComposer({
     repos,
@@ -37,7 +44,20 @@ export function TaskComposer({
     const [draft, setDraft] = useState('');
     const [executor, setExecutor] = useState(() => executors[0]?.name ?? '');
     const [executorTouched, setExecutorTouched] = useState(false);
-    const [repo, setRepo] = useState('');
+    const [repo, setRepo] = useState(() => firstRepo(repos));
+    const [repoTouched, setRepoTouched] = useState(false);
+
+    // The FIRST selected repository is the default — the executor precedent: a member who picked
+    // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
+    // wins the moment they pick it — `repoTouched` is what stops this autoselect from stomping
+    // their choice back on the next workspace poll. The initializer above covers the mount that
+    // already knows the list (and the offline suite, which runs no effects); this covers the poll
+    // that fills the list in afterwards.
+    useEffect(() => {
+        if (!repoTouched && repo === '' && repos !== null && repos.length > 0) {
+            setRepo(firstRepo(repos));
+        }
+    }, [repos, repo, repoTouched]);
 
     // The FIRST configured executor is the default: a member who set one up means their tasks to
     // run on it, not on an unlabelled runner. Explicit `none` wins the moment they pick it —
@@ -59,10 +79,11 @@ export function TaskComposer({
     }, [executors, executor]);
 
     // Same for the repository: a deselection must not survive invisibly in the draft and stamp a
-    // task with a repository the member no longer works in.
+    // task with a repository the member no longer works in. Clamp to what exists — the first
+    // repository, or none when the list is empty.
     useEffect(() => {
         if (repos !== null && repo !== '' && !repos.some(({ owner, name }) => `${owner}/${name}` === repo)) {
-            setRepo('');
+            setRepo(firstRepo(repos));
         }
     }, [repos, repo]);
 
@@ -112,7 +133,14 @@ export function TaskComposer({
                 <div className="composer-row">
                     <label className="composer-label">
                         Repository{' '}
-                        <select className="composer-select" value={repo} onChange={(e) => setRepo(e.target.value)}>
+                        <select
+                            className="composer-select"
+                            value={repo}
+                            onChange={(e) => {
+                                setRepoTouched(true);
+                                setRepo(e.target.value);
+                            }}
+                        >
                             <option value="">none</option>
                             {repos.map(({ owner, name }) => {
                                 const full = `${owner}/${name}`;

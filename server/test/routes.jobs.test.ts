@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { Claim, FollowUpRefusal, GateReport, Job, JobStatus, JobStore, LeaseResult } from '../src/db/job-store.js';
+import type { Claim, FollowUpRefusal, GateReport, Job, JobStatus, JobStore, LeaseResult, RuntimeVitals } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import { stubClient, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -18,9 +18,9 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
     listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
-    completed: { id: string; output: string | null }[];
+    completed: { id: string; output: string | null; contextTokens: number | null; contextCostUsd: number | null }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
-    progressed: { id: string; output: string }[];
+    progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     markedDone: string[];
@@ -103,14 +103,14 @@ function stubStore(
             stub.sessions.push({ id, sessionId, remoteSessionId });
             return options.verdict ?? 'ok';
         },
-        async progress(id, _token, output) {
+        async progress(id: string, _token: string, output: string, runtime: RuntimeVitals | null) {
             boom();
-            stub.progressed.push({ id, output });
+            stub.progressed.push({ id, output, runtime });
             return options.verdict ?? 'ok';
         },
-        async complete(id, _token, { output }) {
+        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd }) {
             boom();
-            stub.completed.push({ id, output });
+            stub.completed.push({ id, output, contextTokens: contextTokens ?? null, contextCostUsd: contextCostUsd ?? null });
             return options.verdict ?? 'ok';
         },
         async gates(id, _token, results) {
@@ -452,6 +452,8 @@ describe('POST /api/jobs/:id/session', () => {
 });
 
 describe('POST /api/jobs/:id/output', () => {
+    const VITALS = { cpuPercent: 93, memUsedMb: 544, memPercent: 7, activity: '→ Read x.ts', sampledAt: '2026-09-09T10:00:00.000Z' };
+
     it('streams a rolling tail of the running attempt', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
@@ -459,7 +461,7 @@ describe('POST /api/jobs/:id/output', () => {
         const response = await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step 1\n' });
 
         expect(response.statusCode).toBe(200);
-        expect(store.progressed).toEqual([{ id: ID, output: 'step 1\n' }]);
+        expect(store.progressed).toEqual([{ id: ID, output: 'step 1\n', runtime: null }]);
     });
 
     // Same rule as every other worker write: a superseded worker must not relabel the run that
@@ -496,6 +498,60 @@ describe('POST /api/jobs/:id/output', () => {
         await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'x'.repeat(100_000) });
 
         expect(store.progressed[0]?.output).toHaveLength(64 * 1024);
+    });
+
+    /**
+     * The attempt's vitals ride beside the tail: the "is it stuck or working" answer. A full object
+     * is validated and passed through; its absence (or an explicit null) means "no sample this
+     * round", which the store reads as leave-the-last-one-alone — never as a clearance.
+     */
+    it('passes the runtime vitals beside the tail, and nothing when there is no sample', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const runtime = {
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7,
+            activity: '→ Read server/src/routes/env.ts',
+            sampledAt: '2026-09-09T10:00:00.000Z',
+        };
+
+        await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step', runtime });
+        await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step' });
+        await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step', runtime: null });
+
+        expect(store.progressed[0]?.runtime).toEqual(runtime);
+        expect(store.progressed[1]?.runtime).toBeNull();
+        expect(store.progressed[2]?.runtime).toBeNull();
+    });
+
+    it.each([
+        ['a non-object runtime', { leaseToken: TOKEN, output: 'x', runtime: 42 }],
+        ['a negative cpu', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, cpuPercent: -1 } }],
+        ['an absurd cpu', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, cpuPercent: 100_001 } }],
+        ['a string memory', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, memUsedMb: '544MiB' } }],
+        ['a memPercent past 100', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, memPercent: 101 } }],
+        ['an empty activity line', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, activity: '  ' } }],
+        ['an unparseable sample time', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, sampledAt: 'noonish' } }],
+        ['a runtime with no sample time', { leaseToken: TOKEN, output: 'x', runtime: { cpuPercent: 1, memUsedMb: 1 } }],
+    ])('refuses %s with BAD_RUNTIME', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/output`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_RUNTIME');
+    });
+
+    it('caps the activity line, which is one CLI line and not a log', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        await post(instance, `/api/jobs/${ID}/output`, {
+            leaseToken: TOKEN,
+            output: 'step',
+            runtime: { ...VITALS, activity: 'a'.repeat(10_000) },
+        });
+
+        expect(store.progressed[0]?.runtime?.activity).toHaveLength(512);
     });
 });
 
@@ -755,7 +811,29 @@ describe('POST /api/jobs/:id/complete', () => {
         const instance = await harnessWith(store);
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
-        expect(store.completed).toEqual([{ id: ID, output: 'hello' }]);
+        expect(store.completed).toEqual([{ id: ID, output: 'hello', contextTokens: null, contextCostUsd: null }]);
+    });
+
+    // The context the run reached, scraped from the session database — rides the verdict and is
+    // stored beside the attempt's vitals.
+    it('records the context stats beside the verdict', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, contextTokens: 90433, contextCostUsd: 0.31 });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ contextTokens: 90433, contextCostUsd: 0.31 });
+    });
+
+    it.each([
+        ['a negative token count', { ...done, contextTokens: -1 }],
+        ['an absurd token count', { ...done, contextTokens: 100_000_001 }],
+        ['a string cost', { ...done, contextCostUsd: 'free' }],
+        ['a negative cost', { ...done, contextCostUsd: -0.01 }],
+    ])('refuses %s with BAD_CONTEXT', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/complete`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_CONTEXT');
     });
 
     it('rejects a report from a worker whose lease was reclaimed', async () => {

@@ -187,6 +187,15 @@ instant fake clock cannot see it, so `loop.test.ts` models a period that never e
   decides a superseded run must die; a telemetry refusal must not duplicate that decision, so the
   pump just stops talking. A failed request costs freshness, not the run, and complains about
   consecutive failures once rather than every flush.
+- **The vitals ride the same flush.** Each progress report may carry a `runtime` object — the
+  runner container's sampled CPU and memory (`docker stats --no-stream`, one round-trip in flight
+  at a time) plus the agent's current activity line, read off the tail being flushed (last
+  non-empty line, escapes stripped — the tool call most of the time, and deliberately a heuristic:
+  the stream is the CLI's to format). A flush fires when either the tail or the sample changed, so
+  a quiet agent burning CPU still answers "is it stuck". A missed sample stores nothing and the
+  last good one stays; the claim clears the column (`started_at`'s precedent — the sample
+  describes the attempt that took it), and the kubernetes runner reports none at all, the same
+  honest refusal its gates make.
 
 **`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own
@@ -196,7 +205,13 @@ used** after the container exits: opencode keeps its sessions in a sqlite databa
 persists that database per member by pointing `XDG_DATA_HOME` at a `.opencode` directory in the
 member's own tree on the workspaces volume (which is also what makes a session resumable at all —
 a fresh container starts with an empty one), and one throwaway node container reads the newest
-root session out of it. The id is reported while the lease is still live, before the verdict,
+root session out of it. The same read answers **how the run's last message ended** — opencode
+exits 0 even when the model's context limit cuts a task short mid-investigation, and only the
+session database knows — so a finish reason that is not `stop` is reported as a FAILED run, the
+reason in the output, despite the exit code. The read also lifts the **context the run reached**
+(the last assistant message's token total) and the run's summed cost, which ride the verdict and
+merge into the runtime vitals — the finished task shows `ctx 90,433 tok`, which is where a
+context death is legible. The id is reported while the lease is still live, before the verdict,
 because a follow-up resumes exactly that row. These jobs show no session link (the link is built
 from `remote_session_id`, which stays claude-only). Their runs still emit OTLP, but the server's
 metric map carries no opencode rows yet, so spend records as an unmapped agent — null, never zero

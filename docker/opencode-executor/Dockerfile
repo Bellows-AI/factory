@@ -55,13 +55,14 @@ ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
 ENV OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 
 # The predefined configuration. Permissions live here, NOT in a CLI flag — unlike claude-code,
-# opencode takes `edit`/`bash`/`webfetch` policy from this file, and "ask" is unusable in a headless
-# `run` (there is nobody to ask; the run would hang to its deadline). The baked policy is the
-# executor spec's acceptEdits mapping: edit and bash allowed, webfetch denied. Bash touching paths
-# outside the project asks separately (external_directory), and an unanswered ask auto-rejects
-# headless — so the runner's own scratch space, /tmp and HOME, is allowed there. Everything else
-# outside the checkout, the rest of the shared workspaces volume included, stays fenced. To run
-# another policy, mount your own over /home/node/.config/opencode/opencode.json.
+# opencode takes policy from this file, and "ask" is unusable in a headless `run`: there is nobody
+# to ask, and an unanswered ask auto-rejects, which once killed a run mid-investigation over a
+# filename that happened to contain ".env.". The baked policy is permissionless inside the working
+# directory (`*: allow`, with read's allow-all stated explicitly over opencode's seeded `*.env.*`
+# deny) and hard-gated outside it: external_directory refuses every path beyond the checkout — the
+# rest of the shared workspaces volume and system folders included — except the runner's own
+# scratch, /tmp and $HOME, and webfetch is a flat deny. To run another policy, mount your own over
+# /home/node/.config/opencode/opencode.json.
 COPY --chown=node:node opencode-home/ /home/node/.config/opencode/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.

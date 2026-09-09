@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { isTerminal, type GateCheck, type Job } from '../api/useJobs.js';
+import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { taskTime } from '../format.js';
 
 /**
@@ -36,6 +36,29 @@ function Checks({ gates }: { gates: GateCheck[] }) {
         </details>
     );
 }
+
+/**
+ * The running attempt's vitals, as the driver samples them off its container: CPU, memory, and the
+ * agent's current activity line — the "is it stuck or working" answer, rendered above the output
+ * while the run is going only. A finished run's last sample is a post-mortem detail; the verdict
+ * and the exit code are what the reader wants there, and a stale "cpu 167%" beside them lies about
+ * a run that is no longer going.
+ */
+function Runtime({ runtime }: { runtime: RuntimeVitals }) {
+    return (
+        <p className="chat-runtime">
+            <span className="pill">cpu {Math.round(runtime.cpuPercent)}%</span>
+            <span className="pill">
+                mem {Math.round(runtime.memUsedMb)} MiB
+                {runtime.memPercent !== null ? ` (${Math.round(runtime.memPercent)}%)` : ''}
+            </span>
+            {runtime.activity !== null ? <span className="chat-activity">{runtime.activity}</span> : null}
+        </p>
+    );
+}
+
+/** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
+const tokenCount = new Intl.NumberFormat('en-US');
 
 /**
  * One task, whole: the follow-up chain rendered as ONE conversation — the root command first,
@@ -170,6 +193,14 @@ export function TaskDetail({
                                 <span className="chat-exit">exit {task.exitCode}</span>
                             ) : null}
                             <span className="muted">{taskTime(task.createdAt)}</span>
+                            {task.runtime?.contextTokens != null ? (
+                                <span className="chat-activity">
+                                    ctx {tokenCount.format(task.runtime.contextTokens)} tok
+                                    {task.runtime.costUsd != null && task.runtime.costUsd > 0
+                                        ? ` · $${task.runtime.costUsd.toFixed(4)}`
+                                        : ''}
+                                </span>
+                            ) : null}
                             {task.status === 'standby' ? (
                                 <button
                                     type="button"
@@ -192,6 +223,7 @@ export function TaskDetail({
                             ) : null}
                         </p>
                         <div className="chat-detail">
+                            {task.status === 'running' && task.runtime ? <Runtime runtime={task.runtime} /> : null}
                             {task.gates !== undefined && task.gates !== null && task.gates.length > 0 ? (
                                 <Checks gates={task.gates} />
                             ) : null}

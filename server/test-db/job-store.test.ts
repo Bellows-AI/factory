@@ -203,6 +203,65 @@ describe.skipIf(!enabled)('job store', () => {
         expect(await store.get(id)).toMatchObject({ output: 'done' });
     });
 
+    /**
+     * The vitals ride the tail's own route, replaced on every sample and left alone when a round
+     * has none — a missed sample costs freshness, not the last good answer. Cleared on the next
+     * claim: the sample describes the attempt that reported it, and a new container starts
+     * unsampled.
+     */
+    it('keeps the last runtime vitals beside the tail, and clears them on a new attempt', async () => {
+        const { id } = await queue('echo hi');
+        const first = await store.claim('w1', 300);
+        const vitals = {
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7,
+            activity: '→ Read src/x.ts',
+            sampledAt: '2026-09-09T10:00:00.000Z',
+        };
+
+        await store.progress(id, first!.leaseToken, 'working', vitals);
+        // A round with no sample leaves the last good answer alone.
+        await store.progress(id, first!.leaseToken, 'still working', null);
+        expect(await store.get(id)).toMatchObject({ runtime: vitals });
+
+        // The claim clears the column: the sample describes the attempt that took it, and a new
+        // attempt starts with a new, unsampled container.
+        await expireLease(id);
+        const second = await store.claim('w2', 300);
+        expect(await store.get(id)).toMatchObject({ runtime: null });
+
+        // The last sample stays on a FINISHED row: "was it doing anything when it died" reads off
+        // sampledAt.
+        await store.progress(id, second!.leaseToken, 'again', vitals);
+        await store.complete(id, second!.leaseToken, { status: 'failed', exitCode: 1, output: 'done', contextTokens: 90433, contextCostUsd: 0.31 });
+        // The context stats MERGE into the sampled vitals — the row keeps its last sample and
+        // gains the context the run reached beside it.
+        expect(await store.get(id)).toMatchObject({
+            runtime: { ...vitals, contextTokens: 90433, contextCostUsd: 0.31 },
+        });
+    });
+
+    // A run whose runner never samples the container (kubernetes, a failed readout) still gets
+    // its context stats stored: the merge creates the vitals object when none exists.
+    it('stores context stats on a finished run with no container samples', async () => {
+        const { id } = await queue('echo hi');
+        const claim = await store.claim('w1', 300);
+
+        await store.complete(id, claim!.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'done',
+            contextTokens: 1200,
+            contextCostUsd: 0,
+        });
+
+        expect(await store.get(id)).toMatchObject({
+            runtime: { contextTokens: 1200, contextCostUsd: 0 },
+        });
+        expect(await store.get(id)).toMatchObject({ output: 'done' });
+    });
+
     it('refuses an output tail from a worker whose lease was reclaimed', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', 300);

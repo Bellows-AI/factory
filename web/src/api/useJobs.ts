@@ -17,6 +17,26 @@ export interface GateCheck {
     output: string | null;
 }
 
+/**
+ * The running attempt's last sampled vitals, from the driver: whether the container is doing work
+ * and what the agent says it is doing. The board keeps current/last only — `sampledAt` is how a
+ * reader tells a live sample from a stopped run's.
+ */
+export interface RuntimeVitals {
+    cpuPercent: number;
+    memUsedMb: number;
+    memPercent: number | null;
+    activity: string | null;
+    sampledAt: string;
+    /**
+     * The context the run reached, scraped from the session database at close — present only on
+     * closed runs whose runner reads it, and stored beside the samples rather than inside them
+     * (a context-only object with no CPU sample is legal).
+     */
+    contextTokens?: number | null;
+    costUsd?: number | null;
+}
+
 export interface Job {
     id: string;
     command: string;
@@ -30,6 +50,8 @@ export interface Job {
      * declares none.
      */
     gates?: GateCheck[] | null;
+    /** The attempt's last container vitals, or null until the driver's first sample lands. */
+    runtime?: RuntimeVitals | null;
     /** The repository tab the task was queued from, or null for one queued before the chat. */
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */

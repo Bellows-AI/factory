@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { Board, BoardJob } from './board.js';
+import type { Board, BoardJob, RuntimeReport } from './board.js';
 import type { DriverConfig } from './config.js';
-import { envFileBody, tailBytes, workspacePathOf } from './docker.js';
+import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
-import type { RunSession, Runner } from './docker.js';
+import type { RunSession, Runner, RuntimeSample } from './docker.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -159,25 +159,59 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      *
      * The runner calls back with its newest tail whenever it has one; this flushes at most once
      * per period, and only what changed — the runner's chunk rate is the container's, the board's
-     * is this period.
+     * is this period. A sample of the container's vitals rides the same flush: at most one
+     * `docker stats` round-trip in flight at a time, kicked each period, and a flush fires when
+     * EITHER the tail or the sample changed — a quiet agent burning CPU is exactly the "is it
+     * stuck" question this answers, so the sample alone is worth a report (it travels only once a
+     * tail exists; a run with no output at all has nothing to show vitals beside).
      *
      * Deliberately not a second heartbeat. A `409` here is NOT acted on — the heartbeat is the one
      * place that decides a superseded run must die (docs/jobs.md) — and a failure costs freshness,
      * never the run, because the complete report carries the final tail regardless.
      */
-    function watchOutput(job: BoardJob, state: JobState): (tail: string) => void {
+    function watchOutput(job: BoardJob, runner: Runner, state: JobState): (tail: string) => void {
         let latest: string | null = null;
         let sent: string | null = null;
+        // A box, not a bare variable: the sample is written from the sampling callback, and a bare
+        // `let` read after the await would have TypeScript narrowing it to the initial null.
+        const sample: { value: RuntimeSample | null } = { value: null };
+        let sentSample: RuntimeSample | null = null;
+        let sampling = false;
         let complained = false;
         void (async () => {
             while (!state.finished && !state.lost) {
                 await Promise.race([sleep(PROGRESS_MS), state.woken]);
                 if (state.finished || state.lost) return;
-                if (latest === null || latest === sent) continue;
+                if (!sampling) {
+                    sampling = true;
+                    runner
+                        .sampleRuntime(job)
+                        .then((read) => {
+                            if (read) sample.value = { ...read, sampledAt: new Date().toISOString() };
+                        })
+                        .catch(() => {})
+                        .finally(() => {
+                            sampling = false;
+                        });
+                }
+                const sampled = sample.value !== sentSample;
+                if (latest === null || (latest === sent && !sampled)) continue;
                 sent = latest;
+                sentSample = sample.value;
+                const runtime: RuntimeReport | null = sample.value
+                    ? {
+                          cpuPercent: sample.value.cpuPercent,
+                          memUsedMb: sample.value.memUsedMb,
+                          memPercent: sample.value.memPercent,
+                          // Derived at flush, from the tail being flushed — the activity line and
+                          // the numbers must describe the same moment.
+                          activity: currentActivity(latest),
+                          sampledAt: sample.value.sampledAt,
+                      }
+                    : null;
                 let verdict: 'held' | 'lost';
                 try {
-                    verdict = await board.progress(job, latest);
+                    verdict = await board.progress(job, latest, runtime ?? undefined);
                     complained = false;
                 } catch (e) {
                     // Rate-limited to the first failure in a row: a board unreachable for a
@@ -295,7 +329,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         // Armed before the run so the runner can hand over tails from its first chunk. The pump
         // stops itself the moment the run finishes; the final complete report carries the tail
         // that matters.
-        const onOutput = watchOutput(job, state);
+        const onOutput = watchOutput(job, runner, state);
         // A resumed job already has its session, and the board already knows it. A fresh one gets
         // one minted here rather than read back from the runner, and reported before the container
         // exists: the whole point is that the board holds the session for the attempt even if the
@@ -417,6 +451,16 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     } catch (e) {
                         log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
                     }
+                } else if (config.cli === 'opencode') {
+                    // An opencode run ALWAYS leaves a session, so an empty scrape is the readout
+                    // having failed every try — said out loud, because the cost is a task that can
+                    // never take a follow-up, and a verdict without its finish reason or context.
+                    // The reason says which failure it was: the runner carries the readout's own
+                    // error line, the docker rejection, or its absence.
+                    log(
+                        `job ${job.id}: the session readout came up empty (${outcome.readoutError ?? 'no session in the database'}) — ` +
+                            'no session to follow up, finish reason and context stats unread',
+                    );
                 }
 
                 /*
@@ -430,19 +474,41 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 let failure: GateFailure | null = null;
                 if (gateSession) failure = await runDeclaredGates(job, gateSession, state);
 
+                /*
+                 * A zero exit code is not proof of completion. opencode records HOW the run's last
+                 * message ended, and `length` — the model's context limit, hit mid-task — exits 0
+                 * like a real finish does. The runner scrapes the reason at close; a reason that
+                 * is anything but `stop` is a run that stopped talking, and reporting it
+                 * succeeded would hang a green verdict over a task no work was finished on. A
+                 * scrape that found nothing (or never ran — claude-code) leaves the exit code in
+                 * charge.
+                 */
+                const finish = outcome.finishReason;
+                const premature = typeof finish === 'string' && finish !== 'stop';
+
                 // The last thing this attempt does, and the first moment the heartbeat may stop.
                 await settle();
 
-                const status = outcome.exitCode === 0 && !outcome.timedOut && !failure ? 'succeeded' : 'failed';
+                const status =
+                    outcome.exitCode === 0 && !outcome.timedOut && !failure && !premature ? 'succeeded' : 'failed';
                 const exitCode = failure ? failure.exitCode : outcome.exitCode;
                 let output = outcome.timedOut
                     ? `${outcome.output}\n[driver] killed after ${config.jobTimeoutMs}ms`
                     : outcome.output;
+                if (premature) {
+                    output = `${output}\n[driver] the agent's run ended before it finished (opencode finish reason: "${finish}") — exit 0, but no completed final message. Re-queue the task, or follow up to continue the session.`;
+                }
                 if (failure) {
                     output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
                 }
 
-                const verdict = await board.complete(job, { status, exitCode, output });
+                const verdict = await board.complete(job, {
+                    status,
+                    exitCode,
+                    output,
+                    contextTokens: outcome.contextTokens ?? null,
+                    contextCostUsd: outcome.costUsd ?? null,
+                });
                 log(
                     verdict === 'lost'
                         ? `job ${job.id}: finished ${status}, but the board had already reclaimed it`

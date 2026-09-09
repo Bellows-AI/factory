@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { Board, BoardJob, LeaseState } from '../src/board.js';
+import type { Board, BoardJob, LeaseState, RuntimeReport } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
-import type { RunOutcome, RunSession, Runner } from '../src/docker.js';
+import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/docker.js';
 import type { GateManager, GateServer } from '../src/gates.js';
 import { createLoop, type GateStack, type Loop } from '../src/loop.js';
 
@@ -22,7 +22,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
 interface BoardStub extends Board {
     completed: { id: string; status: string; exitCode: number | null; output: string }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
-    progressed: { id: string; output: string }[];
+    progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     beats: number;
     gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
@@ -65,9 +65,9 @@ function stubBoard(
             board.sessions.push({ id: claimed.id, sessionId, remoteSessionId });
             return 'held';
         },
-        async progress(claimed, output) {
+        async progress(claimed, output, runtime) {
             if (options.failProgress) throw new Error('board unreachable');
-            board.progressed.push({ id: claimed.id, output });
+            board.progressed.push({ id: claimed.id, output, runtime: runtime ?? null });
             return options.progressLease ?? 'held';
         },
         async claim() {
@@ -101,14 +101,20 @@ function stubBoard(
 function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
     remote: string | null = null,
-): Runner & { killed: string[]; lookups: number } {
+    sample: Omit<RuntimeSample, 'sampledAt'> | null = null,
+): Runner & { killed: string[]; lookups: number; samples: number } {
     const runner = {
         killed: [] as string[],
         lookups: 0,
+        samples: 0,
         run: outcome,
         async remoteSessionId() {
             runner.lookups += 1;
             return remote;
+        },
+        async sampleRuntime() {
+            runner.samples += 1;
+            return sample;
         },
         async kill(killedJob: BoardJob) {
             runner.killed.push(killedJob.id);
@@ -221,7 +227,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done' },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null },
         ]);
     });
 
@@ -232,6 +238,65 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 2, output: 'boom' });
+    });
+
+    /**
+     * A zero exit code is not proof of completion. opencode exits 0 when the model's context
+     * limit cuts a task short mid-investigation — the only tell is the finish reason the runner
+     * scrapes from the session database at close. Reported as a failure with the reason, so a
+     * green verdict never hangs over work nothing was finished on; `stop`, and every runner
+     * that scrapes nothing, keep the exit code in charge.
+     */
+    it('fails a run whose finish reason says it never completed, despite exit 0', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ output: 'reads only', finishReason: 'length' }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 0 });
+        expect(board.board.completed[0]?.output).toContain('finish reason: "length"');
+    });
+
+    it('keeps a stop finish a success, whatever the session scrape reads', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ finishReason: 'stop' }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', exitCode: 0 });
+    });
+
+    // The context the run reached rides the verdict: the finished row carries it beside its
+    // vitals, which is where "died at a full window" is legible.
+    it('reports the scraped context stats with the verdict', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ finishReason: 'stop', contextTokens: 90433, costUsd: 0.31 }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', contextTokens: 90433, contextCostUsd: 0.31 });
+    });
+
+    // An opencode run always leaves a session, so an empty scrape is a failed readout — said out
+    // loud, because a silently-lost session presents later as "this run cannot take a follow-up"
+    // with nothing anywhere naming why.
+    it('says so when an opencode run closes with no session scraped', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ finishReason: 'stop', contextTokens: 1200, costUsd: 0 }));
+        const logs: string[] = [];
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config({ RUNNER_CLI: 'opencode' }),
+            sleep,
+            log: (m) => logs.push(m),
+        });
+        board.attach(loop);
+
+        await loop.start();
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(true);
     });
 
     // The container is already dead by the time this lands; the note is the only place a reader
@@ -438,18 +503,51 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.progressed).toEqual([
-            { id: job(1).id, output: 'tail one' },
-            { id: job(1).id, output: 'tail two' },
+            { id: job(1).id, output: 'tail one', runtime: null },
+            { id: job(1).id, output: 'tail two', runtime: null },
         ]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final' },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
         ]);
+    });
+
+    /**
+     * The vitals ride the same flush as the tail: the "is it stuck or working" answer travels with
+     * the work it describes. The activity line is derived from the tail at flush time, so the
+     * numbers and the line describe the same moment; a sample alone (quiet agent, unchanged tail)
+     * is worth a report of its own.
+     */
+    it('reports the container vitals beside the output tail', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(
+            async (_job, _session, onOutput) => {
+                onOutput?.('$ npm test\n\x1b[32m→ Read src/x.ts\x1b[0m');
+                // The first flush carries no vitals (the sample is still in flight); hold the run
+                // open until the sampled one lands, which is the flush a quiet agent's vitals
+                // trigger on their own.
+                while (!board.board.progressed.some((p) => p.runtime)) await sleep();
+                return ok({ output: 'final' });
+            },
+            null,
+            { cpuPercent: 93, memUsedMb: 544, memPercent: 7 },
+        );
+
+        await drive({ ...board, runner });
+
+        expect(runner.samples).toBeGreaterThan(0);
+        const sampled = board.board.progressed.find((p) => p.runtime);
+        expect(sampled?.runtime).toMatchObject({
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7,
+            activity: '→ Read src/x.ts',
+        });
+        expect(sampled?.runtime?.sampledAt).toBeTruthy();
     });
 
     // A run is not failed by its own telemetry. The output stream is a preview; losing it costs
     // freshness, never the job.
-    it('completes the job anyway when the output stream fails', async () => {
-        const board = stubBoard([job(1)], { failProgress: true });
+    it('completes the job anyway when the output stream fails', async () => {        const board = stubBoard([job(1)], { failProgress: true });
         const runner = stubRunner(async (_job, _session, onOutput) => {
             onOutput?.('tail one');
             await new Promise((resolve) => setTimeout(resolve, 5));
@@ -461,7 +559,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final' },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
         ]);
     });
 
@@ -506,7 +604,7 @@ describe('the poll loop', () => {
         expect(board.board.progressed).toHaveLength(1);
         expect(runner.killed).toEqual([]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final' },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
         ]);
     });
 
@@ -590,7 +688,7 @@ describe('an opencode runner', () => {
         expect(given).toBeNull();
         expect(board.board.sessions).toEqual([]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done' },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null },
         ]);
     });
 

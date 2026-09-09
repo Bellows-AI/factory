@@ -741,6 +741,25 @@ button.primary {
     margin-top: 8px;
 }
 
+/* The running attempt's sampled vitals — the "is it stuck or working" strip above the output. */
+
+.chat-runtime {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 8px;
+}
+
+.chat-activity {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* The verification gates a run has run or is running — current/last only, never history. */
 
 .chat-gates {

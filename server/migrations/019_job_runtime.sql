@@ -1,0 +1,16 @@
+-- Live runtime vitals for a running job — what the dashboard's "is it working" answer is built
+-- from: the runner container's sampled CPU/memory and the agent's current activity line.
+--
+-- ONE JSONB COLUMN ON THE JOB ROW, by 018's precedent twice over:
+--
+-- - Current/last state only, replaced on every report by the lease-guarded output route
+--   (POST /api/jobs/:id/output, which carries it beside the tail). Nothing queries across runs
+--   and no index is needed; a table would grow a sampling history nobody reads.
+-- - Nullable plain data with no foreign key, because every job queued before this migration has
+--   no runtime and `job` is an audit record of what RAN. The last sample is deliberately left on
+--   a finished row: a run that died at 0% CPU says something a verdict alone does not.
+--
+-- Cleared on claim (the `started_at` precedent): the sample describes the attempt that reported
+-- it, and a new attempt starts with a new container. Small and bounded by validation at the
+-- route — a few numbers and one capped activity line.
+alter table job add column if not exists runtime jsonb;
