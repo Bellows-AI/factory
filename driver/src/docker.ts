@@ -1051,7 +1051,13 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     return { ok: false, reason: 'the checkout sync answered nothing readable' };
                 }
             } catch (e) {
-                return { ok: false, reason: `the checkout sync container failed: ${(e as Error).message}` };
+                const err = e as { stderr?: string | Buffer; message?: string };
+                const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+                const detail =
+                    stderr.trim() ||
+                    (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
+                    (err.message ?? 'failed');
+                return { ok: false, reason: `the checkout sync container failed: ${detail.slice(0, 300)}` };
             } finally {
                 if (file) await rm(file).catch(() => undefined);
             }
@@ -1081,6 +1087,27 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 // 'run' and '--rm' INCLUDED — the same full-command rule the sync above states.
                 const vol = ['run', '--rm', '-v', `${config.workspaceVolume}:${config.workspaceMount}`];
                 const inRepo = [...vol, '-w', repo];
+
+                /*
+                 * Every failure names its step and carries the tool's own STDERR, never the echoed
+                 * command. The execFile message is "Command failed: <the whole docker run argv>" —
+                 * 400 characters of that leaves no room for the one line a human can act on
+                 * ("remote: Permission to ... denied to bellows-ai[bot]" lives in git's stderr),
+                 * which is exactly how a credential problem once shipped as an unreadable verdict.
+                 */
+                const runStep = async (name: string, args: string[]): Promise<{ stdout: string }> => {
+                    try {
+                        return await execDocker(args);
+                    } catch (e) {
+                        const err = e as { stderr?: string | Buffer; message?: string };
+                        const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+                        const detail =
+                            stderr.trim() ||
+                            (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
+                            (err.message ?? 'failed');
+                        throw new Error(`${name}: ${detail.slice(0, 300)}`);
+                    }
+                };
 
                 // What is there to publish? A checkout that was never cloned and a clean,
                 // fully-pushed tree are the two ordinary no-ops; everything else flows.
@@ -1118,22 +1145,22 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                         branch,
                     ]).catch(() => null);
                     if (!switched) {
-                        await execDocker([...inRepo, '--entrypoint', 'git', config.image, 'switch', '-c', branch]);
+                        await runStep('git switch', [...inRepo, '--entrypoint', 'git', config.image, 'switch', '-c', branch]);
                     }
                 }
 
                 if (state.dirty) {
-                    await execDocker([...inRepo, '--entrypoint', 'git', config.image, 'add', '-A']);
+                    await runStep('git add', [...inRepo, '--entrypoint', 'git', config.image, 'add', '-A']);
                     // The checkout usually has no committer identity (the agent does not need one
                     // to edit); a fallback is applied only when the probe found none, so a
                     // member-configured identity is never overridden.
                     const identity = state.hasIdentity
                         ? []
                         : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
-                    await execDocker([...inRepo, '--entrypoint', 'git', config.image, ...identity, 'commit', '-m', plan.title]);
+                    await runStep('git commit', [...inRepo, '--entrypoint', 'git', config.image, ...identity, 'commit', '-m', plan.title]);
                 }
 
-                await execDocker([
+                await runStep('git push', [
                     ...inRepo,
                     '--env-file',
                     file,
@@ -1174,7 +1201,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     const body = plan.issueNumber
                         ? `Closes #${plan.issueNumber}.\n\nPublished by the factory board after the declared gates passed.`
                         : 'Published by the factory board after the declared gates passed.';
-                    const created = await execDocker([
+                    const created = await runStep('gh pr create', [
                         ...inRepo,
                         '--env-file',
                         file,
