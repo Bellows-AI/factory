@@ -1,9 +1,10 @@
 # The baked `runtime` image — what deploys, and what `docker compose up` deliberately does not run
 # (compose binds the working tree instead). `make baked` builds it and serves it against the
-# compose TimescaleDB, the same factory_dev the dev stack uses. GITHUB_MODE=none serves whatever
-# is stored and fetches nothing; AUTH_MODE=none + AUTH_ALLOW_PUBLIC_BIND=1 is the chart's
-# values-local profile — the image bakes HOST=0.0.0.0, so the loopback port publish is the
-# perimeter. BAKED_PORT defaults to 8081 so it can sit beside a running dev stack on 8080.
+# compose TimescaleDB, the same factory_dev the dev stack uses, via the OFFLINE entry — the same
+# server, built with the code-only no-fetch arm, so two processes never sync one database;
+# AUTH_MODE=none + AUTH_ALLOW_PUBLIC_BIND=1 is the chart's values-local profile — the image bakes
+# HOST=0.0.0.0, so the loopback port publish is the perimeter. BAKED_PORT defaults to 8081 so it
+# can sit beside a running dev stack on 8080.
 
 IMAGE ?= factory-ai
 BAKED_PORT ?= 8081
@@ -26,12 +27,11 @@ baked-run:
 	docker run --rm --name factory-baked \
 		--network $(BAKED_NETWORK) \
 		-p 127.0.0.1:$(BAKED_PORT):8080 \
-		-e GITHUB_MODE=none \
 		-e AUTH_MODE=none \
 		-e AUTH_ALLOW_PUBLIC_BIND=1 \
 		-e ORG_ID="$${ORG_ID}" \
 		-e ORG_NAME="$${ORG_NAME}" \
 		-e DATABASE_URL=postgres://factory:factory@timescale:5432/factory_dev \
-		$(IMAGE)
+		$(IMAGE) node server/dist/offline.js
 
 baked: baked-build baked-run

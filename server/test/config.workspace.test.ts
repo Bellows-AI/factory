@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 
 const DB = 'postgres://factory:factory@127.0.0.1:5432/factory_dev';
-const env = (extra: NodeJS.ProcessEnv = {}) => ({ DATABASE_URL: DB, GITHUB_MODE: 'none', ...extra });
+const env = (extra: NodeJS.ProcessEnv = {}) => (
+    {
+        DATABASE_URL: DB,
+        GITHUB_APP_ID: '123',
+        GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----',
+        ...extra,
+    }
+);
 
 describe('the workspace root', () => {
     it('is null unless one is configured', () => {

@@ -40,14 +40,18 @@ spec:
                 - name: dashboard
                   image: {{ .Values.dashboard.image }}
                   imagePullPolicy: {{ .Values.dashboard.imagePullPolicy }}
+                  {{- if .Values.dashboard.offline }}
+                  # The offline profile: the code-only no-fetch entry. Same image, same routes;
+                  # nothing is fetched or cloned, and the App credential is not needed.
+                  command: ['node', 'server/dist/offline.js']
+                  {{- end }}
                   ports:
                       - name: http
                         containerPort: {{ .Values.dashboard.port }}
                   env:
                       # The repo-read credential AND the repo list, both from one GitHub App
-                      # installation. `app` is fatal without an id and a key — deliberately.
-                      - name: GITHUB_MODE
-                        value: {{ .Values.github.mode | quote }}
+                      # installation. Required: without an id and a key the server refuses to boot
+                      # — there is no no-fetch mode to fall back to.
                       - name: GITHUB_APP_ID
                         value: {{ .Values.github.appId | quote }}
                       - name: GITHUB_APP_INSTALLATION_ID

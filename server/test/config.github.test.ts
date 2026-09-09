@@ -1,38 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, resolveConfig } from '../src/config.js';
 
 const DB = 'postgres://factory:factory@127.0.0.1:5432/factory_dev';
 const PEM = '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----';
 const env = (extra: NodeJS.ProcessEnv = {}) => ({ DATABASE_URL: DB, ...extra });
 const app = (extra: NodeJS.ProcessEnv = {}) =>
-    env({ GITHUB_MODE: 'app', GITHUB_APP_ID: '123', GITHUB_APP_PRIVATE_KEY: PEM, ...extra });
+    env({ GITHUB_APP_ID: '123', GITHUB_APP_PRIVATE_KEY: PEM, ...extra });
 
-describe('GITHUB_MODE', () => {
-    it('defaults to app, so a deployment that fetches nothing has said so on purpose', () => {
+describe('the GitHub App', () => {
+    it('is the only configuration there is: missing credentials refuse to boot', () => {
         /*
-         * The opposite default from AUTH_MODE, and deliberately so. `none` there keeps
-         * `git clone && npm run dev` working, and there is no offline way to obtain an OAuth client
-         * id — the cost of the wrong default is a locked-out developer. Here the cost runs the
-         * other way: a deployment that silently fetches nothing renders an empty dashboard that
+         * The environment cannot produce "fetches nothing" — not by forgetting a variable, and not
+         * by any variable at all. A deployment without the App would render an empty dashboard that
          * reads as data loss rather than as a missing credential.
          *
-         * The price is real and is paid in four places: `npm run seed`, `npm run verify:ui`,
-         * `npm run test:jobs` and this suite all type GITHUB_MODE=none out.
+         * The offline tooling still runs without a credential, but only by passing the code-only
+         * `none` arm to resolveConfig — a sentence in code, never in the environment.
          */
         expect(() => loadConfig(env())).toThrow(/GITHUB_APP_ID is not set/);
-        expect(loadConfig(env({ GITHUB_MODE: 'none' })).github).toEqual({ mode: 'none' });
+        expect(loadConfig(app()).github).toMatchObject({ mode: 'app' });
     });
 
-    it('is an explicit enum, never inferred from whether an app id happens to be set', () => {
+    it('is never inferred from whether an app id happens to be set', () => {
         // A mode reached by typo is the failure nobody notices. GITHUB_APP_IDD must leave the
         // deployment loudly unconfigured, not quietly reading nothing.
         expect(() => loadConfig(env({ GITHUB_APP_IDD: '123', GITHUB_APP_PRIVATE_KEY: PEM }))).toThrow(
             /GITHUB_APP_ID is not set/,
         );
-    });
-
-    it('refuses a mode it does not recognise', () => {
-        expect(() => loadConfig(env({ GITHUB_MODE: 'pat' }))).toThrow(/GITHUB_MODE must be "app" or "none"/);
     });
 
     it('names the missing key individually, not "the App is incomplete"', () => {
@@ -42,9 +36,15 @@ describe('GITHUB_MODE', () => {
             /GITHUB_APP_PRIVATE_KEY is not set/,
         );
     });
+});
 
-    it('names the deliberate way out, so nobody sets a fake key to get past it', () => {
-        expect(() => loadConfig(app({ GITHUB_APP_ID: undefined }))).toThrow(/GITHUB_MODE=none/);
+describe('the code-only none arm', () => {
+    it('is reachable only through resolveConfig, never through the environment', () => {
+        // The seam the offline tooling uses: seed, the admin CLIs and the offline entry pass the
+        // config in code. Nothing env-reachable can produce this value.
+        const { config } = resolveConfig({ env: app(), github: { mode: 'none' } });
+        expect(config.github).toEqual({ mode: 'none' });
+        expect(() => loadConfig(app())).not.toThrow();
     });
 });
 
@@ -91,27 +91,18 @@ describe('what the App replaced', () => {
      * environment variable is ignored". Each one used to decide what the page was made of, so a
      * quietly dropped one boots a dashboard whose operator believes it is reading something else.
      */
-    it('refuses GITHUB_TOKEN and names both replacements', () => {
-        expect(() => loadConfig(env({ GITHUB_TOKEN: 'ghp_x', GITHUB_MODE: 'none' }))).toThrow(
-            /GITHUB_TOKEN is no longer supported/,
-        );
-        expect(() => loadConfig(env({ GITHUB_TOKEN: 'ghp_x' }))).toThrow(/GITHUB_MODE=app[\s\S]*GITHUB_MODE=none/);
+    it('refuses GITHUB_TOKEN', () => {
+        expect(() => loadConfig(env({ GITHUB_TOKEN: 'ghp_x' }))).toThrow(/GITHUB_TOKEN is no longer supported/);
     });
 
     it('refuses ORG_REPOS and GITHUB_OWNER', () => {
-        expect(() => loadConfig(env({ ORG_REPOS: 'a,b', GITHUB_MODE: 'none' }))).toThrow(
-            /ORG_REPOS is no longer supported/,
-        );
-        expect(() => loadConfig(env({ GITHUB_OWNER: 'acme', GITHUB_MODE: 'none' }))).toThrow(
-            /GITHUB_OWNER is no longer supported/,
-        );
+        expect(() => loadConfig(app({ ORG_REPOS: 'a,b' }))).toThrow(/ORG_REPOS is no longer supported/);
+        expect(() => loadConfig(app({ GITHUB_OWNER: 'acme' }))).toThrow(/GITHUB_OWNER is no longer supported/);
     });
 
     it('treats an empty one as unset, because compose passes several empty', () => {
         // A bare `GITHUB_TOKEN=` left in .env, or compose's `${GITHUB_TOKEN:-}`, must not refuse to
         // boot — an empty value is not an override here any more than anywhere else.
-        expect(() =>
-            loadConfig(env({ GITHUB_MODE: 'none', GITHUB_TOKEN: '', ORG_REPOS: '', GITHUB_OWNER: '' })),
-        ).not.toThrow();
+        expect(() => loadConfig(app({ GITHUB_TOKEN: '', ORG_REPOS: '', GITHUB_OWNER: '' }))).not.toThrow();
     });
 });

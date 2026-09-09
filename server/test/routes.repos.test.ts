@@ -57,10 +57,10 @@ describe('GET /api/repos', () => {
         expect(body.meta.error).toBeNull();
     });
 
-    it('answers 200 with an empty list when no App is configured at all', async () => {
-        // GITHUB_MODE=none. Not a 503: "nothing is installed" is a real state the picker renders a
-        // different thing for, and a route that errors here would make the whole page unreachable
-        // on a deployment that deliberately fetches nothing.
+    it('answers 200 with an empty list when no App client was built', async () => {
+        // The code-only `none` arm. Not a 503: "nothing is installed" is a real state the picker
+        // renders a different thing for, and a route that errors here would make the whole page
+        // unreachable on a process that deliberately fetches nothing.
         const { app } = await boot(undefined);
         const response = await app.inject({ method: 'GET', url: '/api/repos' });
 

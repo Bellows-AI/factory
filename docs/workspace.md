@@ -123,8 +123,8 @@ Claude Code session, and this process cannot tell.
   `-c credential.helper=` first, or an inherited `osxkeychain`/`store` answers with a stale
   credential. `GIT_TERMINAL_PROMPT=0` is set because an unauthenticated private clone would
   otherwise block on stdin forever.
-- **No token is a supported state here too.** Under `GITHUB_MODE=none` public repos clone and
-  private ones report a named failure.
+- **No token is a supported state here too.** Under the offline tooling's code-only `none` arm
+  public repos clone and private ones report a named failure.
 - **Full clone, not `--depth 1`.** Base-branch history and revert detection read history.
 - **`node:24-alpine` ships no git**, so `docker/Dockerfile` installs it. Absent, the failure is an
   ENOENT per repo that appears only in the container and never in dev.

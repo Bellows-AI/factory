@@ -193,15 +193,14 @@ docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
 # Nothing is cloned into it — clones only happen when somebody selects repositories — so this costs
 # one empty directory per job author.
 
-# GITHUB_MODE=none on every boot below. It defaults to `app`, which is fatal without an App id and
-# private key — deliberately, so nobody reaches "fetches nothing" by forgetting a variable. This
-# harness reaches it on purpose: it drives the whole lease protocol with no credential at all.
-export GITHUB_MODE=none
+# Both boards boot the OFFLINE entry (server/dist/offline.js) — the same server built with the
+# code-only no-fetch arm, which is what lets them run with no App credential at all and against a
+# disposable database name. It drives the whole lease protocol with no credential anywhere.
 
 echo "starting the board on $BASE"
 env DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
     ORG_WORKSPACE_ROOT="$work/workspaces" \
-    node server/dist/index.js >"$work/server.log" 2>&1 &
+    node server/dist/offline.js >"$work/server.log" 2>&1 &
 server_pid=$!
 
 up=""
@@ -515,7 +514,7 @@ env DATABASE_URL="$DATABASE_URL" PORT="$AUTH_PORT" HOST=127.0.0.1 \
     AUTH_MODE=github \
     GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
     SESSION_SECRET=a-job-harness-session-secret-32-chars \
-    node server/dist/index.js >"$work/auth-server.log" 2>&1 &
+    node server/dist/offline.js >"$work/auth-server.log" 2>&1 &
 server_pid=$!
 
 up=""

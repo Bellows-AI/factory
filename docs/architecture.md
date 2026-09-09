@@ -1,6 +1,6 @@
 # Architecture
 
-Read before: changing the data flow, adding a forge, touching `server/src/index.ts` wiring, or
+Read before: changing the data flow, adding a forge, touching `server/src/main.ts` wiring, or
 touching anything under `server/src/github/`.
 
 | Package | Role |
@@ -28,7 +28,7 @@ Claude Code → OTEL collector → `POST /api/otlp/v1/metrics` → `flattenMetri
 `createPostgresTelemetryClient()` → `TelemetryInput` → `attribute()` → `TelemetryStats`, a
 sibling of `Stats` in the payload rather than a field inside it.
 
-Server wiring (`server/src/index.ts`): `loadConfig()` → GitHub client → pool + `migrate()`
+Server wiring (`server/src/main.ts`): `loadConfig()` → GitHub client → pool + `migrate()`
 (un-awaited) → telemetry client (`postgres`, `fixture` or `off`) → PR store →
 `createStatsService()` → `buildApp()` → `prime()` (un-awaited) → `listen()`. `buildApp`
 deliberately does not `listen`, which is what lets `server/test/` drive the whole app in-process
@@ -64,7 +64,8 @@ it five minutes before expiry — and no consumer of the interface changed.
 `github/app-client.ts` reads the installation's repository list, and `github/repo-source.ts` caches
 it behind the two accessors the rest of the server needs: an async `list()` for the refresh path and
 a synchronous `snapshot()` for `StatsService.current()`, which aggregates an already-fetched payload
-and must never become a fetch. Under `GITHUB_MODE=none` there is no App client at all and the source
+and must never become a fetch. Without an App client — the offline tooling's code-only `none` arm —
+the source
 falls back to the repos the database already holds rows for — which is what keeps a seeded database
 browsable with no credential, since every stored read is scoped by that list.
 

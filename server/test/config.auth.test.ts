@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 
-// GITHUB_MODE is spelled out because it defaults to `app`, which is fatal without an App id and a
-// private key. That default is deliberate — see config.github.test.ts — and it means every harness
-// that is not about the repo-read credential has to say it is not using one.
+// The App credentials are spelled out because they are required now — the environment has no
+// no-fetch state left — and none of these cases is about the repo-read credential.
 const BASE = {
     DATABASE_URL: 'postgres://factory:factory@127.0.0.1:5432/factory_dev',
-    GITHUB_MODE: 'none',
+    GITHUB_APP_ID: '123',
+    GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----',
 };
 const SECRET = 'a-secret-that-is-at-least-32-characters';
 

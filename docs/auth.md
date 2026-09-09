@@ -20,12 +20,12 @@ unauthenticated request was remote code execution.
   way to obtain an OAuth client id, so requiring auth would make `git clone && npm run dev`
   impossible. It is the default, because a newly required variable that fails every existing case is
   the signal not to require it — but `index.ts` logs unconditionally that every route is open, in
-  the register of the `[fetch] GITHUB_MODE=none` line.
-  - **`GITHUB_MODE` defaults the other way, and the asymmetry is deliberate.** Both are explicit
-    enums whose wrong branch is fatal-and-named; they differ in which branch is the default,
-    because the cost of the wrong default differs. Landing in open-auth by accident is a security
-    failure; landing in fetches-nothing by accident is an empty dashboard that reads as data loss.
-    See [configuration.md](configuration.md).
+  the register of the `[fetch] no GitHub credential` line.
+  - **The GitHub side has no such default, and the asymmetry is deliberate.** The App id and key
+    are required outright — there is no env-reachable no-fetch state to land in by accident,
+    because an empty dashboard that fetches nothing reads as data loss. The tooling that must run
+    credential-free says so in code, never in the environment. See
+    [configuration.md](configuration.md).
 - **`none` refuses a non-loopback `HOST`**, which makes "open on a public interface" *inexpressible*
   rather than warned about — stronger than anything the bind address guaranteed on its own. The one
   hatch, `AUTH_ALLOW_PUBLIC_BIND=1`, exists because `docker/Dockerfile` sets `ENV HOST=0.0.0.0`:
@@ -192,7 +192,7 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
   needs installation permissions and is nothing to do with the person in front of the browser — one
   credential doing both would mean every sign-in grants repository access, and would tie the
   dashboard's ability to fetch to whoever happened to log in last. See
-  [configuration.md](configuration.md) for `GITHUB_MODE`.
+  [configuration.md](configuration.md) for the App credential.
 
 ## Who needs which credential
 

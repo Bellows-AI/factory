@@ -20,19 +20,6 @@ const E2E_LOGIN = 'e2e-user';
 const shared = {
     WEB_ROOT: `${root}web/dist`,
     TELEMETRY_SOURCE: 'postgres',
-    /*
-     * The whole reason this run is offline.
-     *
-     * GITHUB_MODE defaults to `app`, so a boot with no App credentials is fatal — deliberately, so
-     * that a deployment cannot arrive at "fetches nothing" by forgetting a variable. This check has
-     * to arrive there ON PURPOSE, and this is it typed out. Nothing is fetched and nothing is
-     * cloned; the repo list falls back to the repos the seeded database holds rows for, which is
-     * exactly what the page is rendering.
-     *
-     * A literal here rather than left to chance: a non-empty environment variable always wins, so
-     * nothing a developer keeps in their own shell can reach this run.
-     */
-    GITHUB_MODE: 'none',
     BASE_BRANCH: 'dev',
 };
 
@@ -42,9 +29,10 @@ const shared = {
  *
  * It stays offline — no credential, no quota, no network — but no longer by replaying an HTTP
  * payload. The database is the only source the app reads, so the check seeds a disposable one and
- * browses that. Deliberately GITHUB_MODE=none: nothing is constructed to fetch with, so the page
- * renders purely from what was seeded, and `loadConfig` permits the disposable database precisely
- * because nothing can be lost to it.
+ * browses that. Both servers boot the OFFLINE entry, `server/dist/offline.js`: the same server
+ * built with the code-only no-fetch arm, so nothing is constructed to fetch with, the page renders
+ * purely from what was seeded, and `loadConfig` permits the disposable database precisely because
+ * nothing can be lost to it.
  *
  * Requires a running container:  docker compose up -d timescale
  */
@@ -80,7 +68,7 @@ export default defineConfig({
             // Seeded first, and every run: the assertions read the numbers the generator produces,
             // and a stale database from an older generator would fail in a way that looks like a UI
             // bug.
-            command: 'npm run build && npm run seed && node server/dist/index.js',
+            command: 'npm run build && npm run seed && node server/dist/offline.js',
             // /api/health never touches GitHub or the database, so it reports ready immediately —
             // the cold fixture fetch is awaited in the spec instead.
             url: `http://127.0.0.1:${PORT}/api/health`,
@@ -111,7 +99,7 @@ export default defineConfig({
         {
             // A separate database from the one above, so the invite this seeds cannot change what
             // the visual check renders.
-            command: 'npm run build && npm run seed && node server/dist/index.js',
+            command: 'npm run build && npm run seed && node server/dist/offline.js',
             url: `http://127.0.0.1:${AUTH_PORT}/api/health`,
             cwd: root,
             env: {

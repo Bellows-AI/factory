@@ -26,10 +26,10 @@ export interface AppDeps {
     config: AppConfig;
     service: StatsService;
     /**
-     * The repositories the GitHub App installation reports. Required, because under
-     * GITHUB_MODE=none it is a source that reports an empty list rather than an absent one — the
-     * picker then says "nothing is installed", which is the truth, where a missing route would say
-     * nothing at all.
+     * The repositories the GitHub App installation reports. Required, because a credential-less
+     * process (the offline tooling) is a source that reports an empty list rather than an absent
+     * one — the picker then says "nothing is installed", which is the truth, where a missing route
+     * would say nothing at all.
      */
     repos: RepoSource;
     /** Absent unless there is somewhere to write, so the ingest routes simply do not exist. */

@@ -43,8 +43,9 @@ helm install dev charts/factory -f charts/factory/values-local.yaml
 kubectl wait --for=condition=available deployment/dev-factory --timeout=300s
 ```
 
-`values-local.yaml` is the offline profile: `GITHUB_MODE=none` (serves whatever the database holds,
-fetches nothing), `AUTH_MODE=none` + `AUTH_ALLOW_PUBLIC_BIND=1` — the ClusterIP is the perimeter,
+`values-local.yaml` is the offline profile: the dashboard boots the code-only no-fetch entry
+(serves whatever the database holds, fetches nothing), `AUTH_MODE=none` + `AUTH_ALLOW_PUBLIC_BIND=1`
+— the ClusterIP is the perimeter,
 the k8s analogue of the `127.0.0.1` bind every open stack here runs behind — and the stub executor
 image, so a queued job runs a real pod and echoes its prompt back.
 

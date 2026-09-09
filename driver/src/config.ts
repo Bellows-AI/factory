@@ -246,7 +246,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         24 * 3600_000,
     );
 
-    // An explicit enum, like the server's GITHUB_MODE: a value this process does not know is fatal,
+    // An explicit enum, like the server's AUTH_MODE: a value this process does not know is fatal,
     // never a fallback to docker — the first symptom of a fallback would be a driver that claims
     // jobs and runs nothing, forever.
     const EXECUTORS = ['docker', 'kubernetes'] as const;

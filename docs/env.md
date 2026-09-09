@@ -113,7 +113,7 @@ The org scope IS the "Core secrets" of the issue, and `GITHUB_TOKEN` is the firs
 
 Since #28 an app-mode board ALSO mints the App's installation token onto every claim, under the
 name `GITHUB_TOKEN`. This section used to call that "deliberately not built" and name three costs —
-read-only tokens, a GitHub call on the claim hot path, impossibility under `GITHUB_MODE=none` — and
+read-only tokens, a GitHub call on the claim hot path, impossibility without a credential — and
 each is answered in place:
 
 - **The mint is the base layer, below every configured scope** (`withMintedToken` in job-store.ts,
@@ -138,8 +138,8 @@ each is answered in place:
   the claim transaction, and the same rollback that guards the env resolver leaves the job queued
   with its attempt unburned — the claim answers 503 and the driver retries, so a job is never
   handed out with half an environment.
-- **Under `GITHUB_MODE=none` there is no provider, so no mint** — by construction, like every
-  other fetch. The claim env is exactly what it was.
+- **Without a provider there is no mint** — the offline tooling's code-only `none` arm only, by
+  construction, like every other fetch. The claim env is exactly what it was.
 - **The token's permissions are the installation's defaults.** The create-installation-token API
   can only narrow, and code cannot grant what the installation does not have: orchestration —
   commits and PRs (`contents:write`, `pull_requests:write`) and reading CI (`actions:read`) — is

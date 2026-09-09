@@ -37,7 +37,7 @@ export interface CloneQueueDeps {
     readonly store: UserRepoStore;
     readonly root: string;
     readonly orgId: string;
-    /** Absent under GITHUB_MODE=none, where only public repositories can clone. */
+    /** Absent under the code-only `none` arm (the offline tooling), where only public repositories can clone. */
     readonly tokens?: TokenProvider | undefined;
     readonly concurrency?: number;
     readonly log?: (message: string) => void;
