@@ -186,6 +186,11 @@ services:
             # Puts the runner on this compose network, which is the only place `collector` resolves.
             # Without it the agent still works and its telemetry silently goes nowhere.
             RUNNER_NETWORK: ${RUNNER_NETWORK:-factory-ai_default}
+            # Where the runner's telemetry goes. The executor images bake a default endpoint
+            # (http://collector:4318), but RUNNER_OTEL_ENDPOINT overrides it for a collector the
+            # compose network cannot name — the same override the kubernetes runner applies in the
+            # pod spec. Explicit here so the driver forwards it to the runner container.
+            RUNNER_OTEL_ENDPOINT: ${RUNNER_OTEL_ENDPOINT:-http://collector:4318}
             DRIVER_CONCURRENCY: ${DRIVER_CONCURRENCY:-2}
             DRIVER_POLL_MS: ${DRIVER_POLL_MS:-5000}
             DRIVER_LEASE_SECONDS: ${DRIVER_LEASE_SECONDS:-300}

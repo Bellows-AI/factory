@@ -117,6 +117,10 @@ neither):
 `endpoint` plus `protocol` resolve to `http://collector:4318/v1/metrics` (and `/v1/logs`) — the
 `collector` service in this repo's `docker-compose.yml`, resolvable only from that compose network.
 Off that network the exporter fails to connect; the CLI still works, the runs just go unrecorded.
+The entrypoint honors a driver-supplied `OTEL_EXPORTER_OTLP_ENDPOINT` (the driver's
+`RUNNER_OTEL_ENDPOINT`) by rewriting `otel.json`'s `endpoint` before the CLI starts — a collector
+the compose network cannot name is still used by this executor, the same override the kubernetes
+runner applies in the pod spec.
 The plugin emits the same eight counters as Claude Code under an `opencode.` prefix (`token.usage`
 split by `type`, `tool.decision` split by `decision`, plus commit, pull-request, line, session and
 active-time counts), which the server's metric map resolves to the same fields as `claude_code.*`

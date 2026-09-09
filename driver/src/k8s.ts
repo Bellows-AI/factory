@@ -159,11 +159,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // Where a runner's telemetry goes. A literal value like WORKDIR, because an OTLP endpoint is a
     // path, not a credential — and unlike docker, a pod has no network to join that would make the
     // image's baked `collector:4318` resolve, so this process names the collector its spec runs on.
-    // The chart supplies it; absent, the runner keeps the image default, which is the docker
-    // "left off the network" mode (see docs/kubernetes.md).
-    if (config.otelEndpoint) {
-        env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: config.otelEndpoint });
-    }
+    // The chart overrides it; the default names the compose collector, which is what keeps
+    // telemetry flowing wherever a runtime can reach it.
+    env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: config.otelEndpoint });
 
     // The argv the docker runner puts after the image name, unchanged: the executor image's
     // ENTRYPOINT is the same claude wrapper, so the platform below the container is the only

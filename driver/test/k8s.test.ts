@@ -138,26 +138,36 @@ describe('the runner job spec', () => {
             name: 'ANTHROPIC_API_KEY',
             valueFrom: { secretKeyRef: { name: 'claude-credentials', key: 'ANTHROPIC_API_KEY', optional: true } },
         });
-        // WORKDIR is the only literal value a runner env carries, and it is a path, not a secret.
+        // WORKDIR and the OTLP endpoint are the only literal values a runner env carries, and both
+        // are paths/URLs, not secrets — the object of the pin above.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
+            { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
         ]);
     });
 
     // Where a runner's telemetry goes. A literal value like WORKDIR — an OTLP endpoint is a path,
     // not a credential — but unlike the compose world there is no network for a pod to join that
     // would make the image's baked `collector:4318` resolve, so this process has to name the
-    // collector. The chart sets RUNNER_OTEL_ENDPOINT; the pin is that it lands as the runner's own
-    // `value`, readable in the pod spec like WORKDIR is.
-    it('points the runner at the configured collector', () => {
-        const container = spec({ RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }).spec.template.spec
+    // collector. RUNNER_OTEL_ENDPOINT overrides the compose-collector default; the pin is that it
+    // lands as the runner's own `value`, readable in the pod spec like WORKDIR is.
+    it('points the runner at a collector, overriding it when configured', () => {
+        const def = spec().spec.template.spec.containers[0];
+        expect(def.env).toContainEqual({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' });
+        const configured = spec({ RUNNER_OTEL_ENDPOINT: 'http://telemetry.internal:4318' }).spec.template.spec
             .containers[0];
-        expect(container.env).toContainEqual({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' });
+        expect(configured.env).toContainEqual({
+            name: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+            value: 'http://telemetry.internal:4318',
+        });
     });
 
     it('forwards no credentials when no secret is configured', () => {
         const container = spec().spec.template.spec.containers[0];
-        expect(container.env).toEqual([{ name: 'WORKDIR', value: `/workspaces/bellows/${USER}` }]);
+        expect(container.env).toEqual([
+            { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
+            { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
+        ]);
     });
 
     // The claim env's VALUES never touch the pod spec — anyone who can `get pods` would read them.
@@ -181,8 +191,11 @@ describe('the runner job spec', () => {
     it('carries no claim env entries, and names no Secret, for an env-less claim', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(JSON.stringify(container.env)).not.toContain('factory-job-');
+        // The OTEL endpoint is a literal, not a claim entry: the runner's telemetry is always
+        // pointed somewhere, defaulting to the image's compose collector.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
+            { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
         ]);
     });
 

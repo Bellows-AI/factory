@@ -84,15 +84,18 @@ describe('the driver config', () => {
         expect(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' }).k8sNamespace).toBe('factory');
     });
 
-    // Unlike RUNNER_NETWORK's default of null, which is the compose story told once, the kubernetes
-    // runner HAS to be told where its collector is — a pod cannot join a network. The chart sets
-    // this; empty defers to whatever the executor image baked in, the "left off the network" mode.
-    it('leaves RUNNER_OTEL_ENDPOINT off unless set', () => {
-        expect(loadDriverConfig({}).otelEndpoint).toBeNull();
+    // RUNNER_OTEL_ENDPOINT defaults to the compose collector exactly like the compose driver service
+    // sets it, so the endpoint is always provided to the runner — a pod that keeps a baked default
+    // (http://collector:4318) resolves nothing on kubernetes, and "ensure telemetry reaches the
+    // collector" cannot both run every job and opt out of naming it. The override wins, for a
+    // collector the compose network cannot name.
+    it('defaults RUNNER_OTEL_ENDPOINT to the compose collector, overridable', () => {
+        expect(loadDriverConfig({}).otelEndpoint).toBe('http://collector:4318');
+        expect(loadDriverConfig({ RUNNER_OTEL_ENDPOINT: '' }).otelEndpoint).toBe('http://collector:4318');
         expect(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_OTEL_ENDPOINT: 'http://collector:4318' })
+            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_OTEL_ENDPOINT: 'http://telemetry.internal:4318' })
                 .otelEndpoint,
-        ).toBe('http://collector:4318');
+        ).toBe('http://telemetry.internal:4318');
     });
 
     // The kubernetes executor forwards runner credentials the way the docker one forwards `-e NAME`:

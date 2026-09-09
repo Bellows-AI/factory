@@ -849,6 +849,14 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
     // would drop the runner's telemetry network without an error. The two networks do different
     // jobs: config.network carries telemetry out, this one carries the job's DNS names in.
     if (servicesNetwork) args.push('--network', servicesNetwork);
+    // Where the runner's telemetry is pointed. The executor image bakes a default endpoint
+    // (http://collector:4318), but RUNNER_OTEL_ENDPOINT overrides it for a collector the compose
+    // network cannot name — the same override the kubernetes runner applies in the pod spec. A
+    // literal value, not a credential: an OTLP endpoint is a URL, and the kubernetes runner
+    // already names it in a spec anyone with `get pods` can read. Not `-e NAME`, which would make
+    // docker read OTEL_EXPORTER_OTLP_ENDPOINT from this process's environment — a different
+    // variable from the RUNNER_OTEL_ENDPOINT this config was built from.
+    args.push('-e', `OTEL_EXPORTER_OTLP_ENDPOINT=${config.otelEndpoint}`);
 
     // opencode: headless only — Remote Control is refused in the config, so there is no RC branch
     // here and no permissions flag either (the image's baked opencode.json decides them).

@@ -93,6 +93,27 @@ else
     bad 'otel.json points at the compose collector' "$otel"
 fi
 
+# The driver's RUNNER_OTEL_ENDPOINT override arrives as OTEL_EXPORTER_OTLP_ENDPOINT, which the
+# opencode-otel plugin does not read — the entrypoint patches otel.json when it is set. The config
+# directory is bind-mounted so the patched file can be read back on the host; `--help` runs the
+# entrypoint's patch then exits the agent with no credential needed.
+CNF="$(mktemp -d)"
+cp "$(cd "$(dirname "$0")" && pwd)"/opencode-home/otel.json "$CNF/otel.json"
+chmod -R a+rwX "$CNF"
+docker run --rm \
+    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
+    -v "$CNF:/home/node/.config/opencode" \
+    "$IMAGE" --help >/dev/null 2>&1
+patched="$(cat "$CNF/otel.json")"
+rm -rf "$CNF"
+if node -e \
+    'try { const o = JSON.parse(process.argv[1]); process.exit(o.endpoint === "http://collector.example:4318" ? 0 : 1); } catch { process.exit(1); }' \
+    "$patched" >/dev/null 2>&1; then
+    ok 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT'
+else
+    bad 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
+fi
+
 # A missing WORKDIR must refuse in place, not start an agent in the wrong directory.
 docker run --rm -e WORKDIR=/nope "$IMAGE" run 'hi' >/dev/null 2>&1
 if [ "$?" = "2" ]; then ok 'a missing WORKDIR exits 2'; else bad 'a missing WORKDIR exits 2' 'see above'; fi
