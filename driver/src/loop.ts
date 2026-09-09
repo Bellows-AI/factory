@@ -532,6 +532,12 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 if (published?.published) {
                     output = `${output}\n[driver] published ${published.branch}${published.prUrl ? ` — ${published.prUrl}` : ''}`;
                 }
+                if (published && published.ok && !published.published) {
+                    // A silent no-op is how a missing `docker run` once hid behind "the checkout
+                    // has not been cloned yet" — the reason is the only way to tell an ordinary
+                    // clean tree from a publisher that cannot see the tree at all.
+                    log(`job ${job.id}: nothing to publish: ${published.reason}`);
+                }
                 if (publishUnlanded) {
                     output = `${output}\n[driver] publish failed — the work did not land: ${published?.reason}`;
                 }

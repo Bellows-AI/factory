@@ -2612,6 +2612,29 @@ describe('publishing the produced work', () => {
         expect(uncloned.calls).toHaveLength(1);
     });
 
+    // EVERY container this feature starts is a full `docker run` — the sync and the publisher
+    // once built argv without the subcommand, and `docker -v ... -w ...` failed on every job
+    // while the flow tests (matching argv by shape, not by head) stayed green. Pinned at the
+    // head, where the omission actually lives.
+    it('starts every sync and publish container with `docker run --rm`', async () => {
+        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
+            fail: (a) => a.includes('switch') && !a.includes('-c'),
+        });
+        await runner.publishGit(ISSUE_JOB);
+
+        expect(calls.length).toBeGreaterThan(0);
+        for (const args of calls) {
+            expect(args[0]).toBe('run');
+            expect(args).toContain('--rm');
+        }
+        // And the sync, which takes no part in the publish flow above.
+        const { calls: syncCalls, runner: syncRunner } = publishRunner(DIRTY_ON_MAIN);
+        await syncRunner.syncCheckout(ISSUE_JOB);
+        expect(syncCalls).toHaveLength(1);
+        expect(syncCalls[0]![0]).toBe('run');
+        expect(syncCalls[0]).toContain('--rm');
+    });
+
     it('fails with the step’s reason when a git step refuses', async () => {
         const { runner } = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('push') });
         const result = await runner.publishGit(ISSUE_JOB);

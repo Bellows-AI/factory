@@ -1025,7 +1025,13 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 return { ok: false, reason: `could not write the sync env file: ${(e as Error).message}` };
             }
             try {
+                // 'run' and '--rm' INCLUDED — every execDocker argv here is a full `docker run`:
+                // this exact call once shipped as `docker -v ... -w ...`, which is not a command
+                // docker knows, and the sync failed on every job while the compile and the flow
+                // tests (which match argv by shape, not by head) stayed green.
                 const out = await execDocker([
+                    'run',
+                    '--rm',
                     '-v',
                     `${config.workspaceVolume}:${config.workspaceMount}`,
                     '-w',
@@ -1072,7 +1078,8 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             }
             try {
                 const plan = publishPlan(job);
-                const vol = ['-v', `${config.workspaceVolume}:${config.workspaceMount}`];
+                // 'run' and '--rm' INCLUDED — the same full-command rule the sync above states.
+                const vol = ['run', '--rm', '-v', `${config.workspaceVolume}:${config.workspaceMount}`];
                 const inRepo = [...vol, '-w', repo];
 
                 // What is there to publish? A checkout that was never cloned and a clean,
