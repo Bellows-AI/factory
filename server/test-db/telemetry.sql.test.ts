@@ -348,4 +348,19 @@ describe.skipIf(!enabled)('the postgres client', () => {
         const totals = await sql`select * from session_field_total where session_id = 's9'`;
         expect(totals).toHaveLength(0);
     });
+
+    it('aggregates an opencode run under its own agent', async () => {
+        // The opencode-executor emits `opencode.*` metrics; they must price as their own agent,
+        // not vanish into the null-field filter or mislabel as claude-code.
+        await sql`insert into metric_point ${sql({
+            agent: 'opencode', metric: 'opencode.active_time.total', field: 'active_seconds',
+            session_id: 's10', value: 12, temporality: 'delta', start_time: null,
+            time: T('2026-08-01T10:00:00Z'), attrs: {},
+        })}`;
+        const [row] = await sql<{ agent: string; value: number }[]>`
+            select agent, value from session_field_total where session_id = 's10'
+        `;
+        expect(row?.agent).toBe('opencode');
+        expect(row?.value).toBe(12);
+    });
 });

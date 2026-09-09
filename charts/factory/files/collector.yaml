@@ -1,0 +1,88 @@
+# The OTLP collector the chart ships: receives from the runner pods the driver spawns in this
+# namespace and forwards to this release's dashboard ingest route. The kubernetes analogue of the
+# `collector` service in docker-compose.yml.
+#
+# This file is not shared with docker/otel-collector.yaml: the two differ exactly where they must —
+# the exporter's target (a compose service name there, a templated service URL here) and the
+# optional ingest token that keeps an authenticated board reachable. The decisions that must NOT
+# differ — identity stripped, cost refused, compression off, http/json, the session id kept — are
+# deliberate copies; docs/telemetry.md is the reading list for which ones are guarded by a test.
+receivers:
+    otlp:
+        protocols:
+            grpc:
+                endpoint: 0.0.0.0:4317
+            http:
+                endpoint: 0.0.0.0:4318
+
+processors:
+    batch:
+        timeout: 5s
+        send_batch_size: 512
+
+    # Defence in depth. The server's ATTR_ALLOWLIST is the real guarantee, but dropping identity
+    # here means it never crosses the pod boundary either.
+    attributes/strip-identity:
+        actions:
+            - key: user.email
+              action: delete
+            - key: user.id
+              action: delete
+            - key: user.account_uuid
+              action: delete
+            - key: user.account_id
+              action: delete
+            - key: user.groups
+              action: delete
+            - key: organization.id
+              action: delete
+            - key: workspace.host_paths
+              action: delete
+
+    # Cost is out of scope, so it is refused before it can reach the volume. Both executor
+    # surfaces name it differently (claude-code natively, opencode via its OTLP plugin).
+    filter/drop-cost:
+        error_mode: ignore
+        metrics:
+            metric:
+                - 'name == "claude_code.cost.usage"'
+                - 'name == "opencode.cost.usage"'
+
+exporters:
+    # The dashboard is a ClusterIP service in the same namespace; the `dashboard` alias compose
+    # hardcodes is the release name here. The OTLP http exporter appends /v1/metrics, which is the
+    # server's ingest route.
+    otlp_http/dashboard:
+        endpoint: http://{{ include "factory.fullname" . }}:{{ .Values.dashboard.port }}/api/otlp
+        encoding: json
+        # Required. The exporter gzips by default, Fastify's JSON parser does not decompress, and
+        # the result is a flat 400 on every export. This hop is in-cluster with kilobyte payloads,
+        # so compression buys nothing.
+        compression: none
+        tls:
+            insecure: true
+        retry_on_failure:
+            enabled: true
+            initial_interval: 5s
+            max_elapsed_time: 300s
+{{- if .Values.telemetry.ingestToken }}
+        # The token travels by reference: the Deployment mounts the Secret's ingest-token key as
+        # INGEST_TOKEN, and the collector expands ${env:INGEST_TOKEN} at boot, so the value never
+        # lands in this ConfigMap. Rendered only when set — an open board needs no header.
+        headers:
+            X-Factory-Ingest-Token: ${env:INGEST_TOKEN}
+{{- end }}
+
+service:
+    telemetry:
+        logs:
+            level: warn
+    pipelines:
+        metrics:
+            receivers: [otlp]
+            processors: [filter/drop-cost, attributes/strip-identity, batch]
+            exporters: [otlp_http/dashboard]
+        logs:
+            receivers: [otlp]
+            processors: [attributes/strip-identity, batch]
+            exporters: [otlp_http/dashboard]

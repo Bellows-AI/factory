@@ -39,9 +39,16 @@ collector config.
   `organization.id` and `workspace.host_paths` all arrive by default and are all dropped.
 - **There is no monetary field anywhere, on purpose.** Prices and cache discounts change, and a
   dollar figure implies precision a ~20s branch sample cannot support.
-  `claude_code.cost.usage` is refused at the ingest route. A test asserts no field named
-  `cost`/`usd`/`price` exists in `TelemetryStats`, because this is exactly the kind of thing that
-  returns via a "small addition".
+  `claude_code.cost.usage` and `opencode.cost.usage` are refused, at the collector and again at the
+  ingest route. A test asserts no field named `cost`/`usd`/`price` exists in `TelemetryStats`,
+  because this is exactly the kind of thing that returns via a "small addition".
+- **The two executors reach the same collector by different routes.** claude-executor emits Claude
+  Code's native OTLP, driven by env vars baked through its `settings.json`, naming metrics
+  `claude_code.*`. opencode's binary has no native metric surface, so opencode-executor bakes
+  `@gcornut/opencode-otel`, configured by its own `otel.json` (the `OTEL_EXPORTER_OTLP_*` vars mean
+  nothing to it) and naming metrics `opencode.*`. Both arrive at the collector's http receiver on
+  4318 as http/json, and both land in `metric-map.ts` — they are rows in one table, not two code
+  paths, and `agentOf()` keeps them under their own agents.
 - **`ON CONFLICT DO NOTHING` on `metric_point`, never `DO UPDATE`.** OTLP delivery is
   at-least-once, so an identical retry must be a no-op; an update would move `received_at` and
   destroy the only way to tell a retry from a genuine second export.

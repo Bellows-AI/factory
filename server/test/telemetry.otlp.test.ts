@@ -158,24 +158,30 @@ describe('the metric map', () => {
         expect(field('claude_code.lines_of_code.count', [attr('type', 'removed')])).toBe('lines_removed');
         expect(field('claude_code.code_edit_tool.decision', [attr('decision', 'reject')])).toBe('edits_reject');
         expect(field('claude_code.commit.count', [])).toBe('commits');
+        // The opencode executor mirrors the same surface under its own prefix.
+        expect(field('opencode.token.usage', [attr('type', 'cacheCreation')])).toBe('tokens_cacheCreation');
+        expect(field('opencode.lines_of_code.count', [attr('type', 'added')])).toBe('lines_added');
+        expect(field('opencode.tool.decision', [attr('decision', 'accept')])).toBe('edits_accept');
+        expect(field('opencode.active_time.total', [])).toBe('active_seconds');
+        expect(field('opencode.session.count', [])).toBe('sessions');
     });
 
     it('stores an unknown metric with a null field rather than rejecting it', () => {
         // A future tool's data must accumulate before support for it is written.
         const { rows } = flattenMetrics(
-            body(sum('opencode.tokens.total', [{ asInt: '9', timeUnixNano: NANOS }])),
+            body(sum('future_agent.tokens.total', [{ asInt: '9', timeUnixNano: NANOS }])),
         );
         expect(rows).toHaveLength(1);
         expect(rows[0]?.field).toBeNull();
-        expect(rows[0]?.metric).toBe('opencode.tokens.total');
+        expect(rows[0]?.metric).toBe('future_agent.tokens.total');
         expect(rows[0]?.agent).toBe('unknown');
     });
 
     it('derives the agent from the metric name prefix', () => {
-        const { rows } = flattenMetrics(
-            body(sum('claude_code.commit.count', [{ asInt: '1', timeUnixNano: NANOS }])),
-        );
-        expect(rows[0]?.agent).toBe('claude-code');
+        const agent = (name: string) =>
+            flattenMetrics(body(sum(name, [{ asInt: '1', timeUnixNano: NANOS }]))).rows[0]?.agent;
+        expect(agent('claude_code.commit.count')).toBe('claude-code');
+        expect(agent('opencode.commit.count')).toBe('opencode');
     });
 });
 
@@ -226,6 +232,7 @@ describe('the two exclusions', () => {
                         {
                             metrics: [
                                 sum('claude_code.cost.usage', [{ asDouble: 4.1, timeUnixNano: NANOS }]),
+                                sum('opencode.cost.usage', [{ asDouble: 9.5, timeUnixNano: NANOS }]),
                                 sum('claude_code.token.usage', [
                                     { asInt: '100', timeUnixNano: NANOS, attributes: [attr('type', 'input')] },
                                 ]),
@@ -237,10 +244,11 @@ describe('the two exclusions', () => {
         };
 
         const { rows, skipped } = flattenMetrics(payload);
-        expect(skipped.deniedMetric).toBe(1);
+        expect(skipped.deniedMetric).toBe(2);
         expect(rows).toHaveLength(1);
         expect(rows[0]?.metric).toBe('claude_code.token.usage');
         expect(JSON.stringify(rows)).not.toContain('cost');
         expect(JSON.stringify(rows)).not.toContain('4.1');
+        expect(JSON.stringify(rows)).not.toContain('9.5');
     });
 });

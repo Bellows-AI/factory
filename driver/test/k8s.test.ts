@@ -144,6 +144,17 @@ describe('the runner job spec', () => {
         ]);
     });
 
+    // Where a runner's telemetry goes. A literal value like WORKDIR — an OTLP endpoint is a path,
+    // not a credential — but unlike the compose world there is no network for a pod to join that
+    // would make the image's baked `collector:4318` resolve, so this process has to name the
+    // collector. The chart sets RUNNER_OTEL_ENDPOINT; the pin is that it lands as the runner's own
+    // `value`, readable in the pod spec like WORKDIR is.
+    it('points the runner at the configured collector', () => {
+        const container = spec({ RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }).spec.template.spec
+            .containers[0];
+        expect(container.env).toContainEqual({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' });
+    });
+
     it('forwards no credentials when no secret is configured', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(container.env).toEqual([{ name: 'WORKDIR', value: `/workspaces/bellows/${USER}` }]);

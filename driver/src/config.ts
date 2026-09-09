@@ -43,6 +43,18 @@ export interface DriverConfig {
     workspaceVolume: string;
     /** Where that volume is mounted inside the runner. */
     workspaceMount: string;
+    /**
+     * Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT`. Null means "do not
+     * say", which leaves whatever the executor image baked into its own settings — the compose
+     * story, where `network` joining the compose network is what makes that endpoint resolve.
+     *
+     * The kubernetes executor has no network to join: a runner pod only reaches what this process
+     * names, so the chart sets this to the in-chart collector. Null there means the baked
+     * `collector:4318` resolves nowhere and the run's telemetry goes unrecorded — the k8s form of
+     * a docker runner left off the compose network, which is the mode documented as
+     * "the CLI still works, the sessions just go unrecorded".
+     */
+    otelEndpoint: string | null;
     /** Joins the runner to a docker network, which is what lets its telemetry reach the collector. */
     network: string | null;
     concurrency: number;
@@ -338,6 +350,9 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         cli,
         workspaceVolume: text(env.WORKSPACE_VOLUME, 'WORKSPACE_VOLUME', DEFAULTS.workspaceVolume),
         workspaceMount: text(env.WORKSPACE_MOUNT, 'WORKSPACE_MOUNT', DEFAULTS.workspaceMount),
+        // Empty is unset, like every other optional value here: the claim is that the executor
+        // image knows where its own telemetry goes, so the driver stays silent and defers.
+        otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || null,
         network: (env.RUNNER_NETWORK ?? '').trim() || null,
         concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, 1, 32),
         pollMs: int(env.DRIVER_POLL_MS, 'DRIVER_POLL_MS', DEFAULTS.pollMs, 250, 300_000),

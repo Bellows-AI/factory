@@ -20,6 +20,14 @@ ARG OPENCODE_VERSION=1.18.29
 RUN npm install -g opencode-ai@${OPENCODE_VERSION} \
     && npm cache clean --force
 
+# The OTLP metrics plugin, so a headless run actually reaches the collector. Pinned, and
+# self-contained — its OpenTelemetry SDK is bundled into dist/index.js, so the install needs no
+# transitive deps and the runtime needs no npm fetch. Referenced from the baked opencode.json by
+# its absolute path below.
+ARG OPENCODE_OTEL_VERSION=0.4.0
+RUN npm install -g @gcornut/opencode-otel@${OPENCODE_OTEL_VERSION} \
+    && npm cache clean --force
+
 # Atlassian CLI — the only supported way to read and write Jira from here; the Atlassian MCP server
 # is deliberately not configured. TARGETARCH is amd64/arm64, which is exactly how the download
 # paths are named, so no mapping table is needed.
@@ -47,12 +55,12 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/d
 ENV XDG_CONFIG_HOME=/home/node/.config
 ENV OPENCODE_CONFIG=/home/node/.config/opencode/opencode.json
 
-# Telemetry. The endpoint is the compose collector, resolvable only from that network — off it the
-# exporter fails to connect and the sessions go unrecorded, the CLI still works. Unlike
-# claude-code's, opencode's OTEL surface is not exhaustively verified against these variables; if
-# a run's metrics do not arrive at the collector, check here first.
-ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
-ENV OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+# Telemetry. opencode's binary has no native OTLP metric surface (its bundled SDK only emits
+# spans, and only behind `experimental.openTelemetry: true`), so metrics come from the plugin
+# installed above, configured by opencode-home/otel.json. That file is the single source of
+# truth — it points the plugin's exporter at the compose collector on 4318 with http/json, not
+# the OTEL_EXPORTER_OTLP_* variables (the plugin reads neither). Off the compose network the
+# exporter fails to connect and the runs go unrecorded; the CLI still works.
 
 # The predefined configuration. Permissions live here, NOT in a CLI flag — unlike claude-code,
 # opencode takes policy from this file, and "ask" is unusable in a headless `run`: there is nobody

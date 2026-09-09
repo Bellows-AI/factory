@@ -63,6 +63,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run [--session <id>] <prompt>`. Explicit enum. Under `opencode` no session is minted — the runner scrapes the id the run used and reports it at close — and Remote Control, skip-permissions and the kubernetes executor are refused at startup. |
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
+| `RUNNER_OTEL_ENDPOINT` | unset | Where a runner's telemetry is pointed, passed to the **kubernetes** runner as `OTEL_EXPORTER_OTLP_ENDPOINT`. Unset defers to whatever the executor image baked in — right on compose, wrong on a cluster, where `collector` resolves nowhere (see [kubernetes.md](kubernetes.md)). The chart sets it to the in-chart collector. |
 | `DRIVER_CONCURRENCY` | `2` | |
 | `DRIVER_POLL_MS` | `5000` | |
 | `DRIVER_LEASE_SECONDS` | `300` | Heartbeat is a third of this. |

@@ -84,6 +84,17 @@ describe('the driver config', () => {
         expect(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' }).k8sNamespace).toBe('factory');
     });
 
+    // Unlike RUNNER_NETWORK's default of null, which is the compose story told once, the kubernetes
+    // runner HAS to be told where its collector is — a pod cannot join a network. The chart sets
+    // this; empty defers to whatever the executor image baked in, the "left off the network" mode.
+    it('leaves RUNNER_OTEL_ENDPOINT off unless set', () => {
+        expect(loadDriverConfig({}).otelEndpoint).toBeNull();
+        expect(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_OTEL_ENDPOINT: 'http://collector:4318' })
+                .otelEndpoint,
+        ).toBe('http://collector:4318');
+    });
+
     // The kubernetes executor forwards runner credentials the way the docker one forwards `-e NAME`:
     // the NAMES travel, the values live in a Secret the cluster already holds. Off unless named.
     it('leaves RUNNER_CREDENTIALS_SECRET off unless set', () => {

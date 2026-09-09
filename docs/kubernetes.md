@@ -168,6 +168,19 @@ kind walkthrough. Decisions that look like cruft and are not:
   no client can poll away. On a cold cluster the database image pulls for minutes, so an init
   container runs the database pod's own readiness predicate (`pg_isready` against its service)
   until it passes; only then does the server start, inside its retry budget.
+- **The chart ships the collector, and the driver names it in every runner spec.** A docker runner
+  joins the compose network and its baked `collector:4318` resolves; a pod cannot join a network,
+  so the kubernetes form of `RUNNER_NETWORK` is the driver setting `OTEL_EXPORTER_OTLP_ENDPOINT`
+  on the runner container, from `RUNNER_OTEL_ENDPOINT`. The chart contributes both halves: a
+  `Deployment <release>-factory-collector` (an OTLP collector forwarding to this release's
+  dashboard ingest route, with the compose file's strip-identity and drop-cost processors and its
+  `compression: none`), and the driver env that points runner pods at
+  `http://<release>-factory-collector:4318`. `collector.enabled=false` removes the collector;
+  runners then carry the image's baked endpoint, which resolves nowhere — the "off the network"
+  mode, documented as "the CLI still works, the sessions just go unrecorded". The dashboard
+  ingest token, when one is set, reaches the collector as `INGEST_TOKEN` from the same Secret key
+  the dashboard reads and lands in the exporter's header via `${env:INGEST_TOKEN}` — a reference
+  in the ConfigMap, never a value in it.
 
 ## Variables
 
@@ -176,6 +189,7 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `EXECUTOR` | `docker` | `kubernetes` selects the Job runner. Explicit enum: anything else is fatal — a typo must not read as "docker is fine" and quietly claim jobs while spawning nothing. |
 | `K8S_NAMESPACE` | `default` | Where runner Jobs are created. The chart sets it via the downward API, so the driver follows whichever namespace it landed in. |
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials, one key per `RUNNER_ENV` name. Unset forwards nothing — an image with a login baked into a volume needs none, the same answer as the docker driver's missing-credentials warning. |
+| `RUNNER_OTEL_ENDPOINT` | unset | Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT` in the pod spec. The chart sets it to the in-chart collector; unset, the pod keeps whatever the executor image baked in, which nothing in a cluster resolves. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy. Kubernetes reads a missing or `:latest` tag as `Always`, which reaches past the node's local images for a registry copy of `claude-executor` — where the docker runner would have used what the daemon holds. The chart passes `driver.imagePullPolicy` through. |
 
 Refused combinations, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_REMOTE_CONTROL=1` — Remote

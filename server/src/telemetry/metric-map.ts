@@ -34,30 +34,49 @@ const enumerated = (attr: string, values: Record<string, CanonicalField>): Rule 
     field: (attrs) => values[attrs[attr] ?? ''] ?? null,
 });
 
+/**
+ * The opencode executor mirrors Claude Code's metric surface (via its OTLP plugin), so both
+ * agents share the same disambiguating attribute values. One map, two prefixes.
+ */
+const TOKEN_TYPES = {
+    input: 'tokens_input',
+    output: 'tokens_output',
+    cacheRead: 'tokens_cacheRead',
+    cacheCreation: 'tokens_cacheCreation',
+} as const satisfies Record<string, CanonicalField>;
+
+const LINE_TYPES = {
+    added: 'lines_added',
+    removed: 'lines_removed',
+} as const satisfies Record<string, CanonicalField>;
+
+const EDIT_DECISIONS = {
+    accept: 'edits_accept',
+    reject: 'edits_reject',
+} as const satisfies Record<string, CanonicalField>;
+
 const RULES: Record<string, Rule> = {
-    'claude_code.token.usage': enumerated('type', {
-        input: 'tokens_input',
-        output: 'tokens_output',
-        cacheRead: 'tokens_cacheRead',
-        cacheCreation: 'tokens_cacheCreation',
-    }),
-    'claude_code.lines_of_code.count': enumerated('type', {
-        added: 'lines_added',
-        removed: 'lines_removed',
-    }),
-    'claude_code.code_edit_tool.decision': enumerated('decision', {
-        accept: 'edits_accept',
-        reject: 'edits_reject',
-    }),
+    'claude_code.token.usage': enumerated('type', TOKEN_TYPES),
+    'claude_code.lines_of_code.count': enumerated('type', LINE_TYPES),
+    'claude_code.code_edit_tool.decision': enumerated('decision', EDIT_DECISIONS),
     'claude_code.active_time.total': { field: () => 'active_seconds' },
     'claude_code.commit.count': { field: () => 'commits' },
     'claude_code.pull_request.count': { field: () => 'pull_requests' },
     'claude_code.session.count': { field: () => 'sessions' },
+    'opencode.token.usage': enumerated('type', TOKEN_TYPES),
+    'opencode.lines_of_code.count': enumerated('type', LINE_TYPES),
+    'opencode.tool.decision': enumerated('decision', EDIT_DECISIONS),
+    'opencode.active_time.total': { field: () => 'active_seconds' },
+    'opencode.commit.count': { field: () => 'commits' },
+    'opencode.pull_request.count': { field: () => 'pull_requests' },
+    'opencode.session.count': { field: () => 'sessions' },
 };
 
 /** The agent that produced a metric, from its name prefix. */
 export function agentOf(metric: string): string {
-    return metric.startsWith('claude_code.') ? 'claude-code' : 'unknown';
+    if (metric.startsWith('claude_code.')) return 'claude-code';
+    if (metric.startsWith('opencode.')) return 'opencode';
+    return 'unknown';
 }
 
 export function canonicalField(

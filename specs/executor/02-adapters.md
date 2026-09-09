@@ -216,10 +216,10 @@ When false, `POST /api/tasks` answers `400 UNSUPPORTED_INVOCATION` rather than d
 into prose — same rule as `?range=` invalid giving `400 BAD_RANGE` rather than falling back to all
 time.
 
-**Flag D from [00](00-overview.md) applies here:** opencode's OTEL metric names are not in
-`server/src/telemetry/metric-map.ts`'s `RULES`, so `agentOf()` returns `'unknown'` and
-`session_field_total` filters the rows out. An opencode task's token spend is therefore `null` with
-`tokensReason: 'unmapped-agent'`, never 0, until those rows are added. Say so in `docs/limits.md`.
+**Flag D from [00](00-overview.md) is closed:** the opencode image ships `@gcornut/opencode-otel`
+and `server/src/telemetry/metric-map.ts`'s `RULES` carries the `opencode.*` names, so `agentOf()`
+returns `'opencode'` and the session is priced like any other. A metric newer than those rows still
+accumulates as null, and `opencode.cost.usage` is refused the same way as Claude's.
 
 ---
 
@@ -308,4 +308,4 @@ environment switches that silently put prompt text and source code into the data
 `executor/test/fixtures/envelope-*.json`, the three test files above.
 
 **Modify:** `core/src/executor.ts` (add the run/plan/result/envelope types), `core/src/index.ts`
-(re-export), `docs/limits.md` (skill-is-a-request; opencode unmapped; CLI capture versions).
+(re-export), `docs/limits.md` (skill-is-a-request; opencode tokens mapped; CLI capture versions).

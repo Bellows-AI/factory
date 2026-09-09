@@ -37,12 +37,14 @@ processors:
             - key: workspace.host_paths
               action: delete
 
-    # Cost is out of scope, so it is refused before it can reach the volume.
+    # Cost is out of scope, so it is refused before it can reach the volume. Both executor
+    # surfaces name it differently (claude-code natively, opencode via its OTLP plugin).
     filter/drop-cost:
         error_mode: ignore
         metrics:
             metric:
                 - 'name == "claude_code.cost.usage"'
+                - 'name == "opencode.cost.usage"'
 
 exporters:
     # http/json rather than protobuf: the server's ingest route parses OTLP/JSON, which keeps

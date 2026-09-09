@@ -75,6 +75,15 @@ spec:
                       - name: RUNNER_SKIP_PERMISSIONS
                         value: {{ .Values.driver.skipPermissions | quote }}
                       {{- end }}
+                      {{- $otelEndpoint := default (printf "http://%s-collector:4318" (include "factory.fullname" .)) .Values.driver.runnerOtelEndpoint }}
+                      {{- if or .Values.collector.enabled .Values.driver.runnerOtelEndpoint }}
+                      # Where the runner pods this driver spawns send their telemetry. A pod cannot
+                      # join a network the way a docker runner joins the compose one, so the endpoint
+                      # has to be named in every spec it is handed. Defaults to the in-chart
+                      # collector's service; a driver pointed at an external collector overrides it.
+                      - name: RUNNER_OTEL_ENDPOINT
+                        value: {{ $otelEndpoint | quote }}
+                      {{- end }}
                       {{- if or .Values.runner.credentialsExistingSecret .Values.secret.create }}
                       - name: RUNNER_CREDENTIALS_SECRET
                         value: {{ include "factory.runnerSecretName" . | quote }}
