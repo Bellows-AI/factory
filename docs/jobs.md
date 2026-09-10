@@ -107,6 +107,10 @@ ready-made relative path rather than a raw user id the driver would have to inte
   process trusts with a fragment of a shell command — the rule `remoteSessionArgs` already applies
   to a session id — and here a `..` would point at everybody's checkouts. The pattern is **copied**
   from the server rather than imported: this package depends on nothing, deliberately.
+- **The reads carry it too.** `get`/`thread`/`list` derive the same `workspacePath` with the same
+  rule (null when the job has no author or there is no workspace root), which is what the task
+  view's status sidebar shows — the layout is the board's knowledge, so the dashboard reads it
+  rather than rebuilding it.
 
 **Credentials are passed as `-e NAME`, never `-e NAME=value`.** The value then comes from the
 driver's own environment instead of a `docker run` argv that every `ps` on the host can read. This

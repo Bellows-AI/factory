@@ -29,6 +29,7 @@ function job(overrides: Partial<Job> = {}): Job {
         executor: null,
         followUpTo: null,
         doneAt: null,
+        workspacePath: null,
         createdAt: '2026-09-02T12:00:00.000Z',
         startedAt: null,
         finishedAt: null,

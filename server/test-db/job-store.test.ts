@@ -1014,4 +1014,40 @@ describe.runIf(enabled)('attribution', () => {
         expect(job).not.toBeNull();
         expect(job?.createdBy).toBeNull();
     });
+
+    it('reports the workspace directory on reads, not only on the claim', async () => {
+        /*
+         * The task view's status sidebar shows where the run's checkout lives, and a reader of the
+         * board has no other way to learn it: the layout is the board's own knowledge
+         * (`<orgId>/<author>`), so the same derivation the claim makes travels on the reads the
+         * dashboard polls. An unattributed job answers null — the same null the claim reports,
+         * for the same reason.
+         */
+        const userId = await account(5008, 'reading-cat');
+        const { id } = await store.create('echo hi', userId, { repo: null, executor: null });
+
+        expect((await store.get(id))?.workspacePath).toBe(`${ORG}/${userId}`);
+        expect((await store.thread(id))?.[0]?.workspacePath).toBe(`${ORG}/${userId}`);
+
+        const unattributed = await queue('echo hi');
+        expect((await store.get(unattributed.id))?.workspacePath).toBeNull();
+
+        // The list projection carries the derivation too — the sidenav and any list view read it
+        // like the detail, and never `null`-because-unselected.
+        const listed = await store.list({ limit: 10 });
+        expect(listed.find((job) => job.id === id)?.workspacePath).toBe(`${ORG}/${userId}`);
+        expect(listed.find((job) => job.id === unattributed.id)?.workspacePath).toBeNull();
+    });
+
+    it('reports no workspace directory on reads when the deployment has no workspace root', async () => {
+        /*
+         * The claim refuses to name a directory that was never created; the reads must not either,
+         * or the sidebar would show a path that does not exist.
+         */
+        const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
+        const userId = await account(5009, 'unread-cat');
+        const { id } = await rootless.create('echo hi', userId, { repo: null, executor: null });
+
+        expect((await rootless.get(id))?.workspacePath).toBeNull();
+    });
 });

@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job } from '../src/api/useJobs.js';
-import { taskTime } from '../src/format.js';
+import { runDuration, taskTime } from '../src/format.js';
+import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 
@@ -24,6 +25,7 @@ function job(overrides: Partial<Job> = {}): Job {
         executor: null,
         followUpTo: null,
         doneAt: null,
+        workspacePath: null,
         createdAt: '2026-09-01T12:00:00.000Z',
         startedAt: '2026-09-01T12:00:01.000Z',
         finishedAt: '2026-09-01T12:04:00.000Z',
@@ -347,20 +349,19 @@ describe('TaskDetail', () => {
     });
 
     /**
-     * The attempt's sampled vitals — the "is it stuck or working" strip: CPU, memory, and the
-     * agent's current activity line. Rendered while the run is going ONLY: the sample is a
-     * liveness signal, and a stale "cpu 167%" beside a finished run's verdict lies about a run
-     * that is no longer going.
+     * The attempt's sampled vitals — the "is it stuck or working" strip: CPU and memory, rendered
+     * above the output while the run is going ONLY: the sample is a liveness signal, and a stale
+     * "cpu 167%" beside a finished run's verdict lies about a run that is no longer going. The
+     * activity line is the sidebar's "currently running task" and lives there now.
      */
     describe('runtime', () => {
         const runtime = { cpuPercent: 93.4, memUsedMb: 544.2, memPercent: 7, activity: '→ Read src/x.ts', sampledAt: '2026-09-09T10:00:00.000Z' };
 
-        it('renders cpu, memory and the current activity above the output', () => {
+        it('renders cpu and memory above the output while the run is going', () => {
             const html = renderDetail({ jobs: [job({ status: 'running', runtime })] });
             expect(html).toMatch(/cpu (<!-- -->)?93(<!-- -->)?%/);
             expect(html).toMatch(/mem (<!-- -->)?544(<!-- -->)? MiB \((<!-- -->)?7(<!-- -->)?%\)/);
-            expect(html).toContain('chat-activity');
-            expect(html).toContain('→ Read src/x.ts');
+            expect(html).toContain('chat-runtime');
         });
 
         it('renders no strip once the run has ended, whatever it sampled last', () => {
@@ -374,12 +375,11 @@ describe('TaskDetail', () => {
             expect(renderDetail({ jobs: [job({ status: 'running' })] })).not.toContain('chat-runtime');
         });
 
-        it('omits the activity and percentage the sample does not carry', () => {
+        it('omits the percentage the sample does not carry', () => {
             const html = renderDetail({
-                jobs: [job({ status: 'running', runtime: { ...runtime, activity: null, memPercent: null } })],
+                jobs: [job({ status: 'running', runtime: { ...runtime, memPercent: null } })],
             });
             expect(html).toMatch(/mem (<!-- -->)?544(<!-- -->)? MiB</);
-            expect(html).not.toContain('chat-activity');
         });
 
         it('never emits a placeholder value', () => {
@@ -388,28 +388,118 @@ describe('TaskDetail', () => {
             });
             for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
         });
+    });
+
+    /**
+     * The status sidebar: one column beside the conversation, fed by the NEWEST run — the same
+     * run the composer and Done verdict belong to. Everything it shows is either what the board
+     * reports or an honest dash; nothing is inferred.
+     */
+    describe('sidebar', () => {
+        const runtime = { cpuPercent: 12, memUsedMb: 300, memPercent: 2, activity: '→ Bash npm test', sampledAt: '2026-09-01T12:02:00.000Z' };
+
+        it('renders a status sidebar fed by the newest run', () => {
+            const html = renderDetail({ jobs: [job({ executor: 'main' })] });
+            expect(html).toContain('task-side');
+            expect(html).toContain('<h2>Status</h2>');
+            expect(html).toContain('<h2>Connections</h2>');
+            expect(html).toContain('<span class="pill">succeeded</span>');
+            expect(html).toContain('<span class="pill">main</span>');
+        });
+
+        it('shows the workspace directory the board reports, and a dash when there is none', () => {
+            const named = renderDetail({ jobs: [job({ workspacePath: 'org-1/user-2' })] });
+            expect(named).toContain('<dt>Workspace</dt><dd>org-1/user-2</dd>');
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Workspace</dt><dd>—</dd>');
+        });
 
         /**
-         * The context the run reached rides the close-time scrape and is shown on the FINISHED
-         * task — where "died at 90k tokens" is legible — next to the stamp. Cost shows only once
-         * it is money.
+         * The context the run reached rides the close-time scrape — where "died at 90k tokens" is
+         * legible — and cost shows only once it is money.
          */
-        it('shows the context a finished run reached, and its cost once it costs something', () => {
+        it('shows the context the run reached, and its cost once it costs something', () => {
             const html = renderDetail({
                 jobs: [job({ runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } })],
             });
-            expect(html).toContain('ctx 90,433 tok');
-            expect(html).toContain('$0.3100');
+            expect(html).toContain('<dt>Context</dt><dd>90,433 tok</dd>');
+            expect(html).toContain('<dt>Cost</dt><dd>$0.3100</dd>');
 
             const free = renderDetail({
                 jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
             });
-            expect(free).toContain('ctx 1,200 tok');
+            expect(free).toContain('<dt>Context</dt><dd>1,200 tok</dd>');
             expect(free).not.toContain('$0.0000');
         });
 
         it('shows nothing where the runner scraped no context', () => {
-            expect(renderDetail({ jobs: [job()] })).not.toContain('ctx ');
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd>—</dd>');
+        });
+
+        it('shows the running time of a finished run, and nothing before it starts or while parked', () => {
+            // 12:00:01 -> 12:04:00, the factory job's span.
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Running time</dt><dd>4m</dd>');
+            // A queued job has no attempt yet, and a parked one is not running: either way a
+            // ticking clock would lie.
+            const queued = renderDetail({ jobs: [job({ status: 'queued', startedAt: null, finishedAt: null })] });
+            expect(queued).toContain('<dt>Running time</dt><dd>—</dd>');
+            const parked = renderDetail({ jobs: [job({ status: 'standby' })] });
+            expect(parked).toContain('<dt>Running time</dt><dd>—</dd>');
+        });
+
+        it('shows the current task while the run is going, and nothing once it is not', () => {
+            const live = renderDetail({ jobs: [job({ status: 'running', runtime })] });
+            expect(live).toContain('<dt>Task</dt><dd>→ Bash npm test</dd>');
+            expect(renderDetail({ jobs: [job({ runtime })] })).toContain('<dt>Task</dt><dd>—</dd>');
+            expect(renderDetail({ jobs: [job()] })).not.toContain('chat-activity');
+        });
+
+        it('shows the issue reference and the published PR of the thread', () => {
+            const root = job({
+                command: 'fix https://github.com/o/r/issues/44 please',
+                output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
+            });
+            const html = renderDetail({ jobs: [root] });
+            expect(html).toContain('<dt>Issue</dt><dd>#44</dd>');
+            expect(html).toContain('<a href="https://github.com/o/r/pull/9">fix/44</a>');
+            // A url that is not http(s) stays text — nothing a run echoed becomes a handler href.
+            const unsafe = renderDetail({
+                jobs: [job({ output: 'done\n[driver] published fix/44 — javascript:alert(1)' })],
+            });
+            expect(unsafe).not.toContain('<a href="javascript:');
+            expect(unsafe).toContain('fix/44');
+        });
+
+        it('shows dashes for a thread with no issue and no PR', () => {
+            const html = renderDetail({ jobs: [job()] });
+            expect(html).toContain('<dt>Issue</dt><dd>—</dd>');
+            expect(html).toContain('<dt>PR</dt><dd>—</dd>');
+        });
+
+        it('shows a dash for the PR state, which nothing records on the job', () => {
+            // The output line carries a url, not a state; inventing one would be a lie. A
+            // structured PR source is a deliberate follow-up.
+            const root = job({
+                command: 'fix #44',
+                output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
+            });
+            expect(renderDetail({ jobs: [root] })).toContain('<dt>PR state</dt><dd>—</dd>');
+        });
+
+        it('keeps older runs\' pills inline and moves only the newest run\'s to the sidebar', () => {
+            const root = job({ command: 'first command' });
+            const child = { ...job({ command: 'second command' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id };
+            const html = renderDetail({ jobs: [root, child] });
+            const rootMeta = html.slice(html.indexOf('first command'), html.indexOf('chat-detail'));
+            expect(rootMeta).toContain('<span class="pill');
+            const childMeta = html.slice(html.indexOf('second command'), html.indexOf('chat-detail', html.indexOf('second command')));
+            expect(childMeta).not.toContain('<span class="pill');
+        });
+
+        it('never emits a placeholder value', () => {
+            const html = renderDetail({
+                jobs: [job({ executor: null, workspacePath: null, output: null, exitCode: null, runtime: { ...runtime, activity: null, contextTokens: null, costUsd: null } })],
+            });
+            for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
         });
     });
 });
@@ -435,5 +525,97 @@ describe('taskTime', () => {
         expect(taskTime('2026-09-01T12:04:00.000Z')).toBe('2026-09-01 12:04');
         expect(taskTime(null)).toBe('—');
         expect(taskTime('not a date')).toBe('—');
+    });
+});
+
+describe('runDuration', () => {
+    // The sidebar's "running time": the newest attempt's clock. Pure — the caller decides what
+    // "now" is, so the tests pin spans instead of sleeping.
+    it('renders the span of a finished run at minute granularity', () => {
+        expect(runDuration('2026-09-01T12:00:01.000Z', '2026-09-01T12:04:00.000Z')).toBe('4m');
+    });
+
+    it('renders a live run up to the now it is handed', () => {
+        expect(runDuration('2026-09-01T12:00:00.000Z', null, new Date('2026-09-01T12:30:00.000Z'))).toBe('30m');
+    });
+
+    it('renders a dash before the run starts, and for absent or nonsense stamps', () => {
+        expect(runDuration(null, null)).toBe('—');
+        expect(runDuration('not a date', null)).toBe('—');
+        expect(runDuration('2026-09-01T12:04:00.000Z', '2026-09-01T12:00:00.000Z')).toBe('—');
+    });
+});
+
+describe('thread derivations', () => {
+    const base = job();
+    const withCommand = (command: string, over: Partial<Job> = {}): Job => ({ ...base, command, ...over });
+    /** A follow-up of `base`: the chain array is oldest first, so this is the newest run. */
+    const followUp = (command: string, over: Partial<Job> = {}): Job => ({
+        ...base,
+        command,
+        id: '44444444-4444-4444-8444-444444444444',
+        followUpTo: base.id,
+        ...over,
+    });
+
+    describe('threadIssue', () => {
+        // The driver's publishPlan reads the same reference out of the command to name the branch
+        // and close the issue from the PR — the sidebar shows the reader what the task is about.
+        it('parses an issues/ URL and a bare #number', () => {
+            expect(threadIssue([withCommand('fix https://github.com/o/r/issues/44 please')])).toBe(44);
+            expect(threadIssue([withCommand('fix #44 please')])).toBe(44);
+        });
+
+        it('prefers the issues/ form over a bare #, like the driver does', () => {
+            expect(threadIssue([withCommand('see #7, from issues/44')])).toBe(44);
+        });
+
+        it('reads the newest run first — the thread is one conversation', () => {
+            expect(threadIssue([withCommand('fix #44'), followUp('also mentions #9')])).toBe(9);
+        });
+
+        it('answers null when no command names one', () => {
+            expect(threadIssue([withCommand('tighten the retry logic')])).toBeNull();
+        });
+    });
+
+    describe('threadPublish', () => {
+        // The driver appends one line to the output when it publishes — the only place the board
+        // carries a PR. The sidebar reads it; a structured field would be a follow-up.
+        it('parses the published line into the branch and the PR url', () => {
+            expect(
+                threadPublish([withCommand('x', { output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9' })]),
+            ).toEqual({ branch: 'fix/44', url: 'https://github.com/o/r/pull/9' });
+        });
+
+        it('carries a null url when the publish pushed a branch without a PR', () => {
+            expect(threadPublish([withCommand('x', { output: '[driver] published task/20260910' })])).toEqual({
+                branch: 'task/20260910',
+                url: null,
+            });
+        });
+
+        it('reads the newest output first', () => {
+            const root = withCommand('x', { output: '[driver] published fix/1 — https://github.com/o/r/pull/1' });
+            expect(threadPublish([root, followUp('y', { output: '[driver] published fix/2 — https://github.com/o/r/pull/2' })])?.url).toBe(
+                'https://github.com/o/r/pull/2',
+            );
+        });
+
+        it('answers null when nothing was published', () => {
+            expect(threadPublish([withCommand('x', { output: 'no publish here' })])).toBeNull();
+            expect(threadPublish([withCommand('x', { output: null })])).toBeNull();
+        });
+
+        it('ignores a marker the run echoed mid-line, and never links a non-http url', () => {
+            // The agent's output is arbitrary text; only a whole line at a line boundary is the
+            // driver's, and only an http(s) url may become a href.
+            expect(
+                threadPublish([withCommand('x', { output: 'the agent said [driver] published fake/1 — not-a-url' })]),
+            ).toBeNull();
+            expect(
+                threadPublish([withCommand('x', { output: '[driver] published fix/5 — javascript:alert(1)' })]),
+            ).toEqual({ branch: 'fix/5', url: 'javascript:alert(1)' });
+        });
     });
 });

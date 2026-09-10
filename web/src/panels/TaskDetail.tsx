@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { taskTime } from '../format.js';
+import { TaskSide } from './TaskSide.js';
 
 /**
  * One run's verification gates, as the reader meets them: a collapsible "Checks" list, one row per
@@ -37,12 +38,15 @@ function Checks({ gates }: { gates: GateCheck[] }) {
     );
 }
 
+/** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
+const tokenCount = new Intl.NumberFormat('en-US');
+
 /**
- * The running attempt's vitals, as the driver samples them off its container: CPU, memory, and the
- * agent's current activity line — the "is it stuck or working" answer, rendered above the output
+ * The running attempt's sampled container vitals — CPU and memory — rendered above the output
  * while the run is going only. A finished run's last sample is a post-mortem detail; the verdict
  * and the exit code are what the reader wants there, and a stale "cpu 167%" beside them lies about
- * a run that is no longer going.
+ * a run that is no longer going. (The agent's current activity line moved to the status sidebar,
+ * where it reads as "currently running task".)
  */
 function Runtime({ runtime }: { runtime: RuntimeVitals }) {
     return (
@@ -52,13 +56,9 @@ function Runtime({ runtime }: { runtime: RuntimeVitals }) {
                 mem {Math.round(runtime.memUsedMb)} MiB
                 {runtime.memPercent !== null ? ` (${Math.round(runtime.memPercent)}%)` : ''}
             </span>
-            {runtime.activity !== null ? <span className="chat-activity">{runtime.activity}</span> : null}
         </p>
     );
 }
-
-/** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
-const tokenCount = new Intl.NumberFormat('en-US');
 
 /**
  * One task, whole: the follow-up chain rendered as ONE conversation — the root command first,
@@ -175,95 +175,103 @@ export function TaskDetail({
     };
 
     return (
-        <section className="panel">
-            <div className="panel-head">
-                <h2>Tasks</h2>
-            </div>
-            {actionError !== null ? <p className="status">{actionError}</p> : null}
-            {jobs.map((task) => {
-                const taskOpen = isTerminal(task.status) && task.doneAt === null && task.id === latestTask.id;
-                return (
-                    <article className="chat-exchange" key={task.id}>
-                        <p className="msg-user">{task.command}</p>
-                        <p className="msg-meta">
-                            <span className="pill">{task.status}</span>
-                            {task.executor !== null ? <span className="pill">{task.executor}</span> : null}
-                            {task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
-                            {task.exitCode !== null ? (
-                                <span className="chat-exit">exit {task.exitCode}</span>
-                            ) : null}
-                            <span className="muted">{taskTime(task.createdAt)}</span>
-                            {task.runtime?.contextTokens != null ? (
-                                <span className="chat-activity">
-                                    ctx {tokenCount.format(task.runtime.contextTokens)} tok
-                                    {task.runtime.costUsd != null && task.runtime.costUsd > 0
-                                        ? ` · $${task.runtime.costUsd.toFixed(4)}`
-                                        : ''}
-                                </span>
-                            ) : null}
-                            {task.status === 'standby' ? (
-                                <button
-                                    type="button"
-                                    className="chat-resume"
-                                    disabled={resumingId === task.id}
-                                    onClick={() => void resume(task.id)}
-                                >
-                                    Resume
-                                </button>
-                            ) : null}
-                            {taskOpen ? (
-                                <button
-                                    type="button"
-                                    className="chat-resume"
-                                    disabled={doneId === task.id}
-                                    onClick={() => void done(task.id)}
-                                >
-                                    Done
-                                </button>
-                            ) : null}
-                        </p>
-                        <div className="chat-detail">
-                            {task.status === 'running' && task.runtime ? <Runtime runtime={task.runtime} /> : null}
-                            {task.gates !== undefined && task.gates !== null && task.gates.length > 0 ? (
-                                <Checks gates={task.gates} />
-                            ) : null}
-                            {task.output !== null ? (
-                                <pre ref={task.id === latestTask.id ? outputRef : undefined} className="chat-output">
-                                    {task.output}
-                                </pre>
-                            ) : isTerminal(task.status) ? (
-                                <p className="muted">No output recorded.</p>
-                            ) : (
-                                <p className="muted">Waiting for the executor…</p>
-                            )}
-                        </div>
-                    </article>
-                );
-            })}
-            {canFollowUp ? (
-                <div className="composer">
-                    <textarea
-                        className="composer-input"
-                        placeholder="Describe the adjustment…"
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
-                        }}
-                    />
-                    <div className="composer-row">
-                        <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
-                            Send
-                        </button>
-                    </div>
+        <div className="task-layout">
+            <section className="panel">
+                <div className="panel-head">
+                    <h2>Tasks</h2>
                 </div>
-            ) : null}
-            {sessionless ? (
-                <p className="muted">
-                    This run has no agent session to continue, so it cannot take a follow-up. Queue
-                    a new task instead.
-                </p>
-            ) : null}
-        </section>
+                {actionError !== null ? <p className="status">{actionError}</p> : null}
+                {jobs.map((task) => {
+                    const taskOpen = isTerminal(task.status) && task.doneAt === null && task.id === latestTask.id;
+                    // The newest run's statuses live in the sidebar — one status surface for the
+                    // whole task, fed by the run the composer and Done act on. History runs keep
+                    // theirs inline: the sidebar does not carry their per-run verdicts, and
+                    // deleting these would erase what each attempt was.
+                    const history = task.id !== latestTask.id;
+                    return (
+                        <article className="chat-exchange" key={task.id}>
+                            <p className="msg-user">{task.command}</p>
+                            <p className="msg-meta">
+                                {history ? <span className="pill">{task.status}</span> : null}
+                                {history && task.executor !== null ? <span className="pill">{task.executor}</span> : null}
+                                {history && task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
+                                {history && task.exitCode !== null ? (
+                                    <span className="chat-exit">exit {task.exitCode}</span>
+                                ) : null}
+                                <span className="muted">{taskTime(task.createdAt)}</span>
+                                {history && task.runtime?.contextTokens != null ? (
+                                    <span className="chat-activity">
+                                        ctx {tokenCount.format(task.runtime.contextTokens)} tok
+                                        {task.runtime.costUsd != null && task.runtime.costUsd > 0
+                                            ? ` · $${task.runtime.costUsd.toFixed(4)}`
+                                            : ''}
+                                    </span>
+                                ) : null}
+                                {task.status === 'standby' ? (
+                                    <button
+                                        type="button"
+                                        className="chat-resume"
+                                        disabled={resumingId === task.id}
+                                        onClick={() => void resume(task.id)}
+                                    >
+                                        Resume
+                                    </button>
+                                ) : null}
+                                {taskOpen ? (
+                                    <button
+                                        type="button"
+                                        className="chat-resume"
+                                        disabled={doneId === task.id}
+                                        onClick={() => void done(task.id)}
+                                    >
+                                        Done
+                                    </button>
+                                ) : null}
+                            </p>
+                            <div className="chat-detail">
+                                {task.status === 'running' && task.runtime ? <Runtime runtime={task.runtime} /> : null}
+                                {task.gates !== undefined && task.gates !== null && task.gates.length > 0 ? (
+                                    <Checks gates={task.gates} />
+                                ) : null}
+                                {task.output !== null ? (
+                                    <pre ref={task.id === latestTask.id ? outputRef : undefined} className="chat-output">
+                                        {task.output}
+                                    </pre>
+                                ) : isTerminal(task.status) ? (
+                                    <p className="muted">No output recorded.</p>
+                                ) : (
+                                    <p className="muted">Waiting for the executor…</p>
+                                )}
+                            </div>
+                        </article>
+                    );
+                })}
+                {canFollowUp ? (
+                    <div className="composer">
+                        <textarea
+                            className="composer-input"
+                            placeholder="Describe the adjustment…"
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
+                            }}
+                        />
+                        <div className="composer-row">
+                            <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+                                Send
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+                {sessionless ? (
+                    <p className="muted">
+                        This run has no agent session to continue, so it cannot take a follow-up. Queue
+                        a new task instead.
+                    </p>
+                ) : null}
+            </section>
+            <TaskSide jobs={jobs} />
+        </div>
     );
 }

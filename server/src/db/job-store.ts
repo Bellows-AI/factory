@@ -92,6 +92,14 @@ export interface Job {
      * and only settable on a finished task; it never replaces the run's own outcome.
      */
     doneAt: string | null;
+    /**
+     * Where the author's checkouts are, RELATIVE to the workspace root: `<orgId>/<userId>` — the
+     * same field the claim carries, derived here for the reads the dashboard polls so the task
+     * view can show it. Null when the job has no author or this deployment has no workspace root,
+     * exactly as on the claim: naming a directory that was never created would be worse than
+     * saying nothing.
+     */
+    workspacePath: string | null;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -361,29 +369,6 @@ export function withMintedToken(
     return { GITHUB_TOKEN: minted, ...resolved };
 }
 
-const toJob = (row: JobRow): Job => ({
-    id: row.id,
-    command: row.command,
-    status: row.status,
-    attempts: row.attempts,
-    maxAttempts: row.max_attempts,
-    claimedBy: row.claimed_by,
-    createdBy: row.created_by,
-    sessionId: row.session_id,
-    remoteSessionId: row.remote_session_id,
-    exitCode: row.exit_code,
-    output: row.output ?? null,
-    gates: row.gates ?? null,
-    runtime: row.runtime ?? null,
-    repo: row.repo,
-    executor: row.executor,
-    followUpTo: row.parent_job_id,
-    doneAt: iso(row.done_at),
-    createdAt: row.created_at.toISOString(),
-    startedAt: iso(row.started_at),
-    finishedAt: iso(row.finished_at),
-});
-
 /**
  * The organization is bound at construction, for the reasons given on createPrStore.
  *
@@ -451,6 +436,34 @@ export function createJobStore({
     const gate = async () => {
         if (ready) await ready;
     };
+
+    // Inside the factory, so the reads' `workspacePath` derivation closes over the org and the
+    // has-a-workspace-root decision — the claim's own `claimPath` rule, shared rather than copied.
+    const toJob = (row: JobRow): Job => ({
+        id: row.id,
+        command: row.command,
+        status: row.status,
+        attempts: row.attempts,
+        maxAttempts: row.max_attempts,
+        claimedBy: row.claimed_by,
+        createdBy: row.created_by,
+        sessionId: row.session_id,
+        remoteSessionId: row.remote_session_id,
+        exitCode: row.exit_code,
+        output: row.output ?? null,
+        gates: row.gates ?? null,
+        runtime: row.runtime ?? null,
+        repo: row.repo,
+        executor: row.executor,
+        followUpTo: row.parent_job_id,
+        doneAt: iso(row.done_at),
+        // The claim builds the same path only for jobs it hands out; every read carries it too,
+        // which is what the task view's status sidebar shows.
+        workspacePath: hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null,
+        createdAt: row.created_at.toISOString(),
+        startedAt: iso(row.started_at),
+        finishedAt: iso(row.finished_at),
+    });
 
     return {
         async create(command, createdBy, target) {

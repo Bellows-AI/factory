@@ -711,6 +711,22 @@ button.primary {
 
 /* The tasks pages. */
 
+/* The task detail page: the conversation plus its status sidebar, fed by the newest run. The
+   sidebar holds a fixed 280px and the conversation takes the rest; below ~1100px it stacks under
+   the conversation — a two-column read needs the room, and the shell itself collapses at 900px. */
+.task-layout {
+    align-items: start;
+    display: grid;
+    gap: 20px;
+    grid-template-columns: minmax(0, 1fr) 280px;
+}
+
+@media (max-width: 1100px) {
+    .task-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
 .chat-exchange {
     border-top: 1px solid var(--border);
     padding-top: 10px;
