@@ -34,7 +34,7 @@ const ATTR_ALLOWLIST = new Set([
  * be stored so its data accumulates before support is written; only cost is actively refused,
  * because it is out of scope and should never land in the volume at all.
  */
-const METRIC_DENYLIST = new Set(['claude_code.cost.usage']);
+const METRIC_DENYLIST = new Set(['claude_code.cost.usage', 'opencode.cost.usage']);
 
 export interface MetricRow {
     agent: string;

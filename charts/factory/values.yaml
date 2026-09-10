@@ -111,6 +111,19 @@ driver:
     # Off by default and a real decision, here as everywhere: on, the agent edits and runs whatever
     # it likes inside the runner without asking. Read docs/jobs.md first.
     skipPermissions: ''
+    # Where the runner pods this driver spawns send their telemetry (OTEL_EXPORTER_OTLP_ENDPOINT).
+    # Empty uses the in-chart collector's service; set to route to a collector outside this release
+    # instead — which also covers an operator that ships its own and disables `collector.enabled`.
+    runnerOtelEndpoint: ''
+    resources: {}
+
+# The in-chart OTLP collector, receiving from the runner pods and forwarding to the dashboard
+# ingest route — what `collector` is to the compose stack. Off, the driver runs without naming an
+# endpoint, and runner telemetry goes nowhere unless `driver.runnerOtelEndpoint` points elsewhere.
+collector:
+    enabled: true
+    image: otel/opentelemetry-collector-contrib
+    imagePullPolicy: IfNotPresent
     resources: {}
 
 runner:

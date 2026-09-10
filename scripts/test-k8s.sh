@@ -21,6 +21,7 @@ NAMESPACE="${NAMESPACE:-default}"
 DASH_IMAGE="${DASH_IMAGE:-factory-ai}"
 DRIVER_IMAGE="${DRIVER_IMAGE:-factory-driver}"
 STUB_IMAGE="${STUB_IMAGE:-echo-executor}"
+COLLECTOR_IMAGE="${COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib}"
 
 pass=0
 fail=0
@@ -90,6 +91,20 @@ render >"$work/rendered.yaml" || {
 expect_contains 'the driver selects the kubernetes executor'  "$(cat "$work/rendered.yaml")" 'value: kubernetes'
 expect_contains 'the driver finds the board by service name'  "$(cat "$work/rendered.yaml")" "value: http://$RELEASE-factory:8080"
 expect_contains 'the driver learns its namespace at runtime' "$(cat "$work/rendered.yaml")" 'fieldPath: metadata.namespace'
+
+# Telemetry. The docker runner joins the compose network and its baked `collector:4318` resolves; a
+# pod cannot join a network, so the chart ships a collector and names it in every runner spec the
+# driver builds — the kubernetes form of RUNNER_NETWORK.
+expect_contains 'the chart ships a collector service'         "$(cat "$work/rendered.yaml")" \
+    "name: $RELEASE-factory-collector"
+expect_contains 'the driver points runners at the in-chart collector' "$(cat "$work/rendered.yaml")" \
+    "value: \"http://$RELEASE-factory-collector:4318\""
+# The collector's config is rendered, not static: its exporter must target THIS release's dashboard
+# ingest route, and the one line whose absence produces a flat 400 is pinned (docs/telemetry.md).
+expect_contains 'the collector forwards to the release dashboard' "$(cat "$work/rendered.yaml")" \
+    "endpoint: http://$RELEASE-factory:8080/api/otlp"
+expect_contains 'the collector exports uncompressed, or the server answers 400' \
+    "$(cat "$work/rendered.yaml")" 'compression: none'
 
 # Credentials by reference, checked STRUCTURALLY: the line after every credential env's name must
 # be `valueFrom:` — the pod spec carries the reference and never the value, so anything readable in
@@ -255,15 +270,16 @@ echo 'building the images on the host daemon'
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/null &&
     docker build -f docker/driver.Dockerfile -q -t "$DRIVER_IMAGE" . >/dev/null &&
     printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' >"$work/stub.Dockerfile" &&
-    docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >/dev/null || {
-    echo 'test-k8s: image build failed'
+    docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >/dev/null &&
+    docker pull -q "$COLLECTOR_IMAGE" >/dev/null 2>&1 || {
+    echo 'test-k8s: image build or pull failed'
     exit 1
 }
 
 echo "loading the images into the kind cluster $kind_name"
 # One load call per image, not one variadic invocation: every kind version accepts
 # `kind load docker-image <image> --name <cluster>`, older ones not always a list.
-for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE"; do
+for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE" "$COLLECTOR_IMAGE"; do
     kind load docker-image "$image" --name "$kind_name" >/dev/null || {
         echo "test-k8s: could not load $image into the kind cluster $kind_name"
         exit 1
@@ -275,6 +291,7 @@ helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml \
     --set "dashboard.image=$DASH_IMAGE" \
     --set "driver.image=$DRIVER_IMAGE" \
     --set "driver.executorImage=$STUB_IMAGE" \
+    --set "collector.image=$COLLECTOR_IMAGE" \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1
@@ -288,10 +305,10 @@ installed=1
 # queueing before it is available fails every POST no matter how long the queue step polls.
 kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
-    "deployment/$RELEASE-factory-timescale" \
+    "deployment/$RELEASE-factory-timescale" "deployment/$RELEASE-factory-collector" \
     -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
-    ok 'the dashboard, driver and database come up' || \
-    bad 'the dashboard, driver and database come up' \
+    ok 'the dashboard, driver, database and collector come up' || \
+    bad 'the dashboard, driver, database and collector come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
 
 # Through the dashboard, so the assertion is the user's own path: queue, then poll the board.

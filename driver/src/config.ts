@@ -43,6 +43,17 @@ export interface DriverConfig {
     workspaceVolume: string;
     /** Where that volume is mounted inside the runner. */
     workspaceMount: string;
+    /**
+     * Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT`. Defaults to
+     * `http://collector:4318` when `RUNNER_OTEL_ENDPOINT` is not set, so the endpoint is always
+     * provided to the runner container.
+     *
+     * The docker runner forwards the env var and the kubernetes runner names it in the pod spec.
+     * Both executors are pointed at the collector this way, regardless of whether the compose
+     * network is available. The image's baked default also resolves on the compose network, but a
+     * kubernetes runner has no network to join and would silently drop telemetry without this.
+     */
+    otelEndpoint: string;
     /** Joins the runner to a docker network, which is what lets its telemetry reach the collector. */
     network: string | null;
     concurrency: number;
@@ -182,6 +193,7 @@ const DEFAULTS = {
     jobTimeoutMs: 30 * 60_000,
     idleMs: 60 * 60_000,
     authVolume: 'claude-executor-auth',
+    otelEndpoint: 'http://collector:4318',
     passEnv: 'CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY',
 } as const;
 
@@ -338,6 +350,9 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         cli,
         workspaceVolume: text(env.WORKSPACE_VOLUME, 'WORKSPACE_VOLUME', DEFAULTS.workspaceVolume),
         workspaceMount: text(env.WORKSPACE_MOUNT, 'WORKSPACE_MOUNT', DEFAULTS.workspaceMount),
+        // Empty is unset, like every other optional value here: default to the collector on the
+        // compose network, so the endpoint is always provided to the runner.
+        otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,
         network: (env.RUNNER_NETWORK ?? '').trim() || null,
         concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, 1, 32),
         pollMs: int(env.DRIVER_POLL_MS, 'DRIVER_POLL_MS', DEFAULTS.pollMs, 250, 300_000),

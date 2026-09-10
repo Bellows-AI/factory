@@ -159,6 +159,19 @@ describe('the docker run arguments', () => {
         expect(line.indexOf(networkName(job))).toBeGreaterThan(line.indexOf('factory-ai_default'));
     });
 
+    // The endpoint is always provided, defaulting to the compose collector when
+    // RUNNER_OTEL_ENDPOINT is not set — the guarantee that a runner's telemetry reaches the
+    // collector whether or not an operator named one. RUNNER_OTEL_ENDPOINT overrides it for a
+    // collector the compose network cannot name.
+    it('always points the runner at a collector, overriding it when configured', () => {
+        expect(args()).toEqual(
+            expect.arrayContaining(['-e', 'OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318']),
+        );
+        expect(args({ RUNNER_OTEL_ENDPOINT: 'http://telemetry.internal:4318' })).toEqual(
+            expect.arrayContaining(['-e', 'OTEL_EXPORTER_OTLP_ENDPOINT=http://telemetry.internal:4318']),
+        );
+    });
+
     it('skips permissions only when told to', () => {
         expect(args()).not.toContain('--dangerously-skip-permissions');
         expect(args({ RUNNER_SKIP_PERMISSIONS: '1' })).toContain('--dangerously-skip-permissions');
@@ -993,6 +1006,16 @@ describe('the runner env for a gated job', () => {
     it('builds byte-identical argv for a job without gates', () => {
         expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false })).toEqual(
             dockerArgs(loadDriverConfig({}), { ...job, gates: undefined }, { id: SESSION, resume: false }),
+        );
+    });
+
+    // opencode's plugin reads its endpoint from otel.json, not from OTEL_EXPORTER_OTLP_ENDPOINT —
+    // the executor entrypoint rewrites the file. This is the driver half of that contract: the env
+    // var has to reach the runner at all, for this CLI no less than for claude-code.
+    it('forwards the OTEL endpoint to the opencode runner too', () => {
+        const line = dockerArgs(loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }), job, null);
+        expect(line).toEqual(
+            expect.arrayContaining(['-e', 'OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318']),
         );
     });
 });

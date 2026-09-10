@@ -4,8 +4,8 @@
 #   docker/opencode-executor/test.sh
 #
 # Deliberately shallower than docker/claude-executor/test.sh: the pinned version, the baked
-# permission policy, the WORKDIR contract, and the fact that no credential ships in the image.
-# Deepen it the first time something surprises us.
+# permission policy, the baked telemetry wiring, the WORKDIR contract, and the fact that no
+# credential ships in the image. Deepen it the first time something surprises us.
 set -uo pipefail
 
 cd "$(dirname "$0")" || exit 1
@@ -66,6 +66,53 @@ expect_exact 'webfetch is denied'               "$policy" 'permission.webfetch' 
 expect_exact 'external paths are denied by default' "$policy" 'permission.external_directory.*' deny
 expect_exact 'the runner scratch is reachable'  "$policy" 'permission.external_directory./tmp/*' allow
 expect_exact 'home scratch is reachable'        "$policy" 'permission.external_directory./home/node/*' allow
+
+# The telemetry surface is baked, not fetched at runtime: the plugin package must exist in the
+# image and the baked config must wire it to the compose collector. opencode would silently slurp
+# the plugin from npm on first run otherwise, which is slow and not reproducible.
+if docker run --rm --entrypoint sh "$IMAGE" -c \
+    'test -f /usr/local/lib/node_modules/@gcornut/opencode-otel/dist/index.js'; then
+    ok 'the OTLP telemetry plugin is baked into the image'
+else
+    bad 'the OTLP telemetry plugin is baked into the image' 'missing @gcornut/opencode-otel under /usr/local/lib/node_modules'
+fi
+if node -e \
+    'const o = JSON.parse(process.argv[1]); process.exit(Array.isArray(o?.plugin) && o.plugin.includes("/usr/local/lib/node_modules/@gcornut/opencode-otel") ? 0 : 1)' \
+    "$policy" >/dev/null 2>&1; then
+    ok 'the baked opencode.json enables the telemetry plugin'
+else
+    bad 'the baked opencode.json enables the telemetry plugin' 'plugin array does not reference the baked package'
+fi
+otel="$(docker run --rm --entrypoint sh "$IMAGE" \
+    -c 'cat "$XDG_CONFIG_HOME/opencode/otel.json"')"
+if node -e \
+    'try { const o = JSON.parse(process.argv[1]); process.exit(o.endpoint === "http://collector:4318" && o.protocol === "http/json" ? 0 : 1); } catch { process.exit(1); }' \
+    "$otel" >/dev/null 2>&1; then
+    ok 'otel.json points at the compose collector'
+else
+    bad 'otel.json points at the compose collector' "$otel"
+fi
+
+# The driver's RUNNER_OTEL_ENDPOINT override arrives as OTEL_EXPORTER_OTLP_ENDPOINT, which the
+# opencode-otel plugin does not read — the entrypoint patches otel.json when it is set. The config
+# directory is bind-mounted so the patched file can be read back on the host; `--help` runs the
+# entrypoint's patch then exits the agent with no credential needed.
+CNF="$(mktemp -d)"
+cp "$(cd "$(dirname "$0")" && pwd)"/opencode-home/otel.json "$CNF/otel.json"
+chmod -R a+rwX "$CNF"
+docker run --rm \
+    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
+    -v "$CNF:/home/node/.config/opencode" \
+    "$IMAGE" --help >/dev/null 2>&1
+patched="$(cat "$CNF/otel.json")"
+rm -rf "$CNF"
+if node -e \
+    'try { const o = JSON.parse(process.argv[1]); process.exit(o.endpoint === "http://collector.example:4318" ? 0 : 1); } catch { process.exit(1); }' \
+    "$patched" >/dev/null 2>&1; then
+    ok 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT'
+else
+    bad 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
+fi
 
 # A missing WORKDIR must refuse in place, not start an agent in the wrong directory.
 docker run --rm -e WORKDIR=/nope "$IMAGE" run 'hi' >/dev/null 2>&1

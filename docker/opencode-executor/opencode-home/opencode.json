@@ -2,6 +2,9 @@
     "$schema": "https://opencode.ai/config.json",
     "instructions": ["/home/node/.config/opencode/AGENTS.md"],
     "disabled_providers": ["github-copilot"],
+    "plugin": [
+        "/usr/local/lib/node_modules/@gcornut/opencode-otel"
+    ],
     "permission": {
         "*": "allow",
         "read": {

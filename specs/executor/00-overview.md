@@ -155,12 +155,12 @@ it.
 - **C. The prompt must not reach the Job spec.** `kubectl get job -o yaml` prints `args` and `env`,
   and etcd is unencrypted by default. The prompt goes in the per-task Secret as a file; the plan's
   argv never contains it. Asserted offline in [02](02-adapters.md).
-- **D. "Token spend lands in `metric_point` via the existing path" holds for claude-code only.**
-  `agentOf()` in `server/src/telemetry/metric-map.ts` returns `'unknown'` for anything not prefixed
-  `claude_code.`, and `session_field_total` filters `where field is not null` — so an opencode session
-  contributes **nothing** until opencode's metric names are added to `RULES`. Accept explicitly:
-  opencode token spend is `null` with `tokensReason: 'unmapped-agent'`, never 0. Small follow-up, but
-  a follow-up.
+- **D. "Token spend lands in `metric_point` via the existing path" holds for both executors now.**
+  The opencode image ships `@gcornut/opencode-otel`, which mirrors Claude Code's metric surface
+  under the `opencode.` prefix, and `metric-map.ts`'s `RULES` carries those names — so `agentOf()`
+  resolves them to `'opencode'` and `session_field_total` prices them like any other session.
+  Anything newer than those rows still stores with a null field and accumulates before support is
+  written, and `opencode.cost.usage` is refused exactly like `claude_code.cost.usage`.
 - **E. `recordAttemptSession` is load-bearing.** `metric_point` has no `org_id`; without the
   controller's `session_branch` write, an executor pod's metrics belong to no organization —
   invisible today, wrong the day there are two. Also `session_branch.branch` sits in the primary key
@@ -187,4 +187,4 @@ it.
   | `docs/configuration.md` | `[executor]`, the new `bool` kind, deployment-only keys. |
   | `docs/persistence.md` | A second reader of the database, one migration runner, `memoryTaskStore`. |
   | `docs/telemetry.md` | The controller, not an in-pod hook, writes `session_branch` for executor runs. |
-  | `docs/limits.md` | Skill-is-a-request; opencode tokens unmapped; CLI capture versions; short-task export lag. |
+  | `docs/limits.md` | Skill-is-a-request; opencode tokens mapped; CLI capture versions; short-task export lag. |

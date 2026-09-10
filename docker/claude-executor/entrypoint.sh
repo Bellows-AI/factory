@@ -51,4 +51,23 @@ if [ -n "${TRUST_WORKDIR:-}" ] && [ "${TRUST_WORKDIR}" != "0" ]; then
     " || echo "claude-executor: could not pre-accept the trust dialog for $WORKDIR" >&2
 fi
 
+# Claude Code's settings.json env block OVERRIDES the container environment — the settings file
+# value applies — so the endpoint the driver forwards (OTEL_EXPORTER_OTLP_ENDPOINT) would be
+# defeated by the baked http://collector:4318, which only a compose network can resolve. Rewrite
+# the settings value when the driver has pointed us elsewhere, the same way the opencode executor
+# patches otel.json.
+if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+    SETTINGS="$CLAUDE_CONFIG_DIR/settings.json"
+    if [ -f "$SETTINGS" ]; then
+        SETTINGS="$SETTINGS" node -e "
+            const fs = require('fs');
+            const f = process.env.SETTINGS;
+            const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+            c.env = c.env || {};
+            c.env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+            fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
+        " || echo "claude-executor: could not rewrite settings.json's OTEL_EXPORTER_OTLP_ENDPOINT" >&2
+    fi
+fi
+
 exec claude "$@"

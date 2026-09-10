@@ -1,0 +1,5 @@
+{
+    "endpoint": "http://collector:4318",
+    "protocol": "http/json",
+    "metricsTemporality": "delta"
+}

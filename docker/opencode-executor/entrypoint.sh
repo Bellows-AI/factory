@@ -31,4 +31,21 @@ if [ -n "${XDG_DATA_HOME:-}" ]; then
     mkdir -p "$XDG_DATA_HOME"
 fi
 
+# The opencode-otel plugin reads its endpoint from otel.json, not from OTEL_EXPORTER_OTLP_ENDPOINT.
+# The driver overrides that env var via RUNNER_OTEL_ENDPOINT so the executor's baked endpoint
+# (http://collector:4318) can be redirected — for instance to a collector that the compose network
+# cannot name. Patch the file here so the plugin picks up the override.
+if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+    OTEL_JSON="$HOME/.config/opencode/otel.json"
+    if [ -f "$OTEL_JSON" ]; then
+        OTEL_JSON="$OTEL_JSON" node -e "
+            const fs = require('fs');
+            const f = process.env.OTEL_JSON;
+            const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+            c.endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+            fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
+        " || echo "opencode-executor: could not patch otel.json for $OTEL_EXPORTER_OTLP_ENDPOINT" >&2
+    fi
+fi
+
 exec opencode "$@"

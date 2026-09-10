@@ -12,10 +12,11 @@ flag.
 
 | Path | Becomes |
 | --- | --- |
-| `Dockerfile` | the image — Node 24 (debian), `opencode-ai` (pinned), `gh`, `acli`, OTEL env |
+| `Dockerfile` | the image — Node 24 (debian), `opencode-ai` (pinned), `@gcornut/opencode-otel` (pinned), `gh`, `acli` |
 | `entrypoint.sh` | `/usr/local/bin/opencode-executor` — the `ENTRYPOINT` |
 | `test.sh` | builds the image and smoke-tests it — not shipped inside it |
-| `opencode-home/opencode.json` | the baked permission policy, at `OPENCODE_CONFIG` |
+| `opencode-home/opencode.json` | the baked permission policy plus the OTLP plugin reference, at `OPENCODE_CONFIG` |
+| `opencode-home/otel.json` | the telemetry plugin's config: the compose collector, http/json, delta temporality |
 | `opencode-home/AGENTS.md` | the global instructions every run loads |
 
 ## Build
@@ -82,7 +83,9 @@ outside it**:
 
 To run another policy, mount your own over the baked file:
 `-v "$HOME/opencode.json:/home/node/.config/opencode/opencode.json:ro"` — it resolves outside
-`/workspace`, so nothing config-shaped enters the checkout's diff.
+`/workspace`, so nothing config-shaped enters the checkout's diff. A mounted file replaces the
+whole baked config, the plugin reference included: mount an `opencode.json` that lists
+`"plugin": ["/usr/local/lib/node_modules/@gcornut/opencode-otel"]` if you still want telemetry.
 
 ## Session ids
 
@@ -94,14 +97,32 @@ fresh container, and that only works if the session is still in the database it 
 run the driver reads the newest root session out of the database with one throwaway node
 container (`node:sqlite`, read-only) and reports the id to the board, which is what makes the
 task follow-up-able. A job run by this image still shows no session link — the link is built from
-claude-code's Remote Control id, which opencode does not have. Its runs still emit OTLP, but the
-server's metric map carries no opencode rows yet, so spend records as an unmapped agent — null,
-never zero — until those rows are added (see `docs/limits.md`).
+claude-code's Remote Control id, which opencode does not have. Its runs still emit OTLP through the image's baked plugin, and the server's metric map prices the `opencode.*` metrics under the `opencode` agent.
 
 ## Telemetry
 
-`OTEL_EXPORTER_OTLP_ENDPOINT` points at `http://collector:4318` — the `collector` service in this
-repo's `docker-compose.yml`, resolvable only from that compose network. Off that network the
-exporter fails to connect; the CLI still works, the runs just go unrecorded. Unlike claude-code's,
-this OTEL surface is not exhaustively verified — if a run's metrics do not arrive, check these
-variables first.
+Metrics are emitted by `@gcornut/opencode-otel` (MIT, self-contained — its OpenTelemetry SDK is
+bundled), baked into the image and enabled from the baked `opencode.json`. Its config is the baked
+`opencode-home/otel.json`, not the `OTEL_EXPORTER_OTLP_*` environment variables (the plugin reads
+neither):
+
+```json
+{
+    "endpoint": "http://collector:4318",
+    "protocol": "http/json",
+    "metricsTemporality": "delta"
+}
+```
+
+`endpoint` plus `protocol` resolve to `http://collector:4318/v1/metrics` (and `/v1/logs`) — the
+`collector` service in this repo's `docker-compose.yml`, resolvable only from that compose network.
+Off that network the exporter fails to connect; the CLI still works, the runs just go unrecorded.
+The entrypoint honors a driver-supplied `OTEL_EXPORTER_OTLP_ENDPOINT` (the driver's
+`RUNNER_OTEL_ENDPOINT`) by rewriting `otel.json`'s `endpoint` before the CLI starts — a collector
+the compose network cannot name is still used by this executor, the same override the kubernetes
+runner applies in the pod spec.
+The plugin emits the same eight counters as Claude Code under an `opencode.` prefix (`token.usage`
+split by `type`, `tool.decision` split by `decision`, plus commit, pull-request, line, session and
+active-time counts), which the server's metric map resolves to the same fields as `claude_code.*`
+and the collector refuses `opencode.cost.usage` exactly as it refuses Claude's. Override the
+config path with `-e OPENCODE_OTEL_CONFIG_PATH=/path/to/otel.json`.

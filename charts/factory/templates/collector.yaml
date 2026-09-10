@@ -1,0 +1,89 @@
+{{- if .Values.collector.enabled }}
+{{/*
+The in-chart OTLP collector: what the `collector` service in docker-compose.yml is to the compose
+stack, this is to the chart. Runner pods export to it over the cluster's service network — the
+driver names it in every runner spec via RUNNER_OTEL_ENDPOINT — and it forwards to this release's
+dashboard ingest route. Stateless, no storage, no ServiceAccount privileges: it only talks outbound
+to the dashboard service and receives OTLP from the drivers it serves.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ include "factory.fullname" . }}-collector
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: collector
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            {{- include "factory.labels" . | nindent 12 }}
+            app.kubernetes.io/component: collector
+    template:
+        metadata:
+            labels:
+                {{- include "factory.labels" . | nindent 16 }}
+                app.kubernetes.io/component: collector
+        spec:
+            containers:
+                - name: collector
+                  image: {{ .Values.collector.image }}
+                  # Stated, never defaulted to `Always` by an untagged image reaching past the
+                  # node's side-loaded copy — the same rule the runner pods pin.
+                  imagePullPolicy: {{ .Values.collector.imagePullPolicy }}
+                  args: ['--config=/etc/otel/config.yaml']
+                  ports:
+                      - name: otlp-grpc
+                        containerPort: 4317
+                      - name: otlp-http
+                        containerPort: 4318
+                  env:
+                      # For the exporter's X-Factory-Ingest-Token header, when the board requires
+                      # one (see files/collector.yaml). Read from the same Secret key the dashboard
+                      # reads; empty keeps the ingest routes open exactly as it does for compose.
+                      - name: INGEST_TOKEN
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: ingest-token
+                  volumeMounts:
+                      - name: config
+                        mountPath: /etc/otel
+            volumes:
+                - name: config
+                  configMap:
+                      name: {{ include "factory.fullname" . }}-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: {{ include "factory.fullname" . }}-collector
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    # ClusterIP: the consumers are runner pods and nothing else, and nothing external should
+    # discover a collector's existence. The driver resolves it by this name when it builds specs.
+    type: ClusterIP
+    ports:
+        - name: otlp-grpc
+          port: 4317
+          targetPort: otlp-grpc
+        - name: otlp-http
+          port: 4318
+          targetPort: otlp-http
+    selector:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: collector
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: {{ include "factory.fullname" . }}-collector-config
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+data:
+    # files/collector.yaml is a template, not a static file: the exporter points at THIS release's
+    # dashboard service, and the ingest-token header is present only when a token is configured.
+    config.yaml: |
+{{ tpl (.Files.Get "files/collector.yaml") . | indent 4 }}
+{{- end }}
