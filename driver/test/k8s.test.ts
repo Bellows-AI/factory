@@ -599,6 +599,129 @@ describe('the worktree sync', () => {
         const result = await runner(request).syncCheckout(repoJob);
         expect(result).toEqual({ ok: false, reason: 'the worktree sync answered nothing readable' });
     });
+
+    /*
+     * The fence before the sync (PR #46 review): the loop calls syncCheckout before run(), so
+     * the sync is the FIRST writer on the task worktree — and the only mutual exclusion it can
+     * get is the checkout claim, taken here under the same acquireClaim protocol prepare()
+     * runs. The claim is then held through the run: prepare()'s acquire recognizes its own
+     * holder and proceeds.
+     */
+    it('takes the checkout claim before creating anything for the sync, and holds it on success', async () => {
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const result = await runner(request).syncCheckout(envJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
+        const claimPost = order.indexOf(`POST ${configmapsPath}`);
+        expect(claimPost).toBe(0);
+        expect(claimPost).toBeLessThan(order.indexOf(`POST /api/v1/namespaces/${namespace}/secrets`));
+        expect(claimPost).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
+        // Success KEEPS the claim: the runner's own acquire follows within the same lease, and
+        // releasing here would open a window another claimant could walk through.
+        expect(order).not.toContain(`DELETE ${claimPathFor(envJob.id)}`);
+    });
+
+    // The replacement-with-an-active-runner shape of the review comment: a claim POST that
+    // answers 409 against a LIVE newer attempt is the run path's stand-down, and the sync must
+    // honor it before creating anything — no sync Secret, no sync Job, nothing to sweep later.
+    it('stands down without creating anything when a live newer attempt holds the claim', async () => {
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+            }
+            if (path === claimPathFor(job.id) && method === 'GET') {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        metadata: { uid: 'claim-uid-9' },
+                        data: { holder: NEW_TOKEN, attempt: '2' },
+                    }),
+                });
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/stands down/);
+        expect(calls.some((call) => call.method === 'POST' && call.path?.includes('/secrets'))).toBe(false);
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
+    });
+
+    /*
+     * The sync Job used to survive every exit path until its own Kubernetes deadline — the
+     * review's "overlap with a replacement" hazard. It is attempt-scoped by its lease token,
+     * so deleting it on every exit can never reach a replacement's Job.
+     */
+    it('deletes its sync Job when the sync succeeds', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        await runner(request).syncCheckout(repoJob);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    it('deletes its sync Job when the poll gives up and the sync fails', async () => {
+        const { request, calls } = fakeRequest({ job: { status: 500, body: 'nope' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    it('deletes its sync Job even when the sync throws mid-flight', async () => {
+        const calls: Call[] = [];
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.reject(new Error('the apiserver closed the connection'));
+            }
+            if (method === 'DELETE' && path.startsWith('/api/v1/namespaces/')) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/closed the connection/);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    // A failed sync means no runner follows, so nobody else would give the checkout back:
+    // the claim goes, conditionally on this attempt still holding its exact incarnation.
+    it('releases the claim when the sync fails after taking it', async () => {
+        const { request, calls } = fakeRequest({
+            log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' },
+        });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
+        expect(release).toBeDefined();
+        // The uid precondition is what keeps a stale release from reaching a newer claim.
+        expect((release?.body as { preconditions?: { uid?: string } }).preconditions?.uid).toBeDefined();
+    });
+
+    // The sync takes the claim, the run follows within the same lease: prepare()'s acquire must
+    // read the claim it meets as ITS OWN (holder === lease token) and proceed, never stand down
+    // against itself.
+    it('hands the claim to the run that follows without standing down against itself', async () => {
+        const { request } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const r = runner(request);
+        await r.syncCheckout(repoJob);
+        const outcome = await r.run(repoJob, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+    });
 });
 
 describe('the kubernetes runner', () => {

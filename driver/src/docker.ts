@@ -1017,6 +1017,50 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         await serviceTeardown(job);
     };
 
+    /*
+     * The re-claim fence — the only JOB-scoped sweep this runner performs, and the one component
+     * allowed to be job-scoped: it runs BEFORE this attempt creates anything, so whatever it
+     * finds is by construction a previous attempt's leftover. Names are attempt-scoped now, so
+     * no name can find a previous attempt's leftovers — the `factory.job` label is the one
+     * identifier every attempt of the job shares, and the sweep is by label: every leftover
+     * container (runners and services alike), then every leftover network. This claim exists
+     * only because those attempts' leases are gone, so removing them delivers the same verdict
+     * their heartbeats would have, had the driver survived to receive it — and the alternative
+     * to leaving a live leftover runner running is two writers on one checkout, which is the
+     * thing actually worth preventing.
+     *
+     * It runs TWICE per attempt by design: once in syncCheckout — the loop calls the sync
+     * before run(), and the sync is the first writer on the task worktree, so the previous
+     * attempt's runner must be off the daemon before the worktree script starts, not only
+     * before the runner does — and once in run(), which keeps its own call so the guarantee
+     * never depends on the loop's ordering. The sweep is idempotent; removing twice what was
+     * removed once removes nothing.
+     */
+    const reclaimFence = async (job: BoardJob): Promise<void> => {
+        const leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]).catch(
+            () => ({ stdout: '' }),
+        );
+        for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
+            await execDocker(['rm', '-f', id]).catch(() => undefined);
+        }
+        const staleNetworks = await execDocker([
+            'network',
+            'ls',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--format',
+            '{{.Name}}',
+        ]).catch(() => ({ stdout: '' }));
+        for (const name of staleNetworks.stdout.split('\n').map((name) => name.trim()).filter(Boolean)) {
+            await execDocker(['network', 'rm', name]).catch(() => undefined);
+        }
+        // TRANSITIONAL: networks created before the lease token joined the name carry no
+        // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
+        // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
+        // can exist any more.
+        await execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
+    };
+
     return {
         kill,
 
@@ -1033,6 +1077,16 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             const clone = repoPath(config, job);
             const worktree = worktreeDir(config, job);
             if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+
+            /*
+             * The fence BEFORE the sync: the loop calls syncCheckout before run(), so without
+             * this the worktree script would start while a previous attempt's runner was still
+             * writing the same shared task worktree — mixed edits, or a rebase conflict nobody
+             * is awake to resolve. The sweep is idempotent, and run() keeps its own: twice per
+             * attempt is already the fence's documented shape, the same way the service
+             * teardown half runs twice.
+             */
+            await reclaimFence(job);
             let file: string | null = null;
             try {
                 file = envFilePath(job);
@@ -1274,40 +1328,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             // token keying exists to keep down. See the killed set above.
 
             /*
-             * The re-claim fence — the ONLY job-scoped sweep this runner performs, and the one
-             * component allowed to be job-scoped: it runs BEFORE this attempt creates anything,
-             * so whatever it finds is by construction a previous attempt's leftover. Names are
-             * attempt-scoped now, so no name can find a previous attempt's leftovers — the
-             * `factory.job` label is the one identifier every attempt of the job shares, and the
-             * sweep is by label: every leftover container (runners and services alike), then
-             * every leftover network. This claim exists only because those attempts' leases are
-             * gone, so removing them delivers the same verdict their heartbeats would have, had
-             * the driver survived to receive it — and the alternative to leaving a live leftover
-             * runner running is two writers on one checkout, which is the thing actually worth
-             * preventing.
+             * The fence before anything this attempt creates — the job-scoped sweep documented
+             * on reclaimFence above. It already ran once, in syncCheckout; run() keeps its own
+             * call so the guarantee never depends on the loop's ordering.
              */
-            const leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]).catch(
-                () => ({ stdout: '' }),
-            );
-            for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
-                await execDocker(['rm', '-f', id]).catch(() => undefined);
-            }
-            const staleNetworks = await execDocker([
-                'network',
-                'ls',
-                '--filter',
-                `label=factory.job=${job.id}`,
-                '--format',
-                '{{.Name}}',
-            ]).catch(() => ({ stdout: '' }));
-            for (const name of staleNetworks.stdout.split('\n').map((name) => name.trim()).filter(Boolean)) {
-                await execDocker(['network', 'rm', name]).catch(() => undefined);
-            }
-            // TRANSITIONAL: networks created before the lease token joined the name carry no
-            // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
-            // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
-            // can exist any more.
-            await execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
+            await reclaimFence(job);
 
             /*
              * Auxiliary services (issue #6): read the checkouts' .bellows.yaml, then network and

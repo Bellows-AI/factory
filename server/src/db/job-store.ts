@@ -635,12 +635,46 @@ export function createJobStore({
                     runtime          = null,
                     lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
                 where org_id = ${orgId} and id = (
-                    select id from job
-                    where org_id = ${orgId}
-                      and status in ('queued','running')
-                      and lease_expires_at <= now()
-                      and attempts < max_attempts
-                    order by created_at, id
+                    select j.id from job j
+                    where j.org_id = ${orgId}
+                      and j.status in ('queued','running')
+                      and j.lease_expires_at <= now()
+                      and j.attempts < j.max_attempts
+                      -- A row whose thread's ROOT already has another row running waits. The
+                      -- per-task worktree (issue #35) is keyed by that root, so two claimed rows
+                      -- of one thread would run two runners and two sync jobs into the same tree.
+                      -- The blocker is status = 'running' and nothing else: an expired lease is
+                      -- still a run the board believes in until this very statement reclaims it
+                      -- (the same-row reclaim, o.id <> j.id, is the heartbeat-409 path and
+                      -- stays), and a standby row neither blocks nor is claimable. The walk is
+                      -- the thread() walk, up to the root and down to every descendant, so the
+                      -- exclusion is symmetric and terminal rows block nothing. It lives inside
+                      -- the same subquery as the rest of the claimability predicate, evaluated
+                      -- under the row lock the bare id = above relies on — part of the atomic
+                      -- claim, never a check-then-act.
+                      and not exists (
+                          with recursive up as (
+                              select j2.id, j2.parent_job_id from job j2
+                              where j2.org_id = ${orgId} and j2.id = j.id
+                              union all
+                              select j3.id, j3.parent_job_id from job j3 join up on j3.id = up.parent_job_id
+                                where j3.org_id = ${orgId}
+                          ),
+                          root as (
+                              select id from up where parent_job_id is null
+                          ),
+                          thread as (
+                              select id from job where org_id = ${orgId} and id = (select id from root)
+                              union all
+                              select j4.id from job j4 join thread on j4.parent_job_id = thread.id
+                                where j4.org_id = ${orgId}
+                          )
+                          select 1
+                          from thread t
+                          join job o on o.id = t.id and o.org_id = ${orgId}
+                          where o.id <> j.id and o.status = 'running'
+                      )
+                    order by j.created_at, j.id
                     limit 1
                     -- Below the limit in the plan, so a row another claimer holds is skipped
                     -- rather than counted and then discarded. The bare id = above is safe ONLY

@@ -2574,6 +2574,103 @@ describe('publishing the produced work', () => {
         expect(run).toEqual(expect.arrayContaining(['-e', `BRANCH=factory/${job.id}`]));
     });
 
+    /*
+     * A minimal stateful daemon for the sync's fence: containers and networks live in maps,
+     * `ps` and `network ls` honor their `--filter label=` pairs, and rm removes what it names.
+     * The sync container itself answers the script's success verdict.
+     */
+    const fenceDaemon = () => {
+        const containers = new Map<string, Record<string, string>>();
+        const networks = new Map<string, Record<string, string>>();
+        const calls: string[][] = [];
+        const matches = (args: string[], labels: Record<string, string>): boolean => {
+            for (let i = 0; i < args.length; i += 1) {
+                if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
+                    const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
+                    if (labels[key] !== value) return false;
+                }
+            }
+            return true;
+        };
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                return { stdout: '{"ok":true,"reason":null}' };
+            }
+            if (args[0] === 'ps') {
+                return {
+                    stdout: [...containers.entries()]
+                        .filter(([, labels]) => matches(args, labels))
+                        .map(([id]) => id)
+                        .join('\n'),
+                };
+            }
+            if (args[0] === 'rm') {
+                for (const id of args.slice(1)) containers.delete(id);
+                return { stdout: '' };
+            }
+            if (args[0] === 'network' && args[1] === 'ls') {
+                return {
+                    stdout: [...networks.entries()]
+                        .filter(([, labels]) => matches(args, labels))
+                        .map(([name]) => name)
+                        .join('\n'),
+                };
+            }
+            if (args[0] === 'network' && args[1] === 'rm') {
+                for (const name of args.slice(2)) networks.delete(name);
+                return { stdout: '' };
+            }
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        return { containers, networks, calls, exec };
+    };
+
+    // The fence before the sync (PR #46 review): the loop calls syncCheckout before the
+    // runner's own fence, so the sweep has to come here — the sync is the first writer on the
+    // task worktree, and starting it over a previous attempt's live runner would mix edits.
+    it('sweeps the job label before the sync container is created', async () => {
+        const d = fenceDaemon();
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+        const result = await runner.syncCheckout(repoJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const shapes = d.calls.map((a) => a[0]);
+        expect(shapes).toContain('ps');
+        expect(shapes.indexOf('ps')).toBeLessThan(shapes.indexOf('run'));
+    });
+
+    // The replacement-with-an-active-previous-runner shape of the review comment: the old
+    // attempt's runner is still on the daemon when the replacement's sync starts, and the
+    // fence's removal must land BEFORE the sync container runs — not after it.
+    it('removes a previous attempt’s still-running runner before the sync runs', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const NEW_TOKEN = 'bbbbbbbb-2222-4222-8222-222222222222';
+        const d = fenceDaemon();
+        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+        const result = await runner.syncCheckout({ ...repoJob, leaseToken: NEW_TOKEN });
+
+        expect(result).toEqual({ ok: true, reason: null });
+        // The previous runner is off the daemon by the time the sync container is created.
+        expect(d.containers.size).toBe(0);
+        const rmIndex = d.calls.findIndex((a) => a[0] === 'rm');
+        const runIndex = d.calls.findIndex((a) => a[0] === 'run');
+        expect(rmIndex).toBeGreaterThanOrEqual(0);
+        expect(rmIndex).toBeLessThan(runIndex);
+    });
+
     it('runs every publish step inside the task worktree', async () => {
         const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
@@ -2769,12 +2866,15 @@ describe('publishing the produced work', () => {
             expect(args[0]).toBe('run');
             expect(args).toContain('--rm');
         }
-        // And the sync, which takes no part in the publish flow above.
+        // And the sync, which takes no part in the publish flow above. The re-claim fence now
+        // precedes the sync container (ps / network reads and removals — argv-only, no
+        // container among them), so the pin counts CONTAINER starts: one, a full
+        // `docker run --rm`.
         const { calls: syncCalls, runner: syncRunner } = publishRunner(DIRTY_ON_MAIN);
         await syncRunner.syncCheckout(ISSUE_JOB);
-        expect(syncCalls).toHaveLength(1);
-        expect(syncCalls[0]![0]).toBe('run');
-        expect(syncCalls[0]).toContain('--rm');
+        const syncContainers = syncCalls.filter((a) => a[0] === 'run');
+        expect(syncContainers).toHaveLength(1);
+        expect(syncContainers[0]).toContain('--rm');
     });
 
     it('fails with the step’s reason when a git step refuses', async () => {

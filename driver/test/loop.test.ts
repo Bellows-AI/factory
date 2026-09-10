@@ -563,6 +563,23 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // The sync now fences before it writes (the re-claim claim/sweep moved into syncCheckout),
+    // and a fence can refuse: the kubernetes claim answers a live newer attempt by throwing the
+    // attempt's stand-down. That is the fence's own verdict, not the command's — completing the
+    // job failed would burn the attempt on the replacement's arrival. The loop stays up and the
+    // job goes back to its lease, exactly as a runner that cannot start does.
+    it('leaves a job to its lease when the checkout sync throws', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        runner.syncCheckout = async () => {
+            throw new Error('job 1 stands down: the checkout claim is held by a newer attempt (3 >= 2)');
+        };
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toEqual([]);
+    });
+
     // The daemon can refuse to create the container while `docker run` itself succeeds as a
     // process — a leftover name, a volume or network a stack rebuild removed. The runner asks
     // its platform whether the container ever ran and stamps `started: false`; the loop

@@ -97,10 +97,13 @@ job's repository per task THREAD, branched off the remote default (issue #35). T
 the claim's `rootJobId` — the job itself, or the chain's first job for a follow-up — so every
 attempt of a task and every follow-up resuming its session lands in the same tree, and two
 tasks of DIFFERENT threads on one repository are two trees, never two writers on one. (One
-thread's own rows — a follow-up queued while an ancestor follow-up is still claimable — can
-still be claimed concurrently, and land in the same tree; that exposure predates this model,
-which narrows it from "the whole member shares one checkout" to "one thread shares one tree",
-and the heartbeat's 409 kill remains the arbiter between writers.) The clone stays
+thread never holds two claims either: the claim refuses a row whose root already has a
+`running` row, so a follow-up waits for the row it follows to reach a terminal status before
+it is handed out, and one `.worktrees/<rootJobId>` has at most one live claim from the board.
+What remains is the reclaimed row's own predecessor — a lease expires, the row is handed out
+again, and the superseded attempt may still be dying — and there the heartbeat's 409 kill is
+the arbiter between writers, with the driver's re-claim fence sweeping the predecessor's
+fleet and fencing the startup sync.) The clone stays
 pristine: `git worktree add` writes only `.git/worktrees/` inside it and the new directory
 beside it. A command-only job names no repo, so no worktree exists and it starts at
 `<workspaceMount>/<workspacePath>` — the argv it always had. `ORG_ID` used to live in this
@@ -606,15 +609,25 @@ the same race every CI-on-first-commit system lives with. The k8s form is in
 
 ## Publishing: a task ends on a remote branch
 
-**The task worktree is synced before anything reads it.** The workspace reconcile clones a
-repository once and otherwise leaves the checkout untouched, and the startup sync is what makes
-each run start from the code — and the declared gates — that main actually has. At the start of
-each attempt, before the runner spawns, one container fetches the remote (credential by the same
-env file) and then: the task's worktree is created branched off `origin/<default>` (first
-attempt of the thread) or rebased onto the new default with `--autostash`, keeping its own
-commits AND any uncommitted edits the previous run left — which is what makes a follow-up, which
-lands in this same tree by design, work whether or not the last run finished tidy, and what
-keeps a kubernetes thread (where nothing commits for you) alive across turns. Two conflicts
+**The task worktree is synced before anything reads it — under the re-claim fence.** The
+workspace reconcile clones a repository once and otherwise leaves the checkout untouched, and
+the startup sync is what makes each run start from the code — and the declared gates — that
+main actually has. At the start of each attempt, before the runner spawns, one container
+fetches the remote (credential by the same env file) and then: the task's worktree is created
+branched off `origin/<default>` (first attempt of the thread) or rebased onto the new default
+with `--autostash`, keeping its own commits AND any uncommitted edits the previous run left —
+which is what makes a follow-up, which lands in this same tree by design, work whether or not
+the last run finished tidy, and what keeps a kubernetes thread (where nothing commits for you)
+alive across turns. The sync is the first WRITER on the tree, so each platform's re-claim
+fence runs inside the sync, before the script: docker sweeps the `factory.job` label's
+leftovers (the runner's own sweep after it is the documented twice-per-attempt idempotency),
+kubernetes TAKES the checkout claim first and holds it through the run — `prepare`'s acquire
+recognizes its own holder and proceeds. A kubernetes claim held against a live newer attempt
+throws the attempt's stand-down, and the loop treats that like a runner that cannot start: no
+verdict, the lease expires, the job is offered again. A sync that fails after taking the
+claim RELEASES it (uid-preconditioned, holder-checked), and the sync Job itself is deleted on
+every exit path — a Job left to its kubelet deadline could overlap a replacement's sync on
+the shared tree. Two conflicts
 still dead-end the attempt, with the work preserved and named: a rebase whose COMMITS conflict
 aborts itself (the worktree must never sit mid-rebase), and a rebase whose reapplied STASH
 conflicts leaves the markers and the retained autostash in the tree and refuses — a tree with

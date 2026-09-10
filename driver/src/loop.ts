@@ -4,6 +4,7 @@ import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { RunSession, Runner, RuntimeSample } from './docker.js';
+import type { SyncResult } from './publish.js';
 import { worktreeRelDir } from './publish.js';
 import type { PublishResult } from './publish.js';
 
@@ -699,8 +700,22 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  * attempt with the reason (the tree's state is unknown enough that running on it
                  * would compound whatever went wrong), the same author's-problem channel the
                  * gates refusal below uses.
+                 *
+                 * A sync that THROWS is a different outcome and gets the different answer: the
+                 * fence each runner now runs inside its sync (docker's sweep, kubernetes's
+                 * checkout claim) can refuse this attempt — the claim's stand-down against a
+                 * live newer attempt throws by design. That is the fence's verdict, not the
+                 * command's, so it is NOT a failed job: the attempt ran nothing, the lease
+                 * simply expires and the job is offered again, the same answer a runner that
+                 * cannot start gets below.
                  */
-                const synced = await runner.syncCheckout(job);
+                let synced: SyncResult;
+                try {
+                    synced = await runner.syncCheckout(job);
+                } catch (e) {
+                    log(`job ${job.id}: checkout sync threw, leaving it to the lease: ${(e as Error).message}`);
+                    continue;
+                }
                 if (!synced.ok) {
                     log(`job ${job.id}: checkout sync failed: ${synced.reason}`);
                     await board
