@@ -3,10 +3,12 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimEnv, containerName, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
+import { claimEnv, containerName, envFileBody, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
 import type { RunOutcome, RunSession, Runner } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
+import { gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
+import type { SyncResult } from './publish.js';
 import { bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
 
@@ -132,7 +134,16 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a
     // NAME only — the value lives in a Secret the cluster already holds, and `valueFrom` is what
     // keeps it out of the pod spec, which anyone who can `get pods` can read.
-    const env: EnvVar[] = [{ name: 'WORKDIR', value: `${config.workspaceMount}/${path}` }];
+    //
+    // A repo job starts in its task worktree (issue #35), the same tree the docker runner's
+    // WORKDIR names; a command-only job starts at the member root, where it always did.
+    const worktree = job.repo ? worktreeDir(config, job) : null;
+    if (job.repo && !worktree) {
+        throw new Error(
+            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`,
+        );
+    }
+    const env: EnvVar[] = [{ name: 'WORKDIR', value: worktree ?? `${config.workspaceMount}/${path}` }];
     if (config.credentialsSecret) {
         for (const name of config.passEnv) {
             env.push({
@@ -263,6 +274,11 @@ export interface AuxJobSpec {
                     /** One gate run: `sh -c` with the command as the single argv element. */
                     command?: string[];
                     workingDir?: string;
+                    /**
+                     * A handful of literal entries (the sync's three paths), never a
+                     * credential — values travel by `envFrom` below.
+                     */
+                    env?: EnvVar[];
                     /** The whole claim env at once, by reference — never the values. */
                     envFrom?: { secretRef: { name: string } }[];
                     volumeMounts: { name: string; mountPath: string; readOnly?: boolean }[];
@@ -275,13 +291,14 @@ export interface AuxJobSpec {
 
 /**
  * The checkout key a gated job's environment is filed under, and the declared image — both
- * COPIED from docker.ts, which states the full why: the key is interpolated into a working
+ * COPIED from docker.ts, which states the full why: the key is the task worktree the agent
+ * edits — `<org>/<uuid>/.worktrees/<root id>` (issue #35) — and is interpolated into a working
  * directory every gate command runs in, and the image is repo content naming what executes.
  * A validator narrower than the input domain would fail every job on a legally-named checkout,
  * so the patterns travel unchanged rather than being "improved" here.
  */
 const GATE_KEY =
-    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/i;
+    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /** Eight hex characters naming one attempt-scoped run: readable in `kubectl get jobs`, unique by construction. */
@@ -346,7 +363,7 @@ export function gateJobSpec(
         throw new Error(`refusing to run a gate of job ${job.id}: its ids are not the uuids the board claims`);
     }
     if (!GATE_KEY.test(key)) {
-        throw new Error(`refusing to run a gate in a checkout key that is not <org>/<uuid>/<repo>: ${key}`);
+        throw new Error(`refusing to run a gate in a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`);
     }
     if (!GATE_IMAGE.test(image)) {
         throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
@@ -469,6 +486,77 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
  * with a fragment of a shell command.
  */
 const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The startup sync (issue #35), ported: the docker runner creates the task worktree by running
+ * the worktree script in a throwaway container; this executor runs the SAME script as a Job —
+ * the same aux shape the gates and the `.bellows.yaml` readout use, over the same PVC. The one
+ * deliberate difference: the mount is READ-WRITE, because the whole point is creating the
+ * worktree the run will edit. The executor image carries both node and git, as the docker
+ * sync container does.
+ */
+const SYNC_DEADLINE_SECONDS = 600;
+
+export const syncJobName = (job: BoardJob): string => `factory-sync-${hash8(`${job.id}|${job.leaseToken}`)}`;
+
+/**
+ * The per-attempt Secret carrying the claim env for the sync's fetch — the credential travels
+ * by reference (`envFrom`), the way it does for the runner and every gate. Created before the
+ * Job, reaped with the verdict (or on a throw), the same accepted-leak posture as the other
+ * attempt-scoped Secrets. Null when the claim resolved to nothing — the spec then names no
+ * Secret at all, because a pod that references a missing Secret sits in
+ * `CreateContainerConfigError`, and an env-less claim is a supported board configuration.
+ */
+export const syncEnvSecretName = (job: BoardJob): string => `factory-sync-${hash8(`${job.id}|${job.leaseToken}`)}-env`;
+
+export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: string | null): AuxJobSpec {
+    if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
+        throw new Error(`refusing to sync job ${job.id}: its ids are not the uuids the board claims`);
+    }
+    const clone = repoPath(config, job);
+    const worktree = worktreeDir(config, job);
+    if (!clone || !worktree) {
+        throw new Error(`refusing to sync job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`);
+    }
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: syncJobName(job), labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: SYNC_DEADLINE_SECONDS,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            name: 'worktree-sync',
+                            image: config.image,
+                            imagePullPolicy: config.imagePullPolicy,
+                            command: ['node', '-e', gitWorktreeScript],
+                            env: [
+                                { name: 'REPO', value: clone },
+                                { name: 'WORKTREE', value: worktree },
+                                { name: 'BRANCH', value: worktreeBranch(job) },
+                            ],
+                            ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                        },
+                    ],
+                    volumes: [
+                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+                    ],
+                },
+            },
+        },
+    };
+}
 
 /**
  * One declared service, as a Pod. A Pod and not a Job because a Job is a unit of WORK — a
@@ -1664,25 +1752,126 @@ export function createKubernetesRunner(
             return { exitCode, output, timedOut, idled: false, started: true };
         },
 
-        // The publish steps are sibling containers over a named docker volume, machinery this
-        // runner does not have — the same refusal shape every docker-only feature gives the
-        // kubernetes executor. The loop does not call it here (an armed publish on this executor
-        // would answer this), and the answer still names the limit rather than pretending.
-        async publishGit() {
-            return {
-                ok: false,
-                published: false,
-                branch: null,
-                prUrl: null,
-                reason: 'publishing is not supported under EXECUTOR=kubernetes: the publish steps are sibling containers over a docker volume, which this runner cannot start',
-            };
-        },
+        // The publish steps are sibling containers over a named docker volume — the one feature
+        // this executor genuinely does not have. NOT implemented at all, so the loop's
+        // `runner.publishGit` guard skips it: a clean run reports succeeded with its work left
+        // in the task worktree, loudly unstated as "published" and stated plainly here and in
+        // docs/jobs.md. Porting the publish is future work.
+        //
+        // The startup sync, by contrast, IS here (see syncJobSpec): the loop calls it on every
+        // claim, the task worktree does not exist until something creates it, and a refusal
+        // would fail every claimed job.
+        async syncCheckout(job: BoardJob): Promise<SyncResult> {
+            const clone = repoPath(config, job);
+            const worktree = worktreeDir(config, job);
+            if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
 
-        async syncCheckout() {
-            return {
-                ok: false,
-                reason: 'the checkout sync is not supported under EXECUTOR=kubernetes: it is a sibling container over a docker volume, which this runner cannot start',
-            };
+            /*
+             * The fetch credential: the claim env, by reference — the same Secret discipline the
+             * runner and every gate obey. Created before the Job; reaped in the finally, on the
+             * verdict or on a throw. The name carries the lease token, so a superseded attempt
+             * can never delete a replacement's Secret.
+             */
+            const env = envBodyToData(envFileBody(job));
+            const secret = Object.keys(env).length ? syncEnvSecretName(job) : null;
+            if (secret) {
+                const response = await request('POST', secretsPath, {
+                    apiVersion: 'v1',
+                    kind: 'Secret',
+                    type: 'Opaque',
+                    metadata: { name: secret, labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken } },
+                    stringData: env,
+                });
+                if (response.status >= 300) {
+                    return {
+                        ok: false,
+                        reason: `creating the sync secret answered ${response.status}: ${response.body.slice(0, 200)}`,
+                    };
+                }
+            }
+            try {
+                const create = await request('POST', jobsPath(config.k8sNamespace), syncJobSpec(config, job, secret));
+                if (create.status >= 300) {
+                    return {
+                        ok: false,
+                        reason: `creating the worktree sync job answered ${create.status}: ${create.body.slice(0, 200)}`,
+                    };
+                }
+
+                /*
+                 * Poll the sync Job to a terminal state, bounded like the runner's own status
+                 * poll: a blink or a 503 is not the sync's verdict, but an apiserver that will
+                 * not answer is not a tree to run on either — the bound expires into a failed
+                 * sync and the loop fails the attempt with the reason. The kubelet's deadline
+                 * (SYNC_DEADLINE_SECONDS) is what guarantees the JOB itself terminates, even if
+                 * this driver dies first.
+                 */
+                let failures = 0;
+                for (;;) {
+                    let response: K8sResponse;
+                    try {
+                        response = await request('GET', jobPath(config.k8sNamespace, syncJobName(job)));
+                    } catch (e) {
+                        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                            return { ok: false, reason: `the worktree sync job could not be read: ${(e as Error).message}` };
+                        }
+                        await sleep(POLL_MS);
+                        continue;
+                    }
+                    if (response.status === 429 || response.status >= 500) {
+                        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                            return {
+                                ok: false,
+                                reason: `reading the worktree sync job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                            };
+                        }
+                        await sleep(POLL_MS);
+                        continue;
+                    }
+                    if (response.status >= 300) {
+                        return { ok: false, reason: `reading the worktree sync job answered ${response.status}: ${response.body.slice(0, 200)}` };
+                    }
+                    failures = 0;
+                    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+                    if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) break;
+                    await sleep(POLL_MS);
+                }
+
+                // The verdict is the pod log — one JSON line, the same answer the docker sync
+                // container prints. A pod gone before its log could be read is a failed sync:
+                // running on a tree of unknown state would compound whatever went wrong.
+                let body = '';
+                try {
+                    const pods = await request(
+                        'GET',
+                        `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
+                            `job-name=${syncJobName(job)}`,
+                        )}`,
+                    );
+                    const pod = parse<K8sPodList>(pods.body).items?.find(
+                        (item) => !item.metadata?.deletionTimestamp,
+                    );
+                    if (pod?.metadata?.name) {
+                        const log = await request(
+                            'GET',
+                            `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`,
+                        );
+                        if (log.status < 300) body = log.body;
+                    }
+                } catch {
+                    body = '';
+                }
+                const line = body.trim().split('\n').filter(Boolean).pop() ?? '';
+                try {
+                    return JSON.parse(line) as SyncResult;
+                } catch {
+                    return { ok: false, reason: 'the worktree sync answered nothing readable' };
+                }
+            } finally {
+                if (secret) {
+                    void request('DELETE', `${secretsPath}/${secret}`).then(() => undefined, () => undefined);
+                }
+            }
         },
     };
     return runner;
@@ -1750,7 +1939,7 @@ export function createKubernetesGateManager({
                 throw harness('the kubernetes gate manager files gate runs under their job, and no job was given');
             }
             if (!GATE_KEY.test(key)) {
-                throw harness(`refusing to run a gate in a checkout key that is not <org>/<uuid>/<repo>: ${key}`);
+                throw harness(`refusing to run a gate in a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`);
             }
             if (!GATE_IMAGE.test(image)) {
                 throw harness(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);

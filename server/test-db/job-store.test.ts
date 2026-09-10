@@ -562,6 +562,36 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(await store.get(followUp.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
     });
 
+    /*
+     * The per-task worktree (issue #35) is keyed by the thread's ROOT job id, so every attempt
+     * and every follow-up of one task lands in the same tree. The claim is where the board
+     * tells the driver which thread it is handing out.
+     */
+    it('claims with the job itself as the thread root when it is not a follow-up', async () => {
+        const { id } = await queue('echo hi');
+
+        const claim = await store.claim('w1', 300);
+
+        expect(claim?.rootJobId).toBe(id);
+    });
+
+    it('claims a follow-up — and a follow-up of a follow-up — with the thread root as the root', async () => {
+        const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null }, true);
+        const child = await store.createFollowUp(root, 'adjust the tone', null);
+
+        // Finish the child so the grandchild can attach to it.
+        const childClaim = await store.claim('w1', 300);
+        expect(childClaim?.id).toBe(child.id);
+        await store.complete(child.id, childClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const grand = await store.createFollowUp(child.id, 'again, tighter', null);
+
+        // The child is finished too, so the grandchild is the only claimable row.
+        const grandClaim = await store.claim('w2', 300);
+        expect(grandClaim?.id).toBe(grand.id);
+        // NOT the child's id and NOT the grandchild's own: the thread's root.
+        expect(grandClaim?.rootJobId).toBe(root);
+    });
+
     // A moving job belongs to its worker and its run is not over; a follow-up on one would race it.
     it('refuses a follow-up on a job that is still moving', async () => {
         const { id } = await queue('echo hi');

@@ -231,8 +231,20 @@ run ends, the same three moments docker's is.
 
 Both start only between the fence and the runner Job: after it, so a stood-down attempt creates
 nothing; before it, so every author-facing refusal is answered while nothing of the attempt
-runs — a refused job never has a live runner to orphan. The one resource refused throughout:
-publishing and the startup sync remain docker-only (sibling containers over a named volume).
+runs — a refused job never has a live runner to orphan. The one resource still refused throughout
+is publishing — the push and the PR need the sibling-container machinery this executor does not
+have, so the runner implements no `publishGit` and the loop skips it; a clean run's work stays
+unpushed in its task worktree, stated here rather than discovered. The startup sync, by
+contrast, IS ported: the task worktree (`docs/jobs.md`, issue #35) does not exist until something
+creates it, the loop syncs on every claim, and a refusal there would fail every claimed job. The
+sync is the worktree script as an aux Job — the executor image (which carries node and git) over
+a read-WRITE PVC mount, the three paths the script needs as literal env, the claim env by a
+per-attempt Secret read through `envFrom` (omitted entirely when the claim resolves to nothing —
+a pod that references a missing Secret sits in `CreateContainerConfigError`), the kubelet's
+`activeDeadlineSeconds` as its wall
+clock, the verdict scraped off the pod log — and it is attempt-scoped (`factory.job` /
+`factory.lease`) like everything else, so the re-claim fence sweeps a dead attempt's sync Job
+like anything else.
 
 ## Testing
 

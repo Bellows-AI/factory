@@ -10,13 +10,15 @@ import type { ServiceSpec } from './services.js';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
-    gitSyncScript,
+    gitWorktreeScript,
     isBranchName,
     parseGitState,
     publishFailed,
     publishNothing,
     publishPlan,
     repoPath,
+    worktreeBranch,
+    worktreeDir,
     type PublishResult,
     type SyncResult,
 } from './publish.js';
@@ -122,14 +124,15 @@ export interface Runner {
      * one), commit, push, and a PR. The deterministic end of a task — a succeeded verdict may not
      * describe work that exists only in a local checkout. The loop decides WHEN this is called (a
      * succeeded run, gates passed, and nothing else); a runner that cannot publish answers the
-     * refusal in the result rather than throwing.
+     * refusal in the result — or does not implement the method at all, which the loop reads as
+     * "this platform does not publish".
      */
-    publishGit(job: BoardJob): Promise<PublishResult>;
+    publishGit?(job: BoardJob): Promise<PublishResult>;
     /**
-     * Brings the checkout up to the remote default before the run: fetch, then hard-reset the
-     * default branch to origin (stray uncommitted edits there are leftovers, not work) or rebase
-     * the task branch onto the new default, keeping its commits. Called before the runner spawns,
-     * so a task starts from the code — and the declared gates — that main actually has. Answers
+     * Brings the job's task worktree up to the remote default before the run: fetch, create the
+     * worktree branched off `origin/<default>` (first attempt of the thread) or rebase it onto
+     * the new default, keeping its commits (every later one). Called before the runner spawns, so
+     * a task starts from the code — and the declared gates — that main actually has. Answers
      * { ok: false, reason } rather than throwing; the loop turns that into the verdict.
      */
     syncCheckout(job: BoardJob): Promise<SyncResult>;
@@ -342,25 +345,26 @@ export const containerName = (job: BoardJob): string => `factory-job-${job.id}-$
 
 /**
  * The gate environment container's identity: `<checkout key>` under a label, `factory-env-…` as a
- * name. The KEY is the checkout the gates share with the coding agent — `<org>/<uuid>/<repo>` —
- * and it is asserted before it is interpolated into argv or a container name, exactly like
+ * name. The KEY is the checkout the gates share with the coding agent — the task worktree
+ * `<org>/<uuid>/.worktrees/<root id>` (issue #35), the tree the run actually edits — and it is
+ * asserted before it is interpolated into argv or a container name, exactly like
  * `workspacePathOf` above: it arrives from the board's claim plus a repo label, and a `..` in it
  * would work the parent of every member's tree into a container that runs arbitrary commands.
  *
- * The segments mirror what the system legally produces: org ≤ 39 (ORG_ID_PATTERN) and repo ≤ 100
- * (the create route's REPO_SEGMENT_LIMIT under the same first-char rules as `badSegment`) — a
- * validator narrower than the input domain would fail every job on a legally-named checkout.
+ * The segments mirror what the system legally produces: org ≤ 39 (ORG_ID_PATTERN) and both ids
+ * uuids (36) — a validator narrower than the input domain would fail every job on a
+ * legally-named checkout.
  */
 const GATE_KEY =
-    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/i;
+    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Same shape the board's `.bellows.yaml` parser enforces; re-asserted here, before argv. */
 const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /**
  * A container name this process will `docker exec` into: one token, no shell metacharacters. The
- * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 177
- * characters GATE_KEY allows ≈ 189) — a cap BELOW that would create containers every gate then
+ * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 123
+ * characters GATE_KEY allows ≈ 135) — a cap BELOW that would create containers every gate then
  * refuses to exec into, a checkout that can never pass.
  */
 const GATE_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/;
@@ -390,7 +394,7 @@ export function gateEnvContainerName(key: string): string {
  */
 export function gateEnvArgs(config: DriverConfig, key: string, image: string, envFile?: string): string[] {
     if (!GATE_KEY.test(key)) {
-        throw new Error(`refusing to run a gate environment from a checkout key that is not <org>/<uuid>/<repo>: ${key}`);
+        throw new Error(`refusing to run a gate environment from a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`);
     }
     if (!GATE_IMAGE.test(image)) {
         throw new Error(`refusing to run a gate environment from an image that is not a plain docker reference: "${image}"`);
@@ -759,6 +763,18 @@ const envFilePath = (job: BoardJob): string => {
 };
 
 export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null, servicesNetwork: string | null = null, envFile?: string): string[] {
+    /*
+     * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
+     * the remote default — when the job names a repository, and at the member root when it does
+     * not (a command-only job names no repo, so no worktree exists; the root is where it always
+     * started, and the argv stays byte-identical for it).
+     */
+    const worktree = job.repo ? worktreeDir(config, job) : null;
+    if (job.repo && !worktree) {
+        throw new Error(
+            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`,
+        );
+    }
     const args = [
         'run',
         '--name',
@@ -782,7 +798,7 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         // `<mount>/<orgId>` is a safe fallback now: both are the PARENT of every member's tree, and
         // handing that to a container that may be running --dangerously-skip-permissions is a
         // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
-        `WORKDIR=${config.workspaceMount}/${workspacePath(job)}`,
+        `WORKDIR=${worktree ?? `${config.workspaceMount}/${workspacePath(job)}`}`,
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
     ];
@@ -1016,15 +1032,18 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         kill,
 
         /*
-         * The startup sync is one container, one script: fetch (credential by env-file, the same
-         * as every step that touches the remote), then default branch hard-reset to origin or
-         * task branch rebased onto it. A conflicting rebase aborts itself in the script and
-         * answers { ok: false } with the reason — the loop fails the run before it starts rather
-         * than leaving the checkout mid-rebase for every later turn to trip over.
+         * The startup sync is one container, one script: fetch, then create the task's worktree
+         * branched off origin/<default> or rebase the existing one onto it. The env names the
+         * three paths the script needs — the clone (where origin lives), the worktree, the branch
+         * — literal values, not credentials; the claim env rides the env file exactly as before.
+         * A conflicting rebase aborts itself in the script and answers { ok: false } with the
+         * reason — the loop fails the run before it starts rather than leaving the worktree
+         * mid-rebase for every later turn to trip over.
          */
         async syncCheckout(job: BoardJob): Promise<SyncResult> {
-            const repo = repoPath(config, job);
-            if (!repo) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+            const clone = repoPath(config, job);
+            const worktree = worktreeDir(config, job);
+            if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
             let file: string | null = null;
             try {
                 file = envFilePath(job);
@@ -1042,21 +1061,25 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     '--rm',
                     '-v',
                     `${config.workspaceVolume}:${config.workspaceMount}`,
-                    '-w',
-                    repo,
                     '--env-file',
                     file,
+                    '-e',
+                    `REPO=${clone}`,
+                    '-e',
+                    `WORKTREE=${worktree}`,
+                    '-e',
+                    `BRANCH=${worktreeBranch(job)}`,
                     '--entrypoint',
                     'node',
                     config.image,
                     '-e',
-                    gitSyncScript,
+                    gitWorktreeScript,
                 ]);
                 const line = out.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
                 try {
                     return JSON.parse(line) as SyncResult;
                 } catch {
-                    return { ok: false, reason: 'the checkout sync answered nothing readable' };
+                    return { ok: false, reason: 'the worktree sync answered nothing readable' };
                 }
             } catch (e) {
                 const err = e as { stderr?: string | Buffer; message?: string };
@@ -1065,7 +1088,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     stderr.trim() ||
                     (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
                     (err.message ?? 'failed');
-                return { ok: false, reason: `the checkout sync container failed: ${detail.slice(0, 300)}` };
+                return { ok: false, reason: `the worktree sync container failed: ${detail.slice(0, 300)}` };
             } finally {
                 if (file) await rm(file).catch(() => undefined);
             }
@@ -1079,9 +1102,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
          * credential helper reads it. The steps are separate daemon round-trips rather than one
          * shell script, so a failure names its step, and no board-supplied or checkout-supplied
          * value ever passes through a shell.
+         *
+         * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
          */
         async publishGit(job: BoardJob): Promise<PublishResult> {
-            const repo = repoPath(config, job);
+            const repo = worktreeDir(config, job);
             if (!repo) return publishFailed('the job names no checkout this driver can publish');
             let file: string | null = null;
             try {

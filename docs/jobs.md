@@ -91,12 +91,24 @@ nothing to that daemon, and there is no host path to give either — the dashboa
 checkouts into a named volume precisely to avoid one.
 
 **`WORKDIR` comes from the board, not from the driver's configuration.** The claim carries
-`workspacePath` — a root-relative `<orgId>/<userId>` — and the runner starts at
-`<workspaceMount>/<that>`. `ORG_ID` used to live in this table and build `<mount>/<orgId>`, one tree
-that every member's agent shared. Checkouts are per member now, so only the board knows where a
-given job's tree is: it is the thing that created the directory. Each side owns what it knows — the
-board owns the layout, the driver owns the mount point — which is also why the field is a
-ready-made relative path rather than a raw user id the driver would have to interpret.
+`workspacePath` — a root-relative `<orgId>/<userId>` — and the runner starts at the task
+worktree: `<workspaceMount>/<workspacePath>/.worktrees/<rootJobId>`, one `git worktree` of the
+job's repository per task THREAD, branched off the remote default (issue #35). The root id is
+the claim's `rootJobId` — the job itself, or the chain's first job for a follow-up — so every
+attempt of a task and every follow-up resuming its session lands in the same tree, and two
+tasks of DIFFERENT threads on one repository are two trees, never two writers on one. (One
+thread's own rows — a follow-up queued while an ancestor follow-up is still claimable — can
+still be claimed concurrently, and land in the same tree; that exposure predates this model,
+which narrows it from "the whole member shares one checkout" to "one thread shares one tree",
+and the heartbeat's 409 kill remains the arbiter between writers.) The clone stays
+pristine: `git worktree add` writes only `.git/worktrees/` inside it and the new directory
+beside it. A command-only job names no repo, so no worktree exists and it starts at
+`<workspaceMount>/<workspacePath>` — the argv it always had. `ORG_ID` used to live in this
+table and build `<mount>/<orgId>`, one tree that every member's agent shared. Checkouts are per
+member now, so only the board knows where a given job's tree is: it is the thing that created
+the directory. Each side owns what it knows — the board owns the layout, the driver owns the
+mount point — which is also why the field is a ready-made relative path rather than a raw user
+id the driver would have to interpret.
 
 - **A null `workspacePath` fails the job, with a reason, rather than falling back.** There is no
   safe fallback left: both `<mount>` and `<mount>/<orgId>` are the *parent* of every member's tree,
@@ -280,7 +292,12 @@ connection and retry, which is what agents are for.
 
 - **The merge across checkouts is a union, and a duplicate name fails the job.** The claim does not
   say which repository a job is about — `job.repo` is tasks-UI metadata — so every checkout's file
-  applies, capped at ten services across the workspace. Two repos defining `db` would race for one
+  applies, capped at ten services across the workspace. The readout globs the CLONES
+  (`<ws>/*/.bellows.yaml` — a shell glob skips dot-directories, which is also why the task
+  worktrees beside them are never read twice): a task that edits its `.bellows.yaml` in its
+  worktree therefore runs the services its branch inherited from main, and an edited services
+  half applies from the thread's next worktree-based read — gates, by contrast, are read
+  worktree-first. Two repos defining `db` would race for one
   alias, and no first-wins or last-wins rule reads as anything but "the wrong database came up", so
   the job fails naming both.
 - **A runner that joins both networks needs Docker 25.0.** Multi-network container create landed
@@ -514,7 +531,10 @@ environment:
 
 The board reads it **at claim time, off its own workspace mount** — the driver cannot open a path
 on the volume it only names, and the claim is the one place the author, repo label and workspace
-path are all in hand. Missing file means no gates; a file that exists but is outside the accepted
+path are all in hand. The read is worktree-first (`<ws>/.worktrees/<root id>`), falling back to
+the clone: at claim time the worktree does not exist yet, so the clone's file answers, and the
+post-sync re-read finds the worktree's — the tree the run actually edits. Missing file means no
+gates; a file that exists but is outside the accepted
 strict-YAML subset travels as `gateError` on the claim, and the driver **fails the job with that
 reason before anything runs** — running the work while pretending its gates do not exist is the
 one outcome worse than the failure. The parser accepts no YAML package: one `environment:` block,
@@ -522,10 +542,14 @@ one outcome worse than the failure. The parser accepts no YAML package: one `env
 Anything else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — is a named error
 with the line number.
 
-**One environment container per member+repo checkout, a `docker exec` per gate.** The container
+**One environment container per task worktree, a `docker exec` per gate.** The container
 (`factory-env-…`, labelled `factory.gates=<key>`) runs the declared image as a `sleep infinity`
-sleeper over the workspaces volume, working directory at the checkout — the same tree the coding
-agent edits, so gates see exactly what the agent wrote. It comes up **before** the agent runs,
+sleeper over the workspaces volume, working directory at the task worktree —
+`<org>/<uuid>/.worktrees/<root id>`, the same tree the coding agent edits, so gates see exactly
+what the agent wrote. The key is the worktree path now, and with it the environment is per TASK:
+a follow-up within the cooldown reuses the warm container (same key), but two concurrent tasks
+on one member+repo no longer share one, which is the disk-for-isolation trade the worktree
+model already made. It comes up **before** the agent runs,
 because the agent calls gates mid-run: the claim's env rides into it by 0600 env file, and the
 runner gets `BELLOWS_GATE_URL` / `BELLOWS_GATE_TOKEN` (minted per attempt, delivered after the
 claim's env lines in the same file — docker's last-wins rule is the precedence rule; both names
@@ -582,16 +606,24 @@ the same race every CI-on-first-commit system lives with. The k8s form is in
 
 ## Publishing: a task ends on a remote branch
 
-**The checkout is synced before anything reads it.** The workspace reconcile clones a repository
-once and otherwise leaves the checkout untouched, so without a sync every task after a main
-update would start from stale code — a stale gates file included, which is exactly how a
-repository's declared gates go unnoticed. At the start of each attempt, before the runner spawns,
-one container fetches the remote (credential by the same env file) and then: the default branch
-is hard-reset to origin — stray uncommitted edits there are pre-publish leftovers, not work, and
-the publish commits everything a run actually produced — while a task branch is rebased onto the
-new default, keeping its own commits, so the current turn sees the current tree. A conflicting
-rebase aborts itself (the checkout must never sit mid-rebase) and fails the attempt with the
-conflict named: running on a tree of unknown state would only compound whatever went wrong.
+**The task worktree is synced before anything reads it.** The workspace reconcile clones a
+repository once and otherwise leaves the checkout untouched, and the startup sync is what makes
+each run start from the code — and the declared gates — that main actually has. At the start of
+each attempt, before the runner spawns, one container fetches the remote (credential by the same
+env file) and then: the task's worktree is created branched off `origin/<default>` (first
+attempt of the thread) or rebased onto the new default with `--autostash`, keeping its own
+commits AND any uncommitted edits the previous run left — which is what makes a follow-up, which
+lands in this same tree by design, work whether or not the last run finished tidy, and what
+keeps a kubernetes thread (where nothing commits for you) alive across turns. Two conflicts
+still dead-end the attempt, with the work preserved and named: a rebase whose COMMITS conflict
+aborts itself (the worktree must never sit mid-rebase), and a rebase whose reapplied STASH
+conflicts leaves the markers and the retained autostash in the tree and refuses — a tree with
+unmerged entries is not one to run on. The same
+protection covers the worktree PATH: a directory that holds a git tree this sync did
+not create is refused, never deleted — whatever uncommitted work sits there belongs to an agent
+session. The clone's own working tree is never touched — under the worktree model that is
+finally literally true, where the old sync hard-reset the clone's default branch and destroyed
+whatever stray edits sat there.
 
 **The claim's gates answer is re-read after the sync.** The board reads `.bellows.yaml` at CLAIM
 time, which is before the sync — so the claim's answer can predate the tree the run will see,
@@ -625,8 +657,13 @@ which is fatal for a never-pushed branch and once read a two-commit task branch 
 publish". The push is `--force-with-lease`: the startup sync legitimately rewrites a task branch's
 base, and the lease refuses to clobber a remote that moved under us. No uncommitted changes and
 nothing unpushed is the ordinary no-op; a checkout that was never cloned is the other one.
-`EXECUTOR=kubernetes` cannot publish or sync (the steps are sibling containers over a docker
-volume) and its methods answer that refusal; the loop does not call them there. Under
+`EXECUTOR=kubernetes` cannot publish (the publish steps are sibling containers over a docker
+volume) and its runner implements no `publishGit` at all, so the loop skips it: a clean run
+reports succeeded with its work left unpushed in the task worktree — stated here as the
+limitation it is, not discovered by a user. The startup sync it DOES run: the worktree script is
+a Job like every other aux Job (read-write PVC, the claim env by a per-attempt Secret), because
+the worktree does not exist until something creates it and a refusal there would fail every
+claimed job. Under
 `AUTH_MODE=none` a board with no `GITHUB_TOKEN` in any env scope will fail the publish at push
 with the daemon's authentication error — the work stays local, loudly.
 

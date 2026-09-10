@@ -38,6 +38,14 @@ export interface BoardJob {
      */
     workspacePath: string | null;
     /**
+     * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
+     * chain's first job. The task worktree (issue #35) is keyed by it, so every attempt of a task
+     * and every follow-up resuming its session lands in the same tree, branched off the remote
+     * default. Read defensively like everything else here: a board that predates the field omits
+     * it, and the job is then its own root — the correct answer for every non-follow-up.
+     */
+    rootJobId?: string | null;
+    /**
      * The environment the board resolved for this job — org < workspace < repo, secrets included.
      * Read defensively (`?? {}` at claim): a board that predates the field omits it, and the
      * runner's environment is then exactly what this process's own configuration forwards.
@@ -192,6 +200,7 @@ export function createBoard({
                 followUp: claimed.followUp ?? false,
                 userId: claimed.userId ?? null,
                 workspacePath: claimed.workspacePath ?? null,
+                rootJobId: claimed.rootJobId ?? null,
                 env: claimed.env ?? {},
             };
         },

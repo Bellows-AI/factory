@@ -20,7 +20,11 @@ import {
     secretName,
     serviceDnsSpec,
     servicePodSpec,
+    syncEnvSecretName,
+    syncJobName,
+    syncJobSpec,
 } from '../src/k8s.js';
+import { gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -93,6 +97,29 @@ describe('the runner job spec', () => {
             persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
         });
         expect(container.volumeMounts).toContainEqual({ name: 'workspaces', mountPath: '/workspaces' });
+    });
+
+    // Executor parity for the task worktree (issue #35): a repo job starts in the thread's
+    // worktree here exactly as the docker runner does — same WORKDIR rule, one code path on the
+    // board side.
+    it('starts a repo job in its task worktree', () => {
+        const repoSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), { ...job, repo: 'Bellows-AI/factory' }, {
+            id: SESSION,
+            resume: false,
+        });
+        expect(repoSpec.spec.template.spec.containers[0].env).toContainEqual({
+            name: 'WORKDIR',
+            value: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+        });
+    });
+
+    it('refuses to run a repo job whose worktree path cannot be asserted', () => {
+        expect(() =>
+            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), { ...job, repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' }, {
+                id: SESSION,
+                resume: false,
+            }),
+        ).toThrow(/worktree/);
     });
 
     it('refuses a workspace path that is not <org>/<uuid>', () => {
@@ -458,6 +485,121 @@ const claimServer = () => {
         return undefined;
     };
 };
+
+/*
+ * The startup sync (issue #35), ported: the docker runner creates the task worktree with a
+ * `docker run` of the worktree script; here the same script is the same Job shape every other
+ * aux Job uses — the declared image over the workspaces PVC, read-write this time, because the
+ * whole point is creating the worktree the run will edit. Executor parity is why this exists:
+ * without it, every claimed job fails at the loop's sync step.
+ */
+describe('the worktree sync', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+
+    it('runs the worktree script as an aux Job over a read-write PVC', () => {
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const s = syncJobSpec(cfg(), envJob, syncEnvSecretName(envJob));
+        expect(s.apiVersion).toBe('batch/v1');
+        expect(s.kind).toBe('Job');
+        expect(s.metadata.name).toBe(syncJobName(repoJob));
+        expect(s.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
+        const container = s.spec.template.spec.containers[0];
+        expect(container.command).toEqual(['node', '-e', gitWorktreeScript]);
+        // The three paths the script needs, as literal values — paths, not credentials.
+        expect(container.env).toContainEqual({ name: 'REPO', value: `/workspaces/bellows/${USER}/factory` });
+        expect(container.env).toContainEqual({
+            name: 'WORKTREE',
+            value: `/workspaces/bellows/${USER}/.worktrees/${repoJob.id}`,
+        });
+        expect(container.env).toContainEqual({ name: 'BRANCH', value: `factory/${repoJob.id}` });
+        // Read-write: the Job's whole purpose is creating the worktree.
+        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        expect(s.spec.template.spec.volumes).toContainEqual({
+            name: 'workspaces',
+            persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
+        });
+        expect(s.spec.template.spec.automountServiceAccountToken).toBe(false);
+        expect(s.spec.backoffLimit).toBe(0);
+        expect(s.spec.template.spec.restartPolicy).toBe('Never');
+    });
+
+    it('carries the claim env by reference, and a literal value only for the three paths', () => {
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const container = syncJobSpec(cfg(), envJob, syncEnvSecretName(envJob)).spec.template.spec.containers[0];
+        expect(container.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(envJob) } }]);
+        for (const entry of container.env ?? []) {
+            expect(entry.name === 'REPO' || entry.name === 'WORKTREE' || entry.name === 'BRANCH', entry.name).toBe(true);
+            expect(entry.valueFrom, entry.name).toBeUndefined();
+        }
+    });
+
+    // An env-less claim is a supported board configuration (docs/jobs.md: AUTH_MODE=none, no
+    // GITHUB_TOKEN in any scope). The sync pod must not reference a Secret that will never
+    // exist — a pod that does sits in CreateContainerConfigError until the deadline kills the
+    // Job, and every such repo job would stall ten minutes and fail.
+    it('names no Secret at all when the claim resolved to no environment', () => {
+        const container = syncJobSpec(cfg(), repoJob, null).spec.template.spec.containers[0];
+        expect(container.envFrom).toBeUndefined();
+    });
+
+    it('refuses to build a sync for a worktree path it cannot assert', () => {
+        expect(() => syncJobSpec(cfg(), { ...repoJob, rootJobId: 'not-a-uuid' }, 'the-secret')).toThrow(/worktree/);
+    });
+
+    it('syncs through a real Job: Secret before Job, verdict from the log, Secret reaped', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const result = await runner(request).syncCheckout(envJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(secretPost?.body).toMatchObject({
+            metadata: { name: syncEnvSecretName(envJob), labels: { 'factory.job': envJob.id } },
+            stringData: { CORE_TOKEN: 'shh' },
+        });
+        // The Job the sync POSTs is the sync's own, named after this attempt.
+        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(syncJobName(envJob));
+        const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
+        expect(order.indexOf(`POST ${secretsPath}`)).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
+        // Reaped with the verdict, the same accepted-leak posture the runner env Secret has.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${syncEnvSecretName(envJob)}`)).toBe(true);
+    });
+
+    it('creates no Secret for an env-less claim', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        await runner(request).syncCheckout(repoJob);
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+    });
+
+    it('answers ok:false with the script’s reason when the sync job fails', async () => {
+        const { request } = fakeRequest({ log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('no space left');
+    });
+
+    it('syncs nothing for a job that names no repository', async () => {
+        const { request, calls } = fakeRequest();
+        expect(await runner(request).syncCheckout(job)).toEqual({ ok: true, reason: null });
+        expect(calls).toHaveLength(0);
+    });
+
+    it('answers ok:false when the sync Job never reaches a verdict it can read', async () => {
+        const { request } = fakeRequest({ job: { status: 500, body: 'nope' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('500');
+    });
+
+    it('answers ok:false when the log answers nothing parseable', async () => {
+        const { request } = fakeRequest({ log: { status: 404, body: 'gone' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({ ok: false, reason: 'the worktree sync answered nothing readable' });
+    });
+});
 
 describe('the kubernetes runner', () => {
     it('sweeps the job label, then creates the job in the configured namespace and reports success', async () => {
@@ -2787,8 +2929,9 @@ const gatedConfig = loadDriverConfig({
 });
 
 describe('the gate job spec', () => {
+    const ROOT_KEY = '55555555-5555-4555-8555-555555555555';
     const gateSpec = (overrides: Parameters<typeof gateJobSpec>[6] = 1, envSecret: string | null = 'the-secret') =>
-        gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, 'node:24', 'test', 'npm test', overrides, envSecret, 30_000);
+        gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, 'node:24', 'test', 'npm test', overrides, envSecret, 30_000);
 
     it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
         expect(gateSpec().apiVersion).toBe('batch/v1');
@@ -2806,7 +2949,7 @@ describe('the gate job spec', () => {
 
     it("works at the checkout the coding agent edits — the same tree, via the same PVC", () => {
         const container = gateSpec().spec.template.spec.containers[0];
-        expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/factory`);
+        expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/.worktrees/${ROOT_KEY}`);
         expect(container.image).toBe('node:24');
         expect(gateSpec().spec.template.spec.volumes).toEqual([
             { name: 'workspaces', persistentVolumeClaim: { claimName: 'factory-ai_workspaces' } },
@@ -2842,7 +2985,7 @@ describe('the gate job spec', () => {
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
-        const s = gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, 'node:24', 'UPPER Case!!', 'npm test', 1, null, 30_000);
+        const s = gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, 'node:24', 'UPPER Case!!', 'npm test', 1, null, 30_000);
         expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{8}$/);
         expect(s.metadata.name).not.toContain('UPPER');
         expect(s.metadata.name).not.toContain('Case');
@@ -2854,7 +2997,7 @@ describe('the gate job spec', () => {
             gateJobSpec(gatedConfig, job, '../other-member/repo', 'node:24', 'test', 'npm test', 1, null, 30_000),
         ).toThrow(/checkout key/);
         expect(() =>
-            gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, '-flag-image', 'test', 'npm test', 1, null, 30_000),
+            gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, '-flag-image', 'test', 'npm test', 1, null, 30_000),
         ).toThrow(/image reference/);
     });
 });
@@ -2871,7 +3014,7 @@ describe('the gate env body', () => {
 });
 
 describe('the kubernetes gate manager', () => {
-    const KEY = `bellows/${USER}/factory`;
+    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
     const GATE_JOB = /^factory-gate-test-[0-9a-f]{8}$/;
 
     /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
@@ -3081,7 +3224,7 @@ describe('the service pod and DNS specs', () => {
 });
 
 describe('the kubernetes services flow', () => {
-    const KEY = `bellows/${USER}/factory`;
+    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
     const BELLOWS_OUTPUT =
         '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
 

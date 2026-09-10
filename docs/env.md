@@ -42,6 +42,12 @@ real value.
   same way: they are the ad-hoc gate credentials the DRIVER mints per attempt (see
   [jobs.md](jobs.md)), and a member-configured value for either would be a claim telling the
   runner to send its gate calls somewhere else.
+- **`REPO`, `WORKTREE` and `BRANCH` are driver-owned inside the startup sync's container only**
+  (issue #35): the sync's literal env names the clone, the task worktree and its branch, and the
+  driver's literals win a collision on both platforms — docker's last `--env-file`/`-e` order and
+  kubernetes's `env`-over-`envFrom` precedence. They are deliberately NOT in
+  `RESERVED_ENV_NAMES`: a runner never sees them, so reserving them board-wide would refuse
+  member names nothing ever conflicted with outside one throwaway container.
 
 ## Secrets are write-only, not encrypted
 

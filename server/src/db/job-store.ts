@@ -136,6 +136,14 @@ export interface Claim {
      */
     workspacePath: string | null;
     /**
+     * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
+     * chain's first job, resolved through `parent_job_id`. The task worktree (issue #35) is keyed
+     * by it, so every attempt of a task and every follow-up resuming its session lands in the
+     * same tree, branched off the remote default. The driver cannot walk the chain — the board
+     * owns the rows — so the claim is where the root travels.
+     */
+    rootJobId: string;
+    /**
      * Set only when this claim is picking a parked job back up, and it is the whole resume protocol:
      * the worker restores that session instead of starting a new one, and the command is not
      * re-delivered — it was delivered on the first run and is in the transcript.
@@ -422,19 +430,42 @@ export function createJobStore({
     /**
      * The gates reader, when the deployment has a workspace root to read checkouts from. Declared
      * inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a claim
-     * hands it the workspace path and repo label, and gets the parsed `.bellows.yaml` or the
-     * reason the file could not be honoured. Present in index.ts, absent in the tests that
-     * predate gates — a claim then simply carries none.
+     * hands it the workspace path, the repo label and the thread's root id (the worktree the run
+     * edits), and gets the parsed `.bellows.yaml` or the reason the file could not be honoured.
+     * Present in index.ts, absent in the tests that predate gates — a claim then simply carries
+     * none.
      */
     gates?: {
         readFor(
             workspacePath: string,
             repo: string,
+            worktreeId: string | null,
         ): Promise<{ config: BellowsConfig | null; error: string | null }>;
     };
 }): JobStore {
     const gate = async () => {
         if (ready) await ready;
+    };
+
+    /**
+     * The thread's ROOT id for a job — the job itself, unless it is a follow-up, and then the
+     * chain's first job, walked up through parent_job_id (the `thread` walk, up half). The task
+     * worktree (`docs/jobs.md`, issue #35) is keyed by it, which is what makes every attempt of
+     * a task and every follow-up on it land in the same tree. `exec` is the caller's connection
+     * — the claim's transaction, so a claim holds one connection rather than two.
+     */
+    const rootOf = async (exec: Sql | TransactionSql, id: string): Promise<string> => {
+        const [root] = await exec<{ id: string }[]>`
+            with recursive up as (
+                select id, parent_job_id from job
+                where org_id = ${orgId} and id = ${id}
+                union all
+                select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
+                  where j.org_id = ${orgId}
+            )
+            select id from up where parent_job_id is null
+        `;
+        return root?.id ?? id;
     };
 
     // Inside the factory, so the reads' `workspacePath` derivation closes over the org and the
@@ -622,12 +653,15 @@ export function createJobStore({
                 -- never been parked, so its command still has to go out; a resumed parked one has,
                 -- so it must not.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                          session_id, repo,
+                          session_id, repo, parent_job_id,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up
             `;
 
                 const row = rows[0];
                 if (!row) return null;
+                // The thread's ROOT id: the job itself, unless it is a follow-up — and then the
+                // chain's first job (the walk above). A root job answers without the query.
+                const rootJobId = row.parent_job_id !== null ? await rootOf(tx, row.id) : row.id;
                 // Resolved here rather than in the route, because the org is bound here and
                 // the author and repo label are in hand — and ON THE TRANSACTION, so a claim
                 // holds one connection. A resolver failure propagates: the claim route's
@@ -647,11 +681,13 @@ export function createJobStore({
                 // the worker with the reason, where the run's author can see it — rather than as
                 // a 503 that would retry the claim forever. Gates ride only when the job has both
                 // a repo label (the checkout the file lives in) and a workspace to read it from.
+                // The reader is handed the thread root, because the worktree the run edits — and
+                // the gates file it must satisfy — is keyed by it.
                 let claimGates: BellowsConfig | null = null;
                 let gateError: string | null = null;
                 const claimPath = hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null;
                 if (gatesReader && row.repo && claimPath) {
-                    const read = await gatesReader.readFor(claimPath, row.repo);
+                    const read = await gatesReader.readFor(claimPath, row.repo, rootJobId);
                     if (read.error) gateError = read.error;
                     else claimGates = read.config;
                 }
@@ -666,6 +702,7 @@ export function createJobStore({
                     // for an unattributed job — no member, so no workspace — and null when this
                     // deployment has no workspace root, where no directory exists to point at.
                     workspacePath: claimPath,
+                    rootJobId,
                     // Survived the case above, so this claim is a resume.
                     resumeSessionId: row.session_id,
                     followUp: row.follow_up,
@@ -745,8 +782,8 @@ export function createJobStore({
             await gate();
             // Lease-guarded like every worker route: the freshness answer goes only to the worker
             // that holds the run, and only while it still does.
-            const rows = await sql<{ created_by: string | null; repo: string | null }[]>`
-                select created_by, repo
+            const rows = await sql<{ created_by: string | null; repo: string | null; parent_job_id: string | null }[]>`
+                select created_by, repo, parent_job_id
                 from job
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
@@ -758,7 +795,10 @@ export function createJobStore({
             if (!gatesReader || !row.repo || !workspacePath) {
                 return { result: 'ok', gates: null, gateError: null };
             }
-            const read = await gatesReader.readFor(workspacePath, row.repo);
+            // The same root resolution the claim does: the re-read must answer for the worktree
+            // the run edits, which is keyed by the thread's root, not by this row.
+            const rootJobId = row.parent_job_id !== null ? await rootOf(sql, id) : id;
+            const read = await gatesReader.readFor(workspacePath, row.repo, rootJobId);
             return { result: 'ok', gates: read.config, gateError: read.error };
         },
 

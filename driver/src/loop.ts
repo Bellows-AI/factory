@@ -4,6 +4,7 @@ import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { RunSession, Runner, RuntimeSample } from './docker.js';
+import { worktreeRelDir } from './publish.js';
 import type { PublishResult } from './publish.js';
 
 export interface Loop {
@@ -241,11 +242,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      */
     async function beginGates(job: BoardJob): Promise<GateSession | null> {
         if (!gates || !job.gates || !job.gates.gates.length || job.gateError) return null;
-        // The repo label is `owner/name` at the board; the name is the segment that is a
-        // checkout directory. A label without one is not a gated job.
-        const repoName = (job.repo ?? '').split('/')[1];
-        if (!repoName) return null;
-        const key = `${job.workspacePath}/${repoName}`;
+        // The gates run in the task worktree (issue #35) — the tree the run edits — so the
+        // environment is keyed by the worktree path, `<org>/<uuid>/.worktrees/<root id>`. A job
+        // that names no repository has no worktree and no gates either.
+        const key = worktreeRelDir(job);
+        if (!key) return null;
         // The environment starts with the claim's own env — resolved for THIS author and repo —
         // which is exactly what a test suite needs to reach the forge.
         const envBody = envFileBody(job);
@@ -647,6 +648,25 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 }
 
                 /*
+                 * A repo job runs in its task worktree (issue #35), so the same rule the null
+                 * workspacePath above applies extends there: a board-shaped repo label this
+                 * driver cannot resolve a worktree path for is failed with a reason, never run
+                 * in a fallback location. The board's own shape validation is not this
+                 * process's to trust.
+                 */
+                if (job.repo && !worktreeRelDir(job)) {
+                    log(`job ${job.id}: no resolvable task worktree for its repo label, failing`);
+                    await board
+                        .complete(job, {
+                            status: 'failed',
+                            exitCode: null,
+                            output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
+                        })
+                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    continue;
+                }
+
+                /*
                  * A job's session cannot follow it across a RUNNER_CLI flip — with one carve-out:
                  * a FOLLOW-UP under opencode runs, because its session is opencode's own and the
                  * runner restores it with `--session`. What is still refused is a resume claim
@@ -671,13 +691,14 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
 
                 /*
                  * Before anything reads the tree — the gates refusal just below, the agent this
-                 * run — the checkout is brought up to the remote default: fetch, default
-                 * hard-reset to origin, task branch rebased onto it. Checkouts are cloned once
-                 * and otherwise left untouched by the workspace reconcile, so without this every
-                 * task after a main update starts from stale code and a stale gates file. A sync
-                 * failure fails the attempt with the reason (the tree's state is unknown enough
-                 * that running on it would compound whatever went wrong), the same
-                 * author's-problem channel the gates refusal below uses.
+                 * run — the task worktree is brought up to the remote default: fetch, create the
+                 * worktree branched off origin/<default> or rebase the existing one onto it,
+                 * autostashing uncommitted edits. Clones are created once and otherwise left
+                 * untouched by the workspace reconcile, so without this every task after a main
+                 * update starts from stale code and a stale gates file. A sync failure fails the
+                 * attempt with the reason (the tree's state is unknown enough that running on it
+                 * would compound whatever went wrong), the same author's-problem channel the
+                 * gates refusal below uses.
                  */
                 const synced = await runner.syncCheckout(job);
                 if (!synced.ok) {

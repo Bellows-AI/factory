@@ -364,6 +364,19 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('[driver] publish failed — the work did not land: git step failed: authentication refused');
     });
 
+    // A runner with no publishGit at all — the kubernetes shape, whose publish steps are future
+    // work — runs and reports like any other: publishing is a capability the loop asks for, not
+    // one it assumes.
+    it('reports a clean run succeeded from a runner that cannot publish', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        delete (runner as Partial<Runner>).publishGit;
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
     // Only a succeeded run publishes: a failed or truncated run's tree may be mid-thought, and
     // pushing it would publish work the author never saw a verdict on.
     it('does not publish a run that did not succeed', async () => {
@@ -396,6 +409,23 @@ describe('the poll loop', () => {
 
         expect(runner.synced).toEqual([job(1)]);
         expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    // The same no-fallback rule the null workspacePath refusal applies, extended to the task
+    // worktree (issue #35): a repo-shaped label this driver cannot resolve a worktree path for
+    // is failed with a reason, never run in a fallback location.
+    it('fails a repo job whose worktree path cannot be resolved, before anything runs', async () => {
+        const broken: BoardJob = { ...job(1), repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' };
+        const board = stubBoard([broken]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('do not resolve to a task worktree');
     });
 
     it('fails the attempt with the reason when the checkout sync fails', async () => {
@@ -936,8 +966,8 @@ describe('verification gates', () => {
         // The verdict lands after every gate report — a reader never sees a succeeded task whose
         // checks are still shown as running.
         expect(board.board.gatesReported.length).toBeGreaterThan(0);
-        // The environment goes back to its cooldown either way.
-        expect(stack.stack.released).toEqual([`bellows/${USER}/factory`]);
+        // The environment goes back to its cooldown either way — filed under the task's worktree.
+        expect(stack.stack.released).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
         expect(stack.stack.unregistered).toBe(1);
     });
 
@@ -994,7 +1024,21 @@ describe('verification gates', () => {
         // of leaking, one live container per failed claim until the driver restarts.
         expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
         expect(board.board.completed[0]?.output).toContain('could not be started');
-        expect(stack.stack.released).toEqual([`bellows/${USER}/factory`]);
+        expect(stack.stack.released).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
+    });
+
+    // The worktree (issue #35) is the checkout the gates share with the coding agent: the
+    // environment is acquired, and every gate runs, in `<org>/<uuid>/.worktrees/<root id>` —
+    // the tree the run edits — never in the pristine clone.
+    it('acquires the gate environment under the task worktree key', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.acquired).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
+        expect(stack.stack.ran.key).toBe(`bellows/${USER}/.worktrees/${gatedJob(1).id}`);
     });
 
     it('registers the ad-hoc token and releases it, and never leaves it registered', async () => {

@@ -177,4 +177,46 @@ describe.runIf(enabled)('gates on the job store', () => {
         // A stale token is a lost lease, not a missing row; an absent job is missing.
         expect(await store.rereadGates(ABSENT, TOKEN)).toEqual({ result: 'missing' });
     });
+
+    // The gates the run satisfies live in the thread's worktree (issue #35), which is keyed by
+    // the thread's ROOT job — so both the claim's read and the re-read must resolve the root
+    // through the follow-up chain and hand THAT id to the reader.
+    it('reads the gates of the thread root’s worktree, on the claim and on the re-read', async () => {
+        const userId = await account(6009, 'gate-wolf');
+        const seen: { workspacePath: string; repo: string; worktreeId: string | null }[] = [];
+        const reader = createJobStore({
+            sql,
+            orgId: ORG,
+            gates: {
+                readFor: async (workspacePath, repo, worktreeId) => {
+                    seen.push({ workspacePath, repo, worktreeId: worktreeId ?? null });
+                    return { config: null, error: null };
+                },
+            },
+        });
+        // A finished root with a session, a finished follow-up on it, and a follow-up on the
+        // follow-up — a three-row thread.
+        await reader.create('root task', userId, { repo: 'acme/web', executor: null });
+        const rootClaim = await reader.claim('driver-1', 300);
+        const root = rootClaim!.id;
+        await reader.session(root, rootClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
+        await reader.complete(root, rootClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const child = await reader.createFollowUp(root, 'adjust', userId);
+        const childClaim = await reader.claim('driver-1', 300);
+        await reader.session(child.id, childClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
+        await reader.complete(child.id, childClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const grand = await reader.createFollowUp(child.id, 'again', userId);
+
+        // The grandchild is the only claimable row now; its claim reads the ROOT's worktree.
+        seen.length = 0;
+        const claim = await reader.claim('driver-1', 300);
+        expect(claim?.id).toBe(grand.id);
+        expect(claim?.rootJobId).toBe(root);
+        expect(seen).toEqual([{ workspacePath: `${ORG}/${userId}`, repo: 'acme/web', worktreeId: root }]);
+
+        // And the re-read resolves the same root, inside the lease guard.
+        seen.length = 0;
+        await reader.rereadGates(grand.id, claim!.leaseToken);
+        expect(seen).toEqual([{ workspacePath: `${ORG}/${userId}`, repo: 'acme/web', worktreeId: root }]);
+    });
 });

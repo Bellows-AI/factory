@@ -32,7 +32,7 @@ vi.mock('node:http', async (importOriginal) => {
     return { ...actual, createServer: wrapped };
 });
 
-const KEY = `bellows/44444444-4444-4444-8444-444444444444/factory`;
+const KEY = `bellows/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555`;
 const NAME = gateEnvContainerName(KEY);
 const config = loadDriverConfig({});
 
@@ -176,7 +176,7 @@ describe('the gate environment manager', () => {
     it('keeps a different checkout in a different container', async () => {
         logs.length = 0;
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
-        const other = `bellows/44444444-4444-4444-8444-444444444444/other`;
+        const other = `bellows/44444444-4444-4444-8444-444444444444/.worktrees/66666666-6666-4666-8666-666666666666`;
         await manager.acquire(KEY, 'node:24', '');
         await manager.acquire(other, 'python:3', '');
         expect(logs.filter((args) => args[0] === 'run')).toHaveLength(2);

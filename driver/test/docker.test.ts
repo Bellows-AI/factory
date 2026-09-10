@@ -6,7 +6,7 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
-import { CREDENTIAL_HELPER, gitProbeScript, gitSyncScript, isBranchName, parseGitState, publishPlan, repoPath } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeScript, isBranchName, parseGitState, publishPlan, repoPath, worktreeBranch, worktreeDir, worktreeRelDir } from '../src/publish.js';
 
 /*
  * The env-file write is the one await between the setup's final kill-check and the spawn, and a
@@ -837,29 +837,30 @@ describe('the cache watch', () => {
 });
 
 /**
- * The gate environment container: one long-lived `docker run -d` per member+repo, a `docker exec`
+ * The gate environment container: one long-lived `docker run -d` per task worktree, a `docker exec`
  * per gate. Pure and pinned for the same reason dockerArgs is — everything security-relevant about
  * the environment runner is decided in these arrays, and the values they interpolate arrive from
  * the board and from a file in a member's checkout.
  */
 describe('the gate environment container', () => {
-    const KEY = `bellows/${USER}/factory`;
+    const ROOT = '55555555-5555-4555-8555-555555555555';
+    const KEY = `bellows/${USER}/.worktrees/${ROOT}`;
     const config = loadDriverConfig({});
 
-    it('names the container after the checkout key, exec-able and orphan-findable', () => {
-        expect(gateEnvContainerName(KEY)).toBe(`factory-env-bellows-${USER}-factory`);
+    it('names the container after the worktree key, exec-able and orphan-findable', () => {
+        expect(gateEnvContainerName(KEY)).toBe(`factory-env-bellows-${USER}-.worktrees-${ROOT}`);
         expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
             expect.arrayContaining([
                 '-d',
                 '--name',
-                `factory-env-bellows-${USER}-factory`,
+                `factory-env-bellows-${USER}-.worktrees-${ROOT}`,
                 '--label',
                 `factory.gates=${KEY}`,
             ]),
         );
     });
 
-    it('mounts the checkouts volume and works inside the checkout, like the coding agent does', () => {
+    it('mounts the checkouts volume and works inside the worktree, like the coding agent does', () => {
         expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
             expect.arrayContaining([
                 '-v',
@@ -901,14 +902,18 @@ describe('the gate environment container', () => {
     });
 
     // The key is interpolated into argv (-w) and into a container NAME. It arrives from the
-    // board's claim plus a repo label — asserted, not trusted, the WORKSPACE_PATH posture.
-    it('refuses a checkout key that is not <org>/<uuid>/<repo>', () => {
+    // board's claim plus a repo label — asserted, not trusted, the WORKSPACE_PATH posture. The
+    // worktree key is the only shape now: gates run in the tree the agent edits, and that tree
+    // is `<org>/<uuid>/.worktrees/<root id>`, never the pristine clone.
+    it('refuses a key that is not <org>/<uuid>/.worktrees/<uuid>', () => {
         for (const key of [
             '../../etc',
             `bellows/${USER}`,
-            `bellows/not-a-uuid/factory`,
+            `bellows/not-a-uuid/.worktrees/${ROOT}`,
+            `bellows/${USER}/.worktrees/not-a-uuid`,
+            `bellows/${USER}/factory`,
             `bellows/${USER}/../..`,
-            `bellows/${USER}/-rf`,
+            `bellows/${USER}/.worktrees/${ROOT}/../..`,
             '',
         ]) {
             expect(() => gateEnvArgs(config, key, 'node:24'), key).toThrow();
@@ -921,11 +926,12 @@ describe('the gate environment container', () => {
         expect(() => gateExecArgs('bad name; rm -rf', 'x')).toThrow();
     });
 
-    // The name validator and the name generator must agree: a long org + long repo produces the
-    // longest key the pattern allows (org 39 + uuid 36 + repo 100), and every gate of that
-    // checkout must still be exec-able.
-    it('accepts the longest container name the checkout-key pattern can produce', () => {
-        const key = `${'a'.repeat(39)}/${USER}/${'r'.repeat(100)}`;
+    // The name validator and the name generator must agree: a long org + long uuid produces the
+    // longest key the pattern allows (org 39 + uuid 36 + the worktree segment + root uuid 36),
+    // and every gate of that checkout must still be exec-able.
+    it('accepts the longest container name the worktree-key pattern can produce', () => {
+        const longestUuid = `${'f'.repeat(8)}-${'f'.repeat(4)}-${'f'.repeat(4)}-${'f'.repeat(4)}-${'f'.repeat(12)}`;
+        const key = `${'a'.repeat(39)}/${USER}/.worktrees/${longestUuid}`;
         const name = gateEnvContainerName(key);
         expect(() => gateExecArgs(name, 'npm test')).not.toThrow();
         expect(gateEnvArgs(config, key, 'node:24')).toEqual(expect.arrayContaining(['--name', name]));
@@ -2458,6 +2464,120 @@ describe('publishing the produced work', () => {
         expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'o/.' })).toBeNull();
     });
 
+    /*
+     * The per-task workspace (issue #35): one `git worktree` of the job's repo, branched off the
+     * remote default, per task THREAD. Keyed by the thread's ROOT job id — stable across attempts
+     * of the same job, and shared by follow-ups, because a follow-up resumes the parent session
+     * and a session is only coherent in the tree it ran in. The clone itself stays pristine.
+     */
+    const ROOT = '55555555-5555-4555-8555-555555555555';
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+
+    it('computes the worktree path and branch from the thread root', () => {
+        expect(worktreeRelDir(repoJob)).toBe(`bellows/${USER}/.worktrees/${job.id}`);
+        // A follow-up is a NEW job row resuming the parent conversation: its worktree is the
+        // thread's, so it lands in the tree the session (and the parent's work) lives in.
+        expect(worktreeRelDir({ ...repoJob, rootJobId: ROOT })).toBe(`bellows/${USER}/.worktrees/${ROOT}`);
+        expect(worktreeDir(loadDriverConfig({}), { ...repoJob, rootJobId: ROOT })).toBe(
+            `/workspaces/bellows/${USER}/.worktrees/${ROOT}`,
+        );
+        expect(worktreeBranch({ ...repoJob, rootJobId: ROOT })).toBe(`factory/${ROOT}`);
+    });
+
+    it('refuses a worktree path it could not assert', () => {
+        // The same posture repoPath pins above: every board-supplied half is asserted before it
+        // joins a path, and here the value becomes the agent's working directory.
+        const broken: BoardJob[] = [
+            { ...repoJob, workspacePath: null },
+            { ...repoJob, workspacePath: '../etc' },
+            { ...repoJob, workspacePath: `bellows/not-a-uuid` },
+            { ...repoJob, repo: 'just-a-name' },
+            { ...repoJob, repo: 'o/..' },
+            { ...repoJob, repo: 'o/.' },
+            { ...repoJob, rootJobId: 'not-a-uuid' },
+            { ...repoJob, rootJobId: '../../etc' },
+        ];
+        for (const job of broken) expect(worktreeRelDir(job), job.repo).toBeNull();
+    });
+
+    it('runs a repo job inside its worktree, and a repo-less job at the member root', () => {
+        const withRepo = dockerArgs(loadDriverConfig({}), repoJob, { id: SESSION, resume: false });
+        expect(withRepo).toContain(`WORKDIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
+        // A command-only job names no repo: no worktree exists, and the member root is where it
+        // always started — the argv stays byte-identical to what it was.
+        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false })).toContain(
+            `WORKDIR=/workspaces/bellows/${USER}`,
+        );
+    });
+
+    it('refuses to run a repo job whose worktree path cannot be asserted', () => {
+        expect(() =>
+            dockerArgs(loadDriverConfig({}), { ...repoJob, rootJobId: 'not-a-uuid' }, { id: SESSION, resume: false }),
+        ).toThrow(/worktree/);
+    });
+
+    it('creates the worktree off the remote default, rebasing an existing one', () => {
+        // Every git call in the script is execFileSync — no value can become a command.
+        expect(gitWorktreeScript).toContain('execFileSync');
+        expect(gitWorktreeScript).not.toContain('execSync(');
+        // The remote is fetched with the env file's credential; nothing on a command line.
+        expect(gitWorktreeScript).toContain('"fetch","origin","--prune"');
+        // Stale worktree admin entries are pruned before an add, so a directory that was
+        // removed underneath git can be recreated instead of failing forever.
+        expect(gitWorktreeScript).toContain('"worktree","prune"');
+        expect(gitWorktreeScript).toContain('"worktree","add"');
+        // An existing worktree keeps its commits by rebasing onto the new default — with
+        // --autostash, so a follow-up in the same tree works even when the previous run left
+        // uncommitted edits: the edits are stashed for the rebase and reapplied after it.
+        expect(gitWorktreeScript).toContain('"rebase","--autostash","origin/"+def');
+        // A conflicted rebase aborts itself — the worktree must never sit mid-rebase — and the
+        // failure names what happened.
+        expect(gitWorktreeScript).toContain('"rebase","--abort"');
+        expect(gitWorktreeScript).toContain('rebased onto');
+        // A path that holds a git tree this sync did not create is refused, never deleted.
+        expect(gitWorktreeScript).toContain('/.git"');
+    });
+
+    it('hands the sync the clone, the worktree and the branch, by env', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+        const result = await runner.syncCheckout(repoJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const run = calls.find((a) => a[0] === 'run')!;
+        // The clone — where origin lives and the worktree is created FROM. Paths, not
+        // credentials: the claim env rides the env file exactly as before.
+        expect(run).toEqual(expect.arrayContaining(['-e', `REPO=/workspaces/bellows/${USER}/factory`]));
+        expect(run).toEqual(expect.arrayContaining(['-e', `WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`]));
+        expect(run).toEqual(expect.arrayContaining(['-e', `BRANCH=factory/${job.id}`]));
+    });
+
+    it('runs every publish step inside the task worktree', async () => {
+        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
+            fail: (a) => a.includes('switch') && !a.includes('-c'),
+        });
+        await runner.publishGit(ISSUE_JOB);
+
+        const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
+        expect(calls.length).toBeGreaterThan(0);
+        for (const call of calls) {
+            if (call.some((x) => typeof x === 'string' && x.includes('execFileSync'))) {
+                expect(call).toEqual(expect.arrayContaining(['-e', `REPO=${wt}`]));
+            } else if (call.includes('-w')) {
+                expect(call[call.indexOf('-w') + 1]).toBe(wt);
+            }
+        }
+    });
+
     it('refuses branch names that could read as something else', () => {
         expect(isBranchName('fix/10')).toBe(true);
         expect(isBranchName('task/20260909')).toBe(true);
@@ -2480,20 +2600,6 @@ describe('publishing the produced work', () => {
         // The helper reads the token from the container's environment — the env file's job —
         // and the literal appears in no argv the publisher builds.
         expect(CREDENTIAL_HELPER).toContain('$GITHUB_TOKEN');
-    });
-
-    it('syncs by fetch, default hard-reset, task-branch rebase — aborting a conflicted rebase', () => {
-        // The remote is reached with the env file's credential; nothing on a command line.
-        expect(gitSyncScript).toContain('fetch');
-        expect(gitSyncScript).toContain('"--prune"');
-        // A task branch keeps its commits by rebasing onto the new default; the default branch
-        // itself is reset hard, because stray uncommitted edits there are leftovers, not work.
-        expect(gitSyncScript).toContain('"rebase","origin/"+def');
-        expect(gitSyncScript).toContain('"reset","--hard","origin/"+def');
-        // A conflicted rebase aborts itself — the checkout must never sit mid-rebase — and the
-        // failure names what happened.
-        expect(gitSyncScript).toContain('"rebase","--abort"');
-        expect(gitSyncScript).toContain('rebased onto');
     });
 
     it('parses the probe’s answer, defaulting anything missing', () => {
