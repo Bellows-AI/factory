@@ -67,6 +67,25 @@ export function taskTime(iso: string | null | undefined): string {
 }
 
 /**
+ * How long a run has taken, or took: from the attempt's start to its finish, or — while it is
+ * still going — to `now`, which the caller decides so this stays pure (the detail page re-renders
+ * on every 2s poll, which is the ticker). A dash for anything absent, unparseable, or ending
+ * before it started: a negative duration is a lie, not a number.
+ */
+export function runDuration(
+    startedAt: string | null | undefined,
+    endedAt: string | null | undefined,
+    now: Date = new Date(),
+): string {
+    if (!startedAt) return '—';
+    const from = new Date(startedAt);
+    if (Number.isNaN(from.getTime())) return '—';
+    const to = endedAt === null || endedAt === undefined ? now : new Date(endedAt);
+    if (Number.isNaN(to.getTime()) || to.getTime() < from.getTime()) return '—';
+    return duration((to.getTime() - from.getTime()) / 3_600_000);
+}
+
+/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */

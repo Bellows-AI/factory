@@ -60,6 +60,12 @@ export interface Job {
     followUpTo: string | null;
     /** When the user declared the task done, or null while they have not. */
     doneAt: string | null;
+    /**
+     * Where the author's checkouts are, relative to the workspace root — board-derived, the same
+     * field the claim carries. Null when the job has no author or the board has no workspace root;
+     * the task view's status sidebar shows it, or a dash.
+     */
+    workspacePath: string | null;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
