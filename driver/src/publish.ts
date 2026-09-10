@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
+import { readFileSync } from 'node:fs';
 
 /**
  * Publishing the work a run produced. The policy lives in the loop — a successful run, gates
@@ -14,6 +15,22 @@ import type { DriverConfig } from './config.js';
  * run that "succeeded" while leaving its work uncommitted in a local checkout did not land
  * anywhere, and nobody was asked.
  */
+
+/**
+ * The container scripts this module ships: real files under `driver/src/scripts/`, read at load
+ * time and passed to the container by content (`node -e`, `sh -c`, a git credential helper) —
+ * never inline template strings in TS, and never by mounting a path (the driver talks to a
+ * remote daemon and has no host path into the volumes it names). Under tsx and vitest this
+ * resolves into `src/scripts/`; in the built driver into `dist/scripts/`, where the build copies
+ * the directory — forgetting THAT copy fails only in the container, the server/migrations trap.
+ */
+const script = (name: string): string => readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
+
+/** The probe's node script: see scripts/git-probe.cjs. */
+export const gitProbeScript = script('git-probe.cjs');
+
+/** The startup sync's node script: see scripts/git-worktree.cjs. */
+export const gitWorktreeScript = script('git-worktree.cjs');
 
 /** What the board intends to publish for one job. */
 export interface PublishPlan {
@@ -152,77 +169,6 @@ export function worktreeBranch(job: BoardJob): string {
     return `factory/${job.rootJobId ?? job.id}`;
 }
 
-/**
- * The probe's node script: one read-only answer about the checkout, JSON on stdout, no shell —
- * every git call is execFileSync so no path or branch name can become a command. Printed values
- * decide the flow; none of them are secrets.
- *
- * "Unpushed" counts commits the REMOTE default branch does not have — never `@{u}..HEAD`, which
- * is fatal for a branch that was never pushed at all (no upstream) and would read a local-only
- * branch full of work as fully landed. That exact miscount once reported a two-commit task
- * branch as "nothing to publish".
- */
-export const gitProbeScript = `const {execFileSync}=require("node:child_process");const repo=process.env.REPO;` +
-    `const out={cloned:false,branch:"",defaultBranch:"main",dirty:false,unpushed:0,hasIdentity:false};` +
-    `try{` +
-    `const git=(...a)=>execFileSync("git",a,{cwd:repo,encoding:"utf8"}).trim();` +
-    `git("rev-parse","--is-inside-work-tree");` +
-    `out.cloned=true;` +
-    `out.branch=git("branch","--show-current");` +
-    `try{out.defaultBranch=git("symbolic-ref","refs/remotes/origin/HEAD").replace("refs/remotes/origin/","")}catch{}` +
-    `out.dirty=git("status","--porcelain").length>0;` +
-    `try{out.unpushed=Number(git("rev-list","--count","origin/"+out.defaultBranch+"..HEAD"))||0}catch{out.unpushed=0}` +
-    `out.hasIdentity=(()=>{try{return git("config","user.email").length>0}catch{return false}})();` +
-    `}catch{}` +
-    `console.log(JSON.stringify(out));`;
-
-/**
- * The startup sync's node script: make a per-task worktree reflect the remote default, so every
- * run starts from the code — and the declared gates — that main actually has (issue #35). The
- * environment names three paths: REPO is the clone (where `origin` lives and the worktree is
- * created FROM), WORKTREE is the task's own tree, BRANCH the branch it runs on
- * (`worktreeBranch`). One `execFileSync` per git call — no value can become a command — and one
- * JSON verdict on stdout.
- *
- * WORKTREE absent: fetched, pruned, and `git worktree add` — from the existing branch when the
- * thread already has one (a lost directory must not cost its commits), else `-b` at
- * `origin/<default>`. A path that holds a git tree this sync did not create is REFUSED, never
- * deleted: whatever uncommitted work sits there belongs to an agent session, and destroying it
- * is the one outcome worse than a burned attempt. WORKTREE present: rebased onto the new
- * default with `--autostash`, so a follow-up — which lands in this same tree by design — works
- * whether or not the previous run left uncommitted edits: the edits are stashed for the rebase
- * and reapplied on the new base, kept on a conflicted abort, never destroyed. Git exits 0 even
- * when the reapplied STASH conflicts (the rebase itself succeeded), so the script re-checks for
- * unmerged entries and refuses — a tree with conflict markers is not one to run on, and the
- * stash is retained for recovery. A conflicting rebase likewise aborts itself and names the
- * failure. The clone's own working tree is never touched — the worktree model is what finally
- * makes that literally true.
- */
-export const gitWorktreeScript = `const {execFileSync}=require("node:child_process");const fs=require("node:fs");` +
-    `const repo=process.env.REPO,wt=process.env.WORKTREE,branch=process.env.BRANCH;` +
-    `const git=(...a)=>execFileSync("git",a,{cwd:repo,encoding:"utf8"}).trim();` +
-    `const inw=(...a)=>execFileSync("git",a,{cwd:wt,encoding:"utf8"}).trim();` +
-    `const fail=(r)=>{try{inw("rebase","--abort")}catch{}console.log(JSON.stringify({ok:false,reason:r}))};` +
-    `try{` +
-    `git("fetch","origin","--prune");` +
-    `let def="main";` +
-    `try{def=git("symbolic-ref","refs/remotes/origin/HEAD").replace("refs/remotes/origin/","")}catch{}` +
-    `let existing=false;` +
-    `try{inw("rev-parse","--is-inside-work-tree");existing=true}catch{}` +
-    `if(existing){` +
-    `try{inw("rebase","--autostash","origin/"+def)}` +
-    `catch(e){fail("the task worktree could not be rebased onto origin/"+def+": "+String((e&&e.stderr)||(e&&e.message)||e).slice(0,200));process.exit(0)}` +
-    `if(inw("diff","--name-only","--diff-filter=U").length){fail("the task worktree was rebased onto origin/"+def+", but its uncommitted edits conflict with the new base and are left as conflict markers in the tree (the autostash is kept for recovery); resolve them before re-running");process.exit(0)}` +
-    `}else{` +
-    `if(fs.existsSync(wt+"/.git")){fail("the worktree path exists and holds a git tree this sync did not create; remove it by hand if it is truly stale: "+wt);process.exit(0)}` +
-    `fs.rmSync(wt,{recursive:true,force:true});` +
-    `git("worktree","prune");` +
-    `try{git("worktree","add",wt,branch)}` +
-    `catch(e){git("worktree","add","-b",branch,wt,"origin/"+def)}` +
-    `}` +
-    `console.log(JSON.stringify({ok:true,reason:null}));` +
-    `}catch(e){fail("worktree sync failed: "+String((e&&e.stderr)||(e&&e.message)||e).slice(0,300))}`;
-
 /** Pulls the probe's answer out of its stdout, tolerating anything else. */
 export function parseGitState(stdout: string): GitState {
     const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
@@ -253,6 +199,9 @@ export const isBranchName = (name: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._
  * git itself spawns through a shell — the same `-e NAME`, never `-e NAME=value` rule the runner
  * obeys, so the token is in no argv anywhere. Pinned because it is the one place this feature
  * touches a secret.
+ *
+ * The helper is a FILE (scripts/credential-helper.sh) read verbatim, because its content IS the
+ * value of `-c credential.helper=`: a comment line would ship inside the helper, so that one
+ * file deliberately carries no comments — its documentation lives here.
  */
-export const CREDENTIAL_HELPER =
-    '!f(){ printf "username=x-access-token\\n"; printf "password=%s\\n" "$GITHUB_TOKEN"; }; f';
+export const CREDENTIAL_HELPER = script('credential-helper.sh');

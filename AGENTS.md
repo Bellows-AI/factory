@@ -177,6 +177,16 @@ build order. If a type has to be shared, copy it.
 All four packages are ESM with `verbatimModuleSyntax`; relative imports carry a `.js`
 extension even in `.tsx` files.
 
+**Container scripts are files, never inline strings.** Every script the driver hands to a
+container — the git probe, the worktree sync, the `.bellows.yaml` readout, the opencode session
+readout and cache probe, the push credential helper, the remote-session read — lives as a real
+file under `driver/src/scripts/` (`.cjs` for node, `.sh` for shell), is read at load time via
+`import.meta.url`, and is passed to the container by content (`node -e`, `sh -c`), never by
+mounting a path (the driver talks to a remote daemon and has no host path into the volumes it
+names). Script parameters travel as env values or plain argv, never interpolated into the script
+text. The driver build copies the directory into `dist` (`driver/package.json`); forgetting that
+copy fails only in the container, never in dev — the same trap as `server/migrations` below.
+
 Tests import `core/src` directly (`../src/metrics.js`), so `core/test` does not need the build.
 `vitest.config.ts` includes `core/test`, `server/test` and `web/test`. The web suite is a
 **render smoke test only** — it renders the telemetry panels with `react-dom/server`, so no DOM

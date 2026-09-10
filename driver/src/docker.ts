@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,25 @@ import {
     type PublishResult,
     type SyncResult,
 } from './publish.js';
+
+/**
+ * The container scripts this module ships: real files under `driver/src/scripts/`, read at load
+ * time and passed to the container by content (`node -e`, `sh -c`) — never inline template
+ * strings in TS, and never by mounting a path (the driver talks to a remote daemon and has no
+ * host path into the volumes it names). Under tsx and vitest this resolves into `src/scripts/`;
+ * in the built driver into `dist/scripts/`, where the build copies the directory — forgetting
+ * THAT copy fails only in the container, the server/migrations trap.
+ */
+const script = (name: string): string => readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
+
+/** The `sh -c` command that reads the Remote Control id out of a live transcript: see scripts/remote-session.sh. */
+export const remoteSessionScript = script('remote-session.sh');
+
+/** The close-time opencode readout: see scripts/opencode-readout.cjs. */
+export const opencodeReadoutScript = script('opencode-readout.cjs');
+
+/** The live cache probe: see scripts/opencode-cache-probe.cjs. */
+export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
 
 const run = promisify(execFile);
 
@@ -174,7 +194,9 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
  *
  * The session id is asserted to be a uuid before it is interpolated. It comes from the board on a
  * resume, and a board is not something this process should trust with a fragment of a shell
- * command.
+ * command. It travels as the script's FIRST POSITIONAL PARAMETER (`sh -c <script> sh <id>` →
+ * `$1`), a plain argv value — the script text itself (remote-session.sh) is static, so nothing
+ * board-supplied is ever part of it.
  */
 export function remoteSessionArgs(job: BoardJob, sessionId: string): string[] {
     if (!UUID.test(sessionId)) throw new Error(`refusing to read a session id that is not a uuid: ${sessionId}`);
@@ -183,10 +205,9 @@ export function remoteSessionArgs(job: BoardJob, sessionId: string): string[] {
         containerName(job),
         'sh',
         '-c',
-        // A glob over projects/, rather than deriving the slug from WORKDIR: the CLI builds that
-        // directory name itself, and reimplementing the rule here would break silently the day it
-        // changes. The file name is the session id, which is unique enough on its own.
-        `cat "$CLAUDE_CONFIG_DIR"/projects/*/${sessionId}.jsonl 2>/dev/null | grep bridge-session | tail -1`,
+        remoteSessionScript,
+        'sh',
+        sessionId,
     ];
 }
 
@@ -457,36 +478,15 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob):
         '--rm',
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
+        // The database path travels as an env VALUE — the script (opencode-readout.cjs) is
+        // static, so nothing board-derived is ever part of its text.
+        '-e',
+        `OPENCODE_DB=${db}`,
         '--entrypoint',
         'node',
         config.image,
         '-e',
-        // CommonJS: `node -e` is CommonJS unless told otherwise. The session takes the newest ROOT
-        // session — subagents create children under a parent_id, and the conversation a follow-up
-        // continues is the run's own root. The finish reason comes from the last ASSISTANT
-        // message of that session — the run's own closing word — and its token total is the
-        // context the run reached; cost sums across every assistant message of the session. The
-        // role is a field INSIDE the message's data JSON, not a column: filtering it in SQL
-        // throws "no such column: role" on every read, and the failure reads as an empty
-        // database. A failure prints one parseable error line — an empty answer and a broken
-        // query are otherwise indistinguishable to the parse.
-        `const {DatabaseSync}=require("node:sqlite");` +
-            `try{` +
-            `const db=new DatabaseSync(${JSON.stringify(db)},{readOnly:true});` +
-            `const s=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
-            `if(s&&s.id){` +
-            `const msgs=db.prepare("select data from message where session_id=? order by id").all(s.id);` +
-            `let finish=null,tokens=0,cost=0;` +
-            `for(const m of msgs){` +
-            `const d=JSON.parse(m.data);` +
-            `if(d.role!=="assistant")continue;` +
-            `if(d.finish)finish=d.finish;` +
-            `if(d.tokens&&typeof d.tokens.total==="number")tokens=Math.max(tokens,d.tokens.total);` +
-            `if(typeof d.cost==="number")cost+=d.cost;` +
-            `}` +
-            `console.log(JSON.stringify({id:s.id,finish,tokens,cost}));` +
-            `}` +
-            `}catch(e){console.log(JSON.stringify({error:e instanceof Error?e.message:String(e)}));}`,
+        opencodeReadoutScript,
     ];
 }
 
@@ -610,29 +610,18 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
         '--rm',
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
+        // The database path and the turn count travel as env VALUES — the script
+        // (opencode-cache-probe.cjs) is static, and the count comes from this module's constant,
+        // so the trigger cannot drift between the probe and the code that judges the turns.
+        '-e',
+        `OPENCODE_DB=${db}`,
+        '-e',
+        `CACHE_WATCH_TURNS=${CACHE_WATCH_TURNS}`,
         '--entrypoint',
         'node',
         config.image,
         '-e',
-        `const {DatabaseSync}=require("node:sqlite");` +
-            `try{` +
-            `const db=new DatabaseSync(${JSON.stringify(db)},{readOnly:true});` +
-            `const s=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
-            `if(s&&s.id){` +
-            `const msgs=db.prepare("select data from message where session_id=? order by id desc limit 12").all(s.id);` +
-            `const turns=[];` +
-            `for(const m of msgs){` +
-            `const d=JSON.parse(m.data);` +
-            `if(d.role!=="assistant")continue;` +
-            `const t=d.time||{};` +
-            `if(!t.completed)continue;` +
-            `const tk=d.tokens||{};` +
-            `turns.push({input:tk.input||0,cacheRead:(tk.cache||{}).read||0,ms:t.completed-(t.created||t.completed)});` +
-            `if(turns.length>=${CACHE_WATCH_TURNS})break;` +
-            `}` +
-            `console.log(JSON.stringify({id:s.id,turns}));` +
-            `}` +
-            `}catch(e){console.log(JSON.stringify({error:e instanceof Error?e.message:String(e)}));}`,
+        opencodeCacheProbeScript,
     ];
 }
 

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { gitWorktreeScript } from '../src/publish.js';
+import { gitProbeScript } from '../src/publish.js';
 
 /**
  * The worktree sync script, against real git — offline throughout: every remote here is a
@@ -48,7 +48,9 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 const runScript = (env: Record<string, string>): { ok: boolean; reason: string | null } => {
-    const out = execFileSync('node', ['-e', gitWorktreeScript], {
+    // The script FILE itself, not a -e wrap: the artifact the sync container runs is what is
+    // under test.
+    const out = execFileSync('node', [join(import.meta.dirname, '..', 'src', 'scripts', 'git-worktree.cjs')], {
         env: { ...process.env, ...SCRIPT_IDENTITY, ...env },
         encoding: 'utf8',
     });
@@ -236,5 +238,87 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('git tree this sync did not create');
         expect(readFileSync(join(worktree, 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
+    });
+});
+
+/**
+ * The publish probe, executed for real against a checkout — the same artifact the publish flow's
+ * probe container runs, driven by `REPO` alone. It answers the three questions the publisher
+ * branches on: is this a checkout at all, does it hold uncommitted work, and does it carry
+ * commits the remote default does not have.
+ */
+describe.skipIf(!hasGit())('the publish probe script', () => {
+    let dir: string;
+    let repo: string;
+
+    beforeEach(() => {
+        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-probe-')));
+        const work = join(dir, 'origin-work');
+        mkdirSync(work, { recursive: true });
+        git(work, 'init');
+        writeFileSync(join(work, 'README.md'), '# probe\n');
+        git(work, 'add', 'README.md');
+        git(work, 'commit', '-m', 'init');
+        const bare = join(dir, 'probe.git');
+        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
+        repo = join(dir, 'clone');
+        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, repo], { stdio: 'ignore' });
+    });
+
+    const probe = (): {
+        cloned: boolean;
+        branch: string;
+        defaultBranch: string;
+        dirty: boolean;
+        unpushed: number;
+        hasIdentity: boolean;
+    } => {
+        const out = execFileSync('node', [join(import.meta.dirname, '..', 'src', 'scripts', 'git-probe.cjs')], {
+            env: {
+                ...process.env,
+                REPO: repo,
+                // Hermetic identity: the runner's global/system git config must not decide
+                // hasIdentity — the publisher's fallback-identity branch depends on the answer.
+                GIT_CONFIG_GLOBAL: '/dev/null',
+                GIT_CONFIG_SYSTEM: '/dev/null',
+            },
+            encoding: 'utf8',
+        });
+        return JSON.parse(out.trim().split('\n').filter(Boolean).pop()!);
+    };
+
+    it('reads the checkout state the publish flow branches on', () => {
+        writeFileSync(join(repo, 'WIP.md'), 'uncommitted\n');
+        writeFileSync(join(repo, 'TRACKED.md'), 'edit\n');
+        git(repo, 'add', 'TRACKED.md');
+        git(repo, 'commit', '-m', 'local commit');
+
+        expect(probe()).toMatchObject({
+            cloned: true,
+            branch: 'main',
+            defaultBranch: 'main',
+            dirty: true,
+            unpushed: 1,
+        });
+        // The fixture pins a committer identity per git() call only — the clone itself has
+        // none, which is exactly the state the publisher's fallback identity exists for.
+        expect(probe().hasIdentity).toBe(false);
+    });
+
+    it('answers the never-cloned shape for a directory that is not a checkout', () => {
+        repo = join(dir, 'not-a-checkout');
+        mkdirSync(repo, { recursive: true });
+
+        expect(probe()).toEqual({
+            cloned: false,
+            branch: '',
+            defaultBranch: 'main',
+            dirty: false,
+            unpushed: 0,
+            hasIdentity: false,
+        });
+        // The constant is the file — asserting the executed path is the artifact (parity with
+        // the loader is pinned in scripts.test.ts).
+        expect(gitProbeScript.length).toBeGreaterThan(0);
     });
 });

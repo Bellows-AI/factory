@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
+import { CACHE_WATCH_TURNS, cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeScript, isBranchName, parseGitState, publishPlan, repoPath, worktreeBranch, worktreeDir, worktreeRelDir } from '../src/publish.js';
 
@@ -327,8 +327,13 @@ describe('reading the remote session id', () => {
     it('reads the bridge record out of the running container, by session id', () => {
         const line = remoteSessionArgs(job, SESSION);
         expect(line.slice(0, 4)).toEqual(['exec', containerName(job), 'sh', '-c']);
-        expect(line[4]).toContain(`${SESSION}.jsonl`);
+        // The script is the static file; the session id rides as its first positional
+        // parameter, a plain argv value — never interpolated into the script text.
+        expect(line[5]).toBe('sh');
+        expect(line[6]).toBe(SESSION);
         expect(line[4]).toContain('bridge-session');
+        expect(line[4]).toContain('"$1".jsonl');
+        expect(line[4]).not.toContain(SESSION);
     });
 
     // The id arrives from the board on a resume, and a board is not something this process should
@@ -605,27 +610,30 @@ describe('scraping the session opencode used', () => {
      */
     it('reads the session database out of the member’s data directory, root sessions only', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
-        expect(line.slice(0, 8)).toEqual([
+        expect(line.slice(0, 6)).toEqual([
             'run',
             '--rm',
             '-v',
             'factory-ai_workspaces:/workspaces',
-            '--entrypoint',
-            'node',
-            'opencode-executor',
             '-e',
+            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
         ]);
-        expect(line[8]).toContain(`/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`);
-        expect(line[8]).toContain('parent_id is null');
+        expect(line.slice(6, 10)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[10] as string;
+        // The script is the static file: the database path arrives by env, so no board-derived
+        // value is ever part of its text.
+        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
+        expect(script).toContain('process.env.OPENCODE_DB');
+        expect(script).toContain('parent_id is null');
         // The role is a field INSIDE the message's data JSON, not a column — a SQL role filter
         // throws "no such column: role" on every read and the scrape answers nothing. Filtered in
         // JS instead, where the parsed role actually is.
-        expect(line[8]).not.toContain("role='assistant'");
-        expect(line[8]).toContain('d.role!=="assistant"');
-        expect(line[8]).toContain('readOnly');
+        expect(script).not.toContain("role='assistant'");
+        expect(script).toContain("d.role !== 'assistant'");
+        expect(script).toContain('readOnly');
         // A failure prints one parseable error line — the empty output of a broken query is
         // otherwise indistinguishable from an empty database.
-        expect(line[8]).toContain('{error:');
+        expect(script).toContain('{ error:');
     });
 
     it('pulls the session id, finish reason and context stats out of the readout’s answer', () => {
@@ -703,19 +711,24 @@ describe('the cache watch', () => {
             '--rm',
             '-v',
             'factory-ai_workspaces:/workspaces',
-            '--entrypoint',
-            'node',
-            'opencode-executor',
             '-e',
+            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+            '-e',
+            // The turn count rides from the driver's own constant, so the probe and the verdict
+            // cannot drift apart.
+            `CACHE_WATCH_TURNS=${CACHE_WATCH_TURNS}`,
         ]);
-        expect(line[8]).toContain(`/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`);
+        expect(line.slice(8, 12)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[12] as string;
+        expect(script).toContain('process.env.OPENCODE_DB');
+        expect(script).toContain('process.env.CACHE_WATCH_TURNS');
         // Newest-first, so the probe can answer from the run's last handful of messages without
         // reading the session whole.
-        expect(line[8]).toContain('order by id desc');
-        expect(line[8]).toContain('parent_id is null');
-        expect(line[8]).toContain('d.role!=="assistant"');
-        expect(line[8]).toContain('readOnly');
-        expect(line[8]).toContain('{error:');
+        expect(script).toContain('order by id desc');
+        expect(script).toContain('parent_id is null');
+        expect(script).toContain("d.role !== 'assistant'");
+        expect(script).toContain('readOnly');
+        expect(script).toContain('{ error:');
     });
 
     it('parses the probe’s answer, error lines included', () => {
@@ -2521,21 +2534,21 @@ describe('publishing the produced work', () => {
         expect(gitWorktreeScript).toContain('execFileSync');
         expect(gitWorktreeScript).not.toContain('execSync(');
         // The remote is fetched with the env file's credential; nothing on a command line.
-        expect(gitWorktreeScript).toContain('"fetch","origin","--prune"');
+        expect(gitWorktreeScript).toContain("git('fetch', 'origin', '--prune')");
         // Stale worktree admin entries are pruned before an add, so a directory that was
         // removed underneath git can be recreated instead of failing forever.
-        expect(gitWorktreeScript).toContain('"worktree","prune"');
-        expect(gitWorktreeScript).toContain('"worktree","add"');
+        expect(gitWorktreeScript).toContain("git('worktree', 'prune')");
+        expect(gitWorktreeScript).toContain("git('worktree', 'add', wt, branch)");
         // An existing worktree keeps its commits by rebasing onto the new default — with
         // --autostash, so a follow-up in the same tree works even when the previous run left
         // uncommitted edits: the edits are stashed for the rebase and reapplied after it.
-        expect(gitWorktreeScript).toContain('"rebase","--autostash","origin/"+def');
+        expect(gitWorktreeScript).toContain("inw('rebase', '--autostash', 'origin/' + def)");
         // A conflicted rebase aborts itself — the worktree must never sit mid-rebase — and the
         // failure names what happened.
-        expect(gitWorktreeScript).toContain('"rebase","--abort"');
+        expect(gitWorktreeScript).toContain("inw('rebase', '--abort')");
         expect(gitWorktreeScript).toContain('rebased onto');
         // A path that holds a git tree this sync did not create is refused, never deleted.
-        expect(gitWorktreeScript).toContain('/.git"');
+        expect(gitWorktreeScript).toContain("fs.existsSync(wt + '/.git')");
     });
 
     it('hands the sync the clone, the worktree and the branch, by env', async () => {
@@ -2595,7 +2608,7 @@ describe('publishing the produced work', () => {
         // was never pushed has no upstream, and the fatal rev-list would read its local-only
         // commits as fully landed — which once reported a two-commit task branch as "nothing to
         // publish".
-        expect(gitProbeScript).toContain('origin/"+out.defaultBranch+"..HEAD');
+        expect(gitProbeScript).toContain("'origin/' + out.defaultBranch + '..HEAD'");
         expect(gitProbeScript).not.toContain('@{u}');
         // The helper reads the token from the container's environment — the env file's job —
         // and the literal appears in no argv the publisher builds.

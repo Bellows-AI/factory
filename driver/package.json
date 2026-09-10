@@ -5,7 +5,7 @@
     "type": "module",
     "main": "dist/index.js",
     "scripts": {
-        "build": "tsc -b",
+        "build": "tsc -b && mkdir -p dist/scripts && cp -R src/scripts/. dist/scripts/",
         "dev": "tsx watch --env-file-if-exists=../.env src/index.ts"
     },
     "devDependencies": {

@@ -9,7 +9,7 @@ import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
 import { gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
 import type { SyncResult } from './publish.js';
-import { bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
+import { bellowsReadEnv, bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
 
 /**
@@ -465,7 +465,11 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                             name: 'bellows-read',
                             image: config.image,
                             imagePullPolicy: config.imagePullPolicy,
-                            command: ['sh', '-c', bellowsReadScript(config, job)],
+                            command: ['sh', '-c', bellowsReadScript],
+                            // The readout's parameters as literal env values — a path and two
+                            // constants shared with the splitter, never a credential (the same
+                            // justification the sync's REPO/WORKTREE/BRANCH literals give).
+                            env: Object.entries(bellowsReadEnv(config, job)).map(([name, value]) => ({ name, value })),
                             volumeMounts: [
                                 { name: 'workspaces', mountPath: config.workspaceMount, readOnly: true },
                             ],
@@ -481,8 +485,8 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
 }
 
 /**
- * `<org>/<user id>` — COPIED from services.ts (which copied it from docker.ts): the path is
- * interpolated into the readout script, and the board is not something this process trusts
+ * `<org>/<user id>` — COPIED from services.ts (which copied it from docker.ts): the path becomes
+ * an env value the readout script globs under, and the board is not something this process trusts
  * with a fragment of a shell command.
  */
 const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
