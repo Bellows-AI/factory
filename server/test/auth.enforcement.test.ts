@@ -132,6 +132,12 @@ describe('the route table', () => {
         [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
         [`/api/jobs/${JOB_ID}/complete`, 'worker'],
         [`/api/jobs/${JOB_ID}/output`, 'worker'],
+        // Both are the driver's gate machinery — the state reports after each gate runs and the
+        // post-sync re-read of `.bellows.yaml`. Missing from this table is what left the last run's
+        // gate state unstored: under AUTH_MODE=github both fell through to `user` and answered the
+        // worker token 401, while the gates themselves ran and passed unseen.
+        [`/api/jobs/${JOB_ID}/gates`, 'worker'],
+        [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
         ['/api/otlp/v1/logs', 'ingest'],
         ['/api/sessions/branch', 'ingest'],
         // Both fall through to `user` rather than being listed anywhere, which is the point: the

@@ -202,7 +202,7 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 | `/api/auth/*` | open. `/me` 401s on its own; being what *tells* the SPA it is unauthenticated is its purpose. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
 | `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/resume`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done` | session cookie |
-| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete` | `Bearer fwt_…` worker token |
+| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread` | `Bearer fwt_…` worker token |
 | OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
 
 - **The two sets are disjoint, and that is the point.** A session accepted on `/claim` would let any
