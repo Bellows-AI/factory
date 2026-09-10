@@ -241,7 +241,15 @@ The sync is the first writer on the tree, so the checkout CLAIM is taken before 
 the same acquireClaim protocol the runner's prepare runs, and the claim is then held through
 the run (prepare's acquire recognizes its own holder). A claim held against a live newer
 attempt throws the stand-down, the loop leaves the job to its lease, and a sync that fails
-after taking the claim releases it, holder-checked and uid-preconditioned. The
+after taking the claim releases it, holder-checked and uid-preconditioned — but only after
+the sync Job has been deleted with Foreground propagation and the delete has ANSWERED
+(Foreground returns once the pod is gone): a failed sync hands the checkout over, and the
+handover must be clean. Two terminal pre-run refusals — a `.bellows.yaml` that cannot be read,
+gates this driver cannot run — complete the job without ever reaching the runner, whose
+cleanup is the ordinary release path, so the loop hands the fence back explicitly through the
+Runner's optional `releaseFence` (this executor's ownership-checked claim release; docker
+implements nothing, its sweep leaves nothing behind).
+The
 sync is the worktree script as an aux Job — the executor image (which carries node and git) over
 a read-WRITE PVC mount, the three paths the script needs as literal env, the claim env by a
 per-attempt Secret read through `envFrom` (omitted entirely when the claim resolves to nothing —
@@ -249,12 +257,19 @@ a pod that references a missing Secret sits in `CreateContainerConfigError`), th
 `activeDeadlineSeconds` as its wall
 clock, the verdict scraped off the pod log — and it is attempt-scoped (`factory.job` /
 `factory.lease`) like everything else, so the re-claim fence sweeps a dead attempt's sync Job
-like anything else. The sync Job is also deleted on every exit path — success, a failed
+like anything else. When the claim env carries `GITHUB_TOKEN`, the pod's env grows one more
+literal: `CRED_HELPER`, the push's credential-helper CODE (a value that is a program, not a
+credential — the token itself travels the Secret, which git's spawned helper reads from the
+environment; git reads no token from the environment itself). Without the token the env stays
+the three paths, and the fetch runs plain — a public repo's unauthenticated fetch, which a
+helper answering an empty password would break. The sync Job is also deleted on every exit
+path — success, a failed
 verdict, a poll that never answered, a throw — best-effort, fire-and-forget: the name carries
 the lease token, so the delete can never reach a replacement's Job, and a delete that misses
 is swept by the next attempt's fence anyway. Leaving it to its kubelet deadline would let it
 overlap a replacement's sync on the shared worktree, which is the overlap the claim exists to
-close.
+close; on the failure arms the Foreground delete above has already taken it down, and this
+Background delete then answers 404 and is swallowed.
 
 ## Testing
 

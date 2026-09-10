@@ -156,6 +156,16 @@ export interface Runner {
      * { ok: false, reason } rather than throwing; the loop turns that into the verdict.
      */
     syncCheckout(job: BoardJob): Promise<SyncResult>;
+    /**
+     * Hands back whatever the startup sync's fence took — the kubernetes checkout claim, which
+     * syncCheckout acquires and HOLDS through the run. The loop calls this only on the terminal
+     * pre-run refusals that complete the job failed WITHOUT runner.run, where run()'s finally —
+     * the ordinary release path — never executes; a refusal that never runs must not hold the
+     * checkout. Ownership-checked inside the runner: only the exact claim this attempt still
+     * holds is released, never one that moved on. Optional: docker's fence leaves nothing
+     * behind to release, so its runner implements nothing and a loop facing it never calls.
+     */
+    releaseFence?(job: BoardJob): Promise<void>;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -701,6 +711,16 @@ export function claimEnv(job: BoardJob): Record<string, string> {
 }
 
 /**
+ * Whether the claim env carries GITHUB_TOKEN — the condition under which the startup sync's
+ * fetch is handed the credential-helper CODE. Git reads no token from the environment, and the
+ * executor images ship no helper, so a private-repo fetch needs one; a public repo with no
+ * token must keep its plain unauthenticated fetch, which a helper answering an empty password
+ * would break. Shared with the kubernetes syncJobSpec, which embeds the same code as a literal.
+ */
+export const claimCarriesGithubToken = (job: BoardJob): boolean =>
+    Object.prototype.hasOwnProperty.call(claimEnv(job), 'GITHUB_TOKEN');
+
+/**
  * One `NAME=value` line, refusing a newline in either half: the file is line-structured and docker
  * has no quoting for it, so a multiline value would arrive truncated with no error anywhere. The
  * board refuses one at PUT time; this is the driver's own line of defence against rows that
@@ -1035,24 +1055,71 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * before the runner does — and once in run(), which keeps its own call so the guarantee
      * never depends on the loop's ordering. The sweep is idempotent; removing twice what was
      * removed once removes nothing.
+     *
+     * Failures PROPAGATE, and for one reason: a swallowed daemon refusal would be
+     * indistinguishable from "nothing left", and the sync would start while the leftover
+     * runner still writes the worktree. A refusal here is INFRASTRUCTURE — syncCheckout lets
+     * it throw (the loop leaves the job to its lease), and run()'s own call propagates the
+     * same way — never the command's verdict. The one tolerated shape is docker's already-gone
+     * answer on a removal: a container exiting between the ps and its rm is the fence
+     * succeeding, not failing. The transitional unlabelled-network rm below keeps tolerating
+     * absent outright — it removes by a NAME that may never have existed.
      */
+
+    /**
+     * Docker's already-gone answer, in either of its spellings, on stderr or the execFile
+     * message. Read from the removal's own error only — never from a LIST, where "not found"
+     * could never mean anything.
+     */
+    const alreadyGone = (e: unknown): boolean => {
+        const err = e as { stderr?: string | Buffer; message?: string };
+        const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+        return /no such (container|network)|not found/i.test(`${stderr} ${err.message ?? ''}`);
+    };
+
     const reclaimFence = async (job: BoardJob): Promise<void> => {
-        const leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]).catch(
-            () => ({ stdout: '' }),
-        );
-        for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
-            await execDocker(['rm', '-f', id]).catch(() => undefined);
+        let leftovers: { stdout: string };
+        try {
+            leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]);
+        } catch (e) {
+            throw new Error(
+                `the re-claim fence could not list the leftover containers of job ${job.id}: ${(e as Error).message}`,
+            );
         }
-        const staleNetworks = await execDocker([
-            'network',
-            'ls',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--format',
-            '{{.Name}}',
-        ]).catch(() => ({ stdout: '' }));
+        for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
+            try {
+                await execDocker(['rm', '-f', id]);
+            } catch (e) {
+                if (alreadyGone(e)) continue;
+                throw new Error(
+                    `the re-claim fence could not remove the leftover container ${id} of job ${job.id}: ${(e as Error).message}`,
+                );
+            }
+        }
+        let staleNetworks: { stdout: string };
+        try {
+            staleNetworks = await execDocker([
+                'network',
+                'ls',
+                '--filter',
+                `label=factory.job=${job.id}`,
+                '--format',
+                '{{.Name}}',
+            ]);
+        } catch (e) {
+            throw new Error(
+                `the re-claim fence could not list the leftover networks of job ${job.id}: ${(e as Error).message}`,
+            );
+        }
         for (const name of staleNetworks.stdout.split('\n').map((name) => name.trim()).filter(Boolean)) {
-            await execDocker(['network', 'rm', name]).catch(() => undefined);
+            try {
+                await execDocker(['network', 'rm', name]);
+            } catch (e) {
+                if (alreadyGone(e)) continue;
+                throw new Error(
+                    `the re-claim fence could not remove the leftover network ${name} of job ${job.id}: ${(e as Error).message}`,
+                );
+            }
         }
         // TRANSITIONAL: networks created before the lease token joined the name carry no
         // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
@@ -1112,6 +1179,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     `WORKTREE=${worktree}`,
                     '-e',
                     `BRANCH=${worktreeBranch(job)}`,
+                    // The fetch's credential helper, as CODE in an env VALUE — the same class
+                    // of value as the three paths above, and the same mechanism as the push's
+                    // `-c credential.helper=`. Only when the claim env carries the token the
+                    // helper reads; the token itself travels the env file, never argv.
+                    ...(claimCarriesGithubToken(job) ? ['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`] : []),
                     '--entrypoint',
                     'node',
                     config.image,

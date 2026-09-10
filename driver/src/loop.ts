@@ -751,6 +751,14 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  * and the reason this is a refusal rather than a fallback.
                  */
                 if (job.gateError) {
+                    /*
+                     * The sync took the checkout (kubernetes's claim) and this refusal never
+                     * reaches runner.run, whose cleanup is what releases it — so the fence goes
+                     * back here, ownership-checked inside the runner, before the job is failed
+                     * and the way to a replacement claimant opens. Without this the
+                     * factory-job-<id>-claim ConfigMap would outlive the job indefinitely.
+                     */
+                    await runner.releaseFence?.(job);
                     log(`job ${job.id}: its gates file could not be read, failing`);
                     await board
                         .complete(job, {
@@ -767,6 +775,10 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 // it gets the honest answer: a named failure, never a run whose declared
                 // checks silently did not happen.
                 if (job.gates?.gates?.length && !gates) {
+                    // Same as the gateError refusal above: this branch completes the job without
+                    // runner.run, so the checkout the sync fenced is released here, not held
+                    // forever by a claim whose attempt never runs.
+                    await runner.releaseFence?.(job);
                     const why = 'this driver was started with no gate environment configured';
                     log(`job ${job.id}: declares gates this driver cannot run, failing`);
                     await board

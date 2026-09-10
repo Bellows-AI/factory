@@ -24,7 +24,7 @@ import {
     syncJobName,
     syncJobSpec,
 } from '../src/k8s.js';
-import { gitWorktreeScript } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -534,6 +534,24 @@ describe('the worktree sync', () => {
         }
     });
 
+    // The sync's fetch needs a credential helper to read the token git never reads from the
+    // environment — but only when there IS a token: a public repo must keep its plain
+    // unauthenticated fetch. What travels as the literal is helper CODE (the same class as the
+    // three path literals), never the credential value — that stays in the Secret.
+    it('passes the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', () => {
+        const tokenJob: BoardJob = { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } };
+        const withToken = syncJobSpec(cfg(), tokenJob, syncEnvSecretName(tokenJob)).spec.template.spec.containers[0];
+        expect(withToken.env).toContainEqual({ name: 'CRED_HELPER', value: CREDENTIAL_HELPER });
+        // The pin that must survive: no credential VALUE travels as a literal, and the claim
+        // env still rides the Secret by reference.
+        expect(JSON.stringify(withToken.env)).not.toContain('t0k-3n');
+        expect(withToken.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(tokenJob) } }]);
+
+        const noToken = syncJobSpec(cfg(), { ...repoJob, env: { CORE_TOKEN: 'shh' } }, 'the-secret')
+            .spec.template.spec.containers[0];
+        expect(noToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+    });
+
     // An env-less claim is a supported board configuration (docs/jobs.md: AUTH_MODE=none, no
     // GITHUB_TOKEN in any scope). The sync pod must not reference a Secret that will never
     // exist — a pod that does sits in CreateContainerConfigError until the deadline kills the
@@ -710,6 +728,83 @@ describe('the worktree sync', () => {
         expect(release).toBeDefined();
         // The uid precondition is what keeps a stale release from reaching a newer claim.
         expect((release?.body as { preconditions?: { uid?: string } }).preconditions?.uid).toBeDefined();
+    });
+
+    /*
+     * A failure hands the checkout over to a replacement — and a replacement's sync must not
+     * overlap the leftover sync pod on the shared worktree. So the failure arms delete the sync
+     * Job with Foreground propagation (the delete returns only after the pod is gone) and AWAIT
+     * it BEFORE releaseClaim; the finally's Background delete alone returns immediately and
+     * leaves the pod terminating while the next claimant acquires. Modeled with a delay on the
+     * sync Job delete: a release issued before the await would complete (and be recorded) first.
+     */
+    it('takes the sync Job down Foreground, and only then releases the claim, when the sync fails', async () => {
+        const base = fakeRequest({
+            log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' },
+        });
+        const completions: string[] = [];
+        const gated: K8sRequest = async (method, path, body) => {
+            const response = await base.request(method, path, body);
+            if (method === 'DELETE' && path === `${jobPath(namespace, syncJobName(repoJob))}?propagationPolicy=Foreground`) {
+                // Foreground returns only once the dependents are gone — that takes time.
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                completions.push('sync-job-gone');
+            } else if (method === 'DELETE' && path === claimPathFor(repoJob.id)) {
+                completions.push('claim-released');
+            }
+            return response;
+        };
+        const result = await runner(gated).syncCheckout(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(completions).toEqual(['sync-job-gone', 'claim-released']);
+    });
+
+    // The same handover discipline on the THROW arm: a poll that died mid-flight leaves a sync
+    // pod that may still be running, and the rethrow follows the release — so the take-down
+    // must be complete before the claim goes.
+    it('takes the sync Job down Foreground, and only then releases the claim, when the sync throws mid-flight', async () => {
+        const completions: string[] = [];
+        const serve = claimServer();
+        const request: K8sRequest = async (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) {
+                if (method === 'DELETE' && path === claimPathFor(repoJob.id)) completions.push('claim-released');
+                return claimAnswer;
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.reject(new Error('the apiserver closed the connection'));
+            }
+            // Both API groups a delete can name: the claim (/api/v1) and the sync Job
+            // (/apis/batch/v1).
+            if (method === 'DELETE' && path?.startsWith('/api')) {
+                if (path.includes(syncJobName(repoJob))) {
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                    completions.push('sync-job-gone');
+                }
+                return { status: 200, body: '{}' };
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/closed the connection/);
+        expect(completions).toEqual(['sync-job-gone', 'claim-released']);
+    });
+
+    // The mirror pin: success keeps ownership, so its delete stays fire-and-forget Background
+    // and no Foreground delete is issued at all — the claim is held through the run.
+    it('keeps the success-path sync Job delete Background and never deletes Foreground', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const result = await runner(request).syncCheckout(repoJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes('propagationPolicy=Foreground'))).toBe(false);
+        expect(
+            calls.some(
+                (call) =>
+                    call.method === 'DELETE' &&
+                    call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
     });
 
     // The sync takes the claim, the run follows within the same lease: prepare()'s acquire must

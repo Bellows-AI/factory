@@ -3,10 +3,17 @@
 // call: no value can become a command. One JSON verdict on stdout: {ok:true,reason:null} or
 // {ok:false,reason}.
 //
-// Environment (set by the driver; paths and a branch name, never credentials):
-//   REPO     — the clone, where `origin` lives and the worktree is created FROM;
-//   WORKTREE — the task's own tree;
-//   BRANCH   — the branch the worktree runs on (`factory/<thread root id>`).
+// Environment (set by the driver; paths, a branch name, and — when the claim carries a token —
+// the credential-helper CODE; never a credential value):
+//   REPO        — the clone, where `origin` lives and the worktree is created FROM;
+//   WORKTREE    — the task's own tree;
+//   BRANCH      — the branch the worktree runs on (`factory/<thread root id>`);
+//   CRED_HELPER — optional: the git credential-helper program the fetch runs (`-c
+//                 credential.helper=`), set only when the claim env carries GITHUB_TOKEN. The
+//                 token itself still arrives only via the environment, which git hands the
+//                 helper it spawns; git reads no token from the environment itself, so a
+//                 private-repo fetch without a helper cannot authenticate. Absent: the fetch
+//                 runs plain, which is what a public repo wants.
 //
 // WORKTREE present: rebased onto the new default with --autostash, so a follow-up — which
 // lands in this same tree by design — works whether or not the previous run left uncommitted
@@ -39,7 +46,8 @@ const fail = (r) => {
 };
 
 try {
-    git('fetch', 'origin', '--prune');
+    if (process.env.CRED_HELPER) git('-c', 'credential.helper=' + process.env.CRED_HELPER, 'fetch', 'origin', '--prune');
+    else git('fetch', 'origin', '--prune');
     let def = 'main';
     try {
         def = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');

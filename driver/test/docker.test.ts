@@ -2574,12 +2574,45 @@ describe('publishing the produced work', () => {
         expect(run).toEqual(expect.arrayContaining(['-e', `BRANCH=factory/${job.id}`]));
     });
 
+    // git reads no token from the environment, and the executor images ship no credential
+    // helper — so a private-repo fetch needs the same token-backed helper the push uses. It
+    // rides CONDITIONALLY: only when the claim env actually carries GITHUB_TOKEN, because a
+    // public repo must keep its plain unauthenticated fetch (a helper answering an empty
+    // password would break it). The VALUE passed is helper CODE, never the credential — the
+    // token itself travels only in the env file, where the helper reads it.
+    it('hands the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        const run = calls.find((a) => a[0] === 'run')!;
+        expect(run).toEqual(expect.arrayContaining(['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`]));
+        // The token itself rides the env file, never argv.
+        expect(run.some((arg) => arg.includes('t0k-3n'))).toBe(false);
+
+        // Any other claim env — even a non-empty one — keeps the plain fetch, no helper.
+        await runner.syncCheckout({ ...repoJob, env: { CORE_TOKEN: 'shh' } });
+        const plain = calls.filter((a) => a[0] === 'run')[1]!;
+        expect(plain.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+    });
+
     /*
      * A minimal stateful daemon for the sync's fence: containers and networks live in maps,
      * `ps` and `network ls` honor their `--filter label=` pairs, and rm removes what it names.
-     * The sync container itself answers the script's success verdict.
+     * The sync container itself answers the script's success verdict. `fail`, when given, turns
+     * the matching call into an execFile-shaped rejection — stderr on the error, the way the
+     * promisified execFile carries a daemon refusal — so a test can script the daemon saying no.
      */
-    const fenceDaemon = () => {
+    const fenceDaemon = (fail?: (args: string[]) => string | null) => {
         const containers = new Map<string, Record<string, string>>();
         const networks = new Map<string, Record<string, string>>();
         const calls: string[][] = [];
@@ -2594,6 +2627,10 @@ describe('publishing the produced work', () => {
         };
         const exec = vitest.fn(async (args: string[]) => {
             calls.push(args);
+            const refused = fail?.(args);
+            if (refused) {
+                throw Object.assign(new Error(`Command failed: docker ${args.join(' ')}`), { stderr: refused });
+            }
             if (args[0] === 'run' && args.includes('--entrypoint')) {
                 return { stdout: '{"ok":true,"reason":null}' };
             }
@@ -2669,6 +2706,99 @@ describe('publishing the produced work', () => {
         const runIndex = d.calls.findIndex((a) => a[0] === 'run');
         expect(rmIndex).toBeGreaterThanOrEqual(0);
         expect(rmIndex).toBeLessThan(runIndex);
+    });
+
+    // A fence that converts a failed `docker ps` into an empty answer reads "nothing left" —
+    // and the sync would start while a previous attempt's runner is still writing the worktree.
+    // The fence is infrastructure, not the command's verdict: it must throw, and the loop's
+    // try/catch around syncCheckout leaves the job to its lease.
+    it('fails the sync when the fence cannot list the job’s leftover containers', async () => {
+        const d = fenceDaemon((args) =>
+            args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null,
+        );
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        // No sync container over an unfenced checkout: the throw precedes the run argv entirely.
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    it('fails the sync when the fence cannot list the job’s stale networks', async () => {
+        const d = fenceDaemon((args) =>
+            args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null,
+        );
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    it('fails the sync when a leftover container refuses to be removed', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = fenceDaemon((args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null));
+        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    it('fails the sync when a leftover network refuses to be removed', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = fenceDaemon((args) =>
+            args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null,
+        );
+        d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    // The one tolerated shape: a container exiting between the fence's ps and its rm answers
+    // "No such container" — the fence SUCCEEDED, the runner is gone. Failing there would burn
+    // attempts on the daemon confirming a removal already finished.
+    it('proceeds when the fence’s rm answers that the container is already gone', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = fenceDaemon((args) =>
+            args[0] === 'rm'
+                ? `Error response from daemon: No such container: ${containerName({ ...job, leaseToken: OLD_TOKEN })}`
+                : null,
+        );
+        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        expect(await runner.syncCheckout(repoJob)).toEqual({ ok: true, reason: null });
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(true);
     });
 
     it('runs every publish step inside the task worktree', async () => {

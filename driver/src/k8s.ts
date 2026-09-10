@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimEnv, containerName, envFileBody, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
+import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
 import type { RunOutcome, RunSession, Runner } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
-import { gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
+import { CREDENTIAL_HELPER, gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
 import type { SyncResult } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
@@ -548,6 +548,15 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                                 { name: 'REPO', value: clone },
                                 { name: 'WORKTREE', value: worktree },
                                 { name: 'BRANCH', value: worktreeBranch(job) },
+                                // The fetch's credential helper CODE — a literal that is code,
+                                // the same class as the three path literals above (the pin on
+                                // literal credentials stays intact). Only when the claim env
+                                // carries the token the helper reads; the token itself travels
+                                // the Secret below, which git's spawned helper reads from the
+                                // pod's environment.
+                                ...(claimCarriesGithubToken(job)
+                                    ? [{ name: 'CRED_HELPER', value: CREDENTIAL_HELPER }]
+                                    : []),
                             ],
                             ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
@@ -1795,6 +1804,25 @@ export function createKubernetesRunner(
              */
             await acquireClaim(job);
 
+            /*
+             * The deletion the FAILURE arms use, awaited, with Foreground propagation: the
+             * delete returns only after the Job's dependents — the pod — are gone, so the
+             * releaseClaim that follows can never hand the checkout to a replacement while the
+             * sync's pod is still writing the worktree. The success path deliberately keeps the
+             * fire-and-forget Background delete in the finally below: there the Job is already
+             * terminal AND the claim stays held through the run, so no handover window exists.
+             * Failure hands the checkout over; success keeps ownership.
+             */
+            const takeSyncJobDown = async (): Promise<void> => {
+                await request(
+                    'DELETE',
+                    `${jobPath(config.k8sNamespace, syncJobName(job))}?propagationPolicy=Foreground`,
+                ).then(
+                    () => undefined,
+                    () => undefined,
+                );
+            };
+
             let secret: string | null = null;
             try {
                 const result = await (async (): Promise<SyncResult> => {
@@ -1901,12 +1929,20 @@ export function createKubernetesRunner(
                 })();
                 // A failed sync means no runner follows — nobody else would give the checkout
                 // back, so the claim goes here, conditionally on this attempt still holding its
-                // exact incarnation (releaseClaim never touches a claim that moved on).
-                if (!result.ok) await releaseClaim(job);
+                // exact incarnation (releaseClaim never touches a claim that moved on). The sync
+                // Job goes down Foreground FIRST, awaited: handing the checkout back is only
+                // clean once nothing of this sync can still write the tree.
+                if (!result.ok) {
+                    await takeSyncJobDown();
+                    await releaseClaim(job);
+                }
                 return result;
             } catch (e) {
                 // A thrown sync — a transport failure, a malformed env line — releases the claim
                 // the same way: holding it would only leave the next claimant to take it over.
+                // The take-down precedes the release for the same handover reason as above; both
+                // are best-effort, and the original error is the one that propagates.
+                await takeSyncJobDown();
                 await releaseClaim(job);
                 throw e;
             } finally {
@@ -1915,9 +1951,13 @@ export function createKubernetesRunner(
                  * never answered, a throw — not just the Secret it was guarded by: a Job left to
                  * its own deadline could overlap a replacement's sync on the shared worktree. The
                  * name carries the lease token, so this delete can never reach a replacement's
-                 * Job. Best-effort, fire-and-forget — the same posture as the Secret below and
-                 * the readout's own finally: a delete that misses is swept by the next attempt's
-                 * fence, which removes every `factory.job=<id>` object before its own creates.
+                 * Job. The FAILURE arms above already deleted it Foreground and awaited the
+                 * answer — this Background delete then answers 404 and is swallowed; on the
+                 * SUCCESS path it is THE delete, and is fire-and-forget because the claim is
+                 * still held: no handover, no window. Best-effort, fire-and-forget — the same
+                 * posture as the Secret below and the readout's own finally: a delete that misses
+                 * is swept by the next attempt's fence, which removes every `factory.job=<id>`
+                 * object before its own creates.
                  */
                 void request(
                     'DELETE',
@@ -1927,6 +1967,19 @@ export function createKubernetesRunner(
                     void request('DELETE', `${secretsPath}/${secret}`).then(() => undefined, () => undefined);
                 }
             }
+        },
+
+        /*
+         * The loop's terminal pre-run refusals (a gates file that cannot be read, gates this
+         * driver cannot run) complete the job failed WITHOUT runner.run, so run()'s finally —
+         * the ordinary release path — never executes, and the claim the sync took would sit on
+         * the checkout indefinitely. This hands it back: the same ownership-checked release
+         * releaseClaim performs, so a claim that moved on is never touched. Docker implements
+         * nothing here (its sweep leaves nothing behind), so the interface keeps the method
+         * optional.
+         */
+        async releaseFence(job: BoardJob): Promise<void> {
+            await releaseClaim(job);
         },
     };
     return runner;

@@ -100,6 +100,9 @@ tasks of DIFFERENT threads on one repository are two trees, never two writers on
 thread never holds two claims either: the claim refuses a row whose root already has a
 `running` row, so a follow-up waits for the row it follows to reach a terminal status before
 it is handed out, and one `.worktrees/<rootJobId>` has at most one live claim from the board.
+The exclusion is decided under a transaction-scoped advisory lock on the thread root, because
+under READ COMMITTED a concurrent claim could otherwise miss an uncommitted `running` update
+and pass it — claims of one thread fully serialize, different threads never block each other.
 What remains is the reclaimed row's own predecessor — a lease expires, the row is handed out
 again, and the superseded attempt may still be dying — and there the heartbeat's 409 kill is
 the arbiter between writers, with the driver's re-claim fence sweeping the predecessor's
@@ -613,21 +616,41 @@ the same race every CI-on-first-commit system lives with. The k8s form is in
 workspace reconcile clones a repository once and otherwise leaves the checkout untouched, and
 the startup sync is what makes each run start from the code — and the declared gates — that
 main actually has. At the start of each attempt, before the runner spawns, one container
-fetches the remote (credential by the same env file) and then: the task's worktree is created
+fetches the remote and then: the task's worktree is created
 branched off `origin/<default>` (first attempt of the thread) or rebased onto the new default
 with `--autostash`, keeping its own commits AND any uncommitted edits the previous run left —
 which is what makes a follow-up, which lands in this same tree by design, work whether or not
 the last run finished tidy, and what keeps a kubernetes thread (where nothing commits for you)
-alive across turns. The sync is the first WRITER on the tree, so each platform's re-claim
+alive across turns. The fetch's credential: the claim env rides the env file as before, and
+when it carries a `GITHUB_TOKEN` the fetch runs under the push's own token-backed credential
+helper (the helper CODE travels as an env value; the token itself only ever the env) — git
+reads no token from the environment, so a private-repo fetch without a helper cannot
+authenticate; a public repo with no token keeps its plain unauthenticated fetch, which a
+helper answering an empty password would break. The sync is the first WRITER on the tree, so
+each platform's re-claim
 fence runs inside the sync, before the script: docker sweeps the `factory.job` label's
 leftovers (the runner's own sweep after it is the documented twice-per-attempt idempotency),
 kubernetes TAKES the checkout claim first and holds it through the run — `prepare`'s acquire
 recognizes its own holder and proceeds. A kubernetes claim held against a live newer attempt
 throws the attempt's stand-down, and the loop treats that like a runner that cannot start: no
-verdict, the lease expires, the job is offered again. A sync that fails after taking the
-claim RELEASES it (uid-preconditioned, holder-checked), and the sync Job itself is deleted on
-every exit path — a Job left to its kubelet deadline could overlap a replacement's sync on
-the shared tree. Two conflicts
+verdict, the lease expires, the job is offered again — and so does a fence that cannot prove
+the coast clear, docker's sweep included: a failed `docker ps` is never read as "nothing
+left", because starting the sync over a live previous runner is the one outcome the fence
+exists to prevent (a removal failing with docker's already-gone answer is the fence
+succeeding, not failing). A sync that fails after taking the
+claim RELEASES it (uid-preconditioned, holder-checked) — but only AFTER the sync Job is
+deleted with Foreground propagation and the delete has ANSWERED: Foreground returns once the
+pod is gone, so the checkout is never handed to a replacement while this sync's pod can still
+write the tree. On success the deletion stays fire-and-forget Background, because the claim —
+and with it the checkout — is still held through the run: no handover, no window. The sync
+Job is deleted on
+every exit path either way — a Job left to its kubelet deadline could overlap a replacement's
+sync on
+the shared tree. Two terminal pre-run refusals never reach `runner.run`, whose cleanup is the
+ordinary release path — a gates file that cannot be read, and gates this driver cannot run —
+so the loop hands the fence back explicitly (kubernetes's ownership-checked claim release;
+docker holds nothing) before failing the job: a refusal that never runs must not hold the
+checkout forever. Two conflicts
 still dead-end the attempt, with the work preserved and named: a rebase whose COMMITS conflict
 aborts itself (the worktree must never sit mid-rebase), and a rebase whose reapplied STASH
 conflicts leaves the markers and the retained autostash in the tree and refuses — a tree with

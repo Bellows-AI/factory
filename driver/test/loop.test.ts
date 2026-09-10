@@ -580,6 +580,79 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    /*
+     * After a kubernetes syncCheckout, the runner HOLDS the checkout claim; the loop's terminal
+     * pre-run refusals complete the job failed WITHOUT runner.run, so run()'s finally — the
+     * normal release path — never comes, and the factory-job-<id>-claim ConfigMap would sit
+     * forever. These refusals must hand the claim back first, ownership-checked inside the
+     * runner; docker implements no releaseFence, so the optional call is a no-op there.
+     */
+    const releaseEvents = (board: BoardStub, runner: Runner): { events: string[] } => {
+        const events: string[] = [];
+        runner.releaseFence = async (released) => {
+            events.push(`release:${released.id}`);
+        };
+        const realComplete = board.complete.bind(board);
+        board.complete = async (claimed, result) => {
+            events.push(`complete:${claimed.id}`);
+            return realComplete(claimed, result);
+        };
+        return { events };
+    };
+
+    it('releases the checkout fence before failing a job whose gates file cannot be read', async () => {
+        const board = stubBoard([job(1)], { rereadGates: { gates: null, gateError: 'unknown key "ports"' } });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+        const { events } = releaseEvents(board.board, runner);
+
+        await drive({ ...board, runner });
+
+        // Released BEFORE the verdict — a replacement claimant may start the moment the job is failed.
+        expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+    });
+
+    it('releases the checkout fence before failing a job that declares gates this driver cannot run', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+        const { events } = releaseEvents(board.board, runner);
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
+        expect(board.board.completed[0]?.output).toContain('no gate environment configured');
+    });
+
+    // The normal path must NOT release here: the run is about to take over, and run()'s own
+    // finally is the owner of the claim until the attempt ends.
+    it('does not release the fence on the normal path — the run owns the claim', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        const { events } = releaseEvents(board.board, runner);
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual([`complete:${job(1).id}`]);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    // And the sync-failure refusal releases nothing here either: k8s syncCheckout already took
+    // the claim down itself (Foreground Job delete, then release) before answering ok:false.
+    it('does not release the fence when the sync itself fails — the runner released it', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok(), null, null, null, { ok: false, reason: 'conflict in driver/src/loop.ts' });
+        const { events } = releaseEvents(board.board, runner);
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual([`complete:${job(1).id}`]);
+        expect(board.board.completed[0]?.status).toBe('failed');
+    });
+
     // The daemon can refuse to create the container while `docker run` itself succeeds as a
     // process — a leftover name, a volume or network a stack rebuild removed. The runner asks
     // its platform whether the container ever ran and stamps `started: false`; the loop
