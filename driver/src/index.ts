@@ -1,8 +1,8 @@
 import { createBoard } from './board.js';
-import { loadDriverConfig } from './config.js';
+import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
 import { createDockerRunner } from './docker.js';
 import { createGateManager, createGateServer } from './gates.js';
-import { createKubernetesRunner, inClusterRequest } from './k8s.js';
+import { createKubernetesGateManager, createKubernetesRunner, inClusterRequest } from './k8s.js';
 import { createLoop, type GateStack } from './loop.js';
 
 const config = loadDriverConfig(process.env);
@@ -20,38 +20,45 @@ const board = createBoard({
     leaseSeconds: config.leaseSeconds,
     token: config.boardToken,
 });
-// EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on the
-// first claim: a driver asked for kubernetes outside a cluster should say so at startup.
+// EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
+// the first claim: a driver asked for kubernetes outside a cluster should say so at startup.
+const request = config.executor === 'kubernetes' ? inClusterRequest() : null;
 const runner =
     config.executor === 'kubernetes'
-        ? createKubernetesRunner(config, inClusterRequest())
+        ? createKubernetesRunner(config, request!)
         : createDockerRunner(config);
 
-// The gate machinery is docker-exec work, so it exists only under the docker executor; under
-// kubernetes a gated job is refused at claim with a reason, which the loop decides. The endpoint
-// is NOT opened here — the server listens lazily on the first gated claim, so a driver that never
-// meets a gated job opens no socket at all.
-const gates: GateStack | undefined =
-    config.executor === 'docker'
-        ? (() => {
-              const manager = createGateManager({
-                  config,
-                  cooldownMs: config.gateCooldownMs,
-                  gateTimeoutMs: config.gateTimeoutMs,
-              });
-              return {
-                  manager,
-                  server: createGateServer({ host: config.gateListenHost, manager }),
-                  advertiseUrl: (port) => config.gateAdvertiseUrl ?? `http://host.docker.internal:${port}`,
-              };
-          })()
-        : undefined;
+// The gate machinery exists under both executors: docker keeps a warm environment container per
+// checkout and execs into it, kubernetes runs each gate as a Job in the declared image — the
+// runner decides, the loop does not. The endpoint is NOT opened here — the server listens
+// lazily on the first gated claim, so a driver that never meets a gated job opens no socket at
+// all.
+const gates: GateStack = (() => {
+    if (config.executor === 'kubernetes') {
+        const manager = createKubernetesGateManager({ config, request: request! });
+        return {
+            manager,
+            server: createGateServer({ host: config.gateListenHost, manager }),
+            advertiseUrl: (port) => gateAdvertiseUrlFor(config.gateAdvertiseUrl, port),
+        };
+    }
+    const manager = createGateManager({
+        config,
+        cooldownMs: config.gateCooldownMs,
+        gateTimeoutMs: config.gateTimeoutMs,
+    });
+    return {
+        manager,
+        server: createGateServer({ host: config.gateListenHost, manager }),
+        advertiseUrl: (port) => gateAdvertiseUrlFor(config.gateAdvertiseUrl, port),
+    };
+})();
 
 const loop = createLoop({
     board,
     runner,
     config,
-    ...(gates ? { gates } : {}),
+    gates,
     log: (m) => console.log(`[driver] ${m}`),
 });
 
@@ -71,10 +78,11 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 await loop.start();
-// The drain above lets in-flight jobs finish — including their gates, which exec into these very
-// environments — and only then does the environment go. Tearing down on the signal instead would
-// kill the containers every draining gated job is about to exec into.
-await gates?.manager.stop();
+// The drain above lets in-flight jobs finish — including their gates — and only then does the
+// docker environment go. Tearing down on the signal instead would kill the containers every
+// draining gated job is about to exec into. (The kubernetes manager's stop is a no-op: its gate
+// runs leave nothing behind.)
+await gates.manager.stop();
 // The ad-hoc socket holds the event loop open; without this the process never exits after a
 // graceful drain once any gated job has run.
-await gates?.server.close();
+await gates.server.close();

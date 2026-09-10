@@ -126,8 +126,11 @@ done
 # status, delete it, list its pods, read one pod's log. Nothing watches; the jobs rule carries no
 # list, which the exact-verbs assertion pins.
 rbac="$(awk '/^# Source: factory\/templates\/driver-rbac.yaml/,/^---/' "$work/rendered.yaml")"
+# `list` on jobs and services is the re-claim fence: its sweep is a collection GET, and a
+# collection GET needs the list verb — a rule without it makes every fence round a 403.
 expect_contains     'the driver role grants the runner calls' "$rbac" \
-    "verbs: ['create', 'get', 'delete']"
+    "resources: ['jobs']
+      verbs: ['create', 'get', 'delete', 'list']"
 # The claim env's per-job Secret: create before the Job, delete with it. No `get`, no `list` —
 # the driver writes values it was handed and never reads one back.
 expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
@@ -139,7 +142,16 @@ expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
 expect_contains     'the driver role manages the checkout claim' "$rbac" \
     "resources: ['configmaps']
       verbs: ['create', 'get', 'delete']"
-expect_contains     'the driver role lists pods, only to find them' "$rbac" "verbs: ['list']"
+expect_contains     'the driver role lists pods, only to find them' "$rbac" "verbs: ['create', 'delete', 'list']"
+# Gate runs ride the jobs rule (a gate run IS a Job), but a declared SERVICE is a long-running
+# neighbor pod, and its DNS name is a Service object: create before the runner starts, delete
+# with the attempt, list for the fence sweep and the attempt teardown.
+expect_contains     'the driver role names the service DNS objects' "$rbac" \
+    "resources: ['services']
+      verbs: ['create', 'delete', 'list']"
+# Arbitrary exec into a running pod is the one escalation the design never needed: gates run as
+# Jobs this driver specs itself, never as exec calls into somebody else's container.
+expect_not_contains 'the driver role never execs into pods' "$rbac" 'pods/exec'
 expect_not_contains 'the driver role never watches'         "$rbac" 'watch'
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
@@ -155,6 +167,17 @@ expect_contains 'the driver is told that claim name'        "$(cat "$work/render
 service_selector="$(awk '/^# Source: factory\/templates\/service.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains    'the service selects the dashboard component' "$service_selector" 'component: dashboard'
 expect_not_contains 'the service never selects the driver'       "$service_selector" 'component: driver'
+
+# The DRIVER has its own headless Service: the ad-hoc gate endpoint binds an ephemeral port, and
+# a headless Service is the only DNS that resolves to the pod without a port list to name it with.
+driver_service="$(awk '/^# Source: factory\/templates\/driver-service.yaml/,/^---/' "$work/rendered.yaml")"
+expect_contains 'the driver service is headless'        "$driver_service" 'clusterIP: None'
+expect_contains 'the driver service selects the driver' "$driver_service" 'component: driver'
+expect_contains 'the runner is told the driver service name' "$(cat "$work/rendered.yaml")" \
+    "value: http://$RELEASE-factory-driver"
+# The URL is useless against the default loopback bind: inside the pod, nothing else can reach
+# 127.0.0.1. Compose makes the same pairing.
+expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.yaml")" 'value: 0.0.0.0'
 
 # Numbers arrive as integers, not whatever helm's float stringifier felt like — a `1.8e+06` here
 # would be refused by the driver's own integer check at boot.

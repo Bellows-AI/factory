@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName, gateExecArgs, reportTail } from './docker.js';
 
@@ -39,8 +40,10 @@ const defaultExec: ExecDocker = (args, options) =>
  * Docker exec's own failure code: "the CLI could not run the command in that container" — the
  * container is gone or was never there. It is a HARNESS failure, never a gate verdict, and it
  * travels as a rejection carrying this code so the two consumers can tell it from an exit 3.
+ * Exported because the kubernetes manager rejects with the same code for the same meaning —
+ * "the harness could not run the gate", which the loop reports as the failed gate it is.
  */
-const CONTAINER_GONE = 125;
+export const CONTAINER_GONE = 125;
 
 interface Entry {
     name: string;
@@ -52,10 +55,13 @@ interface Entry {
 
 export interface GateManager {
     /**
-     * Ensures the environment container for the checkout exists, cancelling any teardown already
-     * scheduled for it. Idempotent: an existing container is reused as-is, env included.
+     * Ensures the environment for the checkout exists, cancelling any teardown already
+     * scheduled for it. Idempotent: an existing environment is reused as-is, env included.
+     * The job is the attempt context the kubernetes manager files gate runs under (labels,
+     * names, its own per-run env Secret); the docker manager keys everything off the checkout
+     * and ignores it.
      */
-    acquire(key: string, image: string, envBody?: string): Promise<void>;
+    acquire(key: string, image: string, envBody?: string, job?: BoardJob): Promise<void>;
     /** Runs one declared gate inside the checkout's environment container. */
     runGate(key: string, name: string, command: string): Promise<GateRun>;
     /** Arms the cooldown teardown. Safe to call repeatedly; acquire cancels it. */
@@ -120,7 +126,7 @@ export function createGateManager({
     };
 
     return {
-        async acquire(key, image, envBody = '') {
+        async acquire(key, image, envBody = '', _job?: BoardJob) {
             const existing = entries.get(key);
             if (existing) {
                 if (existing.teardown) {

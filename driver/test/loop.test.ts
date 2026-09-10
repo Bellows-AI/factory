@@ -1063,9 +1063,12 @@ describe('verification gates', () => {
         expect(board.board.completed[0]?.output).toContain('unknown key');
     });
 
-    it('refuses gates under the kubernetes executor, with a reason, without running', async () => {
+    // The kubernetes executor has its own gate manager (a Job per gate run), so a gated job
+    // runs and gates there exactly as it does under docker: the environment is acquired with
+    // the attempt's job as context, every declared gate runs, and the verdict follows them.
+    it('runs a gated job under the kubernetes executor like any other', async () => {
         const board = stubBoard([gatedJob(1)]);
-        const stack = stubGateStack();
+        const stack = stubGateStack({ test: 0, lint: 0 });
         let ran = 0;
         const runner = stubRunner(async () => {
             ran += 1;
@@ -1074,9 +1077,9 @@ describe('verification gates', () => {
 
         await drive({ ...board, runner, gates: stack.gates }, { EXECUTOR: 'kubernetes' });
 
-        expect(ran).toBe(0);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
-        expect(board.board.completed[0]?.output).toContain('kubernetes');
+        expect(ran).toBe(1);
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 
     // No gate stack configured (an operator who never asked for gates) but a repo declares them:

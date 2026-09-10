@@ -144,9 +144,10 @@ export interface DriverConfig {
      * The URL the runner is told to reach the gate server by, when loopback will not do — the
      * driver in a container, the runner on the host network, or any split like that. Null builds
      * `http://host.docker.internal:<port>` from the bound port, which the runner reaches through
-     * the `--add-host` dockerArgs adds for gated jobs. Never defaulted to something reachable:
-     * a wrong guess is a gate that hangs, which reads as a broken test rather than as
-     * configuration.
+     * the `--add-host` dockerArgs adds for gated jobs. A URL with no port of its own has the
+     * bound port appended (`gateAdvertiseUrlFor`), because the bind is ephemeral; one that
+     * carries a port stays verbatim. Never defaulted to something reachable: a wrong guess is a
+     * gate that hangs, which reads as a broken test rather than as configuration.
      */
     gateAdvertiseUrl: string | null;
     /**
@@ -294,19 +295,11 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         );
     }
 
-    // Auxiliary services are docker networks and sibling containers, created and torn down around
-    // each run — machinery only the docker runner has. Refused at startup rather than silently
-    // absent, for the same reason Remote Control is: a driver that claimed jobs and quietly never
-    // started a declared service would read as a broken feature instead of the configuration
-    // error it is.
+    // Auxiliary services run under both executors: docker networks and sibling containers
+    // there, service pods with headless DNS Services here. The RUNNER_SERVICES flag decides
+    // whether they run at all, on either platform.
+
     const servicesEnabled = flag(env.RUNNER_SERVICES);
-    if (servicesEnabled && executor === 'kubernetes') {
-        throw new Error(
-            'RUNNER_SERVICES is not supported under EXECUTOR=kubernetes: auxiliary services from ' +
-                '.bellows.yaml are docker networks and sibling containers the kubernetes runner does ' +
-                'not create. Run service-backed workloads on EXECUTOR=docker.',
-        );
-    }
 
     // And the last impossible pair. The kubernetes runner speaks claude-code only — its Job spec is
     // `--session-id`/`--resume` argv — while an opencode job arrives with no session at all.
@@ -378,4 +371,25 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         cacheWatch,
         cacheWatchPollMs: int(env.RUNNER_CACHE_WATCH_POLL_MS, 'RUNNER_CACHE_WATCH_POLL_MS', 30_000, 250, 300_000),
     };
+}
+
+/**
+ * The URL handed to a runner as `BELLOWS_GATE_URL`. Null keeps the host-gateway default. A
+ * configured URL with no port has the bound one appended — the listener binds an ephemeral port
+ * (`listen(0)`), so no fixed URL could name it in advance; a URL that already carries a port is
+ * the operator's word and stays verbatim. Trailing slashes are stripped, because agents build
+ * request paths by string concatenation and `…:44685//run` must not happen. An unparseable URL
+ * is passed through untouched: the run reaches the same dead string it would have before, and
+ * the failure stays at the fetch rather than gaining a second, config-shaped explanation.
+ */
+export function gateAdvertiseUrlFor(advertiseUrl: string | null, port: number): string {
+    if (!advertiseUrl) return `http://host.docker.internal:${port}`;
+    try {
+        const url = new URL(advertiseUrl);
+        if (url.port) return advertiseUrl;
+        url.port = String(port);
+        return url.toString().replace(/\/+$/, '');
+    } catch {
+        return advertiseUrl;
+    }
 }

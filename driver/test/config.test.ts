@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loadDriverConfig } from '../src/config.js';
+import { gateAdvertiseUrlFor, loadDriverConfig } from '../src/config.js';
 
 describe('the driver config', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
@@ -154,6 +154,18 @@ describe('the driver config', () => {
         expect(loadDriverConfig({ GATE_ADVERTISE_URL: 'http://driver:9099' }).gateAdvertiseUrl).toBe(
             'http://driver:9099',
         );
+    });
+
+    // The listener binds an ephemeral port, so a configured URL without one cannot name it in
+    // advance — the bound port is appended. One with a port is the operator's word and stays.
+    it('appends the bound port to a portless advertise URL and leaves a ported one verbatim', () => {
+        expect(gateAdvertiseUrlFor(null, 44_685)).toBe('http://host.docker.internal:44685');
+        expect(gateAdvertiseUrlFor('http://driver', 44_685)).toBe('http://driver:44685');
+        expect(gateAdvertiseUrlFor('http://driver:9099', 44_685)).toBe('http://driver:9099');
+        // Agents concatenate request paths onto this string, so no trailing slash may survive.
+        expect(gateAdvertiseUrlFor('http://driver/', 44_685)).toBe('http://driver:44685');
+        // An unparseable URL is passed through: the failure stays at the fetch, unchanged.
+        expect(gateAdvertiseUrlFor('not a url', 44_685)).toBe('not a url');
     });
 
     // The cap on ONE gate: the runner's timeout covers the agent, this covers a gate that hangs.

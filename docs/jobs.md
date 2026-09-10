@@ -79,11 +79,11 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `K8S_NAMESPACE` | `default` | Where runner Jobs are created. Meaningless under docker. The chart sets it via the downward API. |
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials under `EXECUTOR=kubernetes`, one key per `RUNNER_ENV` name — the k8s form of `-e NAME`: names travel, values stay in the Secret. Unset forwards nothing. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy under `EXECUTOR=kubernetes`. Kubernetes defaults an untagged or `:latest` image to `Always` and would ignore the node's own images; the docker runner has no equivalent problem, so the docker behavior has to be stated. |
-| `GATE_COOLDOWN_MS` | `600000` | How long a gate environment container outlives the task that started it, so the task's next turn does not pay startup again. `0` tears it down the moment the run's exits are walked. |
+| `GATE_COOLDOWN_MS` | `600000` | How long a gate environment container outlives the task that started it, so the task's next turn does not pay startup again. `0` tears it down the moment the run's exits are walked. Docker only: the kubernetes gate manager runs each gate as a Job that leaves nothing behind, so there is nothing to cool down. |
 | `GATE_LISTEN_HOST` | `127.0.0.1` | Where the ad-hoc gate endpoint binds. Loopback by default — it runs shell commands, and the bind address is the access control. |
-| `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver. |
+| `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver — the compose stack points it at `http://driver`. A URL with no port of its own has the bound (ephemeral) port appended — the listener is `listen(0)`, so no fixed URL could name it; one with a port stays verbatim. |
 | `GATE_TIMEOUT_MS` | `600000` | The wall-clock cap on one gate run. A gate that outlives it is a failed gate, exit 124 — the runner's own timeout covers the agent, this covers a gate that hangs. |
-| `RUNNER_SERVICES` | off | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service as a sibling container on a per-job network and joins the runner to it, so `postgres://db:5432` resolves for exactly that job. Read the section below before turning it on. |
+| `RUNNER_SERVICES` | off | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service on a per-job network (docker) or as a pod with a headless DNS Service (kubernetes), so `postgres://db:5432` resolves for exactly that job. Read the section below before turning it on. |
 
 **The workspace is passed as a volume name, not a path.** The driver's runners are *siblings*, not
 children: it talks to the host's daemon over a socket, so a path inside the driver container means
@@ -266,7 +266,8 @@ services:
 ```
 
 With `RUNNER_SERVICES=1` (off by default), the driver reads every checkout's file before the run —
-through a throwaway container over the workspaces volume, because it has no host path into a named
+through a throwaway container over the workspaces volume (a readout Job over the PVC under
+kubernetes), because it has no host path into a named
 volume — starts one detached container per service, and puts
 the runner on the same user-defined network. **The service's `name` is its DNS name inside the
 job**: `postgres://db:5432` resolves for exactly as long as the job runs, and to nothing afterwards.
@@ -557,14 +558,23 @@ A gate outliving `GATE_TIMEOUT_MS` fails with exit **124** (the convention `time
 kill stops the docker CLI, and a stubborn in-container process outlives the gate only until the
 container's own teardown.
 
-**Gates are refused, never silently skipped, where they cannot run.** `EXECUTOR=kubernetes` (the
-exec model has no docker twin there) and a driver started with no gate configuration both fail a
-gated job at claim with a named reason; an ungated job's run is untouched — no container, no
-registration, no reports, byte-identical argv. One honest ambiguity remains: a missing
-`.bellows.yaml` is indistinguishable from a checkout that has not been cloned yet, so the first
-task on a just-connected repository whose gates file was written by the agent itself can run and
-succeed before the file exists. Every later turn of that task is gated; the first is the race,
-and it is the same race every CI-on-first-commit system lives with.
+**Gates run under both executors, by different machinery.** Docker keeps a warm environment
+container per member+repo checkout and `docker exec`s each gate into it. Kubernetes runs each
+gate as a **Job** — the declared image over the workspaces PVC, `workingDir` at the checkout, the
+env as a per-run Secret the pod reads by reference (`envFrom`, never literals), the kubelet's
+`activeDeadlineSeconds` as the wall-clock cap read back as exit 124. A gate run is attempt-scoped
+(`factory.job`/`factory.lease` labels), so the re-claim fence sweeps a dead attempt's gate Jobs
+like anything else. What docker's cooldown buys and kubernetes does not is warm start: docker pays
+container startup once per cooldown window, kubernetes pays pod admission per gate run — seconds
+against suites that run minutes, a cost optimization deliberately not ported. The one rule that
+still fails a job at claim: a driver started with **no gate configuration at all** refuses a
+gated job with a named reason; an ungated job's run is untouched — no container, no registration,
+no reports, byte-identical argv. One honest ambiguity remains: a missing `.bellows.yaml` is
+indistinguishable from a checkout that has not been cloned yet, so the first task on a
+just-connected repository whose gates file was written by the agent itself can run and succeed
+before the file exists. Every later turn of that task is gated; the first is the race, and it is
+the same race every CI-on-first-commit system lives with. The k8s form is in
+[kubernetes.md](kubernetes.md).
 
 ## Publishing: a task ends on a remote branch
 
@@ -699,10 +709,14 @@ claim. "Nothing runs an executor yet" stays true.
   Under `AUTH_MODE=none` all of it is open, including the worker routes — see [security.md](security.md),
   which is where the consequence is written down.
 - **No service volumes, health checks, depends-on ordering or restart policies.** A service that
-  needs a warmed database is the agent's problem — it can sleep and retry, which is the one
-  superpower a headless run has. Add keys to the parser when a real job needs them, not before.
-- **No kubernetes services.** `RUNNER_SERVICES` is refused under `EXECUTOR=kubernetes`; the docker
-  sibling-container trick has no k8s twin written for it.
+   needs a warmed database is the agent's problem — it can sleep and retry, which is the one
+   superpower a headless run has. Add keys to the parser when a real job needs them, not before.
+- **Under kubernetes a service name is namespace-global.** Docker gives each attempt its own
+  network, so two concurrent jobs can both run a service called `db`. A k8s Service named `db`
+  is one object per namespace, so a second concurrent job that declares `db` is refused
+  terminally, naming the conflict — the same rule as a duplicate across checkouts, because no
+  ordering rule reads as anything but "the wrong database came up". Sequential jobs are fine:
+  the name goes free when the attempt's teardown deletes it.
 
 ## Testing
 

@@ -2,16 +2,26 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { containerName } from '../src/docker.js';
+import { CONTAINER_GONE } from '../src/gates.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
 import {
     POLL_MAX_CONSECUTIVE_FAILURES,
+    bellowsJobSpec,
     claimName,
+    createKubernetesGateManager,
     createKubernetesRunner,
+    envBodyToData,
+    gateEnvSecretName,
+    gateJobName,
+    gateJobSpec,
     jobPath,
     jobsPath,
     runnerJobSpec,
     secretName,
+    serviceDnsSpec,
+    servicePodSpec,
 } from '../src/k8s.js';
+import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -333,11 +343,31 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
         // Any attempt's Job: names carry the lease token now, so a run's own status poll targets
         // a path built from ITS token, not the fixture job's.
         if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.resolve(answers.job as K8sResponse);
-        if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+        // Service objects: lists answer empty (nothing to sweep, nothing to tear down), a POST
+        // creates one, a delete succeeds. Overrides script the interesting cases.
+        const servicesPath = `/api/v1/namespaces/${namespace}/services`;
+        if (path === servicesPath) {
+            if (method === 'DELETE') return Promise.resolve(answers.fenceDelete as K8sResponse);
+            return Promise.resolve((answers.serviceCreate ?? { status: 201, body: '{}' }) as K8sResponse);
+        }
+        if (path.startsWith(`${servicesPath}?`)) return Promise.resolve(answers.fenceList as K8sResponse);
+        if (path.startsWith(`${servicesPath}/`)) return Promise.resolve(answers.fenceDelete as K8sResponse);
+        if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
             return Promise.resolve(answers.pods as K8sResponse);
+        }
+        if (
+            path.startsWith(`/api/v1/namespaces/${namespace}/pods/`) &&
+            !path.endsWith('/log') &&
+            method === 'DELETE'
+        ) {
+            return Promise.resolve(answers.fenceDelete as K8sResponse);
         }
         if (path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)) {
             return Promise.resolve(answers.log as K8sResponse);
+        }
+        {
+            const aux = auxRoutes(method, path);
+            if (aux) return Promise.resolve(aux);
         }
         return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
     };
@@ -345,6 +375,34 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
 };
 
 const runner = (request: K8sRequest) => createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), request, async () => {});
+
+/**
+ * Default answers for the objects the runner touches beyond the runner Job itself: the fence
+ * sweeps service pods and headless Services by the job label, the lease teardown lists them,
+ * and aux Jobs (gates, the .bellows.yaml readout) ride the same Job routes the tests script.
+ * Every inline router falls through to this before rejecting, so a test only scripts the
+ * objects it is about. Lists answer empty — nothing to sweep, nothing to tear down.
+ */
+const AUX: Record<string, K8sResponse> = {
+    list: { status: 200, body: '{"items":[]}' },
+    delete: { status: 200, body: '{}' },
+    create: { status: 201, body: '{}' },
+};
+function auxRoutes(method: string, path: string): K8sResponse | null {
+    const ns = `/api/v1/namespaces/${namespace}`;
+    if (path === `${ns}/services`) {
+        if (method === 'DELETE') return AUX.delete;
+        if (method === 'POST') return AUX.create;
+        return AUX.list;
+    }
+    if (path.startsWith(`${ns}/services?`)) return AUX.list;
+    if (path.startsWith(`${ns}/services/`)) return AUX.delete;
+    // Every pod list EXCEPT the runner's job-name discovery (those are routed by the routers
+    // above): the fence's sweep and the lease teardown answer empty — nothing of this job's.
+    if (path.startsWith(`${ns}/pods?`)) return AUX.list;
+    if (path.startsWith(`${ns}/pods/`) && !path.endsWith('/log') && method === 'DELETE') return AUX.delete;
+    return null;
+}
 
 /** A lease token distinct from the fixture job's, for the attempt that reclaimed a job. */
 const NEW_TOKEN = '99999999-9999-4999-8999-999999999999';
@@ -415,7 +473,11 @@ describe('the kubernetes runner', () => {
         expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
             `POST ${configmapsPath}`,
+            // The sweep lists every kind the job label can answer — runner and gate Jobs, then
+            // service pods, then service DNS Services — before this attempt creates anything.
             `GET ${jobsPath(namespace)}`,
+            `GET /api/v1/namespaces/factory/pods`,
+            `GET /api/v1/namespaces/factory/services`,
             `GET ${claimPathFor(job.id)}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPathFor(job.id)}`,
@@ -424,6 +486,10 @@ describe('the kubernetes runner', () => {
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             `GET ${claimPathFor(job.id)}`,
             `DELETE ${claimPathFor(job.id)}`,
+            // The close-time teardown lists this attempt's service fleet by lease; the empty
+            // answers mean nothing was ever started.
+            'GET /api/v1/namespaces/factory/pods',
+            'GET /api/v1/namespaces/factory/services',
         ]);
         expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
     });
@@ -583,13 +649,17 @@ describe('the kubernetes runner', () => {
                         : (FAKE.job as K8sResponse),
                 );
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) {
                 return gets === 1
                     ? Promise.resolve({ status: 200, body: 'partial output\n' })
                     : Promise.resolve(FAKE.log as K8sResponse);
+            }
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -628,10 +698,14 @@ describe('the kubernetes runner', () => {
                         : (FAKE.job as K8sResponse),
                 );
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve({ status: 500, body: 'unavailable' });
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -684,10 +758,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -701,9 +779,16 @@ describe('the kubernetes runner', () => {
         // delete's own response does not wait for them.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
+            // Round one lists every kind — jobs names the leftover, pods and services answer
+            // empty — then the claim is confirmed ours and the leftover is deleted by name.
+            'GET',
+            'GET',
             'GET',
             'GET',
             'DELETE',
+            // Round two: all three kinds answer empty.
+            'GET',
+            'GET',
             'GET',
             'GET',
             'POST',
@@ -713,9 +798,11 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            'GET',
+            'GET',
         ]);
         expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
-        expect(calls[3].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
+        expect(calls[5].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // A re-claim whose sweep never lands — an apiserver losing deletes, say — must not loop
@@ -741,6 +828,10 @@ describe('the kubernetes runner', () => {
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
+            }
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -797,10 +888,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -847,10 +942,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(newerJob))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -872,6 +971,8 @@ describe('the kubernetes runner', () => {
             `DELETE ${claimPath}`,
             `POST ${configmapsPath}`,
             `GET ${jobsPath(namespace)}`,
+            `GET /api/v1/namespaces/factory/pods`,
+            `GET /api/v1/namespaces/factory/services`,
             `GET ${claimPath}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPath}`,
@@ -880,6 +981,8 @@ describe('the kubernetes runner', () => {
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             `GET ${claimPath}`,
             `DELETE ${claimPath}`,
+            'GET /api/v1/namespaces/factory/pods',
+            'GET /api/v1/namespaces/factory/services',
         ]);
     });
 
@@ -929,10 +1032,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(olderJob)) || path === jobPath(namespace, newerJobName)) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
         // The older attempt's fence: its first label list is held until the test has run the
@@ -1000,10 +1107,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1082,10 +1193,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1105,14 +1220,20 @@ describe('the kubernetes runner', () => {
             method: 'DELETE',
             path: `${jobPath(namespace, freshName)}?propagationPolicy=Foreground`,
         });
-        // Claim, LIST (finds both), claim confirmed ours, two deletes, LIST (clean), claim
-        // re-verified before the create, create, claim verified again, then the status poll.
+        // Claim, LIST ×3 (finds both in jobs; pods and services empty), claim confirmed ours,
+        // two deletes, LIST ×3 (clean), claim re-verified before the create, create, claim
+        // verified again, then the status poll, the pod list, the log, the claim release and
+        // the lease teardown.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
             'GET',
+            'GET',
+            'GET',
             'DELETE',
             'DELETE',
+            'GET',
+            'GET',
             'GET',
             'GET',
             'POST',
@@ -1122,6 +1243,8 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            'GET',
+            'GET',
         ]);
     });
 
@@ -1165,10 +1288,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1188,13 +1315,18 @@ describe('the kubernetes runner', () => {
             path: `${jobPath(namespace, predecessor)}?propagationPolicy=Foreground`,
         });
         // ...and only once the claim is confirmed ours and the selector answers nothing does
-        // this attempt create its own Job: claim, LIST (finds the predecessor), claim confirmed,
-        // DELETE, LIST (clean), claim re-verified, POST, claim verified, then the status poll.
+        // this attempt create its own Job: claim, LIST ×3 (finds the predecessor in jobs; the
+        // others empty), claim confirmed, DELETE, LIST ×3 (clean), claim re-verified, POST,
+        // claim verified, then the status poll and the close-time reads.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
             'GET',
+            'GET',
+            'GET',
             'DELETE',
+            'GET',
+            'GET',
             'GET',
             'GET',
             'POST',
@@ -1204,6 +1336,8 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            'GET',
+            'GET',
         ]);
     });
 
@@ -1225,10 +1359,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1236,6 +1374,10 @@ describe('the kubernetes runner', () => {
         expect(outcome.exitCode).toBe(0);
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
+            // Jobs 404s; the sweep goes on to the pods and services lists, both empty — the
+            // round is conclusive and the checkout is free.
+            'GET',
+            'GET',
             'GET',
             'GET',
             'POST',
@@ -1245,6 +1387,8 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            'GET',
+            'GET',
         ]);
     });
 
@@ -1271,10 +1415,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1282,6 +1430,13 @@ describe('the kubernetes runner', () => {
         expect(outcome.exitCode).toBe(0);
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
+            // Round one: the jobs list drops — the round is inconclusive, and the pods and
+            // services lists still run before the retry.
+            'GET',
+            'GET',
+            'GET',
+            // Round two: jobs, pods and services all answer empty — free to create.
+            'GET',
             'GET',
             'GET',
             'GET',
@@ -1292,6 +1447,8 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            'GET',
+            'GET',
         ]);
     });
 
@@ -1303,12 +1460,12 @@ describe('the kubernetes runner', () => {
      */
     it('releases the claim when the run ends, and never releases a claim it no longer holds', async () => {
         const claimPath = claimPathFor(job.id);
-        // (a) A successful run ends with the claim read and released — before the env Secret's
-        // reap, so the last cleanup call stays the Secret's.
+        // (a) A successful run ends with the claim read and released — then the service fleet's
+        // lease lists (empty), and the env Secret's reap is the last call.
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         const released = fakeRequest();
         await runner(released.request).run(envJob, { id: SESSION, resume: false });
-        const tail = released.calls.slice(-3);
+        const tail = released.calls.slice(-5);
         expect(tail[0]).toEqual({ method: 'GET', path: claimPath });
         expect(tail[1]?.method).toBe('DELETE');
         expect(tail[1]?.path).toBe(claimPath);
@@ -1316,6 +1473,14 @@ describe('the kubernetes runner', () => {
             'claim-uid-1',
         );
         expect(tail[2]).toEqual({
+            method: 'GET',
+            path: `/api/v1/namespaces/${namespace}/pods?labelSelector=${encodeURIComponent(`factory.lease=${envJob.leaseToken}`)},factory.service`,
+        });
+        expect(tail[3]).toEqual({
+            method: 'GET',
+            path: `/api/v1/namespaces/${namespace}/services?labelSelector=${encodeURIComponent(`factory.lease=${envJob.leaseToken}`)},factory.service`,
+        });
+        expect(tail[4]).toEqual({
             method: 'DELETE',
             path: `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`,
         });
@@ -1347,10 +1512,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
@@ -1390,10 +1559,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1465,10 +1638,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1511,10 +1688,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1564,10 +1745,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1614,10 +1799,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1670,10 +1859,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1731,10 +1924,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1790,10 +1987,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1857,10 +2058,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1910,10 +2115,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1966,10 +2175,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2031,10 +2244,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2095,10 +2312,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2156,25 +2377,35 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        // LIST (leftover), verify 503 → no delete, LIST (leftover again), verify ours → DELETE,
-        // LIST (clean), claim re-verified, create, verify, poll, pods, log, release,
-        // release-delete.
+        // LIST ×3 (leftover in jobs; pods/services empty), verify 503 → no delete, LIST ×3
+        // (leftover again), verify ours → DELETE, LIST ×3 (clean), claim re-verified, create,
+        // verify, poll, pods, log, release, release-delete, lease teardown ×2.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
             'GET',
             'GET',
             'GET',
+            'GET',
+            'GET',
+            'GET',
+            'GET',
             'DELETE',
+            'GET',
+            'GET',
             'GET',
             'GET',
             'POST',
@@ -2184,8 +2415,10 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            'GET',
+            'GET',
         ]);
-        expect(calls[5]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
+        expect(calls[9]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
 
     // The board refuses a complete POST that does not fit its body limit — an oversized report
@@ -2236,10 +2469,14 @@ describe('the kubernetes runner', () => {
                 if (gets <= 2) return Promise.resolve({ status: 503, body: 'unavailable' });
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2269,6 +2506,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 gets += 1;
                 return Promise.resolve({ status: 503, body: 'unavailable' });
+            }
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -2332,10 +2573,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(script[served++] ?? outage());
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2439,7 +2684,7 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 lists += 1;
                 // A 503 during an apiserver upgrade is not the run's verdict; the exit code is
                 // still out there. The third read succeeds.
@@ -2448,6 +2693,10 @@ describe('the kubernetes runner', () => {
                 );
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2475,10 +2724,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.reject(new Error('connection reset'));
+            {
+                const aux = auxRoutes(method, path);
+                if (aux) return Promise.resolve(aux);
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2491,13 +2744,19 @@ describe('the kubernetes runner', () => {
         const calls: Call[] = [];
         const request: K8sRequest = (method, path) => {
             calls.push({ method, path });
+            // First call is the Job DELETE (200); everything after — the service fleet's lease
+            // lists and their deletes — answers 404, the ordinary end of nothing being there.
             return Promise.resolve({ status: calls.length === 1 ? 200 : 404, body: '{}' });
         };
         await runner(request).kill(job);
         await runner(request).kill(job);
 
-        expect(calls.every((call) => call.method === 'DELETE')).toBe(true);
+        expect(calls[0].method).toBe('DELETE');
         expect(calls[0].path).toContain(`jobs/${containerName(job)}`);
+        // Every further call is the job's own fleet teardown: the lease-scoped pod and service
+        // lists (and 404 deletes for whatever they ever named). No Secrets — kill() deletes none.
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+        expect(calls.every((call) => call.method === 'DELETE' || call.path?.includes('?labelSelector='))).toBe(true);
     });
 
     // The id lands in the DELETE path the same way it lands in the create — asserted before it is
@@ -2512,5 +2771,450 @@ describe('the kubernetes runner', () => {
     it('answers null for the remote session id', async () => {
         const { request } = fakeRequest();
         expect(await runner(request).remoteSessionId(job, SESSION)).toBeNull();
+    });
+});
+
+// ==============================================================================================
+// Gates under kubernetes: a gate run IS a Job — the declared image over the workspaces PVC,
+// workingDir at the checkout, env by reference. Everything security-relevant about a gate Job is
+// decided in gateJobSpec and pinned here, exactly as the runner's is in runnerJobSpec.
+// ==============================================================================================
+
+const gatedConfig = loadDriverConfig({
+    EXECUTOR: 'kubernetes',
+    K8S_NAMESPACE: namespace,
+    GATE_TIMEOUT_MS: '30000',
+});
+
+describe('the gate job spec', () => {
+    const gateSpec = (overrides: Parameters<typeof gateJobSpec>[6] = 1, envSecret: string | null = 'the-secret') =>
+        gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, 'node:24', 'test', 'npm test', overrides, envSecret, 30_000);
+
+    it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
+        expect(gateSpec().apiVersion).toBe('batch/v1');
+        expect(gateSpec().metadata.name).toMatch(/^factory-gate-test-[0-9a-f]{8}$/);
+        // A second run of the same gate is a different object — ad-hoc calls land mid-run, and
+        // two runs of one gate must never race for one name.
+        expect(gateSpec(2).metadata.name).not.toBe(gateSpec(1).metadata.name);
+    });
+
+    // The command travels as ONE argv element into `sh -c` — the same single element docker
+    // exec's gate runs receive. It is never interpolated into a larger shell line.
+    it('runs the declared command via sh -c as one argv element', () => {
+        expect(gateSpec().spec.template.spec.containers[0].command).toEqual(['sh', '-c', 'npm test']);
+    });
+
+    it("works at the checkout the coding agent edits — the same tree, via the same PVC", () => {
+        const container = gateSpec().spec.template.spec.containers[0];
+        expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/factory`);
+        expect(container.image).toBe('node:24');
+        expect(gateSpec().spec.template.spec.volumes).toEqual([
+            { name: 'workspaces', persistentVolumeClaim: { claimName: 'factory-ai_workspaces' } },
+        ]);
+    });
+
+    it('carries the attempt labels and no ServiceAccount token', () => {
+        const s = gateSpec();
+        expect(s.metadata.labels).toEqual({
+            'factory.job': job.id,
+            'factory.lease': job.leaseToken,
+        });
+        expect(s.spec.template.metadata.labels).toEqual(s.metadata.labels);
+        expect(s.spec.template.spec.automountServiceAccountToken).toBe(false);
+    });
+
+    // The kubelet's deadline is the gate's wall-clock cap; the driver reads DeadlineExceeded
+    // off the finished Job and reports exit 124.
+    it('bounds the run with activeDeadlineSeconds from GATE_TIMEOUT_MS', () => {
+        expect(gateSpec().spec.activeDeadlineSeconds).toBe(30);
+        expect(gateSpec().spec.backoffLimit).toBe(0);
+        expect(gateSpec().spec.template.spec.restartPolicy).toBe('Never');
+    });
+
+    // The env travels by reference and never as literals — the same rule that keeps claim
+    // values out of the runner pod spec keeps them out of a gate pod spec.
+    it('reads the env from a Secret by reference, and skips envFrom entirely when there is none', () => {
+        expect(gateSpec().spec.template.spec.containers[0].envFrom).toEqual([
+            { secretRef: { name: 'the-secret' } },
+        ]);
+        expect(gateSpec(1, null).spec.template.spec.containers[0].envFrom).toBeUndefined();
+        expect(JSON.stringify(gateSpec())).not.toContain('"value":');
+    });
+
+    it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
+        const s = gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, 'node:24', 'UPPER Case!!', 'npm test', 1, null, 30_000);
+        expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{8}$/);
+        expect(s.metadata.name).not.toContain('UPPER');
+        expect(s.metadata.name).not.toContain('Case');
+    });
+
+    it('refuses a checkout key or image that is not the shape the board legally produces', () => {
+        expect(() => gateSpec(1, null)).not.toThrow();
+        expect(() =>
+            gateJobSpec(gatedConfig, job, '../other-member/repo', 'node:24', 'test', 'npm test', 1, null, 30_000),
+        ).toThrow(/checkout key/);
+        expect(() =>
+            gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, '-flag-image', 'test', 'npm test', 1, null, 30_000),
+        ).toThrow(/image reference/);
+    });
+});
+
+describe('the gate env body', () => {
+    it('parses NAME=value lines and drops nothing but the newlines', () => {
+        expect(envBodyToData('A=1\nB=hello world\n')).toEqual({ A: '1', B: 'hello world' });
+    });
+
+    it('refuses a line that is not NAME=value, before it becomes a Secret key', () => {
+        expect(() => envBodyToData('A=1\nnot-a-pair\n')).toThrow(/NAME=value/);
+        expect(() => envBodyToData('bad key!=1')).toThrow(/NAME=value/);
+    });
+});
+
+describe('the kubernetes gate manager', () => {
+    const KEY = `bellows/${USER}/factory`;
+    const GATE_JOB = /^factory-gate-test-[0-9a-f]{8}$/;
+
+    /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
+    const gateFake = (options: {
+        job?: K8sResponse;
+        pods?: K8sResponse;
+        log?: K8sResponse;
+        secretCreate?: K8sResponse;
+        jobCreate?: K8sResponse;
+    } = {}) => {
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const respond = (r: K8sResponse) => Promise.resolve(r);
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return respond({ status: 200, body: '{}' });
+                return respond(options.secretCreate ?? { status: 201, body: '{}' });
+            }
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/secrets/`)) return respond({ status: 200, body: '{}' });
+            if (path === jobsPath(namespace)) {
+                if (method === 'DELETE') return respond({ status: 200, body: '{}' });
+                return respond(options.jobCreate ?? { status: 201, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}/`)) {
+                return respond(options.job ?? { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) });
+            }
+            if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=')) {
+                return respond(
+                    options.pods ?? {
+                        status: 200,
+                        body: JSON.stringify({
+                            items: [
+                                {
+                                    metadata: { name: 'gate-pod' },
+                                    status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                                },
+                            ],
+                        }),
+                    },
+                );
+            }
+            if (path.includes('/log')) return respond(options.log ?? { status: 200, body: 'gate said hi\n' });
+            return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
+        };
+        return { request, calls };
+    };
+
+    const manager = (request: K8sRequest) =>
+        createKubernetesGateManager({ config: gatedConfig, request, sleep: async () => {} });
+
+    it('creates the attempt env Secret before the Job, and reaps the Job with the verdict', async () => {
+        const { request, calls } = gateFake();
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', 'CORE_TOKEN=shh\n', job);
+        const outcome = await m.runGate(KEY, 'test', 'npm test');
+
+        expect(outcome).toEqual({ exitCode: 0, output: 'gate said hi' });
+        const secretPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/secrets'));
+        const jobPost = calls.findIndex((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(secretPost).toBeGreaterThanOrEqual(0);
+        expect(secretPost).toBeLessThan(jobPost);
+        // The Secret carries the env values, labeled to this attempt — one per attempt, created
+        // before any gate Job references it.
+        expect(calls[secretPost]?.body).toMatchObject({
+            kind: 'Secret',
+            stringData: { CORE_TOKEN: 'shh' },
+            metadata: { labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken } },
+        });
+        expect(calls[secretPost]?.body).toMatchObject({
+            metadata: { name: gateEnvSecretName(job) },
+        });
+        // The Job goes once the verdict and log have been read; the Secret's life is the
+        // attempt's, and release() is what ends it.
+        expect(
+            calls.some((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`)),
+        ).toBe(true);
+        expect(calls.some((c) => c.method === 'DELETE' && c.path?.includes('/secrets/'))).toBe(false);
+        await m.release(KEY);
+        expect(
+            calls.some(
+                (c) =>
+                    c.method === 'DELETE' &&
+                    c.path === `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(job)}`,
+            ),
+        ).toBe(true);
+    });
+
+    it('runs a gate with no env at all without touching a Secret', async () => {
+        const { request, calls } = gateFake();
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        await m.runGate(KEY, 'test', 'npm test');
+        expect(calls.some((c) => c.path?.includes('/secrets'))).toBe(false);
+    });
+
+    it('reports the kubelet deadline as exit 124, the docker timeout convention', async () => {
+        const { request } = gateFake({
+            job: {
+                status: 200,
+                body: JSON.stringify({ status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] } }),
+            },
+        });
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        const outcome = await m.runGate(KEY, 'test', 'npm test');
+        expect(outcome.exitCode).toBe(124);
+    });
+
+    it('rejects with the harness code when the cluster refuses the run', async () => {
+        const { request } = gateFake({ jobCreate: { status: 403, body: 'forbidden' } });
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
+    });
+
+    it('names an unpullable gate image instead of burning the deadline', async () => {
+        const { request } = gateFake({
+            job: { status: 200, body: '{"status":{}}' },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: 'gate-pod' },
+                            status: {
+                                containerStatuses: [
+                                    { state: { waiting: { reason: 'ImagePullBackOff', message: 'no such image' } } },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toThrow(/ImagePullBackOff/);
+    });
+
+    it('refuses a run whose attempt context was never acquired, like docker refuses a missing container', async () => {
+        const { request } = gateFake();
+        await expect(manager(request).runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
+    });
+
+    it('validates the checkout key and image shapes at acquire, before anything runs', async () => {
+        const { request } = gateFake();
+        const m = manager(request);
+        await expect(m.acquire('../other/repo', 'node:24', '', job)).rejects.toThrow(/checkout key/);
+        await expect(m.acquire(KEY, 'not an image!!', '', job)).rejects.toThrow(/image reference/);
+        await expect(m.acquire(KEY, 'node:24', '', job)).resolves.toBeUndefined();
+    });
+
+    it('names the gate Job so two runs of one gate never collide', async () => {
+        const { request, calls } = gateFake();
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        await m.runGate(KEY, 'test', 'npm test');
+        await m.runGate(KEY, 'test', 'npm test');
+        const names = calls
+            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
+            .map((c) => (c.body as { metadata?: { name?: string } })?.metadata?.name);
+        expect(names[0]).toMatch(GATE_JOB);
+        expect(names[0]).not.toBe(names[1]);
+    });
+});
+
+// ==============================================================================================
+// Auxiliary services under kubernetes: a pod per declared service, a headless Service as its DNS
+// name, alive for exactly the attempt.
+// ==============================================================================================
+
+describe('the service pod and DNS specs', () => {
+    const cache: ServiceSpec = {
+        name: 'cache',
+        image: 'redis',
+        environment: [{ key: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }],
+    };
+
+    it('runs the service as a never-restarted, token-less pod with the declared env as literals', () => {
+        const pod = servicePodSpec(gatedConfig, job, cache);
+        expect(pod.kind).toBe('Pod');
+        expect(pod.metadata.name).toBe(`factory-job-${job.id}-${job.leaseToken}-svc-cache`);
+        expect(pod.metadata.labels).toEqual({
+            'factory.job': job.id,
+            'factory.lease': job.leaseToken,
+            'factory.service': 'cache',
+        });
+        expect(pod.spec.restartPolicy).toBe('Never');
+        expect(pod.spec.automountServiceAccountToken).toBe(false);
+        expect(pod.spec.containers[0].image).toBe('redis');
+        expect(pod.spec.containers[0].env).toEqual([{ name: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }]);
+    });
+
+    it('refuses an environment key that is not a variable name', () => {
+        expect(() =>
+            servicePodSpec(gatedConfig, job, { ...cache, environment: [{ key: 'not a key', value: 'x' }] }),
+        ).toThrow(/not a valid environment variable name/);
+    });
+
+    it('names the DNS object exactly the service name, headless, selecting only this attempt', () => {
+        const dns = serviceDnsSpec(job, cache);
+        expect(dns.kind).toBe('Service');
+        expect(dns.metadata.name).toBe('cache');
+        expect(dns.spec.clusterIP).toBe('None');
+        expect(dns.spec.selector).toEqual({ 'factory.job': job.id, 'factory.service': 'cache' });
+    });
+});
+
+describe('the kubernetes services flow', () => {
+    const KEY = `bellows/${USER}/factory`;
+    const BELLOWS_OUTPUT =
+        '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
+
+    /** A fake that routes one full run with services: readout Job, service objects, runner Job. */
+    const servicesFake = (options: { bellowsLog?: string; dnsCreate?: K8sResponse } = {}) => {
+        const calls: Call[] = [];
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
+            const respond = (r: K8sResponse) => Promise.resolve(r);
+            const empty = { status: 200, body: '{"items":[]}' };
+            if (path === jobsPath(namespace)) {
+                // Every Job POST is accepted; nothing ever polls as failed.
+                return respond({ status: 201, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) {
+                // The fence's job list: nothing of this job's left to sweep.
+                return respond(empty);
+            }
+            if (path.startsWith(`${jobsPath(namespace)}/`)) {
+                return respond({ status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) });
+            }
+            if (path === `/api/v1/namespaces/${namespace}/services`) {
+                return respond(options.dnsCreate ?? { status: 201, body: '{}' });
+            }
+            // The readout's pod list: answer once with a pod so its log can be read.
+            if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=factory-bellows')) {
+                return respond({
+                    status: 200,
+                    body: JSON.stringify({ items: [{ metadata: { name: 'bellows-pod' } }] }),
+                });
+            }
+            if (path === `/api/v1/namespaces/${namespace}/pods/bellows-pod/log`) {
+                return respond({ status: 200, body: options.bellowsLog ?? BELLOWS_OUTPUT });
+            }
+            if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=')) {
+                return respond({
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [
+                            {
+                                metadata: { name: 'runner-pod' },
+                                status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                            },
+                        ],
+                    }),
+                });
+            }
+            if (path === `/api/v1/namespaces/${namespace}/pods/runner-pod/log`) {
+                return respond({ status: 200, body: 'did the work\n' });
+            }
+            if (path.includes('pods?') || path.includes('services?')) return respond(empty);
+            if (path === `/api/v1/namespaces/${namespace}/pods`) return respond({ status: 201, body: '{}' });
+            if (path.includes('/secrets')) return respond({ status: 200, body: '{}' });
+            if (path.startsWith('/api/v1/namespaces/factory/pods/')) return respond({ status: 200, body: '{}' });
+            if (path.startsWith('/api/v1/namespaces/factory/services/')) return respond({ status: 200, body: '{}' });
+            return Promise.reject(new Error(`services fake has no answer for ${method} ${path}`));
+        };
+        return { request, calls };
+    };
+
+    const servicesRunner = (request: K8sRequest) =>
+        createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
+            request,
+            async () => {},
+        );
+
+    it('starts the declared fleet before the runner and tears it down with the attempt', async () => {
+        const { request, calls } = servicesFake();
+        const outcome = await servicesRunner(request).run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        // The readout Job ran first, then the service pod and its DNS name, and only then the
+        // runner Job — docker's fleet-before-runner order.
+        const bellowsPost = calls.findIndex((c) => c.body && (c.body as { metadata?: { name?: string } }).metadata?.name?.startsWith('factory-bellows-'));
+        const podPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/pods'));
+        const dnsPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/services'));
+        const jobPost = calls.findIndex(
+            (c) =>
+                c.method === 'POST' &&
+                c.path === jobsPath(namespace) &&
+                (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job),
+        );
+        expect(bellowsPost).toBeGreaterThanOrEqual(0);
+        expect(podPost).toBeGreaterThan(bellowsPost);
+        expect(dnsPost).toBeGreaterThan(podPost);
+        expect(jobPost).toBeGreaterThan(dnsPost);
+
+        // And the fleet goes with the attempt: the close-time teardown lists by lease. The
+        // claim's release (GET, DELETE) precedes it; an env-less claim has no Secret to reap.
+        const tail = calls.slice(-4);
+        expect(tail.map((c) => c.method)).toEqual(['GET', 'DELETE', 'GET', 'GET']);
+    });
+
+    it('refuses a DNS-name collision terminally, naming the conflict instead of ordering the race', async () => {
+        const { request, calls } = servicesFake({ dnsCreate: { status: 409, body: '{"reason":"AlreadyExists"}' } });
+        const outcome = await servicesRunner(request).run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ exitCode: null, started: true });
+        expect(outcome.output).toContain('already running for another job');
+        // The runner Job was never created — a refused job has no runner to orphan.
+        expect(
+            calls.some((c) => c.method === 'POST' && c.path === jobsPath(namespace) && (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job)),
+        ).toBe(false);
+        // And the partial fleet was torn down on the way out: the lease lists ran (their empty
+        // answers mean the fake had nothing left to delete), plus the DNS 409'd object is
+        // this attempt's own to name.
+        expect(
+            calls.some(
+                (c) => c.method === 'GET' && c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`),
+            ),
+        ).toBe(true);
+        expect(
+            calls.some(
+                (c) => c.method === 'GET' && c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`),
+            ),
+        ).toBe(true);
+    });
+
+    it('fails the read as infrastructure when the readout object disappears', async () => {
+        const { request } = servicesFake({ bellowsLog: 'cat: cannot open: boom' });
+        // The readout Job answering 404 while its output is being read is INFRASTRUCTURE — the
+        // object was removed under us — so the run throws and goes back to its lease, never
+        // reporting a verdict over the API server's answer.
+        const failing: K8sRequest = (method, path, body) => {
+            if (path.startsWith(`${jobsPath(namespace)}/`) && decodeURIComponent(path).includes('factory-bellows')) {
+                return Promise.resolve({ status: 404, body: '{}' });
+            }
+            return servicesFake().request(method, path, body);
+        };
+        await expect(servicesRunner(failing).run(job, { id: SESSION, resume: false })).rejects.toThrow();
     });
 });

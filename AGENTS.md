@@ -10,6 +10,17 @@ deprecation shims, no migration aliases, no preserving old payloads or config sh
 change breaks something, update the callers and delete the old path in the same change.
 Prioritize speed and cleanliness over compatibility.
 
+## Executor parity: kubernetes is primary
+
+**Kubernetes is the primary executor; docker is only for development.** Anything built or changed
+for the docker executor — runner behavior, gates, services, publish/sync, env forwarding, any new
+`RUNNER_*` feature — must land its kubernetes counterpart in the same change (see
+[docs/kubernetes.md](docs/kubernetes.md) for the platform shapes). A docker-only feature is a
+refusal to read, and a refusal message in the kubernetes path is a TODO, not a decision: if a
+capability genuinely cannot be ported (no exec grant, no docker volume), the limit is stated in
+docs and tests, never discovered by a user. When you touch `driver/`, ask "what does this do to
+`EXECUTOR=kubernetes`?" before you finish.
+
 ## Read before you touch
 
 | Touching | Read |

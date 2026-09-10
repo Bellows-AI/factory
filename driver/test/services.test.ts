@@ -485,13 +485,12 @@ describe('the RUNNER_SERVICES switch', () => {
         expect(loadDriverConfig({ RUNNER_SERVICES: '1' }).servicesEnabled).toBe(true);
     });
 
-    it('is refused at startup under the kubernetes executor', () => {
-        // Not silent absence: a driver asked for services on kubernetes would otherwise claim
-        // jobs, run them, and quietly never start a service — the configuration error reading as
-        // a broken feature. The same decision EXECUTOR already makes for Remote Control.
-        expect(() => loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'kubernetes' })).toThrow(
-            /RUNNER_SERVICES is not supported under EXECUTOR=kubernetes/,
-        );
+    it('is allowed under both executors — service pods under kubernetes, containers under docker', () => {
+        // The kubernetes runner starts each declared service as a pod with a headless Service
+        // as its DNS name, so the flag no longer refuses that executor: the switch decides
+        // WHETHER services run, and the executor decides HOW.
+        expect(() => loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'kubernetes' })).not.toThrow();
+        expect(loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'kubernetes' }).servicesEnabled).toBe(true);
         expect(() => loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'docker' })).not.toThrow();
     });
 });

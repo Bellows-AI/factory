@@ -13,6 +13,11 @@ a holder token and an attempt number, both already known to the driver, and neve
 which is exactly why the claim is not a Secret. The grant is namespace-wide on ConfigMaps — RBAC
 cannot scope it to `factory-job-*-claim` names — so a compromised driver can read the namespace's
 configuration, not its credentials: the line this Role has always drawn.
+`pods` create/delete are the gate runs and the auxiliary services: a gate run is a Job (batch,
+already granted), but a service is a long-running neighbor pod, and its headless DNS Service is a
+`services` object — created before the runner starts, deleted with the attempt. No `pods/exec` is
+granted, ever: the driver runs containers it specs itself, and arbitrary exec into a running pod
+is a capability this design has never needed.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -28,9 +33,11 @@ metadata:
     labels:
         {{- include "factory.labels" . | nindent 8 }}
 rules:
+    # `list` on jobs and services is the re-claim fence: its sweep is a collection GET, and a
+    # collection GET needs the list verb — a rule without it makes every fence round a 403.
     - apiGroups: ['batch']
       resources: ['jobs']
-      verbs: ['create', 'get', 'delete']
+      verbs: ['create', 'get', 'delete', 'list']
     - apiGroups: ['']
       resources: ['secrets']
       verbs: ['create', 'delete']
@@ -39,7 +46,10 @@ rules:
       verbs: ['create', 'get', 'delete']
     - apiGroups: ['']
       resources: ['pods']
-      verbs: ['list']
+      verbs: ['create', 'delete', 'list']
+    - apiGroups: ['']
+      resources: ['services']
+      verbs: ['create', 'delete', 'list']
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']

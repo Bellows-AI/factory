@@ -202,6 +202,38 @@ has; and `EXECUTOR=kubernetes` + `RUNNER_CLI=opencode` — the Job spec is the c
 over the workspaces volume, neither of which this runner has an opencode form for. The
 alternative to refusing either was a driver that claims jobs and burns attempts running nothing.
 
+## Gates and services on this platform
+
+**A gate run is a Job.** The docker manager keeps a warm environment container per checkout and
+`docker exec`s gates into it; this executor has no exec grant and wants none, so each gate run is
+a batch Job in the declared image — `sh -c` with the command as one argv element, `workingDir` at
+the checkout over the same workspaces PVC, the env as a per-run Secret read by `envFrom` (never
+literals: anyone who can `get pods` reads a pod spec). `activeDeadlineSeconds` carries
+`GATE_TIMEOUT_MS`, and a `DeadlineExceeded` Job is reported exit 124, the convention the docker
+manager's own timeout kill uses. Gate Jobs carry the attempt's `factory.job`/`factory.lease`
+labels, which is what puts them inside the re-claim fence's sweep. What is deliberately not
+ported is the docker cooldown's warm start: pod admission per gate run costs seconds, and a
+per-checkout sleeper pod would buy back only that. `pods/exec` stays ungranted — running a
+container this process specs itself is the capability the design uses, and exec into an existing
+one is the escalation it never needed.
+
+**A declared service is a Pod with a headless Service as its DNS name.** The `.bellows.yaml`
+readout is a throwaway Job over a read-only PVC mount — the same script the docker readout
+container runs — and each service then starts as a `restartPolicy: Never` pod (docker's detached
+container never restarts either) with the environment as literal pod env, exactly as public as
+the author's file already was. The DNS half is the whole trick: the runner resolves
+`postgres://db:5432` through a headless Service named `db`, whose A records point at the
+attempt's pod — no port list needed, which the strict parser's refusal of `ports:` requires.
+The name is namespace-global, so a collision with a concurrent job's service answers 409 and
+fails the job terminally, naming the conflict — the "wrong database came up" rule, one platform
+later. The fleet is attempt-scoped by lease label, swept by the fence, and torn down when the
+run ends, the same three moments docker's is.
+
+Both start only between the fence and the runner Job: after it, so a stood-down attempt creates
+nothing; before it, so every author-facing refusal is answered while nothing of the attempt
+runs — a refused job never has a live runner to orphan. The one resource refused throughout:
+publishing and the startup sync remain docker-only (sibling containers over a named volume).
+
 ## Testing
 
 - `driver/test/k8s.test.ts` — the whole executor, offline. The request function is injected (the

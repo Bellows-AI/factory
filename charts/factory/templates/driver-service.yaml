@@ -1,0 +1,19 @@
+{{/*
+The driver's in-cluster DNS name. Headless on purpose: the ad-hoc gate endpoint binds an
+ephemeral port, and no Service port list can name one — a headless Service resolves straight to
+the driver POD's address, and the port the driver appends to GATE_ADVERTISE_URL is then the
+runner's own business. Nothing needs a load-balanced VIP for a one-replica peer-to-peer call.
+The name is what GATE_ADVERTISE_URL points at, and there is no other ingress to the driver.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+    name: {{ include "factory.fullname" . }}-driver
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: driver
+spec:
+    clusterIP: None
+    selector:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: driver

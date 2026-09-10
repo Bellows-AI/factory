@@ -452,31 +452,7 @@ export function collectServices(sections: { repo: string; text: string }[]): Ser
  * away exactly as the opencode session readout does.
  */
 export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
-    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
-        throw new Error(
-            `refusing to read .bellows.yaml for job ${job.id}: ` +
-                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
-        );
-    }
-    const root = `${config.workspaceMount}/${job.workspacePath}`;
-    const script =
-        // A glob over the checkout directories, each file preceded by a marker naming its
-        // checkout. The `[ -f ]` guard is what a glob with no matches produces in sh — the
-        // pattern itself — so a workspace with no `.bellows.yaml` prints nothing at all. Each
-        // file is size-checked before it is read: `execFile` bounds this process's stdio at
-        // 1 MiB, and an oversize file must come back as the author's refusal, not as a failed
-        // read that reads as infrastructure and burns the job's attempts.
-        `for f in ${root}/*/.bellows.yaml; do\n` +
-        `[ -f "$f" ] || continue\n` +
-        `echo "###__bellows:$(basename "$(dirname "$f")")"\n` +
-        `if [ "$(wc -c <"$f")" -gt ${MAX_BELLOWS_BYTES} ]; then\n` +
-        `echo "${ERROR_PREFIX}$f is larger than ${MAX_BELLOWS_BYTES} bytes"\n` +
-        `else\n` +
-        `cat "$f"\n` +
-        `fi\n` +
-        // A file with no trailing newline would otherwise glue the next marker onto its last
-        // line; the newline between sections is padding splitBellowsSections drops.
-        `echo\ndone`;
+    const script = bellowsReadScript(config, job);
     return [
         'run',
         '--rm',
@@ -489,6 +465,42 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
         '-c',
         script,
     ];
+}
+
+/**
+ * The shell the readout runs, shared by both platforms: docker wraps it in `docker run` argv
+ * (readBellowsArgs), kubernetes puts it in a Job's `command` over a read-only PVC mount. Pure,
+ * and exported, because it interpolates a board-supplied path into a shell script — the same
+ * pinning readBellowsArgs got.
+ */
+export function bellowsReadScript(config: DriverConfig, job: BoardJob): string {
+    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
+        throw new Error(
+            `refusing to read .bellows.yaml for job ${job.id}: ` +
+                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+        );
+    }
+    const root = `${config.workspaceMount}/${job.workspacePath}`;
+    return (
+        // A glob over the checkout directories, each file preceded by a marker naming its
+        // checkout. The `[ -f ]` guard is what a glob with no matches produces in sh — the
+        // pattern itself — so a workspace with no `.bellows.yaml` prints nothing at all. Each
+        // file is size-checked before it is read: stdio readers on both platforms bound the
+        // output (execFile at 1 MiB, a pod log at its server-side limit), and an oversize file
+        // must come back as the author's refusal, not as a failed read that reads as
+        // infrastructure and burns the job's attempts.
+        `for f in ${root}/*/.bellows.yaml; do\n` +
+        `[ -f "$f" ] || continue\n` +
+        `echo "###__bellows:$(basename "$(dirname "$f")")"\n` +
+        `if [ "$(wc -c <"$f")" -gt ${MAX_BELLOWS_BYTES} ]; then\n` +
+        `echo "${ERROR_PREFIX}$f is larger than ${MAX_BELLOWS_BYTES} bytes"\n` +
+        `else\n` +
+        `cat "$f"\n` +
+        `fi\n` +
+        // A file with no trailing newline would otherwise glue the next marker onto its last
+        // line; the newline between sections is padding splitBellowsSections drops.
+        `echo\ndone`
+    );
 }
 
 /**

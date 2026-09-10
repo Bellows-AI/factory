@@ -115,6 +115,10 @@ driver:
     # Empty uses the in-chart collector's service; set to route to a collector outside this release
     # instead — which also covers an operator that ships its own and disables `collector.enabled`.
     runnerOtelEndpoint: ''
+    # RUNNER_SERVICES: start the auxiliary services a checkout's .bellows.yaml declares — a pod
+    # per service with a headless Service as its DNS name, alive for exactly the run. Off until
+    # somebody turns it on. Read docs/jobs.md first.
+    services: '0'
     resources: {}
 
 # The in-chart OTLP collector, receiving from the runner pods and forwarding to the dashboard
@@ -124,7 +128,6 @@ collector:
     enabled: true
     image: otel/opentelemetry-collector-contrib
     imagePullPolicy: IfNotPresent
-    resources: {}
 
 runner:
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.

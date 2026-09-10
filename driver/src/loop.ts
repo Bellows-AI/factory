@@ -249,7 +249,10 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         // The environment starts with the claim's own env — resolved for THIS author and repo —
         // which is exactly what a test suite needs to reach the forge.
         const envBody = envFileBody(job);
-        await gates.manager.acquire(key, job.gates.image, envBody);
+        // The job is the kubernetes gate manager's attempt context — its gate Jobs carry the
+        // job and lease labels, and their names are derived from them. The docker manager
+        // ignores it.
+        await gates.manager.acquire(key, job.gates.image, envBody, job);
         try {
             const port = await gates.server.listen();
             const token = randomUUID();
@@ -723,20 +726,18 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     continue;
                 }
 
-                // Gates are a docker-exec feature. Under kubernetes — or on a driver built with
-                // no gate machinery at all — the honest answer is a named failure, never a run
-                // whose declared checks silently did not happen.
-                if (job.gates?.gates?.length && (config.executor === 'kubernetes' || !gates)) {
-                    const why =
-                        config.executor === 'kubernetes'
-                            ? 'gates run only under EXECUTOR=docker, and this driver runs on kubernetes'
-                            : 'this driver was started with no gate environment configured';
+                // Gates need the driver's gate machinery, which exists whenever the stack was
+                // built for the executor — under both executors it is. A driver built without
+                // it gets the honest answer: a named failure, never a run whose declared
+                // checks silently did not happen.
+                if (job.gates?.gates?.length && !gates) {
+                    const why = 'this driver was started with no gate environment configured';
                     log(`job ${job.id}: declares gates this driver cannot run, failing`);
                     await board
                         .complete(job, {
                             status: 'failed',
                             exitCode: null,
-                            output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a docker driver with the GATE_* configuration set.`,
+                            output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
                         })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;

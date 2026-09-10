@@ -191,6 +191,13 @@ services:
             # compose network cannot name — the same override the kubernetes runner applies in the
             # pod spec. Explicit here so the driver forwards it to the runner container.
             RUNNER_OTEL_ENDPOINT: ${RUNNER_OTEL_ENDPOINT:-http://collector:4318}
+            # The gate endpoint binds all interfaces INSIDE this container — loopback would leave
+            # it reachable from nothing, and host.docker.internal from a runner resolves to the
+            # host, where nothing listens. The runner reaches it by this container's DNS name on
+            # the compose network; the bound (ephemeral) port is appended to the URL automatically.
+            # Callers still need the per-attempt bearer token, and can only run declared gate names.
+            GATE_LISTEN_HOST: 0.0.0.0
+            GATE_ADVERTISE_URL: http://driver
             DRIVER_CONCURRENCY: ${DRIVER_CONCURRENCY:-2}
             DRIVER_POLL_MS: ${DRIVER_POLL_MS:-5000}
             DRIVER_LEASE_SECONDS: ${DRIVER_LEASE_SECONDS:-300}

@@ -71,6 +71,19 @@ spec:
                         value: {{ .Values.driver.leaseSeconds | quote }}
                       - name: DRIVER_JOB_TIMEOUT_MS
                         value: {{ .Values.driver.jobTimeoutMs | quote }}
+                      # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port;
+                      # the runner reaches it by this headless Service name and the driver
+                      # appends the bound port to the URL. The listener binds all interfaces —
+                      # loopback would leave it reachable from nothing inside the pod. See
+                      # docs/jobs.md, Gates.
+                      - name: GATE_ADVERTISE_URL
+                        value: http://{{ include "factory.fullname" . }}-driver
+                      - name: GATE_LISTEN_HOST
+                        value: 0.0.0.0
+                      # Auxiliary services (.bellows.yaml): off until somebody types it on, here
+                      # as everywhere.
+                      - name: RUNNER_SERVICES
+                        value: {{ .Values.driver.services | quote }}
                       {{- if .Values.driver.skipPermissions }}
                       - name: RUNNER_SKIP_PERMISSIONS
                         value: {{ .Values.driver.skipPermissions | quote }}

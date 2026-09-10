@@ -1,9 +1,14 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { claimEnv, containerName, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
 import type { RunOutcome, RunSession, Runner } from './docker.js';
+import { CONTAINER_GONE } from './gates.js';
+import type { GateManager, GateRun } from './gates.js';
+import { bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
+import type { ServiceSpec } from './services.js';
 
 /**
  * The kubernetes executor: the second Runner, talking to the API server the way the docker one
@@ -146,13 +151,15 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             });
         }
     }
-    // The board's stacked environment, same discipline: names in the pod spec, values in the
-    // per-attempt Secret (created before the Job — see create()). claimEnv has already dropped the
-    // reserved names, so WORKDIR stays the one literal here. NOT optional: this driver created
-    // this exact Secret moments earlier under this attempt's own lease token, so a missing key is
-    // a bug and must fail loud (CreateContainerConfigError) rather than start the pod silently
-    // without its env.
-    for (const name of Object.keys(claimEnv(job))) {
+    // The board's stacked environment plus the loop's minted gate credentials, same discipline:
+    // names in the pod spec, values in the per-attempt Secret (created before the Job — see
+    // create()). claimEnv has already dropped the reserved names, and the BELLOWS_* gate names
+    // are disjoint from it, so a gated job whose claim resolves to nothing still gets its gate
+    // credentials. NOT optional: this driver created this exact Secret moments earlier under
+    // this attempt's own lease token, so a missing key is a bug and must fail loud
+    // (CreateContainerConfigError) rather than start the pod silently without its env.
+    const secretEnv = { ...claimEnv(job), ...(job.gateEnv ?? {}) };
+    for (const name of Object.keys(secretEnv)) {
         env.push({ name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } });
     }
 
@@ -226,6 +233,357 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
 }
 
 export const jobsPath = (namespace: string): string => `/apis/batch/v1/namespaces/${namespace}/jobs`;
+
+/**
+ * A batch Job this driver creates for its own auxiliary work — one gate run, or the
+ * `.bellows.yaml` readout — as opposed to a runner. Structural like `RunnerJobSpec`, and
+ * deliberately a second interface rather than a widening of it: the runner's shape is pinned
+ * field by field (claude argv, WORKDIR, per-name secretKeyRef), and an aux Job decides different
+ * things. Sharing a type would make "the runner has no envFrom" unreadable.
+ */
+export interface AuxJobSpec {
+    apiVersion: 'batch/v1';
+    kind: 'Job';
+    metadata: { name: string; labels: Record<string, string> };
+    spec: {
+        backoffLimit: 0;
+        completions: 1;
+        parallelism: 1;
+        activeDeadlineSeconds: number;
+        ttlSecondsAfterFinished: number;
+        template: {
+            metadata: { labels: Record<string, string> };
+            spec: {
+                restartPolicy: 'Never';
+                automountServiceAccountToken: false;
+                containers: {
+                    name: string;
+                    image: string;
+                    imagePullPolicy: string;
+                    /** One gate run: `sh -c` with the command as the single argv element. */
+                    command?: string[];
+                    workingDir?: string;
+                    /** The whole claim env at once, by reference — never the values. */
+                    envFrom?: { secretRef: { name: string } }[];
+                    volumeMounts: { name: string; mountPath: string; readOnly?: boolean }[];
+                }[];
+                volumes: { name: string; persistentVolumeClaim: { claimName: string } }[];
+            };
+        };
+    };
+}
+
+/**
+ * The checkout key a gated job's environment is filed under, and the declared image — both
+ * COPIED from docker.ts, which states the full why: the key is interpolated into a working
+ * directory every gate command runs in, and the image is repo content naming what executes.
+ * A validator narrower than the input domain would fail every job on a legally-named checkout,
+ * so the patterns travel unchanged rather than being "improved" here.
+ */
+const GATE_KEY =
+    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/i;
+const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
+
+/** Eight hex characters naming one attempt-scoped run: readable in `kubectl get jobs`, unique by construction. */
+const hash8 = (input: string): string => createHash('sha256').update(input).digest('hex').slice(0, 8);
+
+/**
+ * The raw gate name is repo content, so it never joins a k8s name directly: lowercased, every
+ * character outside the DNS-subdomain alphabet folded to `-`, and anything leading rejected.
+ * Uniqueness across runs of the same gate comes from the hash beside it, not from the
+ * sanitization being invertible — it is not, and must not need to be.
+ */
+const sanitizeNamePart = (value: string): string =>
+    value
+        .toLowerCase()
+        .replace(/[^a-z0-9.-]+/g, '-')
+        .replace(/^[^a-z0-9]+/, '')
+        .slice(0, 100);
+
+/** One gate run's Job name. The run counter keeps a second ad-hoc call of the same gate off the first's name. */
+export const gateJobName = (job: BoardJob, gateName: string, run: number): string =>
+    `factory-gate-${sanitizeNamePart(gateName)}-${hash8(`${job.id}|${job.leaseToken}|${gateName}|${run}`)}`;
+
+/**
+ * The gated attempt's Secret carrying the gate environment. Per ATTEMPT, not per run — the env
+ * is the claim's stacked resolution and is identical for every gate run of the attempt, so one
+ * Secret created at acquire serves them all, and a driver crash leaks at most one, the same
+ * accepted-leak posture (and the same `factory.job` cleanup label) the runner's env Secret has.
+ */
+export const gateEnvSecretName = (job: BoardJob): string => `factory-gate-${hash8(`${job.id}|${job.leaseToken}`)}-env`;
+
+/**
+ * One gate run, as a Job. Pure and exported for the pinning, exactly like `runnerJobSpec`:
+ *
+ * - The declared image runs the declared command — `sh -c` with the command as ONE argv
+ *   element, the same single element docker exec's gate runs receive.
+ * - `workingDir` is the checkout itself — the same tree the coding agent edits, via the same
+ *   workspaces PVC at the same mount point.
+ * - The env travels by reference (`envFrom` against the per-run Secret), because the same rule
+ *   that keeps claim values out of the runner pod spec keeps them out of a gate pod spec —
+ *   anyone who can `get pods` can read one, and the values are member-scoped.
+ * - The deadline is the kubelet's: `GATE_TIMEOUT_MS` maps onto `activeDeadlineSeconds`, so a
+ *   hung gate dies even if this driver dies first. The driver reads the
+ *   `DeadlineExceeded` condition and reports exit 124 — the convention the docker manager's
+ *   own timeout kill uses.
+ *
+ * What it deliberately does NOT carry: the checkout claim (the gate runs while the runner holds
+ * the checkout and is swept by the same `factory.job` fence if it outlives its attempt), and any
+ * ServiceAccount token (the pin every pod this driver creates shares).
+ */
+export function gateJobSpec(
+    config: DriverConfig,
+    job: BoardJob,
+    key: string,
+    image: string,
+    gateName: string,
+    command: string,
+    run: number,
+    envSecretName: string | null,
+    gateTimeoutMs: number,
+): AuxJobSpec {
+    if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
+        throw new Error(`refusing to run a gate of job ${job.id}: its ids are not the uuids the board claims`);
+    }
+    if (!GATE_KEY.test(key)) {
+        throw new Error(`refusing to run a gate in a checkout key that is not <org>/<uuid>/<repo>: ${key}`);
+    }
+    if (!GATE_IMAGE.test(image)) {
+        throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
+    }
+    const jobName = gateJobName(job, gateName, run);
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: jobName, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: Math.max(1, Math.round(gateTimeoutMs / 1000)),
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            // A container name is a 63-char DNS label — the Job name's roomy
+                            // subdomain bound does not apply to it, so the short hash stands in.
+                            name: `gate-${hash8(`${jobName}|${command}`)}`,
+                            image,
+                            imagePullPolicy: config.imagePullPolicy,
+                            command: ['sh', '-c', command],
+                            workingDir: `${config.workspaceMount}/${key}`,
+                            ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                        },
+                    ],
+                    volumes: [
+                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+                    ],
+                },
+            },
+        },
+    };
+}
+
+/**
+ * The env-file body becomes Secret stringData. Lines were written by `envFileBody` on this
+ * side and are re-asserted here line by line, because this function is the one place the body
+ * becomes cluster objects: a line without a `=`, or a name outside what a Secret key may hold,
+ * is a bug or a forged claim, and both must fail loud rather than start a gate with half an env.
+ */
+export const envBodyToData = (body: string): Record<string, string> => {
+    const data: Record<string, string> = Object.create(null);
+    for (const line of body.split('\n')) {
+        if (!line) continue;
+        const eq = line.indexOf('=');
+        const name = eq > 0 ? line.slice(0, eq) : '';
+        if (!name || !/^[-._a-zA-Z0-9]+$/.test(name)) {
+            throw new Error(`refusing to build a gate env Secret: "${line.slice(0, 64)}" is not a NAME=value line`);
+        }
+        data[name] = line.slice(eq + 1);
+    }
+    return data;
+};
+
+/**
+ * The `.bellows.yaml` readout under kubernetes: the same shell script docker runs in a
+ * throwaway container, as a Job over the read-only PVC mount. The readout must finish before
+ * anything else about the job's services happens, so it gets a tight deadline of its own.
+ */
+const BELLOWS_READ_DEADLINE_SECONDS = 120;
+
+export const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash8(`${job.id}|${job.leaseToken}`)}`;
+
+export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
+    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
+        throw new Error(
+            `refusing to read .bellows.yaml for job ${job.id}: ` +
+                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+        );
+    }
+    const jobName = bellowsJobName(job);
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: jobName, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: BELLOWS_READ_DEADLINE_SECONDS,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            name: 'bellows-read',
+                            image: config.image,
+                            imagePullPolicy: config.imagePullPolicy,
+                            command: ['sh', '-c', bellowsReadScript(config, job)],
+                            volumeMounts: [
+                                { name: 'workspaces', mountPath: config.workspaceMount, readOnly: true },
+                            ],
+                        },
+                    ],
+                    volumes: [
+                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+                    ],
+                },
+            },
+        },
+    };
+}
+
+/**
+ * `<org>/<user id>` — COPIED from services.ts (which copied it from docker.ts): the path is
+ * interpolated into the readout script, and the board is not something this process trusts
+ * with a fragment of a shell command.
+ */
+const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * One declared service, as a Pod. A Pod and not a Job because a Job is a unit of WORK — a
+ * service is a long-running neighbor the tests talk to, the k8s twin of docker's detached
+ * container. `restartPolicy: Never` mirrors docker exactly: a detached container that crashes
+ * stays crashed, and so does this pod.
+ *
+ * Environment values travel as literals, unlike every credential this driver forwards: they
+ * were already world-readable in the author's `.bellows.yaml`, and no secret of this process's
+ * own ever reaches them — the same reasoning docker's `-e KEY=value` argv states.
+ */
+export const servicePodName = (job: BoardJob, name: string): string =>
+    `factory-job-${job.id}-${job.leaseToken}-svc-${name}`;
+
+const SERVICE_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function servicePodSpec(config: DriverConfig, job: BoardJob, spec: ServiceSpec): {
+    apiVersion: 'v1';
+    kind: 'Pod';
+    metadata: { name: string; labels: Record<string, string> };
+    spec: {
+        restartPolicy: 'Never';
+        automountServiceAccountToken: false;
+        containers: {
+            name: string;
+            image: string;
+            imagePullPolicy: string;
+            env: { name: string; value: string }[];
+        }[];
+    };
+} {
+    const labels = {
+        'factory.job': job.id,
+        'factory.lease': job.leaseToken,
+        'factory.service': spec.name,
+    };
+    return {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: servicePodName(job, spec.name), labels },
+        spec: {
+            restartPolicy: 'Never',
+            automountServiceAccountToken: false,
+            containers: [
+                {
+                    name: spec.name,
+                    image: spec.image,
+                    imagePullPolicy: config.imagePullPolicy,
+                    env: spec.environment.map(({ key, value }) => {
+                        if (!SERVICE_ENV_KEY.test(key)) {
+                            throw new Error(`refusing to run job ${job.id}: "${key}" is not a valid environment variable name`);
+                        }
+                        return { name: key, value };
+                    }),
+                },
+            ],
+        },
+    };
+}
+
+/**
+ * The service's DNS name, as a headless Service. THIS is the whole feature under kubernetes:
+ * `postgres://db:5432` resolves because an object named `db` exists, so the name is exactly the
+ * declared service name and is therefore NAMESPACE-global — two concurrent jobs declaring `db`
+ * collide at the apiserver, and the collision is refused, never resolved by an ordering rule.
+ * The bellows parser already constrains names to lowercase DNS labels, so the declared name is
+ * a legal Service name unchanged.
+ *
+ * Headless (`clusterIP: None`) because the gate endpoint aside, the runner must reach the
+ * service's EPHEMERAL container ports, and no port list was declared — `ports:` is an unknown
+ * key in `.bellows.yaml` by design. A headless Service publishes A records straight to the
+ * matching pods, which is exactly the "any port, direct to the container" semantics docker's
+ * network alias had.
+ */
+export function serviceDnsSpec(job: BoardJob, spec: ServiceSpec): {
+    apiVersion: 'v1';
+    kind: 'Service';
+    metadata: { name: string; labels: Record<string, string> };
+    spec: { clusterIP: 'None'; selector: Record<string, string> };
+} {
+    return {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: {
+            name: spec.name,
+            labels: {
+                'factory.job': job.id,
+                'factory.lease': job.leaseToken,
+                'factory.service': spec.name,
+            },
+        },
+        spec: {
+            clusterIP: 'None',
+            selector: { 'factory.job': job.id, 'factory.service': spec.name },
+        },
+    };
+}
+
+export const podsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/pods`;
+
+/**
+ * Label-scoped collection paths: by JOB for the re-claim fence, by LEASE for this attempt's own
+ * teardown. The teardown selectors additionally require the `factory.service` key to exist —
+ * the set-based `,factory.service` at the end — because the runner pod and every gate pod carry
+ * the same lease label, and only the service fleet may die at teardown.
+ */
+const byJob = (path: string, job: BoardJob): string => `${path}?labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`;
+const byLease = (path: string, job: BoardJob): string =>
+    `${path}?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)},factory.service`;
+
+export const podsSelectorPath = (namespace: string, job: BoardJob): string => byJob(podsPath(namespace), job);
+export const servicesPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/services`;
+export const servicesSelectorPath = (namespace: string, job: BoardJob): string => byJob(servicesPath(namespace), job);
+export const podsByLeasePath = (namespace: string, job: BoardJob): string => byLease(podsPath(namespace), job);
+export const servicesByLeasePath = (namespace: string, job: BoardJob): string => byLease(servicesPath(namespace), job);
 
 export const jobPath = (namespace: string, name: string): string => `${jobsPath(namespace)}/${name}`;
 
@@ -407,7 +765,17 @@ interface K8sJobStatus {
 }
 
 interface K8sPodList {
-    items?: { metadata?: { name?: string; deletionTimestamp?: string }; status?: { containerStatuses?: { state?: { terminated?: { exitCode?: number } } }[] } }[];
+    items?: {
+        metadata?: { name?: string; deletionTimestamp?: string };
+        status?: {
+            containerStatuses?: {
+                state?: {
+                    terminated?: { exitCode?: number };
+                    waiting?: { reason?: string; message?: string };
+                };
+            }[];
+        };
+    }[];
 }
 
 /** Parses what the API server answers; a body that is not JSON reads as an empty object. */
@@ -463,9 +831,128 @@ export function createKubernetesRunner(
     const forgetSecret = (job: BoardJob): Promise<void> =>
         request('DELETE', `${secretsPath}/${secretName(job)}`).then(() => undefined, () => undefined);
 
-    /** Only a job that carries env ever touches the per-job Secret — not even to delete one. */
+    /**
+     * The Secret's contents: the claim env plus the loop's minted gate credentials. The
+     * reserved-name rule means the two sets are disjoint, and the gate names must reach the
+     * runner for the same reason they ride docker's env file — the agent's ad-hoc gate calls
+     * land mid-run, against an endpoint this driver advertises.
+     */
+    const runnerEnv = (job: BoardJob): Record<string, string> => ({
+        ...claimEnv(job),
+        ...(job.gateEnv ?? {}),
+    });
+
+    /** Only a job whose Secret was ever created touches it — not even to delete one. */
     const forgetSecretIfAny = (job: BoardJob): Promise<void> =>
-        Object.keys(claimEnv(job)).length ? forgetSecret(job) : Promise.resolve();
+        Object.keys(runnerEnv(job)).length ? forgetSecret(job) : Promise.resolve();
+
+    /**
+     * This attempt's service fleet — every pod and headless Service carrying this attempt's
+     * lease label AND the service label — deleted by name. The service label is the twin of
+     * docker's `label=factory.service` filter, and it is load-bearing here too: the runner pod
+     * and every ad-hoc gate pod carry the same lease label, and a teardown keyed on the lease
+     * alone would delete a gate run still in flight when the runner's verdict lands early. The
+     * set-based `,factory.service` requirement (key exists) narrows both lists to the fleet.
+     * Every delete is
+     * best-effort: a 404 is the ordinary end of an already-reaped object, a 409 a concurrent
+     * fence's, and anything else is the next attempt's fence's business.
+     */
+    const teardownServices = async (job: BoardJob): Promise<void> => {
+        for (const [listPath, basePath] of [
+            [podsByLeasePath(config.k8sNamespace, job), podsPath(config.k8sNamespace)],
+            [servicesByLeasePath(config.k8sNamespace, job), servicesPath(config.k8sNamespace)],
+        ] as const) {
+            let response: K8sResponse;
+            try {
+                response = await request('GET', listPath);
+            } catch {
+                continue;
+            }
+            if (response.status >= 300) continue;
+            const items = parse<{ items?: { metadata?: { name?: string } }[] }>(response.body).items ?? [];
+            for (const item of items) {
+                if (!item.metadata?.name) continue;
+                await request('DELETE', `${basePath}/${item.metadata.name}`).catch(() => undefined);
+            }
+        }
+    };
+
+    /**
+     * The `.bellows.yaml` readout, as a Job: the same script docker runs in a throwaway
+     * container, over a read-only PVC mount. Runs to terminal status, its log IS the output the
+     * section splitter consumes, and the Job goes as soon as it is read. A readout that cannot
+     * run is infrastructure — the same classification the docker read's failure gets — so every
+     * failure here throws and the job goes back to its lease.
+     */
+    const readBellows = async (job: BoardJob): Promise<string> => {
+        const spec = bellowsJobSpec(config, job);
+        const jobName = spec.metadata.name;
+        try {
+            const created = await request('POST', jobsPath(config.k8sNamespace), spec);
+            if (created.status >= 300) {
+                throw new Error(`creating the .bellows.yaml readout answered ${created.status}: ${created.body.slice(0, 200)}`);
+            }
+            let failures = 0;
+            for (;;) {
+                let response: K8sResponse;
+                try {
+                    response = await request('GET', jobPath(config.k8sNamespace, jobName));
+                } catch (e) {
+                    if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) throw e;
+                    await sleep(POLL_MS);
+                    continue;
+                }
+                if (response.status === 404) {
+                    throw new Error(`the .bellows.yaml readout ${jobName} no longer exists`);
+                }
+                if (response.status === 429 || response.status >= 500) {
+                    if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                        throw new Error(
+                            `reading the .bellows.yaml readout answered ${response.status} ` +
+                                `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                        );
+                    }
+                    await sleep(POLL_MS);
+                    continue;
+                }
+                if (response.status >= 300) {
+                    throw new Error(`reading the .bellows.yaml readout answered ${response.status}`);
+                }
+                failures = 0;
+                const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+                if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) {
+                    if ((status.failed ?? 0) >= 1) {
+                        throw new Error('the .bellows.yaml readout failed — its own deadline is its bound');
+                    }
+                    break;
+                }
+                await sleep(POLL_MS);
+            }
+            const podsResponse = await readVerdict(
+                `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+                'listing the readout pods',
+            );
+            const pod = parse<K8sPodList>(podsResponse.body).items?.find(
+                (item) => !item.metadata?.deletionTimestamp,
+            );
+            if (!pod?.metadata?.name) {
+                throw new Error('the .bellows.yaml readout left no pod to read its output from');
+            }
+            const log = await readVerdict(
+                `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log`,
+                'reading the readout log',
+            );
+            if (log.status >= 300) {
+                throw new Error(`reading the .bellows.yaml readout's log answered ${log.status}`);
+            }
+            return log.body;
+        } finally {
+            void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
+                () => undefined,
+                () => undefined,
+            );
+        }
+    };
 
     /**
      * Best-effort delete of THIS attempt's own Job — by its own attempt-scoped name, which is
@@ -572,8 +1059,17 @@ export function createKubernetesRunner(
         }
     };
 
-    const create = async (job: BoardJob, spec: RunnerJobSpec, cleanup: RunCleanup): Promise<void> => {
-        const env = claimEnv(job);
+    /**
+     * The runner's arrival, split so the loop's auxiliary services can start BETWEEN the fence
+     * and the runner: `prepare` takes the checkout claim, sweeps the label's leftovers, creates
+     * the env Secret and runs the pre-create claim verify; `launch` POSTs the Job and runs the
+     * post-create verify. Services and every author-facing refusal they can produce (a parse
+     * refusal, a DNS-name collision) resolve BETWEEN the two — after the fence, so a stood-down
+     * attempt starts no fleet, and before the Job, so a refused job never has a runner to
+     * orphan and docker's fleet-before-runner order holds for free.
+     */
+    const prepare = async (job: BoardJob, cleanup: RunCleanup): Promise<void> => {
+        const env = runnerEnv(job);
 
         /*
          * The re-claim fence, step one: TAKE THE CHECKOUT. One POST per round, arbitrated by the
@@ -584,13 +1080,13 @@ export function createKubernetesRunner(
         await acquireClaim(job);
 
         /*
-         * Step two: the sweep — the janitor that enforces the takeover. Every Job the
+         * Step two: the sweep — the janitor that enforces the takeover. Every object the
          * `factory.job=<id>` selector answers is a leftover of the attempts this claim was taken
          * FROM: deleted BY NAME, per object, with Foreground propagation, until the selector
          * answers nothing and this attempt's Job is the only possible writer on the checkout. No
          * timestamps, no cutoffs, no clocks: an age filter was unsound in both directions, so the
          * sweep classifies nothing. It is safe to sweep "everything" exactly because the claim is
-         * held: whoever the Jobs belonged to, the board has superseded them — and this attempt's
+         * held: whoever the objects belonged to, the board has superseded them — and this attempt's
          * own Job cannot exist yet, its name carrying this attempt's lease token and nothing
          * having posted it.
          *
@@ -601,77 +1097,112 @@ export function createKubernetesRunner(
          */
         let waits = 0;
         for (;;) {
-            let probe: K8sResponse;
-            try {
-                probe = await request('GET', jobsSelectorPath(config.k8sNamespace, job));
-            } catch {
-                // A transport failure says nothing about whether the objects are gone; keep
-                // polling within the same bound.
-                probe = { status: 0, body: '' };
-            }
-            // Nothing answers the selector at all — nothing to fence.
-            if (probe.status === 404) break;
-            if (probe.status >= 200 && probe.status < 300) {
-                const items = parse<{ items?: { metadata?: { name?: string } }[] }>(probe.body).items ?? [];
-                const names: string[] = [];
-                for (const item of items) {
-                    if (item.metadata?.name) names.push(item.metadata.name);
-                }
-                // The selector answers nothing — the checkout is free.
-                if (names.length === 0) break;
-                let verified: 'ours' | 'lost' | 'unknown' = 'unknown';
+            /*
+             * Every object the `factory.job=<id>` label answers, across the three kinds a job
+             * can leave behind: runner and gate Jobs, a dead attempt's service pods, and its
+             * service DNS Services (whose names are namespace-global, so a leftover `db` must
+             * be swept before a replacement can create its own). Gates under this executor run
+             * as Jobs carrying the same label, which is what puts them inside this sweep.
+             */
+            const fleets: { kind: string; basePath: string; names: string[] }[] = [];
+            // A kind that could not answer — transport failure, 429, 5xx — makes the round
+            // INCONCLUSIVE: "no answer" is not "nothing there", and the create must wait for a
+            // round where every kind answered and named nothing.
+            let conclusive = true;
+            for (const [kind, selectorPath, basePath] of [
+                ['job', jobsSelectorPath(config.k8sNamespace, job), jobsPath(config.k8sNamespace)],
+                ['pod', podsSelectorPath(config.k8sNamespace, job), podsPath(config.k8sNamespace)],
+                ['service', servicesSelectorPath(config.k8sNamespace, job), servicesPath(config.k8sNamespace)],
+            ] as const) {
+                let probe: K8sResponse;
                 try {
-                    const held = await request('GET', claimPath(config.k8sNamespace, job));
-                    if (held.status === 404) {
-                        verified = 'lost';
-                    } else if (held.status >= 200 && held.status < 300) {
-                        // A 2xx that cannot name its holder also reads as lost, deliberately
-                        // asymmetric with step six: standing down deletes nothing, so garbage
-                        // is safe to act on HERE — while step six deletes the Job, so there
-                        // the same evidence fails loud without acting.
-                        verified = parse<K8sClaim>(held.body).data?.holder === job.leaseToken ? 'ours' : 'lost';
-                    }
-                    // 429/5xx: unconfirmed — neither delete nor stand down on a maybe.
+                    probe = await request('GET', selectorPath);
                 } catch {
-                    verified = 'unknown';
+                    // A transport failure says nothing about whether the objects are gone.
+                    probe = { status: 0, body: '' };
                 }
-                if (verified === 'lost') {
-                    throw new Error(
-                        `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`,
-                    );
-                }
-                if (verified === 'unknown') {
-                    if (++waits > REPLACE_MAX_POLLS) {
-                        throw new Error(
-                            `the checkout claim of job ${job.id} could not be confirmed before fencing ` +
-                                `(${REPLACE_MAX_POLLS} polls)`,
-                        );
+                // A kind answering nothing at all has nothing of this job in it.
+                if (probe.status === 404) continue;
+                if (probe.status >= 200 && probe.status < 300) {
+                    const items = parse<{ items?: { metadata?: { name?: string } }[] }>(probe.body).items ?? [];
+                    const names: string[] = [];
+                    for (const item of items) {
+                        if (item.metadata?.name) names.push(item.metadata.name);
                     }
-                    await sleep(POLL_MS);
+                    if (names.length > 0) fleets.push({ kind, basePath, names });
                     continue;
                 }
-                let deleted = 0;
-                for (const leftover of names) {
+                // 429/5xx/transport: inconclusive — the round cannot free the checkout.
+                conclusive = false;
+            }
+            // Every kind answered and none has anything of this job's — the checkout is free.
+            if (fleets.length === 0) {
+                if (conclusive) break;
+                // Inconclusive: keep polling within the same bound instead of creating
+                // alongside what may still be there.
+                if (++waits > REPLACE_MAX_POLLS) {
+                    throw new Error(
+                        `the fence of job ${job.id} could not confirm the checkout empty (${REPLACE_MAX_POLLS} polls)`,
+                    );
+                }
+                await sleep(POLL_MS);
+                continue;
+            }
+            let verified: 'ours' | 'lost' | 'unknown' = 'unknown';
+            try {
+                const held = await request('GET', claimPath(config.k8sNamespace, job));
+                if (held.status === 404) {
+                    verified = 'lost';
+                } else if (held.status >= 200 && held.status < 300) {
+                    // A 2xx that cannot name its holder also reads as lost, deliberately
+                    // asymmetric with step six: standing down deletes nothing, so garbage
+                    // is safe to act on HERE — while step six deletes the Job, so there
+                    // the same evidence fails loud without acting.
+                    verified = parse<K8sClaim>(held.body).data?.holder === job.leaseToken ? 'ours' : 'lost';
+                }
+                // 429/5xx: unconfirmed — neither delete nor stand down on a maybe.
+            } catch {
+                verified = 'unknown';
+            }
+            if (verified === 'lost') {
+                throw new Error(
+                    `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`,
+                );
+            }
+            if (verified === 'unknown') {
+                if (++waits > REPLACE_MAX_POLLS) {
+                    throw new Error(
+                        `the checkout claim of job ${job.id} could not be confirmed before fencing ` +
+                            `(${REPLACE_MAX_POLLS} polls)`,
+                    );
+                }
+                await sleep(POLL_MS);
+                continue;
+            }
+            let deleted = 0;
+            for (const fleet of fleets) {
+                for (const leftover of fleet.names) {
                     const response = await request(
                         'DELETE',
-                        `${jobPath(config.k8sNamespace, leftover)}?propagationPolicy=Foreground`,
+                        `${fleet.basePath}/${leftover}?propagationPolicy=Foreground`,
                     );
                     // A 404 is the ordinary end of an object another fence got to first; a 409
                     // is a concurrent replacement's fence deleting the same object. Both mean
                     // the object is being removed. Anything else fails loud, as ever.
                     if (response.status >= 300 && response.status !== 404 && response.status !== 409) {
                         throw new Error(
-                            `deleting the leftover runners answered ${response.status}: ${response.body.slice(0, 200)}`,
+                            `deleting the leftover ${fleet.kind}s answered ${response.status}: ` +
+                                `${response.body.slice(0, 200)}`,
                         );
                     }
                     if (response.status < 300) deleted += 1;
                 }
-                // Every delete came back 404/409 — another fence removed them already.
-                if (deleted === 0) break;
             }
+            // Every delete came back 404/409 — another fence removed them already.
+            if (deleted === 0) break;
             if (++waits > REPLACE_MAX_POLLS) {
                 throw new Error(
-                    `the leftover runner jobs of job ${job.id} never disappeared after their delete ` +
+                    `the leftover objects of job ${job.id} never disappeared after their delete ` +
                         `(${REPLACE_MAX_POLLS} polls)`,
                 );
             }
@@ -722,8 +1253,10 @@ export function createKubernetesRunner(
                     `(answered ${pre.status})`,
             );
         }
+    };
 
-        // Step five: this attempt's Job, under its own attempt-scoped name.
+    // Step five: this attempt's Job, under its own attempt-scoped name.
+    const launch = async (job: BoardJob, spec: RunnerJobSpec, cleanup: RunCleanup): Promise<void> => {
         const response = await request('POST', jobsPath(config.k8sNamespace), spec);
         if (response.status >= 300) {
             throw new Error(
@@ -824,9 +1357,9 @@ export function createKubernetesRunner(
             return null;
         },
 
-        // No vitals here: `docker stats` has no kubernetes twin, and a pod's metrics come from the
-        // metrics-server the cluster may not run. The dashboard renders nothing rather than a
-        // wrong number, the same way gates are refused here rather than skipped.
+        // No vitals here: `docker stats` has no kubernetes twin, and a pod's metrics come from
+        // the metrics-server the cluster may not run. The dashboard renders nothing rather than
+        // a wrong number.
         async sampleRuntime() {
             return null;
         },
@@ -849,6 +1382,10 @@ export function createKubernetesRunner(
                 'DELETE',
                 `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Background`,
             ).catch(() => undefined);
+            // The declared services go with the runner — docker.ts's kill tears its fleet down
+            // the same way. A killed job's database has no reason to outlive the runner that
+            // talked to it.
+            await teardownServices(job);
         },
 
         // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session
@@ -884,6 +1421,9 @@ export function createKubernetesRunner(
                 return await runner.run0(job, session, onOutput, cleanup);
             } finally {
                 if (!cleanup.holdClaim) await releaseClaim(job);
+                // The service fleet's whole purpose is the run — it goes when the run does,
+                // whatever the run came back with. Same close-time teardown docker.ts runs.
+                await teardownServices(job);
                 await forgetSecretIfAny(job);
             }
         },
@@ -901,7 +1441,77 @@ export function createKubernetesRunner(
             if (!session) {
                 throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
             }
-            await create(job, runnerJobSpec(config, job, session), cleanup);
+            await prepare(job, cleanup);
+
+            /*
+             * Auxiliary services, the k8s form of docker.ts's setup: read the checkouts'
+             * `.bellows.yaml` through a throwaway readout Job, then start each declared service
+             * as a Pod with a headless Service as its DNS name — `redis://cache:6379` resolves
+             * inside this namespace for exactly as long as this attempt runs. This sits between
+             * the fence and the runner's own launch: after the fence, so a stood-down attempt
+             * starts no fleet; before the Job, so every refusal below is answered while nothing
+             * of this attempt's runs — a parse refusal or a name collision must never leave a
+             * live runner to orphan on the checkout.
+             *
+             * The classification is docker.ts's own. A refused read or a refused start is
+             * INFRASTRUCTURE — the API server said no to an object this process spawned — so it
+             * throws, and the loop leaves the job to its lease instead of blaming the command.
+             * A parse refusal is the AUTHOR's: deterministic, fully said by the message, so it
+             * is returned as a failed run rather than thrown. The one addition this platform
+             * forces: a Service name is NAMESPACE-global, so a 409 on the DNS object means
+             * another concurrent job already holds that name — also deterministic, also the
+             * author's to fix, and refused the same terminal way rather than resolved by an
+             * ordering rule that would only read as "the wrong database came up".
+             */
+            if (config.servicesEnabled) {
+                let specs: ServiceSpec[] = [];
+                let refusal: string | null = null;
+                let raw: string;
+                try {
+                    raw = await readBellows(job);
+                } catch (e) {
+                    throw new Error(`could not read .bellows.yaml: ${(e as Error).message}`);
+                }
+                try {
+                    specs = collectServices(splitBellowsSections(raw));
+                } catch (e) {
+                    refusal = (e as Error).message;
+                }
+                if (!refusal) {
+                    for (const spec of specs) {
+                        try {
+                            const pod = await request('POST', podsPath(config.k8sNamespace), servicePodSpec(config, job, spec));
+                            if (pod.status >= 300) {
+                                throw new Error(`creating the service pod answered ${pod.status}: ${pod.body.slice(0, 200)}`);
+                            }
+                            const dns = await request('POST', servicesPath(config.k8sNamespace), serviceDnsSpec(job, spec));
+                            if (dns.status === 409) {
+                                refusal =
+                                    `.bellows.yaml: service "${spec.name}" is already running for another job in ` +
+                                    'this namespace — a service name is shared across the namespace, and no ' +
+                                    'first-wins or last-wins rule reads as anything but "the wrong database came up". ' +
+                                    'Re-queue this job when the other one is done, or rename one of the services.';
+                                break;
+                            }
+                            if (dns.status >= 300) {
+                                throw new Error(`creating the service DNS name answered ${dns.status}: ${dns.body.slice(0, 200)}`);
+                            }
+                        } catch (e) {
+                            // A partial fleet is torn down on the way out, exactly as docker's is.
+                            await teardownServices(job);
+                            throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
+                        }
+                    }
+                }
+                if (refusal !== null) {
+                    await teardownServices(job);
+                    return { exitCode: null, output: refusal, timedOut: false, idled: false, started: true };
+                }
+            }
+
+            // The runner — the last resource this attempt creates, only after every refusal the
+            // services could produce has been answered.
+            await launch(job, runnerJobSpec(config, job, session), cleanup);
 
             /*
              * Poll until the Job reports a terminal status. The kubelet-enforced
@@ -1076,4 +1686,280 @@ export function createKubernetesRunner(
         },
     };
     return runner;
+}
+
+/**
+ * The kubernetes gate manager: the second `GateManager`, the way `createKubernetesRunner` is the
+ * second `Runner`. The docker manager keeps a warm sleeper container per checkout and `docker
+ * exec`s every gate into it; here a gate run IS a Job — the declared image over the workspaces
+ * PVC, `workingDir` at the checkout — and the environment is a per-attempt Secret the pod reads
+ * by reference. The docker cooldown has no twin and no need of one: docker pays container startup
+ * once per cooldown window, kubernetes pays pod admission per run, and pod admission is seconds
+ * against test suites that run minutes. The warm-start cost optimization is the one thing the
+ * docker machinery has that this does not; every correctness property carries over.
+ *
+ * Like the runner, this manager is a client of the injected transport and of nothing else — no
+ * board, no database, no docker — per the package's zero-dependency rule.
+ */
+interface GateEntry {
+    job: BoardJob;
+    image: string;
+    envBody: string;
+    /** The per-attempt env Secret's name, when the attempt carries env at all. */
+    secretName: string | null;
+    /** Per-key counter naming each run, so a gate run twice never reuses a Job name. */
+    run: number;
+}
+
+export function createKubernetesGateManager({
+    config,
+    request,
+    sleep = wait,
+    gateTimeoutMs = config.gateTimeoutMs,
+}: {
+    config: DriverConfig;
+    request: K8sRequest;
+    sleep?: (ms: number) => Promise<void>;
+    gateTimeoutMs?: number;
+}): GateManager {
+    const entries = new Map<string, GateEntry>();
+
+    /** A harness failure, not a verdict: the same code docker exec's own failures carry. */
+    const harness = (message: string): Error => Object.assign(new Error(message), { code: CONTAINER_GONE });
+
+    /** The finished Job goes, on every path — its pod has read the env Secret by then. */
+    const reap = (jobName: string): void => {
+        void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
+            () => undefined,
+            () => undefined,
+        );
+    };
+
+    return {
+        /**
+         * Files the attempt context under the checkout key, validates the declared shapes — the
+         * same checks docker's `gateEnvArgs` runs before its argv — and creates the attempt's
+         * env Secret, so a malformed key, image or env line fails the job at claim, before the
+         * agent runs. The Secret is per ATTEMPT (identical env for every run of one attempt),
+         * created before any gate Job references it, and reaped at release. A 409 means a
+         * previous acquire of this attempt already created it — same name, same values.
+         * No container comes up here: the environment exists for exactly as long as each gate run.
+         */
+        async acquire(key, image, envBody = '', job) {
+            if (!job) {
+                throw harness('the kubernetes gate manager files gate runs under their job, and no job was given');
+            }
+            if (!GATE_KEY.test(key)) {
+                throw harness(`refusing to run a gate in a checkout key that is not <org>/<uuid>/<repo>: ${key}`);
+            }
+            if (!GATE_IMAGE.test(image)) {
+                throw harness(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
+            }
+            const secretName = envBody ? gateEnvSecretName(job) : null;
+            if (secretName) {
+                const response = await request('POST', `/api/v1/namespaces/${config.k8sNamespace}/secrets`, {
+                    apiVersion: 'v1',
+                    kind: 'Secret',
+                    type: 'Opaque',
+                    metadata: {
+                        name: secretName,
+                        labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+                    },
+                    stringData: envBodyToData(envBody),
+                });
+                if (response.status >= 300 && response.status !== 409) {
+                    throw harness(
+                        `creating the gate env secret answered ${response.status}: ${response.body.slice(0, 200)}`,
+                    );
+                }
+            }
+            entries.set(key, { job, image, envBody, secretName, run: 0 });
+        },
+
+        runGate(key, name, command) {
+            const entry = entries.get(key);
+            if (!entry) {
+                return Promise.reject(harness(`no gate environment for ${key}`));
+            }
+            const run = (entry.run += 1);
+            const { job, image, secretName } = entry;
+            const jobName = gateJobName(job, name, run);
+            return (async (): Promise<GateRun> => {
+                try {
+                    const created = await request(
+                        'POST',
+                        jobsPath(config.k8sNamespace),
+                        gateJobSpec(config, job, key, image, name, command, run, secretName, gateTimeoutMs),
+                    );
+                    if (created.status >= 300) {
+                        throw harness(
+                            `creating the gate job answered ${created.status}: ${created.body.slice(0, 200)}`,
+                        );
+                    }
+
+                    /*
+                     * Poll to a terminal status. The kubelet's activeDeadlineSeconds guarantees
+                     * the Job reaches one; the read of it gets the same bounded patience the
+                     * runner's poll has, because an apiserver blink is not a gate verdict.
+                     */
+                    let succeeded = false;
+                    let timedOut = false;
+                    let failures = 0;
+                    let imageCleared = false;
+                    for (;;) {
+                        let response: K8sResponse;
+                        try {
+                            response = await request('GET', jobPath(config.k8sNamespace, jobName));
+                        } catch (e) {
+                            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) throw e;
+                            await sleep(POLL_MS);
+                            continue;
+                        }
+                        if (response.status === 404) {
+                            throw harness(`the gate job ${jobName} no longer exists`);
+                        }
+                        if (response.status === 429 || response.status >= 500) {
+                            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                                throw harness(
+                                    `reading the gate job answered ${response.status} ` +
+                                        `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                                );
+                            }
+                            await sleep(POLL_MS);
+                            continue;
+                        }
+                        if (response.status >= 300) {
+                            throw harness(
+                                `reading the gate job answered ${response.status}: ${response.body.slice(0, 200)}`,
+                            );
+                        }
+                        failures = 0;
+                        const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+                        if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) {
+                            succeeded = (status.succeeded ?? 0) >= 1;
+                            timedOut = (status.conditions ?? []).some(
+                                (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded',
+                            );
+                            break;
+                        }
+
+                        /*
+                         * The one k8s-shaped harness failure worth naming: a declared image the
+                         * cluster cannot pull would otherwise burn the full deadline and report
+                         * "timeout" over what is really "no such image". Named as soon as the
+                         * pod says so; once a pod exists with no blocked container in it, the
+                         * image has pulled and the check stops listing.
+                         */
+                        if (!imageCleared) {
+                            const pods = await request(
+                                'GET',
+                                `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+                            ).catch(() => ({ status: 0, body: '' }));
+                            const pod = parse<K8sPodList>(pods.body).items?.find(
+                                (item) => !item.metadata?.deletionTimestamp,
+                            );
+                            const container = pod?.status?.containerStatuses?.[0];
+                            const waiting = container?.state?.waiting;
+                            if (waiting?.reason === 'ImagePullBackOff' || waiting?.reason === 'ErrImagePull') {
+                                throw harness(
+                                    `the gate image "${image}" cannot be pulled: ${waiting.reason}` +
+                                        (waiting.message ? ` — ${waiting.message.slice(0, 200)}` : ''),
+                                );
+                            }
+                            // A pod with no container status yet has not reported anything — the
+                            // image question is still open, and the check keeps watching.
+                            imageCleared = container !== undefined;
+                        }
+                        await sleep(POLL_MS);
+                    }
+
+                    // The pod carries the exit code; succeeded-with-no-pod maps to 0 exactly as
+                    // the runner's own verdict read does (one pod, never retried). A list that
+                    // answered non-2xx is a harness failure, never a verdict: the runner throws
+                    // on the same shape, and a silent "exit 1, empty output" would blame the
+                    // command for the API server's answer.
+                    const podsResponse = await readGateVerdict(
+                        request,
+                        sleep,
+                        `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+                        'listing the gate pods',
+                    );
+                    if (podsResponse.status >= 300) {
+                        throw harness(
+                            `listing the gate pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, 200)}`,
+                        );
+                    }
+                    const pod = parse<K8sPodList>(podsResponse.body).items?.find(
+                        (item) => !item.metadata?.deletionTimestamp,
+                    );
+                    const exitCode =
+                        pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : 1);
+
+                    let output = '';
+                    if (pod?.metadata?.name) {
+                        const log = await request(
+                            'GET',
+                            `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`,
+                        ).catch(() => ({ status: 0, body: '' }));
+                        // Trimmed like the docker manager's exec stdout: a trailing newline is
+                        // the command's, not the gate's message.
+                        if (log.status < 300) output = reportTail(log.body.trim());
+                    }
+                    // The docker manager's timeout shape: exit 124, and a named reason when the
+                    // gate had nothing to say for itself.
+                    return {
+                        exitCode: timedOut ? 124 : exitCode,
+                        output: timedOut && !output ? `[driver] gate killed after ${gateTimeoutMs}ms` : output,
+                    };
+                } finally {
+                    reap(jobName);
+                }
+            })();
+        },
+
+        /** The attempt's env Secret goes here — every gate run of the attempt has read it by now. */
+        release(key) {
+            const entry = entries.get(key);
+            if (!entry?.secretName) return;
+            entries.delete(key);
+            void request('DELETE', `/api/v1/namespaces/${config.k8sNamespace}/secrets/${entry.secretName}`).then(
+                () => undefined,
+                () => undefined,
+            );
+        },
+
+        /** A drained driver has no more turns coming: whatever the cooldown would have kept is moot. */
+        async stop() {
+            for (const key of [...entries.keys()]) this.release(key);
+        },
+    };
+}
+
+/**
+ * The gate poll's verdict-carrying read: the same bounded patience the runner uses for the reads
+ * that decide a run, because reporting a failed gate over an apiserver blink would blame the
+ * command for the API server's problem.
+ */
+async function readGateVerdict(
+    request: K8sRequest,
+    sleep: (ms: number) => Promise<void>,
+    path: string,
+    what: string,
+): Promise<K8sResponse> {
+    let failures = 0;
+    for (;;) {
+        let response: K8sResponse;
+        try {
+            response = await request('GET', path);
+        } catch (e) {
+            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) throw e;
+            await sleep(POLL_MS);
+            continue;
+        }
+        if (response.status !== 429 && response.status < 500) return response;
+        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+            throw new Error(`${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`);
+        }
+        await sleep(POLL_MS);
+    }
 }
