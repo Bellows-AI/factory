@@ -75,13 +75,37 @@ fi
 # The branch reporter samples session -> (repo, branch) beside the run, so the board can
 # attribute the session's tokens to a PR. A background SIBLING of the CLI, never its child — a
 # CLI crash must not take the reporter down mid-run — with stdio discarded: the output stream
-# this container prints is the run's, and the reporter never speaks. The CLI moves from exec
-# to foreground child so one close-time sample can run after it; the exit status is captured
-# and re-raised, which is the one behavior exec had that must survive.
+# this container prints is the run's, and the reporter never speaks. This shell is PID 1, so
+# it owns the runtime's TERM/INT: both children are tracked, the signal is forwarded to both,
+# and the CLI is waited out past the trap-interrupted `wait` returns — otherwise a
+# `docker stop` would leave it running until the runtime's forced kill. Its exit status, a
+# signal death's 143 included, is captured and re-raised, which is the one behavior exec had
+# that must survive; the reporter is stopped and reaped before the close-time sample so
+# nothing outlives the run.
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
+REPORTER_PID=$!
+opencode "$@" &
+CLI_PID=$!
+
+on_term() {
+    kill -TERM "$CLI_PID" "$REPORTER_PID" 2>/dev/null || true
+}
+trap on_term TERM INT
+
 set +e
-opencode "$@"
-STATUS=$?
+# `wait` returns 128+signal when the trap interrupts it, indistinguishable from a child that
+# died to that signal — so loop until the CLI is really gone (the kill -0 probe fails once
+# the last wait has reaped it), and take that final status.
+while :; do
+    wait "$CLI_PID"
+    STATUS=$?
+    kill -0 "$CLI_PID" 2>/dev/null || break
+done
 set -e
+
+# The run is over: stop the sampler and reap it before the close-time sample, which is the
+# last thing that runs.
+kill -TERM "$REPORTER_PID" 2>/dev/null || true
+wait "$REPORTER_PID" 2>/dev/null || true
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
 exit "$STATUS"

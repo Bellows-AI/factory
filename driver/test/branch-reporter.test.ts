@@ -29,7 +29,16 @@ interface Request {
 
 const boards: Server[] = [];
 
-const board = async (status = 200): Promise<{ url: string; requests: Request[]; waitForRequest: () => Promise<Request> }> => {
+// A scripted response is consumed before the default, one per request in order.
+interface Scripted {
+    status: number;
+    headers?: Record<string, string>;
+}
+
+const board = async (
+    status = 200,
+    scripted: Scripted[] = [],
+): Promise<{ url: string; requests: Request[]; waitForRequest: () => Promise<Request> }> => {
     const requests: Request[] = [];
     let notify: (() => void) | null = null;
     const server = createServer((req, res) => {
@@ -43,7 +52,8 @@ const board = async (status = 200): Promise<{ url: string; requests: Request[]; 
             });
             notify?.();
             notify = null;
-            res.writeHead(status, { 'content-type': 'application/json' });
+            const next = scripted.shift();
+            res.writeHead(next?.status ?? status, { 'content-type': 'application/json', ...next?.headers });
             res.end('{}');
         });
     });
@@ -150,6 +160,33 @@ describe('the branch reporter', () => {
                 WORKDIR: dir,
             });
             expect(withoutToken.requests[0].headers['x-factory-ingest-token']).toBeUndefined();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    // A redirect must not become a second hop for the credential-bearing request: Node strips
+    // only selected headers cross-origin, so the token would stay eligible for forwarding to
+    // whatever the Location points at. The request is refused, not followed.
+    it('does not follow a redirect, and never sends the credential to the redirect target', async () => {
+        const { url, requests } = await board(200, [
+            { status: 302, headers: { location: '/api/sessions/branch-target' } },
+        ]);
+        const dir = gitRepo();
+        try {
+            const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+                FACTORY_STATS_URL: url,
+                BELLOWS_SESSION_ID: SESSION,
+                WORKDIR: dir,
+                INGEST_TOKEN: 'tok',
+            });
+            expect(status).toBe(0);
+            expect(stdout).toBe('');
+            expect(stderr).toBe('');
+            // Exactly the one request, and no GET to /api/sessions/branch-target after it.
+            expect(requests).toHaveLength(1);
+            expect(requests[0].path).toBe('/api/sessions/branch');
+            expect(requests[0].headers['x-factory-ingest-token']).toBe('tok');
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }

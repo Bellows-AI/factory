@@ -102,6 +102,9 @@ async function report(sessionId) {
     try {
         await fetch(`${ENDPOINT}/api/sessions/branch`, {
             method: 'POST',
+            // This request may carry the ingest token, and a redirect must not forward it:
+            // Node strips only selected headers cross-origin, so the token stays eligible.
+            redirect: 'error',
             headers,
             signal: controller.signal,
             body: JSON.stringify({

@@ -191,11 +191,21 @@ render | grep -q 'value: "1800000"' && ok 'the job timeout renders as an integer
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
 
 # The driver forwards the branch reporter's credential by reference — the same Secret key the
-# dashboard and collector read — so the value never lands in the driver's own pod spec.
+# dashboard and collector read — so the value never lands in the driver's own pod spec. The env
+# entry is extracted whole and pinned field by field, so a wrong Secret name or a wrong key cannot
+# pass on the strength of some other env entry's `key: ingest-token`.
 driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' "$work/rendered.yaml")"
-expect_contains 'the driver reads the ingest token for its runners' "$driver" 'key: ingest-token'
-next="$(grep -A1 -- '- name: RUNNER_INGEST_TOKEN' <<<"$driver" | sed -n '2p' | tr -d ' ')"
-[ "$next" = 'valueFrom:' ] || bad 'RUNNER_INGEST_TOKEN travels by secretKeyRef' "next line: '$next'"
+token="$(awk 'f && /- name: /{exit} /- name: RUNNER_INGEST_TOKEN/{f=1} f' <<<"$driver")"
+if [ -n "$token" ]; then
+    expect_contains 'RUNNER_INGEST_TOKEN travels by secretKeyRef'        "$token" 'valueFrom:'
+    expect_contains 'the travel is a secretKeyRef, not a literal'        "$token" 'secretKeyRef:'
+    expect_contains 'RUNNER_INGEST_TOKEN names the shared dashboard Secret' "$token" \
+        "name: $RELEASE-factory-dashboard"
+    expect_contains 'the driver reads the ingest token for its runners'  "$token" 'key: ingest-token'
+else
+    bad 'the driver forwards RUNNER_INGEST_TOKEN' \
+        'no RUNNER_INGEST_TOKEN env in the rendered driver deployment'
+fi
 
 # The dashboard pod must not start its server until the in-chart database accepts connections: the
 # server's migration retry gives up after ~55s and then serves every DB-backed route as a 500
