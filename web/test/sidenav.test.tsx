@@ -153,6 +153,15 @@ describe('SideNav task tree', () => {
         expect(render('/tasks', [])).toContain('No tasks yet');
     });
 
+    it('keeps the group tree and its controls when there are no tasks yet', () => {
+        // Groups are tab state, not task state: a fresh board already has Group 1, so hiding it
+        // for want of tasks would also hide the only way to create or focus a group.
+        const html = render('/tasks', [], tabsFixture([{ id: '1', tabs: [] }]));
+        expect(html).toContain('sidenav-group');
+        expect(html).toContain('+ Group');
+        expect(html).toContain('sidenav-add-group');
+    });
+
     it('shows no task tree until there is one to show', () => {
         // Null is what the shell hands over off /tasks*, where the list is not polled: neither an
         // empty sentence nor dead links, just no list.

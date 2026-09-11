@@ -66,79 +66,77 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                             {item.label}
                         </NavLink>
                         {item.to === '/tasks' && tasks !== null ? (
-                            tasks.length === 0 ? (
-                                <p className="sidenav-empty">No tasks yet</p>
-                            ) : (
-                                <>
-                                    <ul className="sidenav-groups">
-                                        {tabs.groups.map((group) => (
-                                            <li key={group.id}>
-                                                <button
-                                                    type="button"
-                                                    aria-pressed={group.id === tabs.active.id}
-                                                    className={
-                                                        group.id === tabs.active.id
-                                                            ? 'sidenav-group is-active'
-                                                            : 'sidenav-group'
-                                                    }
-                                                    onClick={() => tabs.activateGroup(group.id)}
-                                                >
-                                                    {groupLabel(group)}
-                                                </button>
-                                                {group.tabs.length > 0 ? (
-                                                    <ul className="sidenav-subitems">
-                                                        {group.tabs.map((id) => {
-                                                            const task = taskById(id);
-                                                            return (
-                                                                <li key={id}>
-                                                                    <NavLink
-                                                                        to={`/tasks/${id}`}
-                                                                        title={task?.command ?? id}
-                                                                        className={({ isActive }) =>
-                                                                            isActive ? 'sidenav-task is-active' : 'sidenav-task'
-                                                                        }
-                                                                    >
-                                                                        {taskTitle(id, tasks)}
-                                                                    </NavLink>
-                                                                </li>
-                                                            );
-                                                        })}
-                                                    </ul>
-                                                ) : null}
-                                            </li>
-                                        ))}
-                                        <li>
+                            <>
+                                <ul className="sidenav-groups">
+                                    {tabs.groups.map((group) => (
+                                        <li key={group.id}>
                                             <button
                                                 type="button"
-                                                className="sidenav-add-group"
-                                                onClick={() => tabs.createGroup()}
+                                                aria-pressed={group.id === tabs.active.id}
+                                                className={
+                                                    group.id === tabs.active.id
+                                                        ? 'sidenav-group is-active'
+                                                        : 'sidenav-group'
+                                                }
+                                                onClick={() => tabs.activateGroup(group.id)}
                                             >
-                                                + Group
+                                                {groupLabel(group)}
                                             </button>
+                                            {group.tabs.length > 0 ? (
+                                                <ul className="sidenav-subitems">
+                                                    {group.tabs.map((id) => {
+                                                        const task = taskById(id);
+                                                        return (
+                                                            <li key={id}>
+                                                                <NavLink
+                                                                    to={`/tasks/${id}`}
+                                                                    title={task?.command ?? id}
+                                                                    className={({ isActive }) =>
+                                                                        isActive ? 'sidenav-task is-active' : 'sidenav-task'
+                                                                    }
+                                                                >
+                                                                    {taskTitle(id, tasks)}
+                                                                </NavLink>
+                                                            </li>
+                                                        );
+                                                    })}
+                                                </ul>
+                                            ) : null}
                                         </li>
-                                    </ul>
-                                    {recent.length > 0 ? (
-                                        <>
-                                            <p className="sidenav-recent">Recent</p>
-                                            <ul className="sidenav-subitems">
-                                                {recent.map((task) => (
-                                                    <li key={task.id}>
-                                                        <NavLink
-                                                            to={`/tasks/${task.id}`}
-                                                            title={task.command}
-                                                            className={({ isActive }) =>
-                                                                isActive ? 'sidenav-task is-active' : 'sidenav-task'
-                                                            }
-                                                        >
-                                                            {task.command}
-                                                        </NavLink>
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        </>
-                                    ) : null}
-                                </>
-                            )
+                                    ))}
+                                    <li>
+                                        <button
+                                            type="button"
+                                            className="sidenav-add-group"
+                                            onClick={() => tabs.createGroup()}
+                                        >
+                                            + Group
+                                        </button>
+                                    </li>
+                                </ul>
+                                {tasks.length === 0 ? (
+                                    <p className="sidenav-empty">No tasks yet</p>
+                                ) : recent.length > 0 ? (
+                                    <>
+                                        <p className="sidenav-recent">Recent</p>
+                                        <ul className="sidenav-subitems">
+                                            {recent.map((task) => (
+                                                <li key={task.id}>
+                                                    <NavLink
+                                                        to={`/tasks/${task.id}`}
+                                                        title={task.command}
+                                                        className={({ isActive }) =>
+                                                            isActive ? 'sidenav-task is-active' : 'sidenav-task'
+                                                        }
+                                                    >
+                                                        {task.command}
+                                                    </NavLink>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </>
+                                ) : null}
+                            </>
                         ) : null}
                     </li>
                 ))}

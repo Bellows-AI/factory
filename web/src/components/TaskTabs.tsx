@@ -15,7 +15,7 @@ import type { TaskTabs } from '../tabs.js';
 export function TaskTabs({ tabs, tasks }: { tabs: TaskTabs; tasks: readonly Job[] | null }) {
     const navigate = useNavigate();
     return (
-        <div className="task-tabs" role="tablist" aria-label={`${groupLabel(tabs.active)} tabs`}>
+        <div className="task-tabs">
             <span className="task-tabs-group">{groupLabel(tabs.active)}</span>
             {tabs.active.tabs.map((id) => (
                 <TaskTab key={id} id={id} tasks={tasks} onClose={tabs.removeTab} />
@@ -38,7 +38,7 @@ function TaskTab({ id, tasks, onClose }: { id: string; tasks: readonly Job[] | n
     const title = taskTitle(id, tasks);
     const active = pathname === `/tasks/${id}`;
     return (
-        <div className={active ? 'task-tab is-active' : 'task-tab'} role="tab" aria-selected={active}>
+        <div className={active ? 'task-tab is-active' : 'task-tab'}>
             <NavLink className="task-tab-link" to={`/tasks/${id}`} title={title}>
                 {title}
             </NavLink>

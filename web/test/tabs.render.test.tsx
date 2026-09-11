@@ -58,22 +58,23 @@ describe('TaskTabs', () => {
     it('names the group and renders each open task as a tab', () => {
         const html = render('/tasks', tabs([{ id: '1', tabs: [ID, '33333333-3333-4333-8333-333333333333'] }]));
         expect(html).toContain('Group 1');
-        expect(html).toContain('role="tablist"');
-        expect(html.match(/role="tab"/g)).toHaveLength(2);
+        expect(html).not.toContain('role="tablist"');
+        expect(html).not.toContain('role="tab"');
         expect(html).toContain('fix the flaky login test');
     });
 
     it('marks the focused tab, and only it', () => {
         const html = render(`/tasks/${ID}`, oneTab);
         expect(html).toContain('task-tab is-active');
-        expect(html).toContain('aria-selected="true"');
-        expect(html).not.toContain('aria-selected="false"');
+        expect(html).toContain('aria-current="page"');
+        expect(html).not.toContain('aria-selected');
     });
 
     it('marks no tab on the composer, where a new tab is being written', () => {
         const html = render('/tasks', oneTab);
         expect(html).not.toContain('task-tab is-active');
-        expect(html).toContain('aria-selected="false"');
+        expect(html).not.toContain('aria-current="page"');
+        expect(html).not.toContain('aria-selected');
     });
 
     it('offers the chrome tab controls: a close per tab and a plus for a new one', () => {
