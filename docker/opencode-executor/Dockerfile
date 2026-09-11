@@ -28,6 +28,14 @@ ARG OPENCODE_OTEL_VERSION=0.4.0
 RUN npm install -g @gcornut/opencode-otel@${OPENCODE_OTEL_VERSION} \
     && npm cache clean --force
 
+# The context-mode plugin (https://github.com/mksglu/context-mode) — sandboxed ctx_* tools, session
+# memory, hook-based routing — registered by the baked opencode.json alongside the telemetry
+# plugin. Pinned like everything else here. Its install scripts must run: better-sqlite3 resolves
+# its platform binding through them, and without the binding the plugin fails at run time.
+ARG CONTEXT_MODE_VERSION=1.0.169
+RUN npm install -g context-mode@${CONTEXT_MODE_VERSION} \
+    && npm cache clean --force
+
 # Atlassian CLI — the only supported way to read and write Jira from here; the Atlassian MCP server
 # is deliberately not configured. TARGETARCH is amd64/arm64, which is exactly how the download
 # paths are named, so no mapping table is needed.
