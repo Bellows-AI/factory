@@ -81,6 +81,16 @@ outside it**:
 | `webfetch` | `deny` | A hard refusal, never a prompt: the agent sees "denied" and routes around it. |
 | `external_directory` | `deny` everything, then `allow` `/tmp/*` and `/home/node/*` | The fence, enforced by config rather than agent instructions. Everything outside the working directory is refused — the rest of the shared workspaces volume (other members' trees) and system folders included — except the runner's own scratch space, so a run can still use `/tmp` for throwaway clones. |
 
+**The one runtime amendment:** the entrypoint re-opens the member's own tree. The driver points
+`XDG_DATA_HOME` at `<mount>/<org>/<user>/.opencode`, and a path of that shape makes the
+entrypoint insert an `allow` for `<mount>/<org>/<user>/**` into `external_directory` before the
+CLI starts — the member's checkouts, `.worktrees` and `.opencode` session data are the task's
+own workspace, and a run must never lose an attempt to reaching them, which is exactly what
+killed job `2011be64` (exit 125) mid-investigation. `**` rather than `*`, because the allow has
+to cross `/` and the tree's leading-dot directories. Any other `XDG_DATA_HOME` shape — a
+standalone run, most likely — patches nothing, and the fence stays exactly as baked; other
+members' trees stay refused either way.
+
 To run another policy, mount your own over the baked file:
 `-v "$HOME/opencode.json:/home/node/.config/opencode/opencode.json:ro"` — it resolves outside
 `/workspace`, so nothing config-shaped enters the checkout's diff. A mounted file replaces the

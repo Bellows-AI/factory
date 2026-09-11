@@ -75,10 +75,12 @@ ENV OPENCODE_CONFIG=/home/node/.config/opencode/opencode.json
 # to ask, and an unanswered ask auto-rejects, which once killed a run mid-investigation over a
 # filename that happened to contain ".env.". The baked policy is permissionless inside the working
 # directory (`*: allow`, with read's allow-all stated explicitly over opencode's seeded `*.env.*`
-# deny) and hard-gated outside it: external_directory refuses every path beyond the checkout — the
-# rest of the shared workspaces volume and system folders included — except the runner's own
-# scratch, /tmp and $HOME, and webfetch is a flat deny. To run another policy, mount your own over
-# /home/node/.config/opencode/opencode.json.
+# deny) and hard-gated outside it: external_directory refuses every path beyond the checkout —
+# the rest of the shared workspaces volume and system folders included — except the runner's own
+# scratch, /tmp and $HOME, and webfetch is a flat deny. The entrypoint re-opens exactly one
+# subtree at run time: the member's own tree, derived from the driver's XDG_DATA_HOME, so a task
+# can always operate within its own workspace while other members' trees stay refused. To run
+# another policy, mount your own over /home/node/.config/opencode/opencode.json.
 COPY --chown=node:node opencode-home/ /home/node/.config/opencode/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.

@@ -29,6 +29,30 @@ fi
 # create it rather than letting the first run fail inside opencode's own setup.
 if [ -n "${XDG_DATA_HOME:-}" ]; then
     mkdir -p "$XDG_DATA_HOME"
+
+    # The driver's shape is <mount>/<org>/<user>/.opencode, so the member's own tree — checkouts,
+    # .worktrees, .opencode — is derivable here. The baked fence denies everything outside the
+    # working directory because the volume under the mount is shared by every member; the one
+    # subtree a run may always operate in is its own member's. `**` rather than `*`: the allow
+    # must cross "/" and reach the dot-directories the tree is made of. A path without the
+    # driver's shape patches nothing — standalone runs keep the fence as baked.
+    case "$XDG_DATA_HOME" in
+    */.opencode)
+        MEMBER_ROOT="${XDG_DATA_HOME%/.opencode}"
+        OPENCODE_JSON="$HOME/.config/opencode/opencode.json"
+        if [ -f "$OPENCODE_JSON" ]; then
+            MEMBER_ROOT="$MEMBER_ROOT" OPENCODE_JSON="$OPENCODE_JSON" node -e "
+                const fs = require('fs');
+                const f = process.env.OPENCODE_JSON;
+                const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+                c.permission ??= {};
+                c.permission.external_directory ??= {};
+                c.permission.external_directory[process.env.MEMBER_ROOT + '/**'] = 'allow';
+                fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
+            " || echo "opencode-executor: could not allow $MEMBER_ROOT in opencode.json" >&2
+        fi
+        ;;
+    esac
 fi
 
 # The opencode-otel plugin reads its endpoint from otel.json, not from OTEL_EXPORTER_OTLP_ENDPOINT.

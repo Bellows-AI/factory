@@ -165,6 +165,52 @@ else
     bad 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
 fi
 
+# The task workspace allow: the driver's XDG_DATA_HOME names the member tree on the shared
+# workspaces volume, and the entrypoint opens exactly that subtree in the baked fence — `**`,
+# because the allow must reach the tree's dot-directories. Config bind-mounted so the patched
+# file reads back on the host; `--help` runs the patch then exits with no credential needed.
+CNF="$(mktemp -d)"
+cp "$HERE/opencode-home/opencode.json" "$CNF/opencode.json"
+chmod -R a+rwX "$CNF"
+WS="$(mktemp -d)"
+chmod -R a+rwX "$WS"
+# The member tree is mounted writable, as the driver mounts the workspaces volume: the entrypoint
+# creates the data directory in it, and a mkdir that cannot happen must fail loudly, not skip the
+# patch in silence.
+docker run --rm \
+    -e XDG_DATA_HOME=/workspaces/org/uuid/.opencode \
+    -v "$CNF:/home/node/.config/opencode" \
+    -v "$WS:/workspaces/org/uuid" \
+    "$IMAGE" --help >/dev/null 2>&1
+patched="$(cat "$CNF/opencode.json")"
+rm -rf "$CNF" "$WS"
+if node -e \
+    'try { const o = JSON.parse(process.argv[1]).permission.external_directory; process.exit(o["/workspaces/org/uuid/**"] === "allow" && o["*"] === "deny" ? 0 : 1); } catch { process.exit(1); }' \
+    "$patched" >/dev/null 2>&1; then
+    ok 'the entrypoint allows the member tree from XDG_DATA_HOME'
+else
+    bad 'the entrypoint allows the member tree from XDG_DATA_HOME' "$patched"
+fi
+
+# The fence is not loosened for a data directory that is not the driver's shape: a standalone run
+# that merely points XDG_DATA_HOME somewhere keeps the deny-everything default.
+CNF="$(mktemp -d)"
+cp "$HERE/opencode-home/opencode.json" "$CNF/opencode.json"
+chmod -R a+rwX "$CNF"
+docker run --rm \
+    -e XDG_DATA_HOME=/tmp/just-data \
+    -v "$CNF:/home/node/.config/opencode" \
+    "$IMAGE" --help >/dev/null 2>&1
+unpatched="$(cat "$CNF/opencode.json")"
+rm -rf "$CNF"
+if node -e \
+    'try { const o = JSON.parse(process.argv[1]).permission.external_directory; process.exit(o["*"] === "deny" && !Object.keys(o).some((k) => k.endsWith("/**")) ? 0 : 1); } catch { process.exit(1); }' \
+    "$unpatched" >/dev/null 2>&1; then
+    ok 'the fence stays as baked without the driver-shaped XDG_DATA_HOME'
+else
+    bad 'the fence stays as baked without the driver-shaped XDG_DATA_HOME' "$unpatched"
+fi
+
 # A missing WORKDIR must refuse in place, not start an agent in the wrong directory.
 docker run --rm -e WORKDIR=/nope "$IMAGE" run 'hi' >/dev/null 2>&1
 if [ "$?" = "2" ]; then ok 'a missing WORKDIR exits 2'; else bad 'a missing WORKDIR exits 2' 'see above'; fi
