@@ -183,11 +183,13 @@ describe('the runner job spec', () => {
             name: 'ANTHROPIC_API_KEY',
             valueFrom: { secretKeyRef: { name: 'claude-credentials', key: 'ANTHROPIC_API_KEY', optional: true } },
         });
-        // WORKDIR and the OTLP endpoint are the only literal values a runner env carries, and both
-        // are paths/URLs, not secrets — the object of the pin above.
+        // WORKDIR, the OTLP endpoint and the board URL are the only literal values a runner env
+        // carries, and all are paths/URLs, not secrets — the object of the pin above.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
+            { name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' },
+            { name: 'BELLOWS_SESSION_ID', value: SESSION },
         ]);
     });
 
@@ -212,6 +214,8 @@ describe('the runner job spec', () => {
         expect(container.env).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
+            { name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' },
+            { name: 'BELLOWS_SESSION_ID', value: SESSION },
         ]);
     });
 
@@ -236,12 +240,61 @@ describe('the runner job spec', () => {
     it('carries no claim env entries, and names no Secret, for an env-less claim', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(JSON.stringify(container.env)).not.toContain('factory-job-');
-        // The OTEL endpoint is a literal, not a claim entry: the runner's telemetry is always
-        // pointed somewhere, defaulting to the image's compose collector.
+        // The literal values: WORKDIR, and the two URLs every runner is pointed somewhere by —
+        // the collector for OTLP metrics, the board for the branch reporter's attribution
+        // reports. A URL is a path, not a credential, in a spec anyone with `get pods` can read.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
+            { name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' },
+            { name: 'BELLOWS_SESSION_ID', value: SESSION },
         ]);
+    });
+
+    // The branch reporter posts to the board's API; the same URL the docker runner forwards as
+    // `-e FACTORY_STATS_URL`, defaulted from JOB_BOARD_URL and overridable for a split topology.
+    it('names the board for the branch reporter, overridable', () => {
+        const container = spec().spec.template.spec.containers[0];
+        expect(container.env).toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' });
+        expect(spec({ RUNNER_STATS_URL: 'http://stats.internal:8080' }).spec.template.spec.containers[0].env)
+            .toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://stats.internal:8080' });
+    });
+
+    // The session the reporter names. Claude always has one (the driver mints it); opencode only
+    // on a follow-up — a fresh run discovers its id from the session database, exactly as the
+    // docker runner's env handles it.
+    it('tells the runner which session to report', () => {
+        expect(spec().spec.template.spec.containers[0].env).toContainEqual({
+            name: 'BELLOWS_SESSION_ID',
+            value: SESSION,
+        });
+        const opencode = (env: NodeJS.ProcessEnv = {}) =>
+            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', ...env }), job, null)
+                .spec.template.spec.containers[0];
+        expect(opencode().env.some((entry) => entry.name === 'BELLOWS_SESSION_ID')).toBe(false);
+        expect(
+            runnerJobSpec(
+                loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode' }),
+                { ...job, followUp: true },
+                { id: SESSION, resume: true },
+            ).spec.template.spec.containers[0].env,
+        ).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: SESSION });
+    });
+
+    // The ingest token is a credential: its NAME travels in the pod spec, its VALUE rides the
+    // per-attempt Secret by reference — the same discipline as every claim env entry. Unset, the
+    // pod names no key at all.
+    it('delivers the ingest token by secret reference, never as a value', () => {
+        const withToken = spec({ RUNNER_INGEST_TOKEN: 'shh-ingest' });
+        const container = withToken.spec.template.spec.containers[0];
+        expect(container.env).toContainEqual({
+            name: 'INGEST_TOKEN',
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'INGEST_TOKEN' } },
+        });
+        expect(JSON.stringify(withToken)).not.toContain('shh-ingest');
+        expect(spec().spec.template.spec.containers[0].env.some((entry) => entry.name === 'INGEST_TOKEN')).toBe(
+            false,
+        );
     });
 
     // A failed runner pod must never be re-run by the cluster: a kubelet retry would re-send the

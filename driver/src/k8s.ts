@@ -118,7 +118,7 @@ const LOG_TAIL_LINES = 1_000;
  * re-asserted here rather than trusted from the board — the same refusals the docker runner makes,
  * because the API server changing the runtime does not change who is trusted with what.
  */
-export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunSession): RunnerJobSpec {
+export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerJobSpec {
     // The id becomes the Job object's name; assert it before it lands in the spec, the same way
     // the workspace path is asserted before it becomes a working directory.
     if (!JOB_ID.test(job.id)) {
@@ -183,6 +183,20 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // telemetry flowing wherever a runtime can reach it.
     env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: config.otelEndpoint });
 
+    // Where the runner's branch reporter posts — the board's own URL, a literal like the OTEL
+    // endpoint beside it. A URL is a path, not a credential, in a spec anyone with `get pods`
+    // can read; the same default-and-override the docker runner forwards.
+    env.push({ name: 'FACTORY_STATS_URL', value: config.statsUrl });
+
+    // The ingest token is a CREDENTIAL: the name travels in the pod spec, the value rides the
+    // per-attempt Secret by reference — never a value here, and absent entirely when unconfigured.
+    if (config.ingestToken) {
+        env.push({
+            name: 'INGEST_TOKEN',
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'INGEST_TOKEN' } },
+        });
+    }
+
     // opencode persists its session database under XDG_DATA_HOME, and a fresh container starts
     // with an empty one — pointing it at the member's own tree on the workspaces PVC is what
     // makes a follow-up's `--session <id>` resumable at all, exactly as the docker runner's env
@@ -211,6 +225,10 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                 throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
             }
             args.push('--session', session.id);
+            // Only a follow-up has a session here, and the reporter must name it — the follow-up's
+            // tokens belong to the SAME conversation the parent ran. A fresh run is discovered
+            // live by the reporter from the session database XDG_DATA_HOME above keeps.
+            env.push({ name: 'BELLOWS_SESSION_ID', value: session.id });
         }
         args.push(job.command);
     } else {
@@ -222,6 +240,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
         if (!session) {
             throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
         }
+        // The session id the reporter claims — asserted above as a safe token before it lands in
+        // a spec, the same rule the argv below is held to.
+        env.push({ name: 'BELLOWS_SESSION_ID', value: session.id });
         const deliver = !session.resume || job.followUp;
         args = [session.resume ? '--resume' : '--session-id', session.id];
         if (config.skipPermissions) args.push('--dangerously-skip-permissions');
@@ -1250,14 +1271,15 @@ export function createKubernetesRunner(
         request('DELETE', `${secretsPath}/${secretName(job)}`).then(() => undefined, () => undefined);
 
     /**
-     * The Secret's contents: the claim env plus the loop's minted gate credentials. The
-     * reserved-name rule means the two sets are disjoint, and the gate names must reach the
-     * runner for the same reason they ride docker's env file — the agent's ad-hoc gate calls
-     * land mid-run, against an endpoint this driver advertises.
+     * The Secret's contents: the claim env, the loop's minted gate credentials, and the
+     * reporter's ingest token. The reserved-name rule means the first two sets are disjoint, and
+     * the gate names must reach the runner for the same reason they ride docker's env file —
+     * the agent's ad-hoc gate calls land mid-run, against an endpoint this driver advertises.
      */
     const runnerEnv = (job: BoardJob): Record<string, string> => ({
         ...claimEnv(job),
         ...(job.gateEnv ?? {}),
+        ...(config.ingestToken ? { INGEST_TOKEN: config.ingestToken } : {}),
     });
 
     /** Only a job whose Secret was ever created touches it — not even to delete one. */

@@ -57,6 +57,18 @@ collector config.
   plugin reads neither the var nor a settings.json envelope. Without the rewrite an overridden
   collector (the k8s form, or any docker deployment off the compose network) would silently keep the
   baked `http://collector:4318`.
+- **Both executors also bake the branch reporter, because metrics alone attribute to nothing.**
+  OTLP carries a session id and no branch, so the join below would have no span to intersect and
+  every executor run would sit in the unmatched bucket however much it cost. `branch-reporter.cjs`
+  (one copy per image, byte-identical but for the agent constant) samples
+  `session → (repo, branch)` from the task worktree and POSTs the plugin's wire shape to the
+  board's `/api/sessions/branch` — `FACTORY_STATS_URL` (`RUNNER_STATS_URL`, defaulted to the board
+  URL), authenticated by `INGEST_TOKEN` (`RUNNER_INGEST_TOKEN`) when the board requires one. The
+  reporter's rules are the plugin's, and the entrypoint discards its stdio on top: never fail a
+  run, never lag it, never speak. A refused report (no token on a token board, a board that is
+  down) is a silent no-op — unattributed, not failed. Remote Control runners get the reporter's
+  URL and session id but, receiving no forwarded credentials of any kind, stay unattributed on a
+  board that requires the token.
 - **`ON CONFLICT DO NOTHING` on `metric_point`, never `DO UPDATE`.** OTLP delivery is
   at-least-once, so an identical retry must be a no-op; an update would move `received_at` and
   destroy the only way to tell a retry from a genuine second export.

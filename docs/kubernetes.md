@@ -185,7 +185,9 @@ kind walkthrough. Decisions that look like cruft and are not:
   mode, documented as "the CLI still works, the sessions just go unrecorded". The dashboard
   ingest token, when one is set, reaches the collector as `INGEST_TOKEN` from the same Secret key
   the dashboard reads and lands in the exporter's header via `${env:INGEST_TOKEN}` — a reference
-  in the ConfigMap, never a value in it.
+  in the ConfigMap, never a value in it. The driver reads the same key as `RUNNER_INGEST_TOKEN`
+  and forwards it to every runner pod's per-attempt Secret, so the branch reporter's
+  attribution reports authenticate the way the OTLP export does.
 
 ## Variables
 

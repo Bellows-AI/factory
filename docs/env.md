@@ -45,7 +45,11 @@ real value.
   it names the credential-helper CODE the startup sync's fetch executes (`-c credential.helper=`
   hands the value to git as a program), so a member value there would be member-controlled code
   running in the sync container — reserving the name is what makes the driver's own helper the
-  only possible one.
+  only possible one. `FACTORY_STATS_URL`, `INGEST_TOKEN` and `BELLOWS_SESSION_ID` are reserved
+  for the branch reporter (see [jobs.md](jobs.md)): a member value in the first tells the
+  runner's attribution reports to post somewhere else, the second forges their credential, and
+  the third claims the report is somebody else's session — a cross-tenant write into the
+  telemetry store, refused the same way.
 - **`REPO`, `WORKTREE` and `BRANCH` are driver-owned inside the startup sync's container only**
   (issue #35): the sync's literal env names the clone, the task worktree and its branch, and the
   driver's literals win a collision on both platforms — docker's last `--env-file`/`-e` order and

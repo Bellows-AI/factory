@@ -9,6 +9,7 @@ checkout; it does not build or run this repo's application.
 | --- | --- |
 | `Dockerfile` | the image — Node 24 (debian), git, `@anthropic-ai/claude-code`, `gh`, `acli`, the `context-mode` plugin |
 | `entrypoint.sh` | `/usr/local/bin/claude-executor` — the `ENTRYPOINT` |
+| `branch-reporter.cjs` | `/usr/local/bin/branch-reporter.cjs` — the branch reporter the entrypoint launches beside the CLI |
 | `run.sh` | starts a Remote Control session, with the token read from `.env` — not shipped inside the image |
 | `test.sh` | builds the image and exercises it against this repo — not shipped inside it |
 | `claude-home/` | `/home/node/.claude` inside the image, via `CLAUDE_CONFIG_DIR` |
@@ -164,6 +165,20 @@ than letting `claude` start in the wrong directory and answer about the wrong tr
 It also marks the checkout `safe.directory` when one is mounted. A bind mount keeps the host's uid,
 which is rarely the container's 1000, and git otherwise refuses the repository outright with a
 "dubious ownership" error that never mentions uids.
+
+## Branch reporter
+
+`branch-reporter.cjs` samples `session → (repo, branch)` from `$WORKDIR` while the CLI runs —
+the in-container twin of the local `plugins/agent-telemetry` hook — and POSTs it to
+`FACTORY_STATS_URL` (`/api/sessions/branch`). OTLP metrics carry a session id and nothing else,
+so this side channel is what lets the board attribute a run's tokens to the PR its branch
+became. The driver supplies everything it needs: the endpoint (`RUNNER_STATS_URL`, defaulted to
+the board), the session id (`BELLOWS_SESSION_ID`, the uuid it minted) and, when the board
+requires one, the ingest token (`RUNNER_INGEST_TOKEN`). Nothing is logged, nothing retries, and
+every failure — a board that is down, a token that is wrong, a directory that is not a
+checkout — is a silent no-op: the run is unattributed, never failed. Hand-run containers get no
+session id from a driver, so the reporter stays inert; the local plugin remains the path for
+sessions you start yourself.
 
 ## Telemetry
 

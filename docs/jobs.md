@@ -80,6 +80,8 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, passed to both runners as `OTEL_EXPORTER_OTLP_ENDPOINT`. The default names the compose collector, so the endpoint is always provided — a runner's telemetry reaches the collector whether or not the compose network is there to make the baked image default resolve. The chart overrides it with the in-chart collector. |
+| `RUNNER_STATS_URL` | `JOB_BOARD_URL` | Where the runner's branch reporter posts its `session → (repo, branch)` samples — the board's own `/api/sessions/branch`. Defaults to the board URL, which a runner can already reach on compose and in the chart; override for a split topology (host driver, containerized runners) where only a host-gateway address names the API. |
+| `RUNNER_INGEST_TOKEN` | unset | The board's optional ingest token, forwarded so the reporter's reports authenticate on a board that requires one. A credential: it travels the env file (docker) or the per-attempt Secret (kubernetes), never an argv — and never under Remote Control, which receives no forwarded credentials at all. |
 | `DRIVER_CONCURRENCY` | `2` | |
 | `DRIVER_POLL_MS` | `5000` | |
 | `DRIVER_LEASE_SECONDS` | `300` | Heartbeat is a third of this. |
@@ -257,6 +259,28 @@ The watch is opencode-only (the message rows record per-turn cache tokens; a cla
 transcript answers nothing to the query), refused at startup under claude-code, and docker-only:
 each tick is one throwaway container on a warm daemon, while the kubernetes form would be a Job
 per tick — pod admission every poll period, refused at startup under `EXECUTOR=kubernetes`.
+
+**The branch reporter is how an executor run becomes attributable at all.** The CLIs' OTLP
+metrics carry a session id and nothing else — no branch, no repo, no PR — so the attribution
+join (see [telemetry.md](telemetry.md)) would have no span to intersect, and every executor run
+would land in the unmatched bucket no matter how much it cost. Both executor images bake
+`branch-reporter.cjs`, launched by the entrypoint beside the CLI (never as its child), which
+samples `session → (repo, branch)` from the task worktree and POSTs the plugin's exact wire
+shape to `FACTORY_STATS_URL` (`RUNNER_STATS_URL`, defaulted to the board) every twenty seconds,
+once more at close, and immediately whenever the session id changes. Its posture is the local
+plugin's: one short-timeout request, no retries, no spool, nothing on stdout or stderr — the
+stream this container prints is the run's — and every failure exits 0, because telemetry
+degrades alone. The session id is handed in (`BELLOWS_SESSION_ID`, always under claude-code —
+the driver mints it; on opencode, only a follow-up, which must keep naming the SAME
+conversation) or, for a fresh opencode run, discovered live from the session database with the
+close-time readout's exact query. The names are reserved from member configuration on both
+sides, exactly like the gate credentials: a member value in `FACTORY_STATS_URL`,
+`INGEST_TOKEN` or `BELLOWS_SESSION_ID` would be a cross-tenant write into the telemetry store
+(see [env.md](env.md)). One honest edge, shared with the shipped readout and cache probe that
+read the same database: discovery reads the member's NEWEST root session, so two concurrent
+fresh runs of one member can briefly cross-report each other's session id — the window is the
+time between one run's start and opencode creating its row, and a follow-up avoids it entirely
+by carrying the id.
 
 **`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own

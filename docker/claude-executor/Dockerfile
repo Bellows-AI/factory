@@ -54,7 +54,11 @@ RUN mkdir -p /workspace /opt/claude-home && chown node:node /workspace /opt/clau
 WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/claude-executor
-RUN chmod 0755 /usr/local/bin/claude-executor
+# The branch reporter lives in /usr/local/bin, NOT claude-home/: the Remote Control auth volume
+# mounts over CLAUDE_CONFIG_DIR and would shadow anything baked there — exactly the runs that
+# most want to be attributed.
+COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
+RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs
 
 USER node
 

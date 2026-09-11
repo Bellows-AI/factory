@@ -5,7 +5,9 @@ export default defineConfig({
         include: [
             'core/test/**/*.test.ts',
             'server/test/**/*.test.ts',
-            // Every docker call and every board request is injected, so this suite spawns nothing.
+            // Every docker call and every board request is injected; the one suite that spawns
+            // real processes (the branch reporter's node children, git fixtures, loopback HTTP)
+            // still touches nothing but its own temp dirs — offline, no daemon, no network.
             'driver/test/**/*.test.ts',
             // Renders panels with react-dom/server, so no DOM and no browser is needed.
             'web/test/**/*.test.tsx',
