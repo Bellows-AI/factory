@@ -3,7 +3,8 @@
     "instructions": ["/home/node/.config/opencode/AGENTS.md"],
     "disabled_providers": ["github-copilot"],
     "plugin": [
-        "/usr/local/lib/node_modules/@gcornut/opencode-otel"
+        "/usr/local/lib/node_modules/@gcornut/opencode-otel",
+        "/usr/local/lib/node_modules/context-mode"
     ],
     "permission": {
         "*": "allow",

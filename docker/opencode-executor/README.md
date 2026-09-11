@@ -12,10 +12,10 @@ flag.
 
 | Path | Becomes |
 | --- | --- |
-| `Dockerfile` | the image — Node 24 (debian), `opencode-ai` (pinned), `@gcornut/opencode-otel` (pinned), `gh`, `acli` |
+| `Dockerfile` | the image — Node 24 (debian), `opencode-ai` (pinned), `@gcornut/opencode-otel` (pinned), `context-mode` (pinned), `gh`, `acli` |
 | `entrypoint.sh` | `/usr/local/bin/opencode-executor` — the `ENTRYPOINT` |
 | `test.sh` | builds the image and smoke-tests it — not shipped inside it |
-| `opencode-home/opencode.json` | the baked permission policy plus the OTLP plugin reference, at `OPENCODE_CONFIG` |
+| `opencode-home/opencode.json` | the baked permission policy plus the plugin references (telemetry, context mode), at `OPENCODE_CONFIG` |
 | `opencode-home/otel.json` | the telemetry plugin's config: the compose collector, http/json, delta temporality |
 | `opencode-home/AGENTS.md` | the global instructions every run loads |
 
@@ -84,8 +84,23 @@ outside it**:
 To run another policy, mount your own over the baked file:
 `-v "$HOME/opencode.json:/home/node/.config/opencode/opencode.json:ro"` — it resolves outside
 `/workspace`, so nothing config-shaped enters the checkout's diff. A mounted file replaces the
-whole baked config, the plugin reference included: mount an `opencode.json` that lists
-`"plugin": ["/usr/local/lib/node_modules/@gcornut/opencode-otel"]` if you still want telemetry.
+whole baked config, the plugin references included: mount an `opencode.json` that lists
+`"plugin": ["/usr/local/lib/node_modules/@gcornut/opencode-otel", "/usr/local/lib/node_modules/context-mode"]`
+if you still want telemetry and context mode.
+
+## Context mode
+
+The [`context-mode` plugin](https://github.com/mksglu/context-mode) (sandboxed `ctx_*` tools,
+session memory, hook-based routing) is baked into the image and enabled from the baked
+`opencode.json`, the same way the telemetry plugin is: the package installed at build time and
+referenced by its absolute path `/usr/local/lib/node_modules/context-mode`, so nothing is fetched
+from npm at run time and two builds of one commit carry the same plugin. Do not add an
+`mcp.context-mode` entry beside the plugin entry — the loader then registers zero `ctx_*` tools
+(upstream-documented). The plugin is Elastic License 2.0, not MIT like the rest of the image.
+
+Its state rides `XDG_DATA_HOME`, like opencode's own: verified in a real run that everything it
+writes lands inside the `.opencode` directory the driver already designates per member, so nothing
+plugin-shaped enters the checkout's diff or bloats the workspaces volume elsewhere.
 
 ## Session ids
 
