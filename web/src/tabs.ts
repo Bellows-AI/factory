@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import type { Job } from './api/useJobs.js';
+import type { Job, JobStatus } from './api/useJobs.js';
 
 /**
  * Task groups and their tabs — the tasks area's browser-style tab model.
@@ -41,6 +41,76 @@ export function groupLabel(group: TaskGroup): string {
 export function taskTitle(id: string, jobs: readonly Job[] | null): string {
     const found = jobs?.find((job) => job.id === id);
     return found !== undefined ? found.command : id.slice(0, 8);
+}
+
+/** What the status dot of a task shows: the NEWEST run's state — the conversation's present tense. */
+export interface TaskStatus {
+    status: JobStatus | null;
+    cancelRequestedAt: string | null;
+    doneAt: string | null;
+}
+
+const NO_STATUS: TaskStatus = { status: null, cancelRequestedAt: null, doneAt: null };
+
+/**
+ * A task's status — the NEWEST member of its follow-up chain, resolved from ANY member's id the
+ * way the detail page resolves a thread: each follow-up points at the run it continues
+ * (`followUpTo`), so a tab opened on some adjustment answers for the whole conversation, and the
+ * sidenav paints one dot per task, not per run.
+ *
+ * The chain has no stored head. The newest member is the one nobody continues — a follow-up always
+ * names the run it was asked on, so the member no chain job references as its parent IS the newest,
+ * whatever order the rows arrive in. Nulls when the id names no job at all.
+ */
+export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus {
+    if (jobs === null) return NO_STATUS;
+    const byId = new Map(jobs.map((job) => [job.id, job]));
+    const named = byId.get(id);
+    if (named === undefined) return NO_STATUS;
+
+    // Climb to the chain root — the run with no parent — so a member's id resolves to the same
+    // conversation every member resolves to. The guard is defensive: follow-ups point strictly
+    // backwards, but a cycle must not spin forever.
+    let rootId = id;
+    const climbed = new Set<string>([id]);
+    while (true) {
+        const parent = byId.get(rootId)?.followUpTo;
+        if (parent === undefined || parent === null || climbed.has(parent)) break;
+        climbed.add(parent);
+        rootId = parent;
+    }
+
+    // The chain's members: the root and every job whose follow-up spine reaches it.
+    const members = new Map<string, Job>();
+    for (const job of jobs) {
+        if (inChain(job, byId, rootId)) members.set(job.id, job);
+    }
+
+    // The newest member is the head of the chain — the one no member continues. Null when a cycle
+    // left the chain headless, which this board never writes.
+    const continued = new Set<string>();
+    for (const job of members.values()) {
+        if (job.followUpTo !== null) continued.add(job.followUpTo);
+    }
+    for (const member of members.values()) {
+        if (!continued.has(member.id)) {
+            return { status: member.status, cancelRequestedAt: member.cancelRequestedAt, doneAt: member.doneAt };
+        }
+    }
+    return NO_STATUS;
+}
+
+/** Whether a job's follow-up spine reaches the given chain root. Sets bound the climb. */
+function inChain(job: Job, byId: Map<string, Job>, rootId: string): boolean {
+    let cursor: Job | undefined = job;
+    const visited = new Set<string>();
+    while (cursor !== undefined) {
+        if (cursor.id === rootId) return true;
+        if (visited.has(cursor.id)) return false;
+        visited.add(cursor.id);
+        cursor = cursor.followUpTo !== null ? byId.get(cursor.followUpTo) : undefined;
+    }
+    return false;
 }
 
 export function groupById(state: TaskTabsState, id: string): TaskGroup | null {

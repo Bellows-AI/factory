@@ -80,6 +80,8 @@ export function TaskDetail({
     sending,
     onFollowUp,
     onResume,
+    onStop,
+    onRemove,
     onDone,
 }: {
     /** The task's whole chain, oldest first — null until the thread poll lands. */
@@ -91,10 +93,14 @@ export function TaskDetail({
     sending: boolean;
     onFollowUp: (command: string) => Promise<string | null>;
     onResume: (id: string) => Promise<void>;
+    onStop: (id: string) => Promise<void>;
+    onRemove: (id: string) => Promise<void>;
     onDone: (id: string) => Promise<void>;
 }) {
     const [draft, setDraft] = useState('');
     const [resumingId, setResumingId] = useState<string | null>(null);
+    const [stoppingId, setStoppingId] = useState<string | null>(null);
+    const [removingId, setRemovingId] = useState<string | null>(null);
     const [doneId, setDoneId] = useState<string | null>(null);
     const outputRef = useRef<HTMLPreElement | null>(null);
 
@@ -162,6 +168,32 @@ export function TaskDetail({
         }
     };
 
+    // The board parks the run at the worker's next heartbeat, so the button says "Stop" while the
+    // request is in flight and "Stopping…" once the flag has landed but the run has not gone yet —
+    // the polls repaint the row the moment the driver parks it.
+    const stop = async (id: string) => {
+        if (stoppingId !== null) return;
+        setStoppingId(id);
+        try {
+            await onStop(id);
+        } finally {
+            setStoppingId(null);
+        }
+    };
+
+    // Remove travels with its own in-flight guard like Done; the confirm lives in the page, which
+    // also lands the navigation — after a successful remove the thread is gone and this view has
+    // nothing left to render.
+    const remove = async (id: string) => {
+        if (removingId !== null) return;
+        setRemovingId(id);
+        try {
+            await onRemove(id);
+        } finally {
+            setRemovingId(null);
+        }
+    };
+
     // One in-flight mark at a time, like resume: the button says nothing while the request runs,
     // and the pill arrives with the next poll.
     const done = async (id: string) => {
@@ -215,6 +247,30 @@ export function TaskDetail({
                                         onClick={() => void resume(task.id)}
                                     >
                                         Resume
+                                    </button>
+                                ) : null}
+                                {task.id === latestTask.id && task.status === 'running' ? (
+                                    task.cancelRequestedAt !== null ? (
+                                        <span className="pill chat-stop">Stopping…</span>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            className="chat-resume chat-stop"
+                                            disabled={stoppingId === task.id}
+                                            onClick={() => void stop(task.id)}
+                                        >
+                                            Stop
+                                        </button>
+                                    )
+                                ) : null}
+                                {task.id === latestTask.id && task.status !== 'running' ? (
+                                    <button
+                                        type="button"
+                                        className="chat-remove"
+                                        disabled={removingId === task.id}
+                                        onClick={() => void remove(task.id)}
+                                    >
+                                        Remove
                                     </button>
                                 ) : null}
                                 {taskOpen ? (

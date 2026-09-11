@@ -9,6 +9,7 @@ import {
     nextGroupId,
     openTask,
     saveTaskTabs,
+    taskStatus,
     taskTitle,
 } from '../src/tabs.js';
 import type { TaskGroup, TaskTabsState } from '../src/tabs.js';
@@ -137,6 +138,7 @@ describe('taskTitle', () => {
         executor: null,
         followUpTo: null,
         doneAt: null,
+        cancelRequestedAt: null,
         workspacePath: null,
         createdAt: '2026-09-01T12:00:00.000Z',
         startedAt: null,
@@ -149,6 +151,66 @@ describe('taskTitle', () => {
         expect(taskTitle(job.id, [job])).toBe('fix the flaky login test');
         expect(taskTitle(job.id, null)).toBe('11111111');
         expect(taskTitle(job.id, [])).toBe('11111111');
+    });
+});
+
+describe('taskStatus', () => {
+    const job = (id: string, overrides: Partial<Job> = {}): Job => ({
+        id,
+        command: `command ${id}`,
+        status: 'succeeded',
+        attempts: 1,
+        exitCode: 0,
+        output: null,
+        repo: null,
+        executor: null,
+        followUpTo: null,
+        doneAt: null,
+        cancelRequestedAt: null,
+        workspacePath: null,
+        createdAt: '2026-09-01T12:00:00.000Z',
+        startedAt: null,
+        finishedAt: null,
+        sessionId: null,
+        remoteSessionId: null,
+        ...overrides,
+    });
+
+    it('answers the named run when it is its own chain root', () => {
+        expect(taskStatus('a', [job('a', { status: 'running' })])).toEqual({
+            status: 'running',
+            cancelRequestedAt: null,
+            doneAt: null,
+        });
+    });
+
+    it('resolves ANY member to the newest run of the chain, like the detail page does', () => {
+        // The chain, oldest first: root a, follow-up b, newest c. `taskStatus` must answer c's
+        // state whether asked for the root or one of the follow-ups.
+        const chain = [
+            job('a'),
+            job('b', { followUpTo: 'a' }),
+            job('c', { followUpTo: 'b', status: 'running', cancelRequestedAt: '2026-09-01T13:00:00.000Z' }),
+        ];
+        const expected = { status: 'running', cancelRequestedAt: '2026-09-01T13:00:00.000Z', doneAt: null };
+        expect(taskStatus('a', chain)).toEqual(expected);
+        expect(taskStatus('b', chain)).toEqual(expected);
+        expect(taskStatus('c', chain)).toEqual(expected);
+    });
+
+    it('picks the newest member of the chain regardless of the rows\' order', () => {
+        // The head is found by who points at whom, not by array position — the newest member is
+        // the one no other chain job continues, so a shuffled list answers the same task state.
+        const newest = job('z', { followUpTo: 'b', status: 'failed', doneAt: '2026-09-01T14:00:00.000Z' });
+        const expected = { status: 'failed', cancelRequestedAt: null, doneAt: '2026-09-01T14:00:00.000Z' };
+        expect(taskStatus('b', [newest, job('b', { followUpTo: 'a' }), job('a')])).toEqual(expected);
+        expect(taskStatus('b', [job('a'), job('b', { followUpTo: 'a' }), newest])).toEqual(expected);
+    });
+
+    it('answers nothing about a task the poll does not know', () => {
+        expect(taskStatus('nope', [job('a')])).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });
+        expect(taskStatus('a', null)).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });
+        expect(taskStatus('a', [])).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });
     });
 });
 

@@ -61,6 +61,11 @@ export interface Job {
     /** When the user declared the task done, or null while they have not. */
     doneAt: string | null;
     /**
+     * When a stop was requested on this run while it was running — the user's `/stop` landed on a
+     * moving run and the driver has not parked it yet. Null on every other job.
+     */
+    cancelRequestedAt: string | null;
+    /**
      * Where the author's checkouts are, relative to the workspace root — board-derived, the same
      * field the claim carries. Null when the job has no author or the board has no workspace root;
      * the task view's status sidebar shows it, or a dash.
@@ -97,6 +102,10 @@ export interface UseJobs {
     resume: (id: string) => Promise<string | null>;
     followUp: (id: string, command: string) => Promise<QueueResult>;
     markDone: (id: string) => Promise<string | null>;
+    /** Park a running task: the driver parks it at its next heartbeat. Null on success. */
+    stop: (id: string) => Promise<string | null>;
+    /** Delete the whole thread (the live run refused with an error). Null on success. */
+    remove: (id: string) => Promise<string | null>;
 }
 
 /**
@@ -290,7 +299,54 @@ export function useJobs(enabled: boolean): UseJobs {
         [start],
     );
 
-    return { jobs, error, queue, resume, followUp, markDone };
+    // The two thread actions stop and remove, both POSTed like resume and done, both re-arming the
+    // poll on success (a parked run that appears, a thread that disappears) — and neither is shown
+    // by the panel where the board will refuse it, so these render the board's refusal only when
+    // state slid past the buttons: the stop of a task somebody else already parked, or the remove
+    // of a thread an outside claim just picked up.
+    const stop = useCallback(
+        async (id: string): Promise<string | null> => {
+            try {
+                const response = await fetch(`/api/jobs/${id}/stop`, { method: 'POST' });
+                if (response.status === 401) {
+                    reportUnauthenticated();
+                    return 'Your session expired';
+                }
+                if (!response.ok) {
+                    const body = (await response.json().catch(() => ({}))) as { error?: string };
+                    return body.error ?? `Could not stop the task (${response.status})`;
+                }
+                start();
+                return null;
+            } catch (e) {
+                return (e as Error).message;
+            }
+        },
+        [start],
+    );
+
+    const remove = useCallback(
+        async (id: string): Promise<string | null> => {
+            try {
+                const response = await fetch(`/api/jobs/${id}/remove`, { method: 'POST' });
+                if (response.status === 401) {
+                    reportUnauthenticated();
+                    return 'Your session expired';
+                }
+                if (!response.ok) {
+                    const body = (await response.json().catch(() => ({}))) as { error?: string };
+                    return body.error ?? `Could not remove the task (${response.status})`;
+                }
+                start();
+                return null;
+            } catch (e) {
+                return (e as Error).message;
+            }
+        },
+        [start],
+    );
+
+    return { jobs, error, queue, resume, followUp, markDone, stop, remove };
 }
 
 /**

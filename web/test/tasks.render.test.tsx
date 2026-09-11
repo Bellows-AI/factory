@@ -25,6 +25,7 @@ function job(overrides: Partial<Job> = {}): Job {
         executor: null,
         followUpTo: null,
         doneAt: null,
+        cancelRequestedAt: null,
         workspacePath: null,
         createdAt: '2026-09-01T12:00:00.000Z',
         startedAt: '2026-09-01T12:00:01.000Z',
@@ -86,6 +87,8 @@ const renderDetail = ({
             sending={sending}
             onFollowUp={async () => null}
             onResume={async () => {}}
+            onStop={async () => {}}
+            onRemove={async () => {}}
             onDone={async () => {}}
         />,
     );
@@ -242,6 +245,44 @@ describe('TaskDetail', () => {
         expect(html).not.toContain('<textarea');
         // The verdict is visible, not silently implied by the buttons' absence.
         expect(html).toContain('chat-done');
+    });
+
+    it('offers Stop on the run that is going, and nothing the moment it is not', () => {
+        const running = renderDetail({ jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })] });
+        expect(running).toContain('>Stop<');
+        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+            const html = renderDetail({ jobs: [job({ status })] });
+            expect(html, status).not.toContain('>Stop<');
+            expect(html, status).not.toContain('Stopping…');
+        }
+    });
+
+    it('says Stopping, not Stop, once the stop request has landed but the run has not parked', () => {
+        const html = renderDetail({
+            jobs: [job({ status: 'running', cancelRequestedAt: '2026-09-01T12:01:00.000Z', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+        });
+        expect(html).toContain('Stopping…');
+        expect(html).not.toContain('>Stop<');
+        // A run in flight cannot be removed yet: the board refuses with TASK_RUNNING.
+        expect(html).not.toContain('>Remove<');
+    });
+
+    it('offers Remove on anything not running — queued, parked, finished or dead — and never on one that is', () => {
+        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+            const html = renderDetail({ jobs: [job({ status })] });
+            expect(html, status).toContain('>Remove<');
+        }
+        const running = renderDetail({ jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })] });
+        expect(running).not.toContain('>Remove<');
+    });
+
+    it('keeps the thread actions on the newest run only — history runs render no Remove of their own', () => {
+        const root = job({ command: 'first command' });
+        const child = { ...job({ command: 'second command', status: 'standby' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id };
+        const html = renderDetail({ jobs: [root, child] });
+        expect(html.match(/>Resume</g)).toHaveLength(1);
+        expect(html.match(/>Remove</g)).toHaveLength(1);
+        expect(html).not.toContain('>Stop<');
     });
 
     it('disables the follow-up Send until text is typed', () => {
