@@ -14,12 +14,10 @@ alter table job add column if not exists cancel_requested_at timestamptz;
 -- because of WHO is missing when a task is removed: a queue flows post-run, through the live
 -- driver holding a lease, but a removed thread is queued, parked or terminal — nothing is running
 -- it, so no live driver will ever notice. The row is the driver's work order: it polls the queue,
--- removes the worktree named by root_job_id, and only then acks the row. Lease via claimed_by and
--- lease_expires_at, the expiry a claim stamps from ITS OWN requested lease at claim time — so a
--- holder keeps the row for exactly what it was granted, never re-measured by whatever lease the
--- next poll happens to ask with; an un-acked claim expires when that granted expiry passes and the
--- row is retried. Not a foreign key to job — the thread rows are DELETED, so there would be nothing
--- to point at.
+-- removes the worktree named by root_job_id, and only then acks the row. Lease via claimed_by /
+-- claimed_at, so two drivers never reclaim one tree; an un-acked claim expires and the row is
+-- retried. Not a foreign key to job — the thread rows are DELETED, so there would be nothing to
+-- point at.
 --
 -- workspace_path is the thread's relative checkout root (`<orgId>/<author>`), the same value the
 -- claim derives and the driver mounts; repo is the label the worktree was checked out by. Garbage
@@ -27,13 +25,13 @@ alter table job add column if not exists cancel_requested_at timestamptz;
 --
 -- No index on root_job_id: the queue keys by (org_id, created_at), never by task.
 create table if not exists task_reclaim (
-    id               uuid primary key default gen_random_uuid(),
-    org_id           text not null,
-    root_job_id      uuid not null,
-    repo             text,
-    workspace_path   text,
-    created_at       timestamptz not null default now(),
-    claimed_by       text,
-    lease_expires_at timestamptz
+    id             uuid primary key default gen_random_uuid(),
+    org_id         text not null,
+    root_job_id    uuid not null,
+    repo           text,
+    workspace_path text,
+    created_at     timestamptz not null default now(),
+    claimed_by     text,
+    claimed_at     timestamptz
 );
 create index if not exists task_reclaim_org_created on task_reclaim (org_id, created_at);

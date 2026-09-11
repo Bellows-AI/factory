@@ -44,7 +44,9 @@ beforeAll(async () => {
     if (!enabled) return;
     sql = postgres(url as string, { max: 8 });
     await migrate(sql, { orgId: ORG, attempts: 3 });
-    AUTHOR = await account(6101, 'stop-remove-cat');
+    // A generated identity, never a literal: integration tests do not hardcode ids, and a random
+    // one cannot collide with a real backfilled user the way a memorable constant eventually would.
+    AUTHOR = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'stop-remove-cat');
     store = createJobStore({ sql, orgId: ORG });
 });
 
