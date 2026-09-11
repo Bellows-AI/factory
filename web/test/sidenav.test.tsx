@@ -42,6 +42,7 @@ function job(overrides: Partial<Job> = {}): Job {
         executor: null,
         followUpTo: null,
         doneAt: null,
+        cancelRequestedAt: null,
         workspacePath: null,
         createdAt: '2026-09-02T12:00:00.000Z',
         startedAt: null,
@@ -170,6 +171,51 @@ describe('SideNav task tree', () => {
         expect(html).not.toContain('sidenav-group');
         expect(html).not.toContain('No tasks yet');
         expect(html).not.toContain('href="/tasks/22222222-2222-4222-8222-222222222222"');
+    });
+});
+
+describe('SideNav status dots', () => {
+    it('blinks a green dot beside a run that is going', () => {
+        const html = render('/tasks', [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null })], tabsFixture([{ id: '1', tabs: [job().id] }]));
+        expect(html).toContain('sidenav-dot sidenav-dot-running');
+    });
+
+    it('holds grey for a parked run, and the same grey while a stop request is in flight', () => {
+        const parked = render('/tasks', [job({ status: 'standby', exitCode: null, finishedAt: null, startedAt: null, output: null })], tabsFixture([{ id: '1', tabs: [job().id] }]));
+        expect(parked).toContain('sidenav-dot sidenav-dot-paused');
+        const stopping = render(
+            '/tasks',
+            [job({ status: 'running', cancelRequestedAt: '2026-09-02T12:01:00.000Z', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+            tabsFixture([{ id: '1', tabs: [job().id] }]),
+        );
+        expect(stopping).toContain('sidenav-dot sidenav-dot-stopping');
+    });
+
+    it('paints a failed or dead run red', () => {
+        for (const status of ['failed', 'dead'] as const) {
+            const html = render('/tasks', [job({ status, exitCode: 1 })], tabsFixture([{ id: '1', tabs: [job().id] }]));
+            expect(html, status).toContain('sidenav-dot sidenav-dot-failed');
+        }
+    });
+
+    it('paints a finished or done task solid green', () => {
+        const finished = render('/tasks', [job()], tabsFixture([{ id: '1', tabs: [job().id] }]));
+        expect(finished).toContain('sidenav-dot sidenav-dot-done');
+        const done = render(
+            '/tasks',
+            [job({ doneAt: '2026-09-02T13:00:00.000Z', exitCode: 1, status: 'failed' })],
+            tabsFixture([{ id: '1', tabs: [job().id] }]),
+        );
+        expect(done).toContain('sidenav-dot sidenav-dot-done');
+    });
+
+    it('answers for the whole thread, not the row under the cursor: a follow-up\'s state is the task\'s', () => {
+        const root = job();
+        const child = { ...job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null }), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id };
+        const html = render('/tasks', [root, child]);
+        // The root stays in Recent (its tab is not open), and its dot wears the child's live state.
+        const rootEntry = html.slice(html.indexOf('newer task'), html.indexOf('</a>', html.indexOf('newer task')));
+        expect(rootEntry).toContain('sidenav-dot sidenav-dot-running');
     });
 });
 

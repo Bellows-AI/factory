@@ -129,7 +129,16 @@ describe('the route table', () => {
         // declares the task finished by hand — and both fall through to `user` like resume does.
         [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
         [`/api/jobs/${JOB_ID}/done`, 'user'],
+        // Stop and remove are person's actions too. The driver is told to stop through the
+        // heartbeat it already holds, never through a stop route of its own; and a worker token
+        // removing the audit rows of jobs it never held would be the thread-read hole (#47) again.
+        [`/api/jobs/${JOB_ID}/stop`, 'user'],
+        [`/api/jobs/${JOB_ID}/remove`, 'user'],
         ['/api/jobs/claim', 'worker'],
+        // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
+        // reclaim, so both ends are as worker-only as claim and complete.
+        ['/api/reclaims/claim', 'worker'],
+        [`/api/reclaims/${JOB_ID}/ack`, 'worker'],
         [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
         [`/api/jobs/${JOB_ID}/session`, 'worker'],
         [`/api/jobs/${JOB_ID}/suspend`, 'worker'],

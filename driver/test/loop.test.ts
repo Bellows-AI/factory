@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Board, BoardJob, LeaseState, RuntimeReport } from '../src/board.js';
+import type { Board, BoardJob, HeartbeatVerdict, LeaseState, Reclaim, RuntimeReport } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/docker.js';
 import type { GateManager, GateServer } from '../src/gates.js';
@@ -28,6 +28,8 @@ interface BoardStub extends Board {
     beats: number;
     gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
     gatesReread: number;
+    reclaimGrants: Reclaim[];
+    reclaimAcks: string[];
 }
 
 /**
@@ -48,12 +50,18 @@ function stubBoard(
         threadTerminal?: boolean;
         completeLease?: LeaseState;
         completeFor?: (claimed: BoardJob) => { state: LeaseState; threadTerminal: boolean };
+        cancelRequested?: boolean;
+        removedOnBeat?: boolean;
+        reclaims?: Reclaim[];
+        ackReclaimLease?: 'ok' | 'lost' | 'missing';
+        failAckReclaim?: boolean;
     } = {},
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
     let idle = 0;
     let failures = options.failClaims ?? 0;
     const queue = [...jobs];
+    const reclaimQueue = options.reclaims ? [...options.reclaims] : [];
 
     const board: BoardStub = {
         completed: [],
@@ -63,6 +71,8 @@ function stubBoard(
         beats: 0,
         gatesReported: [],
         gatesReread: 0,
+        reclaimGrants: [],
+        reclaimAcks: [],
         async suspend(claimed) {
             board.suspended.push(claimed.id);
             return 'held';
@@ -90,7 +100,20 @@ function stubBoard(
         },
         async heartbeat() {
             board.beats += 1;
-            return options.lease ?? 'held';
+            if (options.lease === 'lost') return 'lost';
+            if (options.removedOnBeat) return 'removed';
+            const verdict: HeartbeatVerdict = { result: 'held', cancelRequested: options.cancelRequested ?? false };
+            return verdict;
+        },
+        async claimReclaim(worker) {
+            const next = reclaimQueue.shift();
+            if (next) board.reclaimGrants.push(next);
+            return next ?? null;
+        },
+        async ackReclaim(id) {
+            if (options.failAckReclaim) throw new Error('board unreachable');
+            board.reclaimAcks.push(id);
+            return options.ackReclaimLease ?? 'ok';
         },
         async rereadGates(claimed) {
             board.gatesReread += 1;
@@ -743,6 +766,157 @@ describe('the poll loop', () => {
 
         expect(runner.killed).toEqual([job(1).id]);
         expect(board.board.completed).toEqual([]);
+    });
+
+    // A Stop (issue #41) is a park, not an end: the board stamps the running row with the flag,
+    // the heartbeat carries it back, and the container is killed so the run stops editing the
+    // checkout — but the job goes back on the board, session intact, for a human to resume from
+    // the Claude UI. Exactly the landing an idle run gets, and reporting nothing lets it stay
+    // there.
+    it('kills the container and parks the job when the heartbeat reports a stop request', async () => {
+        const board = stubBoard([job(1)], { cancelRequested: true });
+        let finish = () => {};
+        const runner = stubRunner(
+            () =>
+                new Promise<RunOutcome>((resolve) => {
+                    finish = () => resolve(ok());
+                }),
+        );
+
+        const started = drive({ ...board, runner });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        finish();
+        await started;
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // Remove's defensive half this side of the fence: the only way a heartbeat sees a 404 is the
+    // board having deleted the thread while this attempt ran. The container dies, and nothing is
+    // parked or reported — there is no row left to park and nobody left to read a verdict. (The
+    // server refuses to remove a running thread, so this is a race the server already closes; the
+    // driver still answers the status rather than reading it as a broken board.)
+    it('kills the container and reports nothing when the board says the thread was removed', async () => {
+        const board = stubBoard([job(1)], { removedOnBeat: true });
+        let finish = () => {};
+        const runner = stubRunner(
+            () =>
+                new Promise<RunOutcome>((resolve) => {
+                    finish = () => resolve(ok());
+                }),
+        );
+
+        const started = drive({ ...board, runner });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        finish();
+        await started;
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // The other half of Remove (issue #41): the thread's rows are gone and the queue hands this
+    // driver the tree to take down. The worktree is reclaimed through the same runner call a
+    // terminal thread's report() uses, fed a job synthesised from the row's identity, and acked
+    // once the tree is down so the row stops being offered.
+    it('drains the board’s reclaim queue: removes the removed thread’s worktree and acks it', async () => {
+        const rowId = '55555555-5555-4555-8555-555555555555';
+        const root = job(1).id;
+        const board = stubBoard([], {
+            idleBeforeStop: 1,
+            reclaims: [
+                {
+                    id: rowId,
+                    rootJobId: root,
+                    repo: 'Bellows-AI/factory',
+                    workspacePath: `bellows/${USER}`,
+                    leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+                },
+            ],
+        });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.reclaimGrants).toHaveLength(1);
+        // The tree is reclaimed under the thread's identity — the job is the removed root, the
+        // row id rides as the lease token, exactly what keys the removal under kubernetes.
+        expect(runner.reclaimed).toEqual([
+            {
+                id: root,
+                command: '',
+                attempts: 1,
+                leaseToken: rowId,
+                leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+                resumeSessionId: null,
+                followUp: false,
+                userId: null,
+                workspacePath: `bellows/${USER}`,
+                rootJobId: root,
+                repo: 'Bellows-AI/factory',
+            },
+        ]);
+        expect(board.board.reclaimAcks).toEqual([rowId]);
+    });
+
+    it('leaves a refused reclaim to its lease instead of acking it', async () => {
+        const rowId = '55555555-5555-4555-8555-555555555555';
+        const root = job(1).id;
+        const logs: string[] = [];
+        const board = stubBoard([], {
+            idleBeforeStop: 1,
+            reclaims: [{ id: rowId, rootJobId: root, repo: null, workspacePath: null, leaseExpiresAt: '2026-08-21T12:05:00.000Z' }],
+        });
+        const runner = stubRunner(async () => ok());
+        runner.reclaimWorktree = async () => ({ ok: false, removed: false, reason: 'the checkout is held' });
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config(),
+            sleep,
+            log: (m) => logs.push(m),
+        });
+        board.attach(loop);
+
+        await loop.start();
+
+        // No ack: the row survives its lease and is offered again (and to other workers), while
+        // the refusal is said out loud exactly as a refused terminal reclaim is.
+        expect(board.board.reclaimAcks).toEqual([]);
+        expect(logs.some((m) => m.includes('could not be reclaimed: the checkout is held'))).toBe(true);
+    });
+
+    // A transient board error after the tree is already down must not take the driver with it:
+    // like a refused reclaim, a throwing ack is left to the lease — the row is re-offered when it
+    // expires — and the drain loop goes on polling.
+    it('survives a reclaim ack failure instead of crashing the drain loop', async () => {
+        const rowId = '55555555-5555-4555-8555-555555555555';
+        const root = job(1).id;
+        const logs: string[] = [];
+        const board = stubBoard([], {
+            idleBeforeStop: 1,
+            reclaims: [{ id: rowId, rootJobId: root, repo: null, workspacePath: null, leaseExpiresAt: '2026-08-21T12:05:00.000Z' }],
+            failAckReclaim: true,
+        });
+        const runner = stubRunner(async () => ok());
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config(),
+            sleep,
+            log: (m) => logs.push(m),
+        });
+        board.attach(loop);
+
+        await loop.start();
+
+        // The ack never landed, so the row survives for its lease to expire and hand it back —
+        // and start() resolved, where before the fix the rejection ended the driver.
+        expect(board.board.reclaimAcks).toEqual([]);
+        expect(logs.some((m) => m.includes('leaving it to the lease'))).toBe(true);
     });
 
     it('never runs more than the configured number at once', async () => {

@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
-import { groupLabel, taskTitle } from '../tabs.js';
+import { groupLabel, taskStatus, taskTitle } from '../tabs.js';
 import type { TaskTabs } from '../tabs.js';
 
 /**
@@ -52,6 +52,18 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
     const recent = (tasks ?? []).filter((task) => task.followUpTo === null && !openIds.has(task.id));
     const taskById = (id: string): Job | null => tasks?.find((task) => task.id === id) ?? null;
 
+    // The task's own state, not the run's: `taskStatus` resolves the newest member of the chain,
+    // and the dot wears the state that state paints — a live run blinks, a parked or queued one
+    // holds grey, a failed/dead one is red, and anything finished or declared done is solid green.
+    const dotClass = (id: string): string => {
+        const status = taskStatus(id, tasks);
+        if (status.doneAt !== null || status.status === 'succeeded') return 'sidenav-dot-done';
+        if (status.status === 'running') return status.cancelRequestedAt !== null ? 'sidenav-dot-stopping' : 'sidenav-dot-running';
+        if (status.status === 'standby' || status.status === 'queued') return 'sidenav-dot-paused';
+        if (status.status === 'failed' || status.status === 'dead') return 'sidenav-dot-failed';
+        return '';
+    };
+
     return (
         <nav className="sidenav" aria-label="Sections">
             <div className="sidenav-brand">Factory</div>
@@ -86,6 +98,7 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                                 <ul className="sidenav-subitems">
                                                     {group.tabs.map((id) => {
                                                         const task = taskById(id);
+                                                        const dot = dotClass(id);
                                                         return (
                                                             <li key={id}>
                                                                 <NavLink
@@ -95,6 +108,7 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                                                         isActive ? 'sidenav-task is-active' : 'sidenav-task'
                                                                     }
                                                                 >
+                                                                    {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
                                                                     {taskTitle(id, tasks)}
                                                                 </NavLink>
                                                             </li>
@@ -120,19 +134,23 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                     <>
                                         <p className="sidenav-recent">Recent</p>
                                         <ul className="sidenav-subitems">
-                                            {recent.map((task) => (
-                                                <li key={task.id}>
-                                                    <NavLink
-                                                        to={`/tasks/${task.id}`}
-                                                        title={task.command}
-                                                        className={({ isActive }) =>
-                                                            isActive ? 'sidenav-task is-active' : 'sidenav-task'
-                                                        }
-                                                    >
-                                                        {task.command}
-                                                    </NavLink>
-                                                </li>
-                                            ))}
+                                            {recent.map((task) => {
+                                                const dot = dotClass(task.id);
+                                                return (
+                                                    <li key={task.id}>
+                                                        <NavLink
+                                                            to={`/tasks/${task.id}`}
+                                                            title={task.command}
+                                                            className={({ isActive }) =>
+                                                                isActive ? 'sidenav-task is-active' : 'sidenav-task'
+                                                            }
+                                                        >
+                                                            {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
+                                                            {task.command}
+                                                        </NavLink>
+                                                    </li>
+                                                );
+                                            })}
                                         </ul>
                                     </>
                                 ) : null}

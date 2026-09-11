@@ -14,7 +14,7 @@ import { useTasksPage } from './TasksLayout.js';
  * not yet closed — so the page reads it off the polled chain rather than off the URL.
  */
 export function TaskDetailPage() {
-    const { tasks } = useTasksPage();
+    const { tasks, tabs } = useTasksPage();
     const params = useParams();
     const id = params.id ?? null;
     const detail = useThread(id);
@@ -74,6 +74,30 @@ export function TaskDetailPage() {
         detail.refresh();
     };
 
+    const stopTask = async (taskId: string) => {
+        setActionError(null);
+        const message = await tasks.stop(taskId);
+        if (message !== null) setActionError(message);
+        // Success needs no navigation: the polls repaint the parked run in place.
+    };
+
+    // The confirm lives here, with the navigation it owns: deleting a thread is not an accident the
+    // sidebar should be able to make, and once the board has deleted the rows this page has nothing
+    // left to render — the tab closes and the area falls back to the composer (its neighbour, if one
+    // was open). The refusal needs no confirm, so a TASK_RUNNING state slid past the button just
+    // errors in place like every other refusal.
+    const removeTask = async (taskId: string) => {
+        setActionError(null);
+        if (!window.confirm('Remove this task? Every run of the thread and its worktree are deleted.')) return;
+        // The panel holds the in-flight guard, so a double confirmation cannot double-remove.
+        const message = await tasks.remove(taskId);
+        if (message !== null) {
+            setActionError(message);
+            return;
+        }
+        tabs.removeTab(taskId);
+    };
+
     return (
         <main>
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
@@ -85,6 +109,8 @@ export function TaskDetailPage() {
                 sending={sending}
                 onFollowUp={followUp}
                 onResume={resumeTask}
+                onStop={stopTask}
+                onRemove={removeTask}
                 onDone={doneTask}
             />
         </main>

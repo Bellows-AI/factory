@@ -553,6 +553,52 @@ footer {
     color: var(--primary);
 }
 
+/* The status dot before a task's name: the task's state in one painted pixel, the legend being the
+   colours the rest of the app already speaks — a live run blinks, a parked one holds grey, a
+   failed one is red, and a finished or done one is solid green. */
+.sidenav-dot {
+    background: currentColor;
+    border-radius: 50%;
+    display: inline-block;
+    height: 6px;
+    margin-right: 4px;
+    vertical-align: middle;
+    width: 6px;
+}
+
+.sidenav-dot-running {
+    color: var(--ok);
+    animation: blink 1.2s ease-in-out infinite;
+}
+
+.sidenav-dot-stopping {
+    color: var(--muted);
+    animation: blink 1.2s ease-in-out infinite;
+}
+
+.sidenav-dot-paused,
+.sidenav-dot-queued {
+    color: var(--muted);
+}
+
+.sidenav-dot-failed {
+    color: var(--bad);
+}
+
+.sidenav-dot-done {
+    color: var(--ok);
+}
+
+@keyframes blink {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.25;
+    }
+}
+
 .sidenav-empty {
     color: var(--muted);
     font-size: 12px;
@@ -996,6 +1042,19 @@ button.primary {
 .chat-done {
     border-color: #1c4523;
     color: var(--ok);
+}
+
+/* Stop wears the same amber as a queued run: a request in flight, not yet a verdict. The darkened
+   pill is its request-landed state — the run is coming down but has not parked yet. */
+.chat-stop {
+    border-color: #4a3a12;
+    color: var(--warn);
+}
+
+/* Remove is the thread's end: the red a failed run wears, because it is the same finality. */
+.chat-remove {
+    border-color: #5a1e1c;
+    color: var(--bad);
 }
 
 .composer {

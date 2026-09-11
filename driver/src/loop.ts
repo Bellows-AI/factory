@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { Board, BoardJob, LeaseState, RuntimeReport } from './board.js';
+import type { Board, BoardJob, LeaseState, Reclaim, ReclaimAck, RuntimeReport } from './board.js';
 import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { RunSession, Runner, RuntimeSample } from './docker.js';
-import type { SyncResult } from './publish.js';
+import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { worktreeRelDir } from './publish.js';
-import type { PublishResult } from './publish.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -48,6 +47,17 @@ const PROGRESS_MS = 2_000;
 interface JobState {
     finished: boolean;
     lost: boolean;
+    /**
+     * True once the board answered a Stop while this attempt ran: the container is killed and the
+     * job parked on standby — Stop is park, never finish (docs/jobs.md).
+     */
+    stopped: boolean;
+    /**
+     * True once the board answered that the thread was removed while this attempt ran. The
+     * container is killed and nothing is parked or reported: the rows are gone and the tree now
+     * belongs to the queue's reclaim.
+     */
+    removed: boolean;
     /** Resolves the moment the run ends, so the heartbeat can stop waiting out its period. */
     woken: Promise<void>;
     wake: () => void;
@@ -78,7 +88,7 @@ function newJobState(): JobState {
     const woken = new Promise<void>((resolve) => {
         wake = resolve;
     });
-    return { finished: false, lost: false, woken, wake };
+    return { finished: false, lost: false, stopped: false, removed: false, woken, wake };
 }
 
 export function createLoop({ board, runner, config, gates, log = () => {}, sleep = wait }: LoopDeps): Loop {
@@ -104,12 +114,16 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * A 409 means the lease was reclaimed while this container was still working: the job belongs
      * to another worker now, so this one is killed rather than left to finish and report. The board
      * would refuse the report anyway — but by then the two runs have both been writing to the same
-     * checkout, which is the thing actually worth preventing.
+     * checkout, which is the thing actually worth preventing. A 404 means the thread was REMOVED
+     * (issue #41): same kill, and nothing left to park against or report to. A Stop — the board
+     * answers `cancelRequested` on a still-held beat — kills the container too, but parks the job
+     * on standby instead of ending it: Stop is park, never finish, and the session survives for a
+     * human to resume from the Claude UI.
      */
     function heartbeat(job: BoardJob, state: JobState): Promise<void> {
         const every = Math.max(1_000, Math.floor((config.leaseSeconds * 1000) / 3));
         return (async () => {
-            while (!state.finished && !state.lost) {
+            while (!state.finished && !state.lost && !state.stopped && !state.removed) {
                 // Raced against the run finishing, not simply awaited. The beat period is a third
                 // of the lease — 100s at the default — and a plain sleep would hold every finished
                 // job for the remainder of it before its result could be reported.
@@ -128,6 +142,14 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 if (verdict === 'lost') {
                     state.lost = true;
                     log(`job ${job.id}: lease lost, killing the runner`);
+                    await runner.kill(job);
+                } else if (verdict === 'removed') {
+                    state.removed = true;
+                    log(`job ${job.id}: removed while it ran, killing the runner`);
+                    await runner.kill(job);
+                } else if (verdict.cancelRequested) {
+                    state.stopped = true;
+                    log(`job ${job.id}: stop requested, killing the runner`);
                     await runner.kill(job);
                 }
             }
@@ -427,6 +449,31 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     return;
                 }
 
+                if (state.removed) {
+                    // The heartbeat already killed the container. The thread's rows are gone and
+                    // its tree belongs to the queue's reclaim (issue #41): nothing to park against,
+                    // nobody to hand a verdict to — the job finishes by being gone.
+                    await settle();
+                    log(`job ${job.id}: removed while it ran; the queue owns the tree`);
+                    return;
+                }
+
+                if (state.stopped) {
+                    // The heartbeat already killed the container. A Stop is a PARK: the session is
+                    // kept, the job goes back on the board, and a human resumes it from the Claude
+                    // UI — the same landing an idled run gets, and for the same reason: reporting an
+                    // exit code here would make a paused session indistinguishable from a run that
+                    // ended (docs/jobs.md).
+                    await settle();
+                    const verdict = await board.suspend(job);
+                    log(
+                        verdict === 'lost'
+                            ? `job ${job.id}: stopped, but the board had already reclaimed it`
+                            : `job ${job.id}: stopped, parked on standby`,
+                    );
+                    return;
+                }
+
                 /*
                  * The runner, not this loop, knows what a refused start looks like on its platform,
                  * and stamps `started: false` for it — docker from its daemon-error signature, a
@@ -651,6 +698,77 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         active.add(promise);
     }
 
+    /**
+     * Drains the board's removed-thread queue (issue #41), one row at a time: a Remove deleted a
+     * thread and this loop is the worker half of taking its tree down. Claim a row, remove the
+     * tree the thread left behind, then ack so the row stops being offered.
+     *
+     * The tree is reclaimed with the same runner call a terminal thread's report() uses, fed a
+     * job synthesised from the row: the thread's identity — its root id, repo label and workspace
+     * path — is all the tree is filed under. The row's own id rides as the lease token, which is
+     * exactly what makes the removal hold the checkout against a live attempt's startup sync
+     * under kubernetes (the claim ConfigMap is named from id + leaseToken), and the short claim
+     * lease bounds how long a driver that dies mid-removal holds the row.
+     *
+     * A removed thread has no follow-ups — every row was deleted — so there is no reclaim barrier
+     * entry to take here: nothing can claim that root again, and this loop's owns each root it is
+     * handed once. A refused tree or a throw — in the reclaim or its ack — simply skips the ack,
+     * and the row is offered again when its lease expires; a refused tree also stays on the disk,
+     * exactly as a refused terminal reclaim leaves it.
+     */
+    async function drainReclaims(): Promise<void> {
+        while (running) {
+            let reclaim: Reclaim | null;
+            try {
+                reclaim = await board.claimReclaim(config.worker);
+            } catch (e) {
+                log(`reclaim claim failed, retrying: ${(e as Error).message}`);
+                await sleep(config.pollMs);
+                continue;
+            }
+            if (!reclaim) {
+                await sleep(config.pollMs);
+                continue;
+            }
+            const removed: BoardJob = {
+                id: reclaim.rootJobId,
+                command: '',
+                attempts: 1,
+                leaseToken: reclaim.id,
+                leaseExpiresAt: reclaim.leaseExpiresAt,
+                resumeSessionId: null,
+                followUp: false,
+                userId: null,
+                workspacePath: reclaim.workspacePath,
+                rootJobId: reclaim.rootJobId,
+                repo: reclaim.repo,
+            };
+            let outcome: ReclaimResult;
+            try {
+                outcome = await runner.reclaimWorktree(removed);
+            } catch (e) {
+                log(`reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${(e as Error).message}`);
+                continue;
+            }
+            if (!outcome.ok) {
+                log(`reclaim ${reclaim.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
+                continue;
+            }
+            let ack: ReclaimAck;
+            try {
+                ack = await board.ackReclaim(reclaim.id, config.worker);
+            } catch (e) {
+                log(`reclaim ${reclaim.id}: the ack threw, leaving it to the lease: ${(e as Error).message}`);
+                continue;
+            }
+            if (ack === 'lost') {
+                log(`reclaim ${reclaim.id}: ack refused, the row is re-leased to another worker`);
+            } else if (ack === 'missing') {
+                log(`reclaim ${reclaim.id}: already acked elsewhere`);
+            }
+        }
+    }
+
     return {
         stop() {
             running = false;
@@ -661,6 +779,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 `polling ${config.boardUrl} every ${config.pollMs}ms as "${config.worker}", ` +
                     `${config.concurrency} at a time, image ${config.image}`,
             );
+
+            // Drains the board's removed-thread queue in parallel with the claim loop. This loop
+            // ends when running is set to false (via stop()) — no orphaning a removal mid-reclaim
+            // — and its return is awaited after all in-flight jobs settle.
+            const draining = drainReclaims();
 
             while (running) {
                 if (active.size >= config.concurrency) {
@@ -859,6 +982,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             // containers that are mid-edit in a checkout.
             if (active.size) log(`draining ${active.size} running job(s)`);
             await Promise.all(active);
+            await draining;
         },
     };
 }

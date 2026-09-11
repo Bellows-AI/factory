@@ -189,6 +189,95 @@ describe('rereading the gates after the startup sync', () => {
     });
 });
 
+describe('the heartbeat verdict', () => {
+    const job = {
+        id: 'job-1',
+        command: 'echo hi',
+        attempts: 1,
+        leaseToken: 'token-1',
+        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+        resumeSessionId: null,
+        userId: null,
+    };
+
+    it('carries the stop flag when the board set it on a held lease', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ cancelRequested: true }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: true });
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/heartbeat');
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', leaseSeconds: 300 });
+    });
+
+    it('answers held without the stop flag when the board never set one', async () => {
+        const { fetch } = recorder(() => Response.json({}, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false });
+    });
+
+    it('answers lost on a 409, which is a verdict not a failure', async () => {
+        const { fetch } = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect(await board.heartbeat(job)).toBe('lost');
+    });
+
+    it('answers removed on a 404 — the thread was deleted while this attempt ran', async () => {
+        // The only 404 a heartbeat can see is a Remove; the driver kills the container and
+        // reports nothing, so the status has to arrive as a verdict rather than "board broken".
+        const { fetch } = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect(await board.heartbeat(job)).toBe('removed');
+    });
+});
+
+describe('the removed-thread reclaim queue', () => {
+    it('claims a row with the worker and lease, answering null on an empty queue', async () => {
+        const row = {
+            id: '55555555-5555-4555-8555-555555555555',
+            rootJobId: 'job-1',
+            repo: 'Bellows-AI/factory',
+            workspacePath: 'bellows/user-7',
+            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+        };
+        const { calls, fetch } = recorder(() => Response.json(row, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        expect(await board.claimReclaim('driver-1')).toEqual(row);
+        expect(calls[0]!.url).toBe('http://board/api/reclaims/claim');
+        expect(calls[0]!.body).toEqual({ worker: 'driver-1', leaseSeconds: 300 });
+
+        const { fetch: idle } = recorder(() => new Response(null, { status: 204 }));
+        const idleBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: idle });
+        expect(await idleBoard.claimReclaim('driver-1')).toBeNull();
+    });
+
+    it('acks a consumed row as ok, and reads 409 and 404 back as their own verdicts', async () => {
+        const ok = recorder(() => Response.json({ id: 'row-1' }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch: ok.fetch });
+        expect(await board.ackReclaim('row-1', 'driver-1')).toBe('ok');
+        expect(ok.calls[0]!.url).toBe('http://board/api/reclaims/row-1/ack');
+        expect(ok.calls[0]!.body).toEqual({ worker: 'driver-1' });
+        expect(ok.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+
+        const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).ackReclaim('row-1', 'driver-1'),
+        ).toBe('lost');
+
+        const gone = recorder(() => Response.json({ error: 'No such reclaim' }, { status: 404 }));
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: gone.fetch }).ackReclaim('row-1', 'driver-1'),
+        ).toBe('missing');
+    });
+
+    it('still throws on any other non-ok answer', async () => {
+        const { fetch } = recorder(() => Response.json({ error: 'boom' }, { status: 500 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        await expect(board.ackReclaim('row-1', 'driver-1')).rejects.toThrow(/500/);
+    });
+});
+
 describe('the complete verdict', () => {
     const job = {
         id: 'job-1',

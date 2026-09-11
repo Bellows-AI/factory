@@ -201,16 +201,19 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 | `GET /api/health` | **open** — must answer while migrations retry, and the compose healthcheck carries none. Authenticating it restarts the container that was about to succeed. |
 | `/api/auth/*` | open. `/me` 401s on its own; being what *tells* the SPA it is unauthenticated is its purpose. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
-| `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/resume`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done` | session cookie |
-| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread` | `Bearer fwt_…` worker token |
+| `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/resume`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove` | session cookie |
+| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `/api/reclaims/claim`, `/api/reclaims/:id/ack` | `Bearer fwt_…` worker token |
 | OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
 
 - **There is no overlap: every route takes exactly one credential.** A session accepted on
   `/claim` would let any member steal another worker's lease; a worker token accepted on
   `POST /api/jobs` would produce a job with no author, silently breaking the audit trail on the
-  route that runs shell commands. `/api/jobs/:id/resume`, `/follow-up` and `/done` are *human*
-  routes: nobody holds a parked job, and a finished task is over — which is exactly what makes
-  resuming, adjusting and closing one a person's action.
+  route that runs shell commands. `/api/jobs/:id/resume`, `/follow-up`, `/done`, `/stop` and
+  `/remove` are *human* routes: nobody holds a parked job, a finished task is over, and stopping
+  or deleting one is a person's verdict — which is exactly what makes resuming, adjusting, closing,
+  stopping and removing one a person's action. The reclaim queue is the opposite shape: it hands
+  the driver worktrees to delete, so its claim and ack take the worker token like the job claim and
+  complete do.
 - **`GET /api/jobs/:id/thread` is session-only, and an earlier exception for the worker token was
   removed.** The thread carries every job of the conversation — commands, output tails, session
   ids and authorship — so a worker token on that read let a driver process read the audit and

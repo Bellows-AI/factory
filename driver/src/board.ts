@@ -82,6 +82,36 @@ export interface BoardJob {
 export type LeaseState = 'held' | 'lost';
 
 /**
+ * How one heartbeat landed.
+ *
+ * `held` carries the stop flag the board set on a Stop while this attempt was running: the driver
+ * kills its container and parks the job on standby — Stop is park, not finish (docs/jobs.md).
+ * `lost` is the pre-existing 409 — the lease was reclaimed and the run must die. `removed` is the
+ * board answering 404, which only a Remove can have produced (the thread's rows are gone); the
+ * container dies and nothing is parked or reported — there is nobody left to park against.
+ */
+export type HeartbeatVerdict = { result: 'held'; cancelRequested: boolean } | 'lost' | 'removed';
+
+/**
+ * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
+ * the tree for somebody to take down. The lease claims the row so the reclaim is mutually
+ * exclusive with a live attempt's startup sync; the row is deleted when the work is acked.
+ */
+export interface Reclaim {
+    /** The queue row's own id — the lease token acking the removal produces. */
+    id: string;
+    /** The thread whose tree the removed job left behind. */
+    rootJobId: string;
+    /** The checkout the thread's worktree belonged to, when the removed job named one. */
+    repo: string | null;
+    workspacePath: string | null;
+    leaseExpiresAt: string;
+}
+
+/** What acking a reclaim answered: consumed, or another worker already has it. */
+export type ReclaimAck = 'ok' | 'lost' | 'missing';
+
+/**
  * The runner container's vitals at one sample, plus the agent's current activity line — what the
  * board stores beside the output tail and the task view renders as the "is it working" answer.
  * Shapes the board's own validation; the driver sends only samples it took.
@@ -97,7 +127,20 @@ export interface RuntimeReport {
 export interface Board {
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
-    heartbeat(job: BoardJob): Promise<LeaseState>;
+    heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
+    /**
+     * Claims one row of the removed-thread queue put there by a Remove (issue #41): the thread's
+     * rows are gone and the tree is this worker's to take down. Null means the queue is empty.
+     * The claim leases the row so the reclaim that follows holds the checkout against a live
+     * attempt's startup sync for its duration.
+     */
+    claimReclaim(worker: string): Promise<Reclaim | null>;
+    /**
+     * Tells the board the removed thread's tree was reclaimed, so the row leaves the queue
+     * instead of being offered again. `lost` means the lease ran out under this worker — another
+     * worker holds the row now and its tree is this worker's no longer.
+     */
+    ackReclaim(id: string, worker: string): Promise<ReclaimAck>;
     /**
      * Streams a rolling tail of the runner's output while the job runs, so the dashboard shows the
      * work instead of a spinner. `runtime` rides beside it when the driver has a fresh sample of
@@ -174,7 +217,7 @@ export function createBoard({
     token?: string | undefined;
     fetch?: Fetch;
 }): Board {
-    const post = async (path: string, body: unknown): Promise<Response> => {
+    const post = async (path: string, body: unknown, allow404 = false): Promise<Response> => {
         const response = await fetch(`${url}${path}`, {
             method: 'POST',
             headers: {
@@ -186,9 +229,11 @@ export function createBoard({
             },
             body: JSON.stringify(body),
         });
-        // 409 is a verdict, not a failure; everything else outside 2xx is the board being broken or
-        // the driver being wrong, and neither should be swallowed into a silent no-op.
-        if (!response.ok && response.status !== 409) {
+        // 409 is a verdict, not a failure; 404 is a verdict too for the calls that ask for one (a
+        // heartbeat against a removed thread, an ack for a row that left the queue); everything
+        // else outside 2xx is the board being broken or the driver being wrong, and neither should
+        // be swallowed into a silent no-op.
+        if (!response.ok && response.status !== 409 && !(allow404 && response.status === 404)) {
             throw new Error(`${path} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
         }
         return response;
@@ -211,11 +256,38 @@ export function createBoard({
         },
 
         async heartbeat(job) {
-            const response = await post(`/api/jobs/${job.id}/heartbeat`, {
-                leaseToken: job.leaseToken,
-                leaseSeconds,
-            });
-            return response.status === 409 ? 'lost' : 'held';
+            const response = await post(
+                `/api/jobs/${job.id}/heartbeat`,
+                {
+                    leaseToken: job.leaseToken,
+                    leaseSeconds,
+                },
+                true,
+            );
+            // The 404 only a Remove can have produced: the thread's rows are gone, so the answer
+            // is "die and report nothing" — there is nothing left to park against or hand a
+            // verdict to. Read after the 409 check is redundant (they are exclusive statuses);
+            // both are verdicts, and a defensive read keeps a future where the board blurs them
+            // into a decision this side of the fence.
+            if (response.status === 404) return 'removed';
+            if (response.status === 409) return 'lost';
+            const body = (await response.json()) as { cancelRequested?: boolean };
+            return { result: 'held', cancelRequested: body.cancelRequested === true };
+        },
+
+        async claimReclaim(worker) {
+            const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
+            if (response.status === 204) return null;
+            return (await response.json()) as Reclaim;
+        },
+
+        async ackReclaim(id, worker) {
+            const response = await post(`/api/reclaims/${id}/ack`, { worker }, true);
+            // 409 means this worker's lease on the row ran out — another worker holds it now.
+            // 404 means the row already left the queue (acked elsewhere, or the delete landed).
+            if (response.status === 409) return 'lost';
+            if (response.status === 404) return 'missing';
+            return 'ok';
         },
 
         async progress(job, output, runtime) {
