@@ -202,20 +202,24 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 | `/api/auth/*` | open. `/me` 401s on its own; being what *tells* the SPA it is unauthenticated is its purpose. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
 | `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/resume`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done` | session cookie |
-| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `GET /api/jobs/:id/thread` | `Bearer fwt_…` worker token |
+| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread` | `Bearer fwt_…` worker token |
 | OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
 
-- **The two sets are disjoint, and that is the point.** A session accepted on `/claim` would let any
-  member steal another worker's lease; a worker token accepted on `POST /api/jobs` would produce a
-  job with no author, silently breaking the audit trail on the route that runs shell commands.
-  `/api/jobs/:id/resume`, `/follow-up` and `/done` are *human* routes: nobody holds a parked job, and
-  a finished task is over — which is exactly what makes resuming, adjusting and closing one a
-  person's action.
-- **The one sanctioned overlap is `GET /api/jobs/:id/thread`, and it is a READ.** The route existed
-  for the UI before the driver had any use for it, so walling it behind the worker token would 401
-  the task detail page; the driver reads the same rows on its way to reclaiming the task worktree
-  (issue #47). A worker token on a thread read widens nothing a claim does not already hold — every
-  row of the thread carries the command and output the worker itself wrote.
+- **There is no overlap: every route takes exactly one credential.** A session accepted on
+  `/claim` would let any member steal another worker's lease; a worker token accepted on
+  `POST /api/jobs` would produce a job with no author, silently breaking the audit trail on the
+  route that runs shell commands. `/api/jobs/:id/resume`, `/follow-up` and `/done` are *human*
+  routes: nobody holds a parked job, and a finished task is over — which is exactly what makes
+  resuming, adjusting and closing one a person's action.
+- **`GET /api/jobs/:id/thread` is session-only, and an earlier exception for the worker token was
+  removed.** The thread carries every job of the conversation — commands, output tails, session
+  ids and authorship — so a worker token on that read let a driver process read the audit and
+  session data of jobs it never held a lease on; a claim exposes only the currently claimed job,
+  and the token's one legitimate use of the thread (deciding the task worktree reclaim, issue
+  #47) now rides the lease-guarded `complete` response instead: the store computes
+  `threadTerminal` in the same transaction as the verdict, and the driver reclaims on that. The
+  task detail page keeps its session-cookie read, which was the read's original and remaining
+  purpose.
 - **The worker token is minted by CLI only.** `npm run worker-token -- --name driver-1`, printed
   once, hash stored. No HTTP route mints a credential: everything else a member can do is bounded by
   the organization, whereas this issues something that claims work and reports results with no human

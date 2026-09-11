@@ -300,6 +300,15 @@ export interface JobStore {
      * precisely what makes it resumable by a request from outside.
      */
     resume(id: string): Promise<'ok' | 'missing' | 'conflict'>;
+    /**
+     * Records the verdict and answers it with the terminality of the job's WHOLE thread, computed
+     * in the same transaction: `threadTerminal` is true only when every job of the thread — the
+     * root and every follow-up — has reached `succeeded`, `failed` or `dead`. This is the driver's
+     * worktree-reclaim signal (issue #47), and it rides the lease-guarded complete rather than a
+     * thread read so a worker credential never pulls audit data of jobs it does not hold. The
+     * verdict-moment answer also closes the read-after-verdict race: a follow-up inserted after
+     * the verdict commits cannot change an answer that was already given.
+     */
     complete(
         id: string,
         leaseToken: string,
@@ -317,7 +326,7 @@ export interface JobStore {
             contextTokens?: number | null;
             contextCostUsd?: number | null;
         },
-    ): Promise<LeaseResult>;
+    ): Promise<{ result: 'ok'; threadTerminal: boolean } | { result: 'lost' | 'missing' }>;
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
      * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a
@@ -935,22 +944,57 @@ export function createJobStore({
                           ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
                       } as never)
                     : null;
-            const rows = await sql<{ id: string }[]>`
-                update job set
-                    status      = ${status},
-                    exit_code   = ${exitCode},
-                    output      = ${output},
-                    finished_at = now(),
-                    lease_token = null,
-                    runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
-                where org_id = ${orgId} and id = ${id}
-                  and status = 'running' and lease_token = ${leaseToken}
-                returning id
-            `;
-            if (rows[0]) return 'ok';
-            // A report from a worker whose lease was reclaimed is refused, not merged: the job is
-            // someone else's now, and the two runs did different work.
-            return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
+            // One transaction, because the terminality answer must describe the thread AS THE
+            // VERDICT lands: the walk below runs on the same connection, where the just-updated
+            // row's new status is visible and no follow-up inserted after the commit can be.
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ id: string }[]>`
+                    update job set
+                        status      = ${status},
+                        exit_code   = ${exitCode},
+                        output      = ${output},
+                        finished_at = now(),
+                        lease_token = null,
+                        runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
+                    where org_id = ${orgId} and id = ${id}
+                      and status = 'running' and lease_token = ${leaseToken}
+                    returning id
+                `;
+                if (!rows[0]) {
+                    // A report from a worker whose lease was reclaimed is refused, not merged: the
+                    // job is someone else's now, and the two runs did different work.
+                    return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
+                }
+                // The thread walk, the `thread` read's up-to-the-root-then-down shape, kept as a
+                // copy rather than a shared helper so the thread read itself stays untouched. The
+                // just-updated row's verdict status is visible here; the walk collects statuses
+                // only, and the aggregate answers in one row.
+                const [thread] = await tx<{ total: number; terminal: number }[]>`
+                    with recursive up as (
+                        select id, parent_job_id from job
+                        where org_id = ${orgId} and id = ${id}
+                        union all
+                        select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
+                          where j.org_id = ${orgId}
+                    ),
+                    root as (
+                        select id from up where parent_job_id is null
+                    ),
+                    chain as (
+                        select id, status from job where org_id = ${orgId} and id = (select id from root)
+                        union all
+                        select j.id, j.status from job j join chain on j.parent_job_id = chain.id
+                          where j.org_id = ${orgId}
+                    )
+                    select count(*)::int as total,
+                           count(*) filter (where status in ('succeeded','failed','dead'))::int as terminal
+                    from chain
+                `;
+                return {
+                    result: 'ok',
+                    threadTerminal: (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal,
+                };
+            });
         },
 
         async thread(id) {

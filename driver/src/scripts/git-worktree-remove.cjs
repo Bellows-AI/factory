@@ -1,7 +1,9 @@
 // The terminal reclaim: remove the task's worktree once the whole thread is finished, so a
 // finished or deleted task does not leave its tree squatting on the member volume forever
 // (issue #47). One execFileSync per git call: no value can become a command. One JSON verdict
-// on stdout: {ok:true,removed:bool} or {ok:false,reason}.
+// on stdout: {ok:true,removed:bool} or {ok:false,reason}. A refusal IS the verdict and is
+// terminal: it prints and stops — no prune, no further line — because the runners parse only
+// the LAST stdout line, and a trailing success verdict would shadow the refusal.
 //
 // Environment (set by the driver; paths only, never credentials):
 //   REPO    — the clone, whose admin dir registers the worktree;
@@ -35,9 +37,9 @@ const repo = process.env.REPO;
 const wt = process.env.WORKTREE;
 
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
-const ref = (r) => console.log(JSON.stringify({ ok: false, reason: r }));
+const refused = (r) => ({ ok: false, reason: r });
 
-try {
+function reclaim() {
     const wtExists = fs.existsSync(wt);
     const registered =
         wtExists &&
@@ -46,24 +48,31 @@ try {
             .filter((l) => l.startsWith('worktree '))
             .map((l) => l.slice('worktree '.length))
             .includes(wt);
-    let removed = false;
-    if (registered) {
-        git('worktree', 'remove', '--force', wt);
-        removed = true;
-    } else if (wtExists && fs.existsSync(wt + '/.git')) {
-        ref(
+    if (!registered && wtExists && fs.existsSync(wt + '/.git')) {
+        // The refusal is terminal: returning it here means the prune below never runs, so the
+        // single verdict this script prints is the refusal itself.
+        return refused(
             'refusing to remove ' +
                 wt +
                 ': the path holds a git tree that is not a registered worktree of ' +
                 repo +
                 '; remove it by hand if it is truly stale',
         );
+    }
+    let removed = false;
+    if (registered) {
+        git('worktree', 'remove', '--force', wt);
+        removed = true;
     } else if (wtExists) {
         fs.rmSync(wt, { recursive: true, force: true });
         removed = true;
     }
     git('worktree', 'prune');
-    console.log(JSON.stringify({ ok: true, removed }));
+    return { ok: true, removed };
+}
+
+try {
+    console.log(JSON.stringify(reclaim()));
 } catch (e) {
-    ref('worktree reclaim failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, 300));
+    console.log(JSON.stringify(refused('worktree reclaim failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, 300))));
 }

@@ -28,7 +28,6 @@ interface BoardStub extends Board {
     beats: number;
     gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
     gatesReread: number;
-    threadReads: string[];
 }
 
 /**
@@ -48,6 +47,7 @@ function stubBoard(
         rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
         threadTerminal?: boolean;
         completeLease?: LeaseState;
+        completeFor?: (claimed: BoardJob) => { state: LeaseState; threadTerminal: boolean };
     } = {},
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -63,7 +63,6 @@ function stubBoard(
         beats: 0,
         gatesReported: [],
         gatesReread: 0,
-        threadReads: [],
         async suspend(claimed) {
             board.suspended.push(claimed.id);
             return 'held';
@@ -99,11 +98,8 @@ function stubBoard(
         },
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
-            return options.completeLease ?? 'held';
-        },
-        async threadTerminal(claimed) {
-            board.threadReads.push(claimed.id);
-            return options.threadTerminal ?? false;
+            if (options.completeFor) return options.completeFor(claimed);
+            return { state: options.completeLease ?? 'held', threadTerminal: options.threadTerminal ?? false };
         },
         async gates(claimed, results) {
             board.gatesReported.push({ id: claimed.id, results });
@@ -499,28 +495,28 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
-    // The terminal reclaim (issue #47): after the whole thread is done, the per-thread task
-    // worktree is removed so a finished task does not leave its tree squatting on the volume.
-    it('reclaims the task worktree when the thread is terminal after the verdict', async () => {
+    // The terminal reclaim (issue #47): after the whole thread is done — the board says so in the
+    // same breath as the verdict — the per-thread task worktree is removed so a finished task does
+    // not leave its tree squatting on the volume.
+    it('reclaims the task worktree when the complete answer says the thread is terminal', async () => {
         const board = stubBoard([job(1)], { threadTerminal: true });
         const runner = stubRunner(async () => ok());
 
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
-        expect(board.board.threadReads).toEqual([job(1).id]);
         expect(runner.reclaimed).toEqual([job(1)]);
     });
 
-    it('keeps the task worktree when any job of the thread is not terminal', async () => {
-        // The default answer is "the thread is not terminal" — a follow-up still queued.
+    it('keeps the task worktree when the complete answer says the thread is not terminal', async () => {
+        // The default answer is "the thread is not terminal" — a follow-up still queued. No
+        // reclaim attempt is made at all: the tree belongs to a thread that might continue.
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok());
 
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
-        expect(board.board.threadReads).toEqual([job(1).id]);
         expect(runner.reclaimed).toHaveLength(0);
     });
 
@@ -582,13 +578,127 @@ describe('the poll loop', () => {
     });
 
     it('does not reclaim a job whose verdict was lost to the board', async () => {
+        // 409 means the tree belongs to whoever holds the lease now — and the board's terminality
+        // answer rides that refusal as false, so nothing is removed on either ground.
         const board = stubBoard([job(1)], { completeLease: 'lost' });
         const runner = stubRunner(async () => ok());
 
         await drive({ ...board, runner });
 
         expect(runner.reclaimed).toHaveLength(0);
-        expect(board.board.threadReads).toHaveLength(0);
+    });
+
+    /**
+     * The reclaim race (greptile #3988007814), same-driver half: the board said "thread terminal",
+     * the removal started — and a follow-up created in that window gets claimed and syncs against
+     * the very tree being deleted. The in-driver barrier makes the follow-up wait out the
+     * in-flight removal before its startup sync, which is the first touch of the task worktree.
+     */
+    it('waits out an in-flight reclaim of the same thread before a follow-up syncs', async () => {
+        const root = job(1).id;
+        const followUp: BoardJob = { ...job(2), followUp: true, resumeSessionId: 'ses_follow-up', rootJobId: root };
+        const events: string[] = [];
+        let releaseReclaim = () => {};
+        const reclaimGate = new Promise<void>((resolve) => {
+            releaseReclaim = resolve;
+        });
+        const board = stubBoard([job(1), followUp], {
+            completeFor: (claimed) =>
+                claimed.id === job(1).id ? { state: 'held', threadTerminal: true } : { state: 'held', threadTerminal: false },
+        });
+        const runner = stubRunner(async () => ok());
+        runner.reclaimWorktree = async (claimed) => {
+            runner.reclaimed.push(claimed);
+            events.push(`reclaim-start:${claimed.id}`);
+            await reclaimGate;
+            events.push(`reclaim-done:${claimed.id}`);
+            return { ok: true, removed: true, reason: null };
+        };
+        const realSync = runner.syncCheckout.bind(runner);
+        runner.syncCheckout = async (claimed) => {
+            events.push(`sync:${claimed.id}`);
+            return realSync(claimed);
+        };
+
+        const started = drive({ ...board, runner }, { DRIVER_CONCURRENCY: '1' });
+        // Let the root job finish, its verdict land and its reclaim start — then give the loop a
+        // beat to claim the follow-up and park it on the barrier.
+        for (let i = 0; i < 50 && !events.includes(`reclaim-start:${job(1).id}`); i += 1) await sleep();
+        await sleep();
+        await sleep();
+        expect(events).toContain(`reclaim-start:${job(1).id}`);
+        // The follow-up has been claimed but has NOT synced: the removal of its thread's tree is
+        // still in flight.
+        expect(events).not.toContain(`sync:${followUp.id}`);
+
+        releaseReclaim();
+        await started;
+
+        // The follow-up synced only after the removal settled — never against a tree mid-deletion.
+        expect(events.indexOf(`reclaim-done:${job(1).id}`)).toBeLessThan(events.indexOf(`sync:${followUp.id}`));
+        expect(board.board.completed).toHaveLength(2);
+        expect(runner.reclaimed).toEqual([job(1)]);
+    });
+
+    /**
+     * The barrier is a set-and-clear cycle, not a one-shot latch: once a reclaim settles its
+     * entry is dropped, so the next reclaim of the same thread registers afresh and claimants
+     * wait on the CURRENT removal — never on a stale one, and never forever (a hung suite here is
+     * a leaked entry). A settled entry would also be harmless to await, which is why this is
+     * pinned by the full chain running to completion rather than by timing alone.
+     */
+    it('drops the barrier entry when the reclaim settles, so the next reclaim of the thread registers afresh', async () => {
+        const root = job(1).id;
+        const firstFollowUp: BoardJob = { ...job(2), followUp: true, resumeSessionId: 'ses_two', rootJobId: root };
+        const secondFollowUp: BoardJob = { ...job(3), followUp: true, resumeSessionId: 'ses_three', rootJobId: root };
+        const events: string[] = [];
+        const resolvers = new Map<string, () => void>();
+        const gatePromises = new Map<string, Promise<void>>();
+        const makeGate = (id: string) => {
+            gatePromises.set(
+                id,
+                new Promise<void>((resolve) => {
+                    resolvers.set(id, resolve);
+                }),
+            );
+        };
+        makeGate(job(1).id);
+        makeGate(firstFollowUp.id);
+        const board = stubBoard([job(1), firstFollowUp, secondFollowUp], {
+            completeFor: (claimed) => ({ state: 'held', threadTerminal: claimed.id !== secondFollowUp.id }),
+        });
+        const runner = stubRunner(async () => ok());
+        runner.reclaimWorktree = async (claimed) => {
+            runner.reclaimed.push(claimed);
+            events.push(`reclaim-start:${claimed.id}`);
+            await gatePromises.get(claimed.id);
+            events.push(`reclaim-done:${claimed.id}`);
+            return { ok: true, removed: true, reason: null };
+        };
+        const realSync = runner.syncCheckout.bind(runner);
+        runner.syncCheckout = async (claimed) => {
+            events.push(`sync:${claimed.id}`);
+            return realSync(claimed);
+        };
+
+        const started = drive({ ...board, runner }, { DRIVER_CONCURRENCY: '1' });
+        // Root's removal in flight; release it so the first follow-up can go.
+        for (let i = 0; i < 50 && !events.includes(`reclaim-start:${job(1).id}`); i += 1) await sleep();
+        resolvers.get(job(1).id)?.();
+        // The first follow-up's own reclaim must now be the live barrier — registered afresh,
+        // after the root's entry was dropped.
+        for (let i = 0; i < 50 && !events.includes(`reclaim-start:${firstFollowUp.id}`); i += 1) await sleep();
+        await sleep();
+        await sleep();
+        expect(events).not.toContain(`sync:${secondFollowUp.id}`);
+        resolvers.get(firstFollowUp.id)?.();
+
+        await started;
+
+        expect(events.indexOf(`reclaim-done:${job(1).id}`)).toBeLessThan(events.indexOf(`sync:${firstFollowUp.id}`));
+        expect(events.indexOf(`reclaim-done:${firstFollowUp.id}`)).toBeLessThan(events.indexOf(`sync:${secondFollowUp.id}`));
+        expect(board.board.completed).toHaveLength(3);
+        expect(runner.reclaimed).toEqual([job(1), firstFollowUp]);
     });
 
     // The cache watch killed the run mid-tool-call, so the scrape reads finish `tool-calls` — the

@@ -85,6 +85,19 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
     let running = true;
     const active = new Set<Promise<void>>();
 
+    /*
+     * In-flight worktree reclaims, keyed by the thread's ROOT id (`rootJobId ?? id`, the same
+     * reading worktreeRelDir uses — the key the task worktree itself is filed under). report()
+     * registers the reclaim here before it starts and drops the entry when it settles; the claim
+     * loop awaits a job's root entry before its startup sync, so a follow-up claimed while the
+     * thread's tree is being removed waits out the removal instead of syncing against it. This
+     * closes the race for reclaims and claims that both leave THIS driver; it cannot close it
+     * across drivers — docker's documented bound is one driver per daemon (docs/jobs.md), and
+     * under kubernetes reclaimWorktree holds the checkout claim for the removal's duration,
+     * which is what makes it mutually exclusive with a follow-up's claim-taking sync there.
+     */
+    const reclaims = new Map<string, Promise<void>>();
+
     /**
      * Beats until the run finishes.
      *
@@ -590,42 +603,53 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
 
     /**
      * The verdict is reported, then the task worktree is reclaimed once the whole thread is done
-     * (issue #47) — the driver's side of "finishing a task cleans up its worktree". Reclaim sits
-     * deliberately DOWNSTREAM of the verdict: the verdict must reach the board first, and the tree
-     * goes only when every job in the thread is terminal, so a follow-up still queued keeps its
-     * tree. Best-effort by contract — the verdict is already safe the moment it is on the board, so
-     * a board that will not answer the thread read, a runner that refuses the tree, or a transport
-     * hiccup can cost the reclaim but never the verdict. A refused tree stays on the disk (the
-     * script it runs deletes only what the sync created) and is logged rather than turned into a
-     * bomb in the author's mouth.
+     * (issue #47) — the driver's side of "finishing a task cleans up its worktree". The board
+     * answers the verdict AND the thread's terminality in one lease-guarded round trip — computed
+     * in the same transaction as the verdict — so there is no separate thread read left to race a
+     * follow-up's insertion: reclaim sits downstream of the verdict and runs only when the answer
+     * says every job of the thread is terminal, so a follow-up still queued keeps its tree.
+     * Best-effort by contract — the verdict is already safe the moment it is on the board, so a
+     * runner that refuses the tree or a transport hiccup can cost the reclaim but never the
+     * verdict. A refused tree stays on the disk (the script it runs deletes only what the sync
+     * created) and is logged rather than turned into a bomb in the author's mouth.
+     *
+     * The removal is registered under the thread's ROOT id in the reclaim barrier BEFORE it
+     * starts and the entry is dropped when it settles: a follow-up of the same thread claimed by
+     * this driver while the removal is in flight then waits it out before its startup sync (see
+     * `reclaims`), instead of syncing against a tree mid-deletion.
      */
     async function report(
         job: BoardJob,
         result: Parameters<Board['complete']>[1],
     ): Promise<LeaseState> {
         const verdict = await board.complete(job, result);
-        if (verdict !== 'held') return verdict;
-        try {
-            const terminal = await board.threadTerminal(job);
-            if (!terminal) return verdict;
-        } catch {
-            return verdict;
-        }
-        try {
-            const reclaim = await runner.reclaimWorktree(job);
-            if (!reclaim.ok) {
-                log(`job ${job.id}: the task worktree could not be reclaimed: ${reclaim.reason}`);
+        if (verdict.state !== 'held' || !verdict.threadTerminal) return verdict.state;
+        const root = job.rootJobId ?? job.id;
+        // Registered before the removal starts — the set and the start are one synchronous block,
+        // so no claimant can observe the in-between. The entry is dropped only while it is still
+        // the one registered: a replacement reclaim for the same root is never undone by a
+        // predecessor settling late.
+        let reclaim: Promise<void> = Promise.resolve();
+        reclaim = (async () => {
+            try {
+                const outcome = await runner.reclaimWorktree(job);
+                if (!outcome.ok) {
+                    log(`job ${job.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
+                }
+            } catch (e) {
+                log(`job ${job.id}: the task worktree could not be reclaimed: ${(e as Error).message}`);
+            } finally {
+                if (reclaims.get(root) === reclaim) reclaims.delete(root);
             }
-        } catch (e) {
-            log(`job ${job.id}: the task worktree could not be reclaimed: ${(e as Error).message}`);
-        }
-        return verdict;
+        })();
+        reclaims.set(root, reclaim);
+        return verdict.state;
     }
 
-function track(job: BoardJob): void {
-    const promise = runJob(job).finally(() => active.delete(promise));
-    active.add(promise);
-}
+    function track(job: BoardJob): void {
+        const promise = runJob(job).finally(() => active.delete(promise));
+        active.add(promise);
+    }
 
     return {
         stop() {
@@ -720,6 +744,15 @@ function track(job: BoardJob): void {
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
+
+                /*
+                 * The reclaim barrier (see `reclaims`): an in-flight removal of THIS thread's
+                 * tree is waited out before the sync — the first touch of the task worktree — so
+                 * a follow-up claimed while its thread's tree was being deleted never syncs
+                 * against, or resurrects work on top of, a tree mid-removal.
+                 */
+                const inflight = reclaims.get(job.rootJobId ?? job.id);
+                if (inflight) await inflight;
 
                 /*
                  * Before anything reads the tree — the gates refusal just below, the agent this

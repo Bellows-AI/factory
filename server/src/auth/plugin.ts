@@ -11,7 +11,10 @@ import type { AuthStore, Caller, WorkerIdentity } from './store.js';
  * A union, because the job board has two callers with nothing in common and the credentials that
  * identify them are deliberately disjoint: a session cookie accepted on `/claim` would let any
  * member steal another worker's lease, and a worker token accepted on `POST /api/jobs` would produce
- * a job with no author on the one route docs/security.md describes as remote code execution.
+ * a job with no author on the one route docs/security.md describes as remote code execution. No
+ * route accepts both: an earlier exception for the thread read let a worker token read the audit
+ * and session data of jobs it never held a lease on, so it is gone — the driver's one need from
+ * that read rides the lease-guarded complete response instead.
  */
 export type Principal =
     | { kind: 'user'; caller: Caller }
@@ -31,15 +34,6 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread)$/,
 ];
 
-/**
- * Routes reachable with EITHER a session or a worker token — the one sanctioned overlap, and
- * only a READ. `GET /api/jobs/:id/thread` existed for the UI before the driver had any use for
- * it, so walling it behind the worker token would 401 the task detail page; the driver reads the
- * same rows on its way to reclaim (issue #47), and a worker token on a thread read widens nothing
- * the worker could not already hold — a claim sees the whole thread's command and output anyway.
- */
-const EITHER_ROUTES: readonly RegExp[] = [/^\/api\/jobs\/[^/]+\/thread$/];
-
 /** Machine-to-machine telemetry, from the collector and from developer laptops. */
 const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//, /^\/api\/sessions\/branch$/];
 
@@ -57,14 +51,13 @@ const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//, /^\/api\/sessions\/b
  */
 const OPEN_ROUTES: readonly RegExp[] = [/^\/api\/health$/, /^\/api\/auth\//];
 
-type Requirement = 'open' | 'user' | 'worker' | 'either' | 'ingest';
+type Requirement = 'open' | 'user' | 'worker' | 'ingest';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
 export function requirementFor(path: string): Requirement {
     if (!path.startsWith('/api/')) return 'open';
     if (OPEN_ROUTES.some((route) => route.test(path))) return 'open';
     if (WORKER_ROUTES.some((route) => route.test(path))) return 'worker';
-    if (EITHER_ROUTES.some((route) => route.test(path))) return 'either';
     if (INGEST_ROUTES.some((route) => route.test(path))) return 'ingest';
     return 'user';
 }
@@ -169,26 +162,6 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
                 return reply.code(401).send({ error: 'Invalid worker token', code: 'UNAUTHENTICATED' });
             }
             request.auth = { kind: 'worker', worker };
-            return;
-        }
-
-        if (requirement === 'either') {
-            // The read needs no credential distinction — the worker's token first, the browser's
-            // session second. Open in `none` mode for the same reason every worker route is.
-            if (auth.mode === 'none') return;
-
-            const token = bearer(request);
-            const worker = token ? await store.findWorkerToken(hashToken(token)) : null;
-            if (worker && worker.orgId === config.orgId) {
-                request.auth = { kind: 'worker', worker };
-                return;
-            }
-
-            const caller = await resolveUser(request);
-            if (!caller) {
-                return reply.code(401).send({ error: 'Sign in required', code: 'UNAUTHENTICATED' });
-            }
-            request.auth = { kind: 'user', caller };
             return;
         }
 

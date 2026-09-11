@@ -141,12 +141,11 @@ describe('the route table', () => {
         // worker token 401, while the gates themselves ran and passed unseen.
         [`/api/jobs/${JOB_ID}/gates`, 'worker'],
         [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
-        // The thread read is the ONE route both credentials reach: it existed for the UI before the
-        // driver had any use for it (walling it behind the worker token would 401 the task detail
-        // page), and the driver reads the same rows on its way to reclaiming the task worktree
-        // (issue #47). `either` is the exception to disjointness, and only a READ; the single-job
-        // read just above stays a person's.
-        [`/api/jobs/${JOB_ID}/thread`, 'either'],
+        // The thread read is a person's again: it carries commands, output and session ids of the
+        // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
+        // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
+        // lease-guarded complete response as `threadTerminal` instead.
+        [`/api/jobs/${JOB_ID}/thread`, 'user'],
         ['/api/otlp/v1/logs', 'ingest'],
         ['/api/sessions/branch', 'ingest'],
         // Both fall through to `user` rather than being listed anywhere, which is the point: the
@@ -275,9 +274,8 @@ describe('the two credentials are disjoint', () => {
         expect(response.statusCode).toBe(401);
     });
 
-    it('is one than one route: the thread read takes a session and a worker token both', async () => {
-        // The SPA renders the task detail page with a session cookie — the read predates the
-        // driver's use of it, and walling it would break that page under github auth.
+    it('keeps the thread read session-only, in both directions', async () => {
+        // The SPA renders the task detail page with a session cookie — that has to keep working.
         const sessionStore = memoryAuthStore();
         const sessionServer = await build(githubAuth(), sessionStore);
         const caller = sessionStore.seedMember(ORG, 'octocat');
@@ -292,7 +290,9 @@ describe('the two credentials are disjoint', () => {
             ).statusCode,
         ).toBe(200);
 
-        // The driver reaches the same rows with its token on the way to reclaim (issue #47).
+        // A worker token on the full thread read would let the driver read commands, output and
+        // session ids of jobs it never held a lease on — the thread is audit data, and the worker's
+        // only need from it (the reclaim terminality) rides the complete response instead.
         const tokenStore = memoryAuthStore();
         tokenStore.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
         const tokenServer = await build(githubAuth(), tokenStore);
@@ -304,7 +304,7 @@ describe('the two credentials are disjoint', () => {
                     headers: { authorization: `Bearer ${WORKER_TOKEN}` },
                 })
             ).statusCode,
-        ).toBe(200);
+        ).toBe(401);
     });
 
     it('refuses a worker token on the single-job read, which stays a person\'s', async () => {

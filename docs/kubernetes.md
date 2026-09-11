@@ -271,6 +271,21 @@ overlap a replacement's sync on the shared worktree, which is the overlap the cl
 close; on the failure arms the Foreground delete above has already taken it down, and this
 Background delete then answers 404 and is swallowed.
 
+The terminal reclaim (issue #47, the full story in `docs/jobs.md`) is ported as the sync's twin:
+the remove script as an aux Job over the same read-write PVC, attempt-scoped like everything
+else. It runs UNDER the checkout claim — the same `acquireClaim` protocol, held for the
+reclaim's whole duration — because a thread that looked terminal to the board can gain a
+follow-up before the removal lands, and that follow-up's startup sync is a writer on the same
+root-scoped tree. The claim is taken before the reclaim Job is created and released on every
+exit path, after a Foreground delete on the failure arms so a mid-flight removal pod never
+outlives the claim it runs under. An acquire that answers 409 — a live attempt holds the
+checkout, a follow-up mid-sync most likely — SKIPS the reclaim (`ok: false`, the held tree
+named): costing the reclaim is fine by contract, costing a live run is not. The same-driver
+half of that race is closed in the loop itself: an in-driver barrier keyed by the thread root
+makes a follow-up claimed while a reclaim is in flight wait out the removal before its startup
+sync. Docker's documented bound is one driver per daemon, so the barrier is all docker needs;
+the claim is what makes the exclusion hold across drivers under kubernetes.
+
 ## Testing
 
 - `driver/test/k8s.test.ts` — the whole executor, offline. The request function is injected (the

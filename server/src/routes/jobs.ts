@@ -483,6 +483,11 @@ export const jobRoutes =
             return reply.code(200).send({ id, status: result.value.status, doneAt: result.value.doneAt });
         });
 
+        // The worker's verdict that the run is over. The 200 body carries `threadTerminal` — the
+        // store's answer, computed in the same transaction as the verdict, to whether the job's
+        // whole thread is finished: it is the driver's only worktree-reclaim signal, and it rides
+        // the lease-guarded complete rather than a thread read, so a worker credential can never
+        // pull the audit data of jobs it does not hold (see docs/auth.md).
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
@@ -528,13 +533,13 @@ export const jobRoutes =
                 }),
             );
             if (!result.ok) return reply;
-            if (result.value === 'missing') {
-                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
-            }
-            if (result.value === 'lost') {
+            if (result.value.result !== 'ok') {
+                if (result.value.result === 'missing') {
+                    return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+                }
                 return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
             }
-            return reply.code(200).send({ id, status });
+            return reply.code(200).send({ id, status, threadTerminal: result.value.threadTerminal });
         });
 
         app.get('/api/jobs/:id', async (request, reply) => {

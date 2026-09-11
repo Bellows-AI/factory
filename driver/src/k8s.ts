@@ -574,10 +574,12 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
 /**
  * The terminal reclaim (issue #47), ported to the aux shape like every other one-off: the SAME
  * worktree-remove script the docker runner passes to its container, as a Job over the same
- * read-write PVC. The contrast with the sync is deliberate — no claim, no Secret, no env: the
- * tree is reclaimed only when the whole thread is terminal, so nobody else can be writing it,
- * and removing it needs nothing the claim held. The juice is the name carrying the lease token,
- * so a superseded attempt can never remove anything of a replacement's.
+ * read-write PVC. Like the sync it undoes, it runs UNDER the checkout claim (see
+ * reclaimWorktree) — a thread that looks terminal can gain a follow-up between the board's
+ * answer and the removal, so the removal must not race that follow-up's sync on the shared
+ * root-scoped tree. Still no Secret, no env: removing needs nothing the claim held. The juice is
+ * the name carrying the lease token, so a superseded attempt can never remove anything of a
+ * replacement's.
  */
 const RECLAIM_DEADLINE_SECONDS = 600;
 
@@ -2030,87 +2032,134 @@ export function createKubernetesRunner(
 
         /*
          * The terminal reclaim, the kubernetes shape: the remove script as a Job over the PVC,
-         * no claim, no Secret, no env — the thread is terminal, so nobody writes the tree, and
-         * removing it needs nothing the claim held. The poll is bounded exactly like the sync's:
-         * a blink or a 503 is not the script's verdict, but an apiserver that will not answer is
-         * not a tree worth waiting on either, and the deadline (RECLAIM_DEADLINE_SECONDS) is what
-         * guarantees the Job itself terminates if this driver dies first. Best-effort by contract
-         * — the loop calls this only AFTER the verdict is safely on the board, and a refusal must
-         * never turn a done task back into a failed one.
+         * UNDER the checkout claim — the same acquireClaim protocol the sync and the runner use,
+         * so the removal and a follow-up's claim-taking sync are mutually exclusive ACROSS
+         * drivers too, not just within this one (the loop's own barrier covers this driver; see
+         * loop.ts). The claim is taken before the Job is created and released on every exit
+         * path; an acquire that answers 409 means a LIVE attempt holds the checkout — a
+         * follow-up mid-sync, most likely — and the reclaim SKIPS: costing the reclaim is fine
+         * by contract (the tree stays, the branch survives), costing a live run is not. No
+         * Secret, no env: removing needs nothing the claim held. The poll is bounded exactly
+         * like the sync's: a blink or a 503 is not the script's verdict, but an apiserver that
+         * will not answer is not a tree worth waiting on either, and the deadline
+         * (RECLAIM_DEADLINE_SECONDS) is what guarantees the Job itself terminates if this driver
+         * dies first. Best-effort by contract — the loop calls this only AFTER the verdict is
+         * safely on the board, and a refusal must never turn a done task back into a failed one.
          */
         async reclaimWorktree(job: BoardJob): Promise<ReclaimResult> {
             const clone = repoPath(config, job);
             const worktree = worktreeDir(config, job);
             if (!clone || !worktree) return { ok: true, removed: false, reason: null };
             try {
-                const create = await request('POST', jobsPath(config.k8sNamespace), reclaimJobSpec(config, job));
-                if (create.status >= 300) {
-                    return { ok: false, removed: false, reason: `creating the worktree reclaim job answered ${create.status}: ${create.body.slice(0, 200)}` };
-                }
-                let failures = 0;
-                for (;;) {
-                    let response: K8sResponse;
+                await acquireClaim(job);
+            } catch (e) {
+                // A 409 the acquire could not resolve by takeover is a live attempt on the
+                // checkout (acquireClaim says which and why in its message). The skip names the
+                // held tree so the log line says what was NOT reclaimed, and why.
+                return {
+                    ok: false,
+                    removed: false,
+                    reason: `the checkout is held (${worktree}): ${(e as Error).message}`,
+                };
+            }
+            /*
+             * The deletion the FAILURE arms use, awaited, with Foreground propagation — the same
+             * handover discipline the sync's failure arm runs: the delete returns only after the
+             * Job's dependents — the removal pod — are gone, so the releaseClaim that follows can
+             * never hand the checkout to a follow-up's sync while something of this reclaim can
+             * still write the tree. On the success path the Job is already terminal (its pod has
+             * exited — that is what the poll waited for), so the Background fire-and-forget
+             * delete in the finally is pure reaping and the release hands over nothing live.
+             */
+            const takeReclaimJobDown = async (): Promise<void> => {
+                await request(
+                    'DELETE',
+                    `${jobPath(config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Foreground`,
+                ).then(() => undefined, () => undefined);
+            };
+            try {
+                const result = await (async (): Promise<ReclaimResult> => {
+                    const create = await request('POST', jobsPath(config.k8sNamespace), reclaimJobSpec(config, job));
+                    if (create.status >= 300) {
+                        return { ok: false, removed: false, reason: `creating the worktree reclaim job answered ${create.status}: ${create.body.slice(0, 200)}` };
+                    }
+                    let failures = 0;
+                    for (;;) {
+                        let response: K8sResponse;
+                        try {
+                            response = await request('GET', jobPath(config.k8sNamespace, reclaimJobName(job)));
+                        } catch (e) {
+                            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                                return { ok: false, removed: false, reason: `the worktree reclaim job could not be read: ${(e as Error).message}` };
+                            }
+                            await sleep(POLL_MS);
+                            continue;
+                        }
+                        if (response.status === 429 || response.status >= 500) {
+                            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                                return {
+                                    ok: false,
+                                    removed: false,
+                                    reason: `reading the worktree reclaim job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                                };
+                            }
+                            await sleep(POLL_MS);
+                            continue;
+                        }
+                        if (response.status >= 300) {
+                            return { ok: false, removed: false, reason: `reading the worktree reclaim job answered ${response.status}: ${response.body.slice(0, 200)}` };
+                        }
+                        failures = 0;
+                        const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+                        if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) break;
+                        await sleep(POLL_MS);
+                    }
+                    let body = '';
                     try {
-                        response = await request('GET', jobPath(config.k8sNamespace, reclaimJobName(job)));
-                    } catch (e) {
-                        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
-                            return { ok: false, removed: false, reason: `the worktree reclaim job could not be read: ${(e as Error).message}` };
-                        }
-                        await sleep(POLL_MS);
-                        continue;
-                    }
-                    if (response.status === 429 || response.status >= 500) {
-                        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
-                            return {
-                                ok: false,
-                                removed: false,
-                                reason: `reading the worktree reclaim job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
-                            };
-                        }
-                        await sleep(POLL_MS);
-                        continue;
-                    }
-                    if (response.status >= 300) {
-                        return { ok: false, removed: false, reason: `reading the worktree reclaim job answered ${response.status}: ${response.body.slice(0, 200)}` };
-                    }
-                    failures = 0;
-                    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
-                    if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) break;
-                    await sleep(POLL_MS);
-                }
-                let body = '';
-                try {
-                    const pods = await request(
-                        'GET',
-                        `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
-                            `job-name=${reclaimJobName(job)}`,
-                        )}`,
-                    );
-                    const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
-                    if (pod?.metadata?.name) {
-                        const log = await request(
+                        const pods = await request(
                             'GET',
-                            `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`,
+                            `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
+                                `job-name=${reclaimJobName(job)}`,
+                            )}`,
                         );
-                        if (log.status < 300) body = log.body;
+                        const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+                        if (pod?.metadata?.name) {
+                            const log = await request(
+                                'GET',
+                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`,
+                            );
+                            if (log.status < 300) body = log.body;
+                        }
+                    } catch {
+                        body = '';
                     }
-                } catch {
-                    body = '';
-                }
-                const line = body.trim().split('\n').filter(Boolean).pop() ?? '';
-                try {
-                    return JSON.parse(line) as ReclaimResult;
-                } catch {
-                    return { ok: false, removed: false, reason: 'the worktree reclaim answered nothing readable' };
-                }
+                    const line = body.trim().split('\n').filter(Boolean).pop() ?? '';
+                    try {
+                        return JSON.parse(line) as ReclaimResult;
+                    } catch {
+                        return { ok: false, removed: false, reason: 'the worktree reclaim answered nothing readable' };
+                    }
+                })();
+                if (!result.ok) await takeReclaimJobDown();
+                return result;
+            } catch (e) {
+                // A thrown read between create and verdict leaves the same live-pod risk as a
+                // failed verdict: take the Job down before the finally hands the checkout back.
+                // The error itself stays a throw — reclaimWorktree's callers catch, and a throw
+                // here is transport-shaped, not a verdict to relay.
+                await takeReclaimJobDown();
+                throw e;
             } finally {
                 // Every exit path, like the sync's own finally: a reclaim Job left running is a
-                // pod still mounted on the volume, so it goes down Background (fire-and-forget,
-                // best-effort — a miss is swept by the next attempt's fence).
+                // pod still mounted on the volume. The failure arms' Foreground delete above has
+                // already taken it down (this Background delete then answers 404 and is
+                // swallowed); on the success path it IS the delete. THEN the claim goes — the
+                // checkout is only handed over once nothing of this reclaim can still write it.
                 void request(
                     'DELETE',
                     `${jobPath(config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Background`,
                 ).then(() => undefined, () => undefined);
+                await releaseClaim(job);
             }
         },
 

@@ -189,7 +189,7 @@ describe('rereading the gates after the startup sync', () => {
     });
 });
 
-describe('reading the thread terminality after a verdict', () => {
+describe('the complete verdict', () => {
     const job = {
         id: 'job-1',
         command: 'echo hi',
@@ -200,49 +200,74 @@ describe('reading the thread terminality after a verdict', () => {
         userId: null,
     };
 
-    const thread = (statuses: string[]) =>
-        Response.json({ jobs: statuses.map((status) => ({ id: `job-${statuses.indexOf(status)}`, status })) }, { status: 200 });
-
-    it('reads the thread as a GET on the job, with the worker token', async () => {
-        const { calls, fetch } = recorder(() => thread(['succeeded']));
+    it('carries the thread-terminal answer the board computed beside the lease state', async () => {
+        // The board computes threadTerminal in the same lease-guarded transaction as the verdict,
+        // so the driver reads both from the one complete round trip — no separate thread read to
+        // race a follow-up's insertion against.
+        const { calls, fetch } = recorder(() =>
+            Response.json({ id: 'job-1', status: 'succeeded', threadTerminal: true }, { status: 200 }),
+        );
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
 
-        expect(await board.threadTerminal(job)).toBe(true);
-        expect(calls).toHaveLength(1);
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/thread');
+        const verdict = await board.complete(job, { status: 'succeeded', exitCode: 0, output: '' });
+
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/complete');
         expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+        expect(verdict).toEqual({ state: 'held', threadTerminal: true });
     });
 
-    it('is true only when EVERY job of the thread is terminal', async () => {
-        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['succeeded'])).fetch });
-        expect(await board.threadTerminal(job)).toBe(true);
+    it('reads an absent, false or non-boolean threadTerminal as false — keep the tree', async () => {
+        // Defensive on purpose: a board that predates the field, a body without it, or one that
+        // lies about its type all mean "a follow-up might still come" — the conservative answer.
+        const absent = recorder(() => Response.json({ id: 'job-1', status: 'succeeded' }, { status: 200 }));
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: absent.fetch }).complete(job, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: '',
+            }),
+        ).toEqual({ state: 'held', threadTerminal: false });
 
-        const failed = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['failed', 'succeeded'])).fetch });
-        expect(await failed.threadTerminal(job)).toBe(true);
+        const falseBody = recorder(() => Response.json({ id: 'job-1', threadTerminal: false }, { status: 200 }));
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: falseBody.fetch }).complete(job, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: '',
+            }),
+        ).toEqual({ state: 'held', threadTerminal: false });
 
-        const dead = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['dead'])).fetch });
-        expect(await dead.threadTerminal(job)).toBe(true);
-
-        // Any non-terminal member — a follow-up still queued, parked, or running — keeps it false.
-        const queued = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['succeeded', 'queued'])).fetch });
-        expect(await queued.threadTerminal(job)).toBe(false);
-
-        const standby = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['standby'])).fetch });
-        expect(await standby.threadTerminal(job)).toBe(false);
+        const lying = recorder(() => Response.json({ id: 'job-1', threadTerminal: 'yes' }, { status: 200 }));
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lying.fetch }).complete(job, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: '',
+            }),
+        ).toEqual({ state: 'held', threadTerminal: false });
     });
 
-    it('answers false — keep the tree — when the board refuses or fails', async () => {
-        // Best-effort by contract, like rereadGates: the verdict is already on the board, so the
-        // reclaim must never wait on a board that will not answer the child question.
-        const broken = recorder(() => {
-            throw new Error('board unreachable');
+    it('answers lost with threadTerminal false when the board refuses the verdict with a 409', async () => {
+        const { fetch } = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        expect(await board.complete(job, { status: 'failed', exitCode: 1, output: 'boom' })).toEqual({
+            state: 'lost',
+            threadTerminal: false,
         });
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).threadTerminal(job)).toBe(false);
+    });
 
-        const refused = recorder(() => Response.json({ error: 'gone' }, { status: 404 }));
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: refused.fetch }).threadTerminal(job)).toBe(false);
+    it('still throws on any other non-ok answer', async () => {
+        // 409 is a verdict; everything else is the board being broken or the driver being wrong,
+        // and neither is swallowed into a silent no-op.
+        const { fetch } = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
 
-        const empty = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: empty.fetch }).threadTerminal(job)).toBe(false);
+        await expect(board.complete(job, { status: 'succeeded', exitCode: 0, output: '' })).rejects.toThrow(/404/);
+    });
+
+    it('no longer carries a separate thread read — the answer travels on complete', () => {
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => claimed()).fetch });
+        expect('threadTerminal' in board).toBe(false);
     });
 });

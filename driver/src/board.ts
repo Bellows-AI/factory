@@ -134,7 +134,12 @@ export interface Board {
     /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,
-     * stored beside the attempt's vitals on the board.
+     * stored beside the attempt's vitals on the board. The answer carries `threadTerminal` —
+     * whether EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead'), computed
+     * by the board in the SAME lease-guarded transaction as the verdict — which is the signal a
+     * worker uses right after a verdict to decide the task worktree can be reclaimed (issue #47).
+     * A follow-up still queued, parked, or running keeps it false, so a thread that might
+     * continue keeps its tree.
      */
     complete(
         job: BoardJob,
@@ -145,15 +150,7 @@ export interface Board {
             contextTokens?: number | null;
             contextCostUsd?: number | null;
         },
-    ): Promise<LeaseState>;
-    /**
-     * Whether EVERY job in the task's thread is terminal (succeeded, failed, or dead) — the
-     * signal a worker uses right after a verdict to decide the task worktree can be reclaimed
-     * (issue #47). A follow-up still queued, parked, or running keeps it false, so a thread that
-     * might continue keeps its tree. A board that answers nothing means "keep the tree" — this
-     * read is best-effort by contract, like rereadGates.
-     */
-    threadTerminal(job: BoardJob): Promise<boolean>;
+    ): Promise<{ state: LeaseState; threadTerminal: boolean }>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -192,17 +189,6 @@ export function createBoard({
         // 409 is a verdict, not a failure; everything else outside 2xx is the board being broken or
         // the driver being wrong, and neither should be swallowed into a silent no-op.
         if (!response.ok && response.status !== 409) {
-            throw new Error(`${path} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
-        }
-        return response;
-    };
-
-    const get = async (path: string): Promise<Response> => {
-        const response = await fetch(`${url}${path}`, {
-            method: 'GET',
-            headers: token ? { authorization: `Bearer ${token}` } : {},
-        });
-        if (!response.ok) {
             throw new Error(`${path} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
         }
         return response;
@@ -283,21 +269,14 @@ export function createBoard({
                 ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
                 ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
             });
-            return response.status === 409 ? 'lost' : 'held';
-        },
-
-        async threadTerminal(job) {
-            // Best-effort by contract, like rereadGates: a board that will not answer this read
-            // means "keep the tree", never a crash that strands a verified third attempt.
-            try {
-                const response = await get(`/api/jobs/${job.id}/thread`);
-                const body = (await response.json()) as { jobs?: { status?: string }[] };
-                const statuses = (body.jobs ?? []).map((j) => j.status ?? '');
-                const every = statuses.length > 0 && statuses.every((s) => 'succeeded|failed|dead'.includes(s));
-                return every;
-            } catch {
-                return false;
-            }
+            // 409 is a verdict, not a failure: the lease is gone and with it any say over the
+            // thread — the terminality answer is false, not unknown.
+            if (response.status === 409) return { state: 'lost', threadTerminal: false };
+            // Read defensively, like every other board field: anything but a literal true —
+            // absent, false, a body that is not the shape we asked for — means "a follow-up
+            // might still come", which is the only safe reading of an unclear answer.
+            const body = (await response.json()) as { threadTerminal?: boolean };
+            return { state: 'held', threadTerminal: body.threadTerminal === true };
         },
     };
 }
