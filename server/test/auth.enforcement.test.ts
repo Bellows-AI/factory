@@ -64,6 +64,9 @@ const jobStub = (): JobStore =>
         async get() {
             return null as Job | null;
         },
+        async thread() {
+            return [] as Job[];
+        },
         async list() {
             return [];
         },
@@ -138,6 +141,12 @@ describe('the route table', () => {
         // worker token 401, while the gates themselves ran and passed unseen.
         [`/api/jobs/${JOB_ID}/gates`, 'worker'],
         [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
+        // The thread read is the ONE route both credentials reach: it existed for the UI before the
+        // driver had any use for it (walling it behind the worker token would 401 the task detail
+        // page), and the driver reads the same rows on its way to reclaiming the task worktree
+        // (issue #47). `either` is the exception to disjointness, and only a READ; the single-job
+        // read just above stays a person's.
+        [`/api/jobs/${JOB_ID}/thread`, 'either'],
         ['/api/otlp/v1/logs', 'ingest'],
         ['/api/sessions/branch', 'ingest'],
         // Both fall through to `user` rather than being listed anywhere, which is the point: the
@@ -263,6 +272,54 @@ describe('the two credentials are disjoint', () => {
         });
 
         // A job queued by a worker token would have no author, silently breaking the audit trail.
+        expect(response.statusCode).toBe(401);
+    });
+
+    it('is one than one route: the thread read takes a session and a worker token both', async () => {
+        // The SPA renders the task detail page with a session cookie — the read predates the
+        // driver's use of it, and walling it would break that page under github auth.
+        const sessionStore = memoryAuthStore();
+        const sessionServer = await build(githubAuth(), sessionStore);
+        const caller = sessionStore.seedMember(ORG, 'octocat');
+        const cookie = await signedIn(sessionStore, caller);
+        expect(
+            (
+                await sessionServer.inject({
+                    method: 'GET',
+                    url: `/api/jobs/${JOB_ID}/thread`,
+                    headers: { cookie },
+                })
+            ).statusCode,
+        ).toBe(200);
+
+        // The driver reaches the same rows with its token on the way to reclaim (issue #47).
+        const tokenStore = memoryAuthStore();
+        tokenStore.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
+        const tokenServer = await build(githubAuth(), tokenStore);
+        expect(
+            (
+                await tokenServer.inject({
+                    method: 'GET',
+                    url: `/api/jobs/${JOB_ID}/thread`,
+                    headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+                })
+            ).statusCode,
+        ).toBe(200);
+    });
+
+    it('refuses a worker token on the single-job read, which stays a person\'s', async () => {
+        const store = memoryAuthStore();
+        store.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({
+            method: 'GET',
+            url: `/api/jobs/${JOB_ID}`,
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        // The job row — command, output, verdict — is a person's view of their audit trail; a
+        // worker token reaching it would make a member's session no stronger than any leaked one.
         expect(response.statusCode).toBe(401);
     });
 

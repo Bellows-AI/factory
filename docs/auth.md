@@ -202,7 +202,7 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 | `/api/auth/*` | open. `/me` 401s on its own; being what *tells* the SPA it is unauthenticated is its purpose. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
 | `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/resume`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done` | session cookie |
-| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread` | `Bearer fwt_…` worker token |
+| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `GET /api/jobs/:id/thread` | `Bearer fwt_…` worker token |
 | OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
 
 - **The two sets are disjoint, and that is the point.** A session accepted on `/claim` would let any
@@ -211,6 +211,11 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
   `/api/jobs/:id/resume`, `/follow-up` and `/done` are *human* routes: nobody holds a parked job, and
   a finished task is over — which is exactly what makes resuming, adjusting and closing one a
   person's action.
+- **The one sanctioned overlap is `GET /api/jobs/:id/thread`, and it is a READ.** The route existed
+  for the UI before the driver had any use for it, so walling it behind the worker token would 401
+  the task detail page; the driver reads the same rows on its way to reclaiming the task worktree
+  (issue #47). A worker token on a thread read widens nothing a claim does not already hold — every
+  row of the thread carries the command and output the worker itself wrote.
 - **The worker token is minted by CLI only.** `npm run worker-token -- --name driver-1`, printed
   once, hash stored. No HTTP route mints a credential: everything else a member can do is bounded by
   the organization, whereas this issues something that claims work and reports results with no human
