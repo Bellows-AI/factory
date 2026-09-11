@@ -24,6 +24,8 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
   spawn the runner with the command, as that session
   (claude-code mints and reports a session uuid; opencode reports the id it used, scraped at close — see below)
   POST /api/jobs/:id/heartbeat {leaseToken}     every leaseSeconds/3, while it runs
+     200 {leaseExpiresAt, cancelRequested}: false on an ordinary beat, true when the
+     user asked to park this run (see Stop) — the kill order of a different kind
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
   POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
 POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
@@ -34,10 +36,22 @@ POST /api/jobs/:id/suspend  {leaseToken}        -> standby, session kept
 POST /api/jobs/:id/resume   {}                  -> queued, claimed again with resumeSessionId
 ```
 
+**Person-gated routes meet the same loop through the same states.** `POST /api/jobs/:id/stop`
+parks a task — queued or already-parked rows land on `standby` directly, a moving run answers
+`200 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the beat above,
+kills its runner and suspends. `POST /api/jobs/:id/remove` deletes the whole thread and hands the
+driver the worktree to remove through a separate queue (see the sections below).
+
 **A `409` from heartbeat means the container must be killed.** Its lease expired, the job was
 handed to someone else, and nothing it reports will be accepted. The board cannot stop a worker —
 it can only refuse it — so double execution is prevented by the driver acting on that 409, not by
 the database. This is the single most important line in this file.
+
+The other kill order rode the same beat, and deserved a line of its own: **a `cancelRequested: true`
+beat means the container must be killed AND the run parked.** A user asked for the task, the board
+can do nothing but pass the message, and the run dies the same way a 409 does — only afterwards the
+driver `suspend`s the row instead of settling it. There is no separate endpoint and no third state:
+`cancel_requested_at` is a timestamp on the moving row that the beat reads.
 
 ## The driver (`driver/`)
 
@@ -525,6 +539,49 @@ clearing it would throw the thread away with the attempt. The command re-deliver
 which is the ordinary retry semantics for a headless run — and unreachable for Remote Control in
 practice, since a drivable job parks on silence before its lease can expire.
 
+## Stop and remove: winding a task down, and deleting it
+
+Two person-gated actions (session cookie, like `resume`/`done` — a worker token must never move a
+thread the driver does not hold). Both reuse what exists: stopping lands on the standby machinery,
+removing lands on the worktree-reclaim machinery.
+
+**Stop parks the task, never destroys it.** `POST /api/jobs/:id/stop` is a person's verdict that
+no more work is wanted *right now* — the row keeps its session and its place in the thread, and a
+`resume` brings it straight back. A queued or already-parked row is parked directly (the answer is
+`{ status: 'standby' }`); a `running` row answers `{ status: 'running', cancelRequestedAt }` and
+the request is delivered by the worker's next heartbeat — the `cancelRequested` flag — exactly the
+way a lost lease is delivered, and by the same kill. The loading of the `running` answer makes a
+stop idempotent: asking twice before the worker parks answers the same instant. A finished or dead
+row answers `409 NOT_STOPPABLE` — there is nothing running to stop, and the task's own verdicts are
+the ones that outlived the run.
+
+**The stop lands when the parking (or the finishing) lands, never when the request does.**
+`cancel_requested_at` is cleared by `suspend` and by `complete` — parking a run IS finishing the
+stop, and a run that finishes under its own power before the driver reads the flag needs no
+parking. The claim does **not** clear it: a driver that dies mid-stop drops its lease, the next
+claimor picks the row up, and the flag tells it the previous worker never parked the task — so it
+kills the attempt it spawned and parks, preserving the user's stop through a crash. That is the
+same dead-driver story as a lost lease, with the verdict "park it instead of running it".
+
+**Remove deletes the whole thread and queues its worktree for removal.** `POST /api/jobs/:id/remove`
+deletes the task's root and every follow-up — the audit rows, not just the newest run — and, in the
+same transaction, inserts a `task_reclaim` row for the driver to delete the tree (see the section
+above). The transaction takes the same advisory lock the claim takes, so a claim cannot slip a
+`running` row between the check and the delete; Remove is refused with `409 TASK_RUNNING` while any
+thread member is running, because a live run's worktree is exactly what must not come down under it
+— stop first, then remove. Nothing on the row survives: the thread's nav entry, its tabs, its
+Reclaim-eligible tree.
+
+**The reclaim is its own queue, not a verdict signal.** `threadTerminal` is the driver's completing
+attempt claiming its own tree; a removed thread has no attempt to complete, so the board hands the
+tree itself out: `POST /api/reclaims/claim {worker}` returns the oldest queued row
+(`{ id, rootJobId, repo, workspacePath, leaseExpiresAt }`) or 204, and `POST /api/reclaims/:id/ack`
+proves it gone. The row id is the lease token, ack matches on `claimed_by`, and the driver drains
+the queue in a loop parallel to its job claims — claim, remove the worktree, ack, repeat — so a
+worker that dies mid-reclaim simply loses the lease and the next poll picks the tree up again. A
+removed task cannot be undeleted; the worktree removal is the last thing to land, and it lands
+because the rows are already gone.
+
 ## Gates: verification checks declared by `.bellows.yaml`
 
 A repository may ship a `.bellows.yaml` at its checkout root declaring an environment image and
@@ -695,8 +752,9 @@ that is not this clone's worktree, logging the reason rather than touching it. I
 best-effort by contract: the verdict is already on the board when it runs, so a board that
 refuses the complete call, a runner that refuses the tree, or a daemon that says no costs the
 reclaim, never the verdict — the tree stays and the branch survives for a later follow-up. Who
-reclaims: the driver's last completing attempt. Deleting a task by hand is covered because the
-board's `done` action and the driver's verdict both land on the same terminal statuses.
+reclaims: the driver's last completing attempt. Deleting a task by hand is the other end of the same
+queue: `remove` inserts a `task_reclaim` row in the delete transaction, and the driver's separate
+reclaim loop (claim → worktree removal → ack) pulls it down — see the Remove section above.
 
 **The claim's gates answer is re-read after the sync.** The board reads `.bellows.yaml` at CLAIM
 time, which is before the sync — so the claim's answer can predate the tree the run will see,
@@ -804,22 +862,25 @@ claim. "Nothing runs an executor yet" stays true.
 - **No idempotency key on create.** A `POST /api/jobs` that times out and is retried creates a
   second job, and the command runs twice. Add a client-supplied id with `on conflict do nothing`
   when a driver actually retries creates.
-- **No cancel, no priority, no scheduling.** A dead job is reaped; a queued one is taken in order.
+- **No priority, no scheduling.** A dead job is reaped; a queued one is taken in order. Stop and
+  remove exist (a person can wind a task down or delete it — see the section above), but a queued
+  job's *place* in the queue is not something anybody moves.
 - **No cap on how long a job may sit on standby, and nothing reaps one.** A parked job waits for a
   `resume` forever. It costs a row rather than a worker slot, which is the whole point of parking it.
 - **One auth volume, shared by every concurrent Remote Control runner.** They all write
   `.claude.json` in the same directory. Fine for one drivable job at a time and unexamined beyond
   that; a volume per job would make the login a template to copy rather than a mount.
 - **No per-job authorization.** There is authentication now — see [auth.md](auth.md) — and the two
-  credentials are disjoint: a session cookie queues, follows up, marks done, resumes and reads, a
-  `Bearer fwt_…` worker token claims, heartbeats, streams output, suspends and completes. A session on `/claim`
+  credentials are disjoint: a session cookie queues, follows up, marks done, resumes, stops, removes
+  and reads, a `Bearer fwt_…` worker token claims, heartbeats, streams output, suspends, completes,
+  and drains the reclaim queue. A session on `/claim`
   would let any member take work away from the driver running it; a worker token on `POST /api/jobs`
   would produce a job with no author. But **membership is not a sandbox**: every member can queue a
   command that runs against their own checkouts, follow up on their own tasks, and close any task —
   and `job.created_by` records who did rather than limiting what they may do. Follow-ups are the one
   exception, and not an authorization regime: the child resumes the parent's session, and a session
-  only resumes in the tree it ran in — the author's (see the follow-ups section above). Done has no
-  such coupling, so it stays open to every member.
+  only resumes in the tree it ran in — the author's (see the follow-ups section above). Done, stop
+  and remove have no such coupling, so they stay open to every member.
   Under `AUTH_MODE=none` all of it is open, including the worker routes — see [security.md](security.md),
   which is where the consequence is written down.
 - **No service volumes, health checks, depends-on ordering or restart policies.** A service that
