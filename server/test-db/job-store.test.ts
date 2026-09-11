@@ -169,8 +169,8 @@ describe.skipIf(!enabled)('job store', () => {
             output: 'from the live one',
         });
 
-        expect(refused).toBe('lost');
-        expect(accepted).toBe('ok');
+        expect(refused).toEqual({ result: 'lost' });
+        expect(accepted).toEqual({ result: 'ok', threadTerminal: true });
         expect(await store.get(id)).toMatchObject({
             status: 'failed',
             exitCode: 3,
@@ -184,7 +184,7 @@ describe.skipIf(!enabled)('job store', () => {
             exitCode: 0,
             output: null,
         });
-        expect(result).toBe('missing');
+        expect(result).toEqual({ result: 'missing' });
     });
 
     it('streams a rolling output tail while the run is going', async () => {
@@ -796,6 +796,111 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         expect(await store.markDone(queued)).toBe('conflict');
         expect(await store.markDone(ABSENT)).toBe('missing');
+    });
+
+    /**
+     * The verdict's answer to the driver's worktree reclaim (issue #47): whether the job's WHOLE
+     * thread is terminal, computed in the same transaction as the verdict itself. This is the
+     * credential fix too — the driver used to read the answer off `GET /api/jobs/:id/thread`, a
+     * route a worker token has no business on (docs/auth.md).
+     */
+    describe('the verdict carries the thread terminality', () => {
+        it('answers true for a single-job thread', async () => {
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', 300);
+
+            const result = await store.complete(id, claim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+
+            expect(result).toEqual({ result: 'ok', threadTerminal: true });
+        });
+
+        it('answers false while a follow-up is still queued, and true once it completes', async () => {
+            const root = await finishWithSession('drive me');
+            // Two adjustments on one parent: the shape the thread walk already contemplates.
+            // A linear chain cannot hold a queued member at a verdict moment — the follow-up
+            // only exists once the parent is finished.
+            const first = await store.createFollowUp(root, 'first adjustment', null);
+            const second = await store.createFollowUp(root, 'second adjustment', null);
+
+            const firstClaim = await store.claim('w1', 300);
+            expect(firstClaim?.id).toBe(first.id);
+            const whileQueued = await store.complete(first.id, firstClaim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+            expect(whileQueued).toEqual({ result: 'ok', threadTerminal: false });
+
+            const secondClaim = await store.claim('w2', 300);
+            expect(secondClaim?.id).toBe(second.id);
+            const afterBoth = await store.complete(second.id, secondClaim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+            expect(afterBoth).toEqual({ result: 'ok', threadTerminal: true });
+        });
+
+        it('answers false while a parked member holds the thread open', async () => {
+            const root = await finishWithSession('drive me');
+            const first = await store.createFollowUp(root, 'first adjustment', null);
+            const second = await store.createFollowUp(root, 'second adjustment', null);
+
+            const firstClaim = await store.claim('w1', 300);
+            expect(firstClaim?.id).toBe(first.id);
+            await store.suspend(first.id, firstClaim!.leaseToken);
+
+            // Standby neither blocks nor is claimable, so the second adjustment can run.
+            const secondClaim = await store.claim('w2', 300);
+            expect(secondClaim?.id).toBe(second.id);
+            const result = await store.complete(second.id, secondClaim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+
+            expect(result).toEqual({ result: 'ok', threadTerminal: false });
+        });
+
+        it('counts a dead member as terminal', async () => {
+            const { id } = await queue('drive me');
+            await sql`update job set max_attempts = 1 where id = ${id}`;
+            const claim = await store.claim('w1', 300);
+            // Reported before the job dies, or the follow-up would have nothing to continue.
+            await store.session(id, claim!.leaseToken, SESSION, null);
+            await expireLease(id);
+            expect(await store.claim('w2', 300)).toBeNull();
+            expect((await row(id))[0]?.status).toBe('dead');
+
+            const followUp = await store.createFollowUp(id, 'again', null);
+            const followUpClaim = await store.claim('w3', 300);
+            expect(followUpClaim?.id).toBe(followUp.id);
+            const result = await store.complete(followUp.id, followUpClaim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+
+            // `dead` is the board giving up, not work continuing — the tree is free to reclaim.
+            expect(result).toEqual({ result: 'ok', threadTerminal: true });
+        });
+
+        it('refuses a completion carrying a lease token that is not the holder', async () => {
+            const { id } = await queue('echo hi');
+            await store.claim('w1', 300);
+
+            const result = await store.complete(id, ABSENT, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+
+            expect(result).toEqual({ result: 'lost' });
+        });
     });
 });
 

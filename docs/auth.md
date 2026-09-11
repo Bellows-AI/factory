@@ -205,12 +205,21 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 | `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread` | `Bearer fwt_…` worker token |
 | OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
 
-- **The two sets are disjoint, and that is the point.** A session accepted on `/claim` would let any
-  member steal another worker's lease; a worker token accepted on `POST /api/jobs` would produce a
-  job with no author, silently breaking the audit trail on the route that runs shell commands.
-  `/api/jobs/:id/resume`, `/follow-up` and `/done` are *human* routes: nobody holds a parked job, and
-  a finished task is over — which is exactly what makes resuming, adjusting and closing one a
-  person's action.
+- **There is no overlap: every route takes exactly one credential.** A session accepted on
+  `/claim` would let any member steal another worker's lease; a worker token accepted on
+  `POST /api/jobs` would produce a job with no author, silently breaking the audit trail on the
+  route that runs shell commands. `/api/jobs/:id/resume`, `/follow-up` and `/done` are *human*
+  routes: nobody holds a parked job, and a finished task is over — which is exactly what makes
+  resuming, adjusting and closing one a person's action.
+- **`GET /api/jobs/:id/thread` is session-only, and an earlier exception for the worker token was
+  removed.** The thread carries every job of the conversation — commands, output tails, session
+  ids and authorship — so a worker token on that read let a driver process read the audit and
+  session data of jobs it never held a lease on; a claim exposes only the currently claimed job,
+  and the token's one legitimate use of the thread (deciding the task worktree reclaim, issue
+  #47) now rides the lease-guarded `complete` response instead: the store computes
+  `threadTerminal` in the same transaction as the verdict, and the driver reclaims on that. The
+  task detail page keeps its session-cookie read, which was the read's original and remaining
+  purpose.
 - **The worker token is minted by CLI only.** `npm run worker-token -- --name driver-1`, printed
   once, hash stored. No HTTP route mints a credential: everything else a member can do is bounded by
   the organization, whereas this issues something that claims work and reports results with no human

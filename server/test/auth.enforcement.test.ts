@@ -64,6 +64,9 @@ const jobStub = (): JobStore =>
         async get() {
             return null as Job | null;
         },
+        async thread() {
+            return [] as Job[];
+        },
         async list() {
             return [];
         },
@@ -138,6 +141,11 @@ describe('the route table', () => {
         // worker token 401, while the gates themselves ran and passed unseen.
         [`/api/jobs/${JOB_ID}/gates`, 'worker'],
         [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
+        // The thread read is a person's again: it carries commands, output and session ids of the
+        // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
+        // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
+        // lease-guarded complete response as `threadTerminal` instead.
+        [`/api/jobs/${JOB_ID}/thread`, 'user'],
         ['/api/otlp/v1/logs', 'ingest'],
         ['/api/sessions/branch', 'ingest'],
         // Both fall through to `user` rather than being listed anywhere, which is the point: the
@@ -263,6 +271,55 @@ describe('the two credentials are disjoint', () => {
         });
 
         // A job queued by a worker token would have no author, silently breaking the audit trail.
+        expect(response.statusCode).toBe(401);
+    });
+
+    it('keeps the thread read session-only, in both directions', async () => {
+        // The SPA renders the task detail page with a session cookie — that has to keep working.
+        const sessionStore = memoryAuthStore();
+        const sessionServer = await build(githubAuth(), sessionStore);
+        const caller = sessionStore.seedMember(ORG, 'octocat');
+        const cookie = await signedIn(sessionStore, caller);
+        expect(
+            (
+                await sessionServer.inject({
+                    method: 'GET',
+                    url: `/api/jobs/${JOB_ID}/thread`,
+                    headers: { cookie },
+                })
+            ).statusCode,
+        ).toBe(200);
+
+        // A worker token on the full thread read would let the driver read commands, output and
+        // session ids of jobs it never held a lease on — the thread is audit data, and the worker's
+        // only need from it (the reclaim terminality) rides the complete response instead.
+        const tokenStore = memoryAuthStore();
+        tokenStore.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
+        const tokenServer = await build(githubAuth(), tokenStore);
+        expect(
+            (
+                await tokenServer.inject({
+                    method: 'GET',
+                    url: `/api/jobs/${JOB_ID}/thread`,
+                    headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+                })
+            ).statusCode,
+        ).toBe(401);
+    });
+
+    it('refuses a worker token on the single-job read, which stays a person\'s', async () => {
+        const store = memoryAuthStore();
+        store.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({
+            method: 'GET',
+            url: `/api/jobs/${JOB_ID}`,
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        // The job row — command, output, verdict — is a person's view of their audit trail; a
+        // worker token reaching it would make a member's session no stronger than any leaked one.
         expect(response.statusCode).toBe(401);
     });
 

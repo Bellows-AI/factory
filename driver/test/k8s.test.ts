@@ -17,6 +17,8 @@ import {
     jobPath,
     jobsPath,
     runnerJobSpec,
+    reclaimJobName,
+    reclaimJobSpec,
     secretName,
     serviceDnsSpec,
     servicePodSpec,
@@ -24,7 +26,7 @@ import {
     syncJobName,
     syncJobSpec,
 } from '../src/k8s.js';
-import { CREDENTIAL_HELPER, gitWorktreeScript } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -823,6 +825,121 @@ describe('the worktree sync', () => {
         await r.syncCheckout(repoJob);
         const outcome = await r.run(repoJob, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
+    });
+});
+
+/*
+ * The terminal reclaim (issue #47), ported the same way the sync was: the remove script as an
+ * aux Job over the workspaces PVC. What it shares with the sync is the checkout CLAIM: a thread
+ * that looks terminal can gain a follow-up between the board's answer and the removal, and the
+ * follow-up's own sync is a writer on the same root-scoped tree — so the reclaim takes the
+ * claim for its whole duration, and an acquire that answers 409 (a live attempt holds the
+ * checkout) SKIPS the reclaim. Costing the reclaim is fine by contract; costing a live run is
+ * not. No Secret, no env: removing needs nothing the claim held.
+ */
+describe('the worktree reclaim', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+
+    it('runs the remove script as an aux Job over a read-write PVC, naming only paths', () => {
+        const s = reclaimJobSpec(cfg(), repoJob);
+        expect(s.apiVersion).toBe('batch/v1');
+        expect(s.kind).toBe('Job');
+        expect(s.metadata.name).toBe(reclaimJobName(repoJob));
+        expect(s.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
+        const container = s.spec.template.spec.containers[0];
+        expect(container.command).toEqual(['node', '-e', gitWorktreeRemoveScript]);
+        expect(container.env).toEqual([
+            { name: 'REPO', value: `/workspaces/bellows/${USER}/factory` },
+            { name: 'WORKTREE', value: `/workspaces/bellows/${USER}/.worktrees/${repoJob.id}` },
+        ]);
+        // No BRANCH, no credential-helper code, no envFrom: reclaim authenticates nothing.
+        expect(container.envFrom).toBeUndefined();
+        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        expect(s.spec.backoffLimit).toBe(0);
+        expect(s.spec.template.spec.restartPolicy).toBe('Never');
+    });
+
+    it('refuses to build a reclaim for a worktree path it cannot assert', () => {
+        expect(() => reclaimJobSpec(cfg(), { ...repoJob, rootJobId: 'not-a-uuid' })).toThrow(/worktree/);
+    });
+
+    it('takes the checkout claim before the reclaim Job and releases it after the Job is deleted', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"removed":true,"reason":null}\n' } });
+        const result = await runner(request).reclaimWorktree(repoJob);
+
+        expect(result).toEqual({ ok: true, removed: true, reason: null });
+        // The claim brackets the Job: acquired before the POST (so a follow-up's sync, itself
+        // claim-taking, cannot interleave), released only after the Job's delete.
+        const claimPost = calls.findIndex((call) => call.method === 'POST' && call.path === configmapsPath);
+        const jobPost = calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        const jobDelete = calls.findIndex(
+            (call) =>
+                call.method === 'DELETE' &&
+                call.path === `${jobsPath(namespace)}/${reclaimJobName(repoJob)}?propagationPolicy=Background`,
+        );
+        const claimDelete = calls.findIndex((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
+        expect(claimPost).toBeGreaterThanOrEqual(0);
+        expect(jobPost).toBeGreaterThan(claimPost);
+        expect(jobDelete).toBeGreaterThan(jobPost);
+        expect(claimDelete).toBeGreaterThan(jobDelete);
+        // No Secret: removing the tree authenticates nothing.
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+    });
+
+    it('skips the reclaim — ok:false, no Job — when a live attempt holds the checkout claim', async () => {
+        const { request, calls } = fakeRequest();
+        // Another attempt holds the checkout: a claim whose attempt is at or ahead of ours —
+        // a follow-up claimed and mid-sync, most likely. The acquire must refuse to take over.
+        await request('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, attempt: '5' },
+        });
+
+        const result = await runner(request).reclaimWorktree(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(result.removed).toBe(false);
+        expect(result.reason).toContain('held');
+        expect(result.reason).toContain(`/workspaces/bellows/${USER}/.worktrees/${repoJob.id}`);
+        // Nothing was created against a checkout somebody else is writing.
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
+    });
+
+    it('releases the checkout claim even when the reclaim Job poll gives up', async () => {
+        const { request, calls } = fakeRequest({ job: { status: 500, body: 'nope' } });
+        const result = await runner(request).reclaimWorktree(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('500');
+        // The failure arm takes the Job down Foreground BEFORE the release, so a mid-flight
+        // removal pod never outlives the claim it runs under.
+        const foregroundDelete = calls.findIndex(
+            (call) =>
+                call.method === 'DELETE' &&
+                call.path === `${jobsPath(namespace)}/${reclaimJobName(repoJob)}?propagationPolicy=Foreground`,
+        );
+        const claimDelete = calls.findIndex((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
+        expect(foregroundDelete).toBeGreaterThanOrEqual(0);
+        expect(claimDelete).toBeGreaterThan(foregroundDelete);
+    });
+
+    it('answers the script verdict when the reclaim script refuses', async () => {
+        const { request } = fakeRequest({
+            log: { status: 200, body: '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}\n' },
+        });
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('registered worktree');
+    });
+
+    it('reclaims nothing for a job that names no repository', async () => {
+        const { request, calls } = fakeRequest();
+        expect(await runner(request).reclaimWorktree(job)).toEqual({ ok: true, removed: false, reason: null });
+        // Not even a claim attempt: there is no tree and no checkout to fence.
+        expect(calls).toHaveLength(0);
     });
 });
 

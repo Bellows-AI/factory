@@ -172,9 +172,12 @@ against this list — and still nothing runs.
 - **Nothing prunes, and per-member checkouts multiply that by the number of members.** Deselecting a
   repository frees nothing; `docker compose down -v` is the only reclaim. The reason has not changed
   and is the reason nothing can be built here safely: this process cannot tell a stale clone from
-  one holding an agent's uncommitted work. The driver's task worktrees grow the same way — one
-  working tree per task thread, never pruned by anything — for the identical reason, and they are
-  invisible to the workspace page, which walks checkout directories only.
+  one holding an agent's uncommitted work. The driver's task worktrees only LOOK like that — a
+  finished or deleted task does clean its tree up: when the whole thread is terminal the driver
+  removes the per-thread worktree and prunes its admin entry (issue #47, `docs/jobs.md`), keeping
+  the surviving `factory/<root>` branch so a follow-up can recreate the tree on a fresh sync. What
+  still grows unbounded is the member CLONES, which hold the per-thread worktrees' branches; those
+  are invisible to the workspace page, which walks checkout directories only.
 - **What exists instead:** a per-member cap of 20 repositories, so one click cannot clone an entire
   GitHub organization onto a shared volume; a reported `sizeBytes` per checkout; and an `orphaned`
   list of deselected repositories that are still on disk, so growth is at least visible on the page

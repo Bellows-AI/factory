@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Board, BoardJob, RuntimeReport } from './board.js';
+import type { Board, BoardJob, LeaseState, RuntimeReport } from './board.js';
 import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
@@ -84,6 +84,19 @@ function newJobState(): JobState {
 export function createLoop({ board, runner, config, gates, log = () => {}, sleep = wait }: LoopDeps): Loop {
     let running = true;
     const active = new Set<Promise<void>>();
+
+    /*
+     * In-flight worktree reclaims, keyed by the thread's ROOT id (`rootJobId ?? id`, the same
+     * reading worktreeRelDir uses — the key the task worktree itself is filed under). report()
+     * registers the reclaim here before it starts and drops the entry when it settles; the claim
+     * loop awaits a job's root entry before its startup sync, so a follow-up claimed while the
+     * thread's tree is being removed waits out the removal instead of syncing against it. This
+     * closes the race for reclaims and claims that both leave THIS driver; it cannot close it
+     * across drivers — docker's documented bound is one driver per daemon (docs/jobs.md), and
+     * under kubernetes reclaimWorktree holds the checkout claim for the removal's duration,
+     * which is what makes it mutually exclusive with a follow-up's claim-taking sync there.
+     */
+    const reclaims = new Map<string, Promise<void>>();
 
     /**
      * Beats until the run finishes.
@@ -559,7 +572,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
                 }
 
-                const verdict = await board.complete(job, {
+                const verdict = await report(job, {
                     status,
                     exitCode,
                     output,
@@ -586,6 +599,51 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             await settle();
             log(`job ${job.id}: could not run, leaving it to the lease: ${(e as Error).message}`);
         }
+    }
+
+    /**
+     * The verdict is reported, then the task worktree is reclaimed once the whole thread is done
+     * (issue #47) — the driver's side of "finishing a task cleans up its worktree". The board
+     * answers the verdict AND the thread's terminality in one lease-guarded round trip — computed
+     * in the same transaction as the verdict — so there is no separate thread read left to race a
+     * follow-up's insertion: reclaim sits downstream of the verdict and runs only when the answer
+     * says every job of the thread is terminal, so a follow-up still queued keeps its tree.
+     * Best-effort by contract — the verdict is already safe the moment it is on the board, so a
+     * runner that refuses the tree or a transport hiccup can cost the reclaim but never the
+     * verdict. A refused tree stays on the disk (the script it runs deletes only what the sync
+     * created) and is logged rather than turned into a bomb in the author's mouth.
+     *
+     * The removal is registered under the thread's ROOT id in the reclaim barrier BEFORE it
+     * starts and the entry is dropped when it settles: a follow-up of the same thread claimed by
+     * this driver while the removal is in flight then waits it out before its startup sync (see
+     * `reclaims`), instead of syncing against a tree mid-deletion.
+     */
+    async function report(
+        job: BoardJob,
+        result: Parameters<Board['complete']>[1],
+    ): Promise<LeaseState> {
+        const verdict = await board.complete(job, result);
+        if (verdict.state !== 'held' || !verdict.threadTerminal) return verdict.state;
+        const root = job.rootJobId ?? job.id;
+        // Registered before the removal starts — the set and the start are one synchronous block,
+        // so no claimant can observe the in-between. The entry is dropped only while it is still
+        // the one registered: a replacement reclaim for the same root is never undone by a
+        // predecessor settling late.
+        let reclaim: Promise<void> = Promise.resolve();
+        reclaim = (async () => {
+            try {
+                const outcome = await runner.reclaimWorktree(job);
+                if (!outcome.ok) {
+                    log(`job ${job.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
+                }
+            } catch (e) {
+                log(`job ${job.id}: the task worktree could not be reclaimed: ${(e as Error).message}`);
+            } finally {
+                if (reclaims.get(root) === reclaim) reclaims.delete(root);
+            }
+        })();
+        reclaims.set(root, reclaim);
+        return verdict.state;
     }
 
     function track(job: BoardJob): void {
@@ -637,13 +695,12 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  */
                 if (!workspacePathOf(job)) {
                     log(`job ${job.id}: no workspace for its author, failing`);
-                    await board
-                        .complete(job, {
-                            status: 'failed',
-                            exitCode: null,
-                            output:
-                                'This job has no workspace. It was queued by an account this board cannot resolve a checkout directory for, or the board has no workspace root configured.',
-                        })
+                    await report(job, {
+                        status: 'failed',
+                        exitCode: null,
+                        output:
+                            'This job has no workspace. It was queued by an account this board cannot resolve a checkout directory for, or the board has no workspace root configured.',
+                    })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
@@ -657,12 +714,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  */
                 if (job.repo && !worktreeRelDir(job)) {
                     log(`job ${job.id}: no resolvable task worktree for its repo label, failing`);
-                    await board
-                        .complete(job, {
-                            status: 'failed',
-                            exitCode: null,
-                            output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
-                        })
+                    await report(job, {
+                        status: 'failed',
+                        exitCode: null,
+                        output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
+                    })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
@@ -679,16 +735,24 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  */
                 if (config.cli === 'opencode' && job.resumeSessionId && !job.followUp) {
                     log(`job ${job.id}: carries a session this opencode driver cannot restore, failing`);
-                    await board
-                        .complete(job, {
-                            status: 'failed',
-                            exitCode: null,
-                            output:
-                                'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
-                        })
+                    await report(job, {
+                        status: 'failed',
+                        exitCode: null,
+                        output:
+                            'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
+                    })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
+
+                /*
+                 * The reclaim barrier (see `reclaims`): an in-flight removal of THIS thread's
+                 * tree is waited out before the sync — the first touch of the task worktree — so
+                 * a follow-up claimed while its thread's tree was being deleted never syncs
+                 * against, or resurrects work on top of, a tree mid-removal.
+                 */
+                const inflight = reclaims.get(job.rootJobId ?? job.id);
+                if (inflight) await inflight;
 
                 /*
                  * Before anything reads the tree — the gates refusal just below, the agent this
@@ -718,12 +782,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 }
                 if (!synced.ok) {
                     log(`job ${job.id}: checkout sync failed: ${synced.reason}`);
-                    await board
-                        .complete(job, {
-                            status: 'failed',
-                            exitCode: null,
-                            output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-                        })
+                    await report(job, {
+                        status: 'failed',
+                        exitCode: null,
+                        output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
+                    })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
@@ -760,12 +823,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                      */
                     await runner.releaseFence?.(job);
                     log(`job ${job.id}: its gates file could not be read, failing`);
-                    await board
-                        .complete(job, {
-                            status: 'failed',
-                            exitCode: null,
-                            output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
-                        })
+                    await report(job, {
+                        status: 'failed',
+                        exitCode: null,
+                        output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
+                    })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
@@ -781,12 +843,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     await runner.releaseFence?.(job);
                     const why = 'this driver was started with no gate environment configured';
                     log(`job ${job.id}: declares gates this driver cannot run, failing`);
-                    await board
-                        .complete(job, {
-                            status: 'failed',
-                            exitCode: null,
-                            output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
-                        })
+                    await report(job, {
+                        status: 'failed',
+                        exitCode: null,
+                        output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
+                    })
                         .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }

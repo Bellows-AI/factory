@@ -11,7 +11,10 @@ import type { AuthStore, Caller, WorkerIdentity } from './store.js';
  * A union, because the job board has two callers with nothing in common and the credentials that
  * identify them are deliberately disjoint: a session cookie accepted on `/claim` would let any
  * member steal another worker's lease, and a worker token accepted on `POST /api/jobs` would produce
- * a job with no author on the one route docs/security.md describes as remote code execution.
+ * a job with no author on the one route docs/security.md describes as remote code execution. No
+ * route accepts both: an earlier exception for the thread read let a worker token read the audit
+ * and session data of jobs it never held a lease on, so it is gone — the driver's one need from
+ * that read rides the lease-guarded complete response instead.
  */
 export type Principal =
     | { kind: 'user'; caller: Caller }

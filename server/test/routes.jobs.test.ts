@@ -40,6 +40,8 @@ function stubStore(
         fail?: boolean;
         claim?: Claim | null;
         verdict?: LeaseResult;
+        /** The terminality answer the store computes at the verdict moment, on the 'ok' path. */
+        threadTerminal?: boolean;
         job?: Job | null;
         thread?: Job[] | null;
         resume?: 'ok' | 'missing' | 'conflict';
@@ -115,7 +117,10 @@ function stubStore(
         async complete(id: string, _token: string, { output, contextTokens, contextCostUsd }) {
             boom();
             stub.completed.push({ id, output, contextTokens: contextTokens ?? null, contextCostUsd: contextCostUsd ?? null });
-            return options.verdict ?? 'ok';
+            const verdict = options.verdict ?? 'ok';
+            return verdict === 'ok'
+                ? { result: 'ok', threadTerminal: options.threadTerminal ?? false }
+                : { result: verdict };
         },
         async gates(id, _token, results) {
             boom();
@@ -822,6 +827,21 @@ describe('POST /api/jobs/:id/complete', () => {
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
         expect(store.completed).toEqual([{ id: ID, output: 'hello', contextTokens: null, contextCostUsd: null }]);
+    });
+
+    // The verdict-moment terminality of the job's whole thread, computed in the store's complete
+    // transaction and relayed verbatim: the driver's worktree reclaim (issue #47) decides on this
+    // instead of reading the thread back.
+    it('answers the 200 body with the thread terminality, true and false', async () => {
+        const finished = await harnessWith(stubStore({ verdict: 'ok', threadTerminal: true }));
+        const yes = await post(finished, `/api/jobs/${ID}/complete`, done);
+        expect(yes.statusCode).toBe(200);
+        expect(yes.json()).toEqual({ id: ID, status: 'succeeded', threadTerminal: true });
+
+        const ongoing = await harnessWith(stubStore({ verdict: 'ok', threadTerminal: false }));
+        const no = await post(ongoing, `/api/jobs/${ID}/complete`, done);
+        expect(no.statusCode).toBe(200);
+        expect(no.json()).toEqual({ id: ID, status: 'succeeded', threadTerminal: false });
     });
 
     // The context the run reached, scraped from the session database — rides the verdict and is

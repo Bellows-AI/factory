@@ -27,6 +27,8 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
   POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
 POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
+  -> 200 {id, status, threadTerminal}   the verdict, plus whether EVERY job of the thread is
+                                         terminal — the worktree-reclaim signal (see below)
   ... or, if the runner went quiet:
 POST /api/jobs/:id/suspend  {leaseToken}        -> standby, session kept
 POST /api/jobs/:id/resume   {}                  -> queued, claimed again with resumeSessionId
@@ -669,6 +671,31 @@ not create is refused, never deleted — whatever uncommitted work sits there be
 session. The clone's own working tree is never touched — under the worktree model that is
 finally literally true, where the old sync hard-reset the clone's default branch and destroyed
 whatever stray edits sat there.
+
+**The task worktree is reclaimed when the thread ends — finishing or deleting a task cleans up
+its tree (issue #47).** The sync created the tree, and every commit on it belongs to one thread;
+once the whole thread is terminal the tree holds nothing worth keeping. The signal is the
+verdict itself: `complete` answers `{ id, status, threadTerminal }`, where `threadTerminal` is
+the store's answer — computed in the same transaction as the verdict — to whether EVERY job of
+the thread is terminal (`succeeded`/`failed`/`dead`), and when it is true the driver removes the
+tree via the worktree script run as the sync's twin — a throwaway `docker run` naming the clone
+and the tree, or a reclaim Job over the PVC whose name carries the lease token. The driver does
+not ask the board for the thread any more: an earlier shape read `GET /api/jobs/:id/thread`
+after the verdict, which put the whole thread's commands, output and session ids on a route the
+worker token could reach — audit data of jobs the driver never held — and computing the answer
+at the verdict moment also closes a race the read had: a follow-up inserted between the verdict
+and the read made the thread non-terminal at the last possible moment, where the verdict-moment
+answer is final. A follow-up still queued, parked, or running keeps `threadTerminal` false and
+the tree in place; a follow-up created after the reclaim simply recreates the tree on the
+surviving `factory/<root>` branch the next time it syncs. The reclaim deletes only
+what the sync would have — a registered worktree of the clone, or the bare leftover directory
+the sync itself would have removed — and REFUSES, like the sync, a path that holds a git tree
+that is not this clone's worktree, logging the reason rather than touching it. It is
+best-effort by contract: the verdict is already on the board when it runs, so a board that
+refuses the complete call, a runner that refuses the tree, or a daemon that says no costs the
+reclaim, never the verdict — the tree stays and the branch survives for a later follow-up. Who
+reclaims: the driver's last completing attempt. Deleting a task by hand is covered because the
+board's `done` action and the driver's verdict both land on the same terminal statuses.
 
 **The claim's gates answer is re-read after the sync.** The board reads `.bellows.yaml` at CLAIM
 time, which is before the sync — so the claim's answer can predate the tree the run will see,
