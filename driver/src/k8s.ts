@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, OUTPUT_LIMIT, reportTail, workspacePathOf } from './docker.js';
-import type { RunOutcome, RunSession, Runner } from './docker.js';
+import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, SESSION_ID, workspacePathOf } from './docker.js';
+import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
 import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
@@ -181,15 +181,50 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // telemetry flowing wherever a runtime can reach it.
     env.push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: config.otelEndpoint });
 
-    // The argv the docker runner puts after the image name, unchanged: the executor image's
-    // ENTRYPOINT is the same claude wrapper, so the platform below the container is the only
-    // difference. `--resume` keeps the original session id, and the command is NOT re-delivered —
-    // it is already in the transcript. A follow-up is the exception, on this platform exactly as
-    // on docker: its command is the new adjustment, and it goes into the restored transcript.
-    const deliver = !session.resume || job.followUp;
-    const args: string[] = [session.resume ? '--resume' : '--session-id', session.id];
-    if (config.skipPermissions) args.push('--dangerously-skip-permissions');
-    if (deliver) args.push('-p', job.command);
+    // opencode persists its session database under XDG_DATA_HOME, and a fresh container starts
+    // with an empty one — pointing it at the member's own tree on the workspaces PVC is what
+    // makes a follow-up's `--session <id>` resumable at all, exactly as the docker runner's env
+    // does (docker.ts). A path literal like WORKDIR, never a credential.
+    if (config.cli === 'opencode') {
+        env.push({ name: 'XDG_DATA_HOME', value: `${config.workspaceMount}/${path}/.opencode` });
+    }
+
+    // The argv each CLI speaks. The docker runner composes the same two shapes in dockerArgs —
+    // the ENTRYPOINT of either executor image receives exactly these arguments after the image
+    // name, so the platform below the container is the only difference.
+    let args: string[];
+    if (config.cli === 'opencode') {
+        // Headless only, and opencode mints its own session ids: a fresh run is `run <command>`
+        // with no session at all, and a follow-up is `run --session <id> <command>` — the
+        // session opencode ITSELF created on the earlier run, persisted via XDG_DATA_HOME above.
+        // Restoring a session for anything but a follow-up would deliver nothing into the run
+        // and idle it to the deadline; the loop refuses that state first, and this is the
+        // runner asserting it too, exactly as dockerArgs does.
+        if (session && !job.followUp) {
+            throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
+        }
+        args = ['run'];
+        if (session) {
+            if (!SESSION_ID.test(session.id)) {
+                throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
+            }
+            args.push('--session', session.id);
+        }
+        args.push(job.command);
+    } else {
+        // The claude-code argv: `--resume` keeps the original session id, and the command is NOT
+        // re-delivered — it is already in the transcript. A follow-up is the exception, on this
+        // platform exactly as on docker: its command is the new adjustment, and it goes into the
+        // restored transcript. It goes last, so a command that looks like a flag is still read
+        // as a prompt.
+        if (!session) {
+            throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
+        }
+        const deliver = !session.resume || job.followUp;
+        args = [session.resume ? '--resume' : '--session-id', session.id];
+        if (config.skipPermissions) args.push('--dangerously-skip-permissions');
+        if (deliver) args.push('-p', job.command);
+    }
 
     return {
         apiVersion: 'batch/v1',
@@ -490,6 +525,63 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
  * with a fragment of a shell command.
  */
 const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The close-time opencode session readout under kubernetes: the same script docker runs in a
+ * throwaway container (opencode-readout.cjs, passed by content), as one aux Job over the PVC.
+ * The database path travels as an env VALUE — the script is static, so nothing board-derived is
+ * ever part of its text. The mount is READ-WRITE on purpose, unlike the bellows readout's:
+ * opening a sqlite database whose WAL needs recovery has to write the recovery, and the run
+ * that died mid-checkpoint is exactly the readout this exists for. The docker readout mounts
+ * the same volume read-write for the same reason.
+ */
+const OPENCODE_READOUT_DEADLINE_SECONDS = 120;
+
+export const opencodeReadoutJobName = (job: BoardJob): string =>
+    `factory-ocread-${hash8(`${job.id}|${job.leaseToken}`)}`;
+
+export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
+    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
+        throw new Error(
+            `refusing to read the opencode session database for job ${job.id}: ` +
+                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+        );
+    }
+    const jobName = opencodeReadoutJobName(job);
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: jobName, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            name: 'opencode-readout',
+                            image: config.image,
+                            imagePullPolicy: config.imagePullPolicy,
+                            command: ['node', '-e', opencodeReadoutScript],
+                            env: [{ name: 'OPENCODE_DB', value: opencodeDbPath(config, job) }],
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                        },
+                    ],
+                    volumes: [
+                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+                    ],
+                },
+            },
+        },
+    };
+}
 
 /**
  * The startup sync (issue #35), ported: the docker runner creates the task worktree by running
@@ -1123,6 +1215,98 @@ export function createKubernetesRunner(
     };
 
     /**
+     * The close-time opencode session scrape, as a Job: the same read the docker runner performs
+     * with a throwaway container after the run's close, against the database the run persisted on
+     * the PVC. NEVER throws — the scrape is the run's follow-up-ability, finish reason and
+     * context vitals, and a failed read is not a failed run: the docker runner answers the same
+     * failures with an `error` line and its verdict intact. Like docker, the caller retries —
+     * the CLI exited a moment ago and the database may still be mid-checkpoint, so an empty or
+     * failed answer reads as "not yet", whatever the reason.
+     */
+    const scrapeOpencodeSession = async (job: BoardJob): Promise<OpencodeRunOutcome> => {
+        const fail = (error: string): OpencodeRunOutcome => ({
+            sessionId: null,
+            finishReason: null,
+            contextTokens: null,
+            costUsd: null,
+            error,
+        });
+        let spec: AuxJobSpec;
+        try {
+            spec = opencodeReadoutJobSpec(config, job);
+        } catch (e) {
+            return fail((e as Error).message);
+        }
+        const jobName = spec.metadata.name;
+        try {
+            const created = await request('POST', jobsPath(config.k8sNamespace), spec);
+            if (created.status >= 300) {
+                return fail(`creating the session readout answered ${created.status}: ${created.body.slice(0, 200)}`);
+            }
+            let failures = 0;
+            for (;;) {
+                let response: K8sResponse;
+                try {
+                    response = await request('GET', jobPath(config.k8sNamespace, jobName));
+                } catch (e) {
+                    if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) return fail((e as Error).message);
+                    await sleep(POLL_MS);
+                    continue;
+                }
+                if (response.status === 404) return fail(`the session readout ${jobName} no longer exists`);
+                if (response.status === 429 || response.status >= 500) {
+                    if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                        return fail(
+                            `reading the session readout answered ${response.status} ` +
+                                `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                        );
+                    }
+                    await sleep(POLL_MS);
+                    continue;
+                }
+                if (response.status >= 300) return fail(`reading the session readout answered ${response.status}`);
+                failures = 0;
+                const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+                if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) {
+                    if ((status.failed ?? 0) >= 1) {
+                        return fail('the session readout job failed — its own deadline is its bound');
+                    }
+                    break;
+                }
+                await sleep(POLL_MS);
+            }
+            let pods: K8sResponse;
+            let log: K8sResponse;
+            try {
+                pods = await readVerdict(
+                    `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+                    'listing the session readout pods',
+                );
+                if (pods.status >= 300) {
+                    return fail(`listing the session readout pods answered ${pods.status}`);
+                }
+                const pod = parse<K8sPodList>(pods.body).items?.find(
+                    (item) => !item.metadata?.deletionTimestamp,
+                );
+                if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
+                log = await readVerdict(
+                    `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log`,
+                    'reading the session readout log',
+                );
+                if (log.status >= 300) return fail(`reading the session readout's log answered ${log.status}`);
+            } catch (e) {
+                return fail((e as Error).message);
+            }
+            return parseOpencodeRunOutcome(log.body);
+        } finally {
+            void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
+                () => undefined,
+                () => undefined,
+            );
+        }
+    };
+
+    /**
      * Best-effort delete of THIS attempt's own Job — by its own attempt-scoped name, which is
      * what keeps it from ever reaching another attempt's objects. Used by the claim verifies
      * around the Job POST: a run that cannot prove the checkout is still its own must not leave a
@@ -1556,9 +1740,9 @@ export function createKubernetesRunner(
             await teardownServices(job);
         },
 
-        // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session
-        // is an opencode job, which this executor does not carry. Mirrors the docker runner's
-        // own refusal of a sessionless claude-code run.
+        // Both CLIs carry: claude-code with a minted session, opencode headless with none (the
+        // session the run uses is scraped at close — see run0). The claude-code null-session
+        // refusal lives in runnerJobSpec and in run0's pre-fence check below.
         async run(job: BoardJob, session: RunSession, onOutput?: (tail: string) => void) {
             /*
              * Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed
@@ -1603,10 +1787,11 @@ export function createKubernetesRunner(
             onOutput: ((tail: string) => void) | undefined,
             cleanup: RunCleanup,
         ): Promise<RunOutcome> {
-            // The kubernetes runner speaks claude-code only, like its RunnerJobSpec: a null session
-            // is an opencode job, which this executor does not carry. Mirrors the docker runner's
-            // own refusal of a sessionless claude-code run.
-            if (!session) {
+            // A null session is an opencode job under this executor — a fresh headless run, the
+            // same shape the docker runner carries (dockerArgs). Under claude-code every job is
+            // a session, and one arriving without is refused here, BEFORE the fence takes the
+            // checkout — the same early refusal the docker loop makes.
+            if (!session && config.cli !== 'opencode') {
                 throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
             }
             await prepare(job, cleanup);
@@ -1829,7 +2014,44 @@ export function createKubernetesRunner(
             // whatever the code — started is true even at 125, which is a perfectly ordinary exit
             // status for a shell or an agent CLI. The env Secret went with the run above — the
             // pod read it by now, and the wrapper's finally has removed it.
-            return { exitCode, output, timedOut, idled: false, started: true };
+            const outcome: RunOutcome = { exitCode, output, timedOut, idled: false, started: true };
+
+            /*
+             * opencode mints its own session id, so the loop had none to report at spawn — this
+             * is where it comes from instead: one throwaway Job over the PVC, one read-only query
+             * against the database the run just closed. The same read answers HOW the run's last
+             * message ended — a zero exit code with a finish reason that is not `stop` is the
+             * model's context limit (or an abort) cutting a task short, which only the session
+             * database knows. A failed read is not a failed run: it costs the task its follow-ups
+             * and this verdict-check, not its verdict. Three tries, half a second apart, exactly
+             * as the docker runner scrapes — the CLI exited a moment ago, and the database may
+             * still be mid-checkpoint, which an answer of "no session yet" says without naming.
+             */
+            if (config.cli === 'opencode') {
+                let scraped: OpencodeRunOutcome = {
+                    sessionId: null,
+                    finishReason: null,
+                    contextTokens: null,
+                    costUsd: null,
+                    error: null,
+                };
+                let reason: string | null = null;
+                for (let attempt = 0; attempt < 3 && !scraped.sessionId; attempt += 1) {
+                    if (attempt > 0) await sleep(500);
+                    scraped = await scrapeOpencodeSession(job);
+                    reason = scraped.error ?? reason;
+                }
+                if (scraped.sessionId) {
+                    outcome.sessionId = scraped.sessionId;
+                    if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
+                    if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
+                    if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+                } else {
+                    outcome.readoutError =
+                        reason ?? 'the readout answered nothing (no session in the database)';
+                }
+            }
+            return outcome;
         },
 
         // The publish steps are sibling containers over a named docker volume — the one feature

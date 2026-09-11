@@ -301,18 +301,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     const servicesEnabled = flag(env.RUNNER_SERVICES);
 
-    // And the last impossible pair. The kubernetes runner speaks claude-code only — its Job spec is
-    // `--session-id`/`--resume` argv — while an opencode job arrives with no session at all.
-    // Allowed, the first claim would burn an attempt on the runner's own refusal, and the job would
-    // die looking like a command that keeps failing rather than like the configuration error it is.
-    if (cli === 'opencode' && executor === 'kubernetes') {
-        throw new Error(
-            'RUNNER_CLI=opencode is not supported under EXECUTOR=kubernetes: the kubernetes runner ' +
-                'runs every job as a claude-code session, and an opencode job carries none. Run ' +
-                'opencode runners on EXECUTOR=docker.',
-        );
-    }
-
     // An explicit enum, like EXECUTOR: the API server would reject a bad policy only at job-create
     // time, which is attempt-burning — the failure this whole loader exists to move to startup.
     const PULL_POLICIES = ['Always', 'IfNotPresent', 'Never'] as const;
@@ -323,15 +311,23 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     // The cache watch is opencode's — refused at startup rather than discovered mid-job. The
     // probe reads the opencode session database, whose message rows record per-turn input and
-    // cache tokens; a claude-code transcript answers nothing to the query. No kubernetes refusal
-    // is needed: the watch requires opencode, and opencode under the kubernetes executor is
-    // already refused above — an armed watch is docker by composition.
+    // cache tokens; a claude-code transcript answers nothing to the query. And it stays
+    // docker-only: each tick is one throwaway container on an already-warm daemon, while the
+    // kubernetes equivalent would be a Job per tick — pod admission every poll period is a tax
+    // no watch is worth paying the cluster.
     const cacheWatch = flag(env.RUNNER_CACHE_WATCH);
     if (cacheWatch && cli === 'claude-code') {
         throw new Error(
             'RUNNER_CACHE_WATCH is not supported under RUNNER_CLI=claude-code: the watch reads the ' +
                 'opencode session database, which records per-turn input and cache tokens. Only ' +
                 'RUNNER_CLI=opencode runs can be watched.',
+        );
+    }
+    if (cacheWatch && executor === 'kubernetes') {
+        throw new Error(
+            'RUNNER_CACHE_WATCH is not supported under EXECUTOR=kubernetes: each watch tick is one ' +
+                'throwaway container on the docker daemon, and a Job per tick would put the cluster ' +
+                'under pod-admission load no watch is worth. Run the cache watch on EXECUTOR=docker.',
         );
     }
 

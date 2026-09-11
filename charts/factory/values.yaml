@@ -102,6 +102,13 @@ driver:
     imagePullPolicy: IfNotPresent
     replicas: 1
     executorImage: claude-executor
+    # Which CLI the runner image speaks: claude-code's `--session-id`/`-p` form, or opencode's
+    # headless `run [--session <id>] <command>`. Switching this to opencode requires switching
+    # executorImage too — an image that does not speak RUNNER_CLI's dialect is a mismatch nothing
+    # guards against. Under opencode the runner persists session databases on the workspaces
+    # volume and scrapes the session id at close; Remote Control and skip-permissions are
+    # refused at startup (opencode takes its permissions from the config baked into its image).
+    runnerCli: claude-code
     # Every number below is an environment variable, quoted so helm cannot stringify one of them
     # into scientific notation (`1.8e+06` parses as an integer nowhere).
     concurrency: '2'

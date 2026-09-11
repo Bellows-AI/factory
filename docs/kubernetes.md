@@ -197,10 +197,23 @@ kind walkthrough. Decisions that look like cruft and are not:
 
 Refused combinations, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_REMOTE_CONTROL=1` — Remote
 Control needs a tty held open, an auth volume and an idle-parking loop that only the docker runner
-has; and `EXECUTOR=kubernetes` + `RUNNER_CLI=opencode` — the Job spec is the claude-code argv
-(`--session-id`/`--resume`) and the session scrape after a run is a throwaway docker container
-over the workspaces volume, neither of which this runner has an opencode form for. The
-alternative to refusing either was a driver that claims jobs and burns attempts running nothing.
+has; and `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each watch tick is one throwaway
+container on the docker daemon, and the kubernetes form would be a Job per tick, pod admission
+every poll period. The alternative to refusing either was a driver that claims jobs and burns
+attempts running nothing.
+
+**opencode runs under this executor** (with `RUNNER_CLI=opencode` and an image that speaks it):
+the runner Job's argv is opencode's headless form — `run [--session <id>] <command>`, no session
+minted by the driver — and the Job carries `XDG_DATA_HOME=<mount>/<org>/<user>/.opencode` so the
+session database persists on the workspaces PVC, which is what makes a follow-up's `--session`
+resumable at all. The close-time session scrape is the docker readout as an aux Job: the
+`opencode-readout.cjs` script passed by content to `node -e` over a READ-WRITE PVC mount — the
+database path as an env value, the mount read-write because a WAL needing recovery has to write —
+polled to terminal and read from its pod log, its JSON line parsed into the outcome the same way
+`parseOpencodeRunOutcome` does on docker. A failed scrape never fails the verdict: the session id,
+finish reason and context stats are the run's follow-up-ability, not its work. What stays
+unported for opencode here is what stays unported for claude-code: publish (`publishGit` is a
+sibling-container feature), and the cache watch above.
 
 ## Gates and services on this platform
 

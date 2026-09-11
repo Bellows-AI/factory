@@ -16,6 +16,8 @@ import {
     gateJobSpec,
     jobPath,
     jobsPath,
+    opencodeReadoutJobName,
+    opencodeReadoutJobSpec,
     runnerJobSpec,
     reclaimJobName,
     reclaimJobSpec,
@@ -3701,5 +3703,231 @@ describe('the kubernetes services flow', () => {
             return servicesFake().request(method, path, body);
         };
         await expect(servicesRunner(failing).run(job, { id: SESSION, resume: false })).rejects.toThrow();
+    });
+});
+
+/**
+ * RUNNER_CLI=opencode under EXECUTOR=kubernetes: the same `run [--session <id>] <command>` argv
+ * the docker runner composes, a session database persisted on the PVC, and the close-time
+ * session scrape as an aux Job. The spec tests pin the shapes; the runner tests pin that the
+ * scrape rides the run's outcome the way docker's verdict does.
+ */
+describe('the runner job spec under opencode', () => {
+    const ocConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace });
+
+    it('runs a fresh job headless, with no session argv at all', () => {
+        const spec = runnerJobSpec(ocConfig, job, null);
+        const container = spec.spec.template.spec.containers[0];
+        expect(container.args).toEqual(['run', 'fix the failing build']);
+    });
+
+    it('restores a follow-up session with run --session, the id the CLI itself minted', () => {
+        const spec = runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'ses_abc123', resume: true });
+        const container = spec.spec.template.spec.containers[0];
+        expect(container.args).toEqual(['run', '--session', 'ses_abc123', 'fix the failing build']);
+    });
+
+    it('persists the session database on the workspaces volume, under the member tree', () => {
+        const spec = runnerJobSpec(ocConfig, job, null);
+        const xdg = spec.spec.template.spec.containers[0].env.find((e) => e.name === 'XDG_DATA_HOME');
+        expect(xdg).toEqual({
+            name: 'XDG_DATA_HOME',
+            value: `/workspaces/bellows/${USER}/.opencode`,
+        });
+        // A value, not a secretKeyRef — a path like WORKDIR, never a credential.
+        expect(xdg?.valueFrom).toBeUndefined();
+    });
+
+    it('never sets XDG_DATA_HOME for claude-code, whose sessions are not file-persisted', () => {
+        const spec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job, {
+            id: SESSION,
+            resume: false,
+        });
+        expect(spec.spec.template.spec.containers[0].env.some((e) => e.name === 'XDG_DATA_HOME')).toBe(false);
+    });
+
+    it('refuses to restore a session for anything but a follow-up, as dockerArgs does', () => {
+        expect(() => runnerJobSpec(ocConfig, job, { id: 'ses_abc123', resume: true })).toThrow(
+            /restores a session only for a follow-up/,
+        );
+    });
+
+    it('refuses a session id that is not a safe token, before it reaches argv', () => {
+        expect(() =>
+            runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'bad id; rm -rf', resume: true }),
+        ).toThrow(/not a safe token/);
+    });
+});
+
+describe('the opencode session readout job', () => {
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace });
+
+    it('runs the readout script by content, with the database path as an env value', () => {
+        const spec = opencodeReadoutJobSpec(config, job);
+        const container = spec.spec.template.spec.containers[0];
+        expect(spec.metadata.name).toBe(opencodeReadoutJobName(job));
+        expect(spec.metadata.name).toMatch(/^factory-ocread-/);
+        expect(container.command).toEqual(['node', '-e', expect.stringContaining('node:sqlite')]);
+        expect(container.env).toEqual([
+            {
+                name: 'OPENCODE_DB',
+                value: `/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+            },
+        ]);
+    });
+
+    it('mounts the workspaces volume READ-WRITE: a WAL needing recovery has to write it', () => {
+        const spec = opencodeReadoutJobSpec(config, job);
+        expect(spec.spec.template.spec.containers[0].volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: '/workspaces' },
+        ]);
+        expect(spec.spec.template.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined();
+    });
+
+    it('bounds itself with a deadline of its own and reaps its pod', () => {
+        const spec = opencodeReadoutJobSpec(config, job);
+        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+        expect(spec.spec.backoffLimit).toBe(0);
+        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
+    });
+
+    it('refuses a job whose workspace path it cannot assert', () => {
+        expect(() => opencodeReadoutJobSpec(config, { ...job, workspacePath: null })).toThrow(/workspace path/);
+    });
+});
+
+describe('the kubernetes runner under opencode', () => {
+    const ocreadName = opencodeReadoutJobName(job);
+    const ocreadPod = `${ocreadName}-pod`;
+    const ns = `/api/v1/namespaces/${namespace}`;
+
+    const ok = (body: unknown) => Promise.resolve({ status: 200, body: JSON.stringify(body) });
+
+    /**
+     * A router scripted for one opencode run: the runner Job goes terminal succeeded, the
+     * close-time readout Job runs and answers `readoutLog`. Every claim and teardown route
+     * answers the boring way. The calls list is the audit.
+     */
+    const opencodeFake = (readout: { status?: 'failed'; log?: string } = {}) => {
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (path === configmapsPath && method === 'POST') return Promise.resolve({ status: 201, body: '{}' });
+            if (path === claimPathFor(job.id) && method === 'GET') {
+                return ok({ metadata: { uid: 'u1' }, data: { holder: job.leaseToken, attempt: String(job.attempts) } });
+            }
+            if (path === claimPathFor(job.id) && method === 'DELETE') {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path.startsWith(`${jobsPath(namespace)}?`)) return ok({ items: [] });
+            if (path.startsWith(`${ns}/pods?`) && decodeURIComponent(path).includes('factory.job=')) {
+                return ok({ items: [] });
+            }
+            if (path.startsWith(`${ns}/services?`) || path.startsWith(`${ns}/services/`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            if (path === jobsPath(namespace) && method === 'POST') {
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (path === jobPath(namespace, containerName(job))) {
+                return ok({ status: { succeeded: 1 } });
+            }
+            if (path === jobPath(namespace, ocreadName)) {
+                return ok(readout.status === 'failed' ? { status: { failed: 1 } } : { status: { succeeded: 1 } });
+            }
+            if (path.startsWith(`${ns}/pods?`) && decodeURIComponent(path).includes(`job-name=${containerName(job)}`)) {
+                return ok({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                        },
+                    ],
+                });
+            }
+            if (path.startsWith(`${ns}/pods?`) && decodeURIComponent(path).includes(`job-name=${ocreadName}`)) {
+                return ok({ items: [{ metadata: { name: ocreadPod } }] });
+            }
+            if (path === `${ns}/pods/${podName}/log`) return Promise.resolve({ status: 200, body: 'did the work\n' });
+            if (path === `${ns}/pods/${ocreadPod}/log`) {
+                return Promise.resolve({ status: 200, body: readout.log ?? '' });
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        return { request, calls };
+    };
+
+    const ocRunner = (request: K8sRequest) =>
+        createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace }),
+            request,
+            async () => {},
+        );
+
+    it('scrapes the session the run minted, and rides it on the outcome', async () => {
+        const { request, calls } = opencodeFake({
+            log: JSON.stringify({ id: 'ses_n3w', finish: 'stop', tokens: 4321, cost: 0.12 }),
+        });
+        const outcome = await ocRunner(request).run(job, null);
+
+        expect(outcome.sessionId).toBe('ses_n3w');
+        expect(outcome.finishReason).toBe('stop');
+        expect(outcome.contextTokens).toBe(4321);
+        expect(outcome.costUsd).toBeCloseTo(0.12);
+        expect(outcome.readoutError).toBeUndefined();
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome.started).toBe(true);
+
+        // The readout Job was created, read, and reaped — after the runner Job existed.
+        const created = calls.findIndex(
+            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName,
+        );
+        const deleted = calls.findIndex(
+            (c) => c.method === 'DELETE' && c.path?.startsWith(jobPath(namespace, ocreadName)),
+        );
+        expect(created).toBeGreaterThan(0);
+        expect(deleted).toBeGreaterThan(created);
+    });
+
+    it('retries the scrape while the database is mid-checkpoint, then reports the session', async () => {
+        let scrapeRuns = 0;
+        const { request } = opencodeFake();
+        const flaky: K8sRequest = (method, path, body) => {
+            // The readout pod's log is the scrape's answer: empty twice (the database was still
+            // mid-checkpoint — "no session yet"), then the session line.
+            if (path === `${ns}/pods/${ocreadPod}/log`) {
+                scrapeRuns += 1;
+                return Promise.resolve({
+                    status: 200,
+                    body: scrapeRuns < 3 ? '' : JSON.stringify({ id: 'ses_late', finish: 'stop' }),
+                });
+            }
+            return opencodeFake().request(method, path, body);
+        };
+        const outcome = await ocRunner(flaky).run(job, null);
+        expect(scrapeRuns).toBe(3);
+        expect(outcome.sessionId).toBe('ses_late');
+    });
+
+    it('fails no verdict when the scrape cannot run: the error rides readoutError instead', async () => {
+        const { request, calls } = opencodeFake({ status: 'failed' });
+        const outcome = await ocRunner(request).run(job, null);
+
+        // The run's own verdict is untouched; only the follow-up-ability was lost, said out loud.
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome.sessionId).toBeUndefined();
+        expect(outcome.readoutError).toContain('the session readout job failed');
+        // Retried to the end before giving up: three attempts, every one a POST of the readout.
+        const scrapePosts = calls.filter(
+            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName,
+        );
+        expect(scrapePosts.length).toBe(3);
+    });
+
+    it('scrapes nothing for a claude-code run, whose session is known at spawn', async () => {
+        const { request, calls } = opencodeFake({ log: 'irrelevant' });
+        await runner(request).run(job, { id: SESSION, resume: false });
+        expect(calls.some((c) => decodeURIComponent(c.path ?? '').includes('ocread'))).toBe(false);
+        expect(calls.some((c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name?.startsWith('factory-ocread-'))).toBe(false);
     });
 });

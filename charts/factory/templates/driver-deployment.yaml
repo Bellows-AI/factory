@@ -52,6 +52,11 @@ spec:
                                 fieldPath: metadata.namespace
                       - name: EXECUTOR
                         value: kubernetes
+                      # Which CLI the runner image speaks — claude-code, or opencode's headless
+                      # `run [--session <id>] <command>`. Read docs/jobs.md before switching it:
+                      # executorImage must speak the same dialect.
+                      - name: RUNNER_CLI
+                        value: {{ .Values.driver.runnerCli | quote }}
                       - name: EXECUTOR_IMAGE
                         value: {{ .Values.driver.executorImage | quote }}
                       # Runner pods pull like the driver's own: IfNotPresent, so a side-loaded

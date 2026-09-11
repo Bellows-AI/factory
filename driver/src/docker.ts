@@ -76,10 +76,10 @@ export interface RunOutcome {
     /**
      * The finish reason opencode recorded for the run's LAST root assistant message — `stop` for
      * a run that ended itself, `length` for one that hit the model's context limit mid-task.
-     * Undefined when no scrape happened (claude-code, kubernetes); null when the scrape ran but
-     * read nothing. A zero exit code with a finish reason that is not `stop` is a run that
-     * STOPPED TALKING, not one that finished — the loop reports it failed rather than letting
-     * the exit code call a truncated run a success.
+     * Undefined when no scrape happened (claude-code, or an opencode run whose scrape never
+     * ran); null when the scrape ran but read nothing. A zero exit code with a finish reason
+     * that is not `stop` is a run that STOPPED TALKING, not one that finished — the loop
+     * reports it failed rather than letting the exit code call a truncated run a success.
      */
     finishReason?: string | null;
     /**
@@ -96,13 +96,14 @@ export interface RunOutcome {
      * docker rejection, or null when it answered nothing at all. The loop logs it beside the
      * empty-scrape notice, because a lost session presents later as "this task cannot take a
      * follow-up" and the reason is the only way to tell a broken query from an empty database.
-     * Undefined for claude-code and kubernetes, which never scrape.
+     * Undefined for claude-code, which never scrapes.
      */
     readoutError?: string | null;
     /**
      * Why the cache watch killed the run, when it did — the observed turns, so the verdict the
      * author reads names what the provider stopped doing instead of just "failed". Undefined
-     * when the watch is off or never fired; never set by claude-code or kubernetes.
+     * when the watch is off or never fired; never set by claude-code, and the watch itself is
+     * docker-only (config refuses it under EXECUTOR=kubernetes).
      */
     cacheLost?: string | null;
 }
@@ -188,9 +189,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * uuids and opencode's `ses_…` both qualify, and nothing shell-shaped does. The id on a resume
  * claim comes from the board, and a board is not something this process trusts with a fragment of
  * a command. Copied from server/src/routes/jobs.ts, which states the same rule for the report:
- * this package depends on nothing, deliberately.
+ * this package depends on nothing, deliberately. Exported because the kubernetes runner asserts
+ * the same id before the same interpolation.
  */
-const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
+export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 
 /**
  * `<org>/<user id>` and nothing else, asserted before it is interpolated into a `docker run`.

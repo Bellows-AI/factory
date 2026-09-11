@@ -58,17 +58,17 @@ describe('RUNNER_CLI', () => {
         expect(() => loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '1' })).not.toThrow();
     });
 
-    // The kubernetes runner speaks claude-code only: its Job spec is `--session-id`/`--resume`
-    // argv, and an opencode job arrives with no session at all. Left runnable, every claim would
-    // burn an attempt on the runner's own refusal — discovered mid-job what the loader exists to
-    // catch at startup.
-    it('refuses the kubernetes executor under opencode', () => {
-        expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', EXECUTOR: 'kubernetes' })).toThrow(
-            /RUNNER_CLI=opencode.*EXECUTOR=kubernetes|EXECUTOR=kubernetes.*RUNNER_CLI=opencode/s,
-        );
-        // And each alone is fine — the refusal is about the pair, not either half.
-        expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode' })).not.toThrow();
-        expect(() => loadDriverConfig({ EXECUTOR: 'kubernetes' })).not.toThrow();
+    // The kubernetes runner carries opencode the same way the docker one does: `run
+    // [--session <id>] <command>` argv, a session database persisted on the workspaces volume,
+    // and the close-time scrape. The one refusal that remains is the cache watch's, which is
+    // about the watch's own platform cost, not the CLI pair.
+    it('loads under the kubernetes executor', () => {
+        const loaded = loadDriverConfig({ RUNNER_CLI: 'opencode', EXECUTOR: 'kubernetes' });
+        expect(loaded.cli).toBe('opencode');
+        expect(loaded.executor).toBe('kubernetes');
+        // Each half alone is fine too, as ever — the pair is not special.
+        expect(loadDriverConfig({ RUNNER_CLI: 'opencode' }).executor).toBe('docker');
+        expect(loadDriverConfig({ EXECUTOR: 'kubernetes' }).cli).toBe('claude-code');
     });
 });
 
@@ -101,13 +101,17 @@ describe('RUNNER_CACHE_WATCH', () => {
         expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1' })).not.toThrow();
     });
 
-    // No kubernetes refusal of its own: the watch requires opencode, and opencode under the
-    // kubernetes executor is already refused — the fundamental pair is the truer diagnosis, and
-    // an armed watch is docker by composition. Pinned so that composition survives a reorder.
-    it('stays unrepresentable under the kubernetes executor', () => {
+    // The watch stays docker-only on its own merits now: each tick is one throwaway container on
+    // a warm daemon, while the kubernetes form would be a Job per tick — pod admission every
+    // poll period, a tax no watch is worth paying the cluster. Pinned so the refusal survives a
+    // reorder of the config checks.
+    it('refuses the kubernetes executor, where every tick would be a Job', () => {
         expect(() =>
             loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1', EXECUTOR: 'kubernetes' }),
-        ).toThrow(/RUNNER_CLI=opencode is not supported under EXECUTOR=kubernetes/);
+        ).toThrow(/RUNNER_CACHE_WATCH.*EXECUTOR=kubernetes|EXECUTOR=kubernetes.*RUNNER_CACHE_WATCH/s);
+        // And each half alone is fine — the refusal is about the pair, not either half.
+        expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1' })).not.toThrow();
+        expect(() => loadDriverConfig({ RUNNER_CACHE_WATCH: '1' })).toThrow(/RUNNER_CLI=claude-code/);
     });
 
     // Remote Control needs no refusal of its own: it requires claude-code, and the claude-code

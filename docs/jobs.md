@@ -62,7 +62,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `JOB_BOARD_URL` | `http://127.0.0.1:8080` | Must be http(s); the scheme is checked, because `new URL('dashboard:8080')` parses. |
 | `JOB_BOARD_TOKEN` | unset | The worker token, from `npm run worker-token -- --name <worker>`. Required against a board running `AUTH_MODE=github`; unset against an open one, where the header is **omitted rather than sent empty** — an empty Bearer is a credential that failed, not one that was never offered. It is also how the board knows which organization this driver works for. |
 | `EXECUTOR_IMAGE` | `claude-executor` | The runner image. `opencode-executor` under `RUNNER_CLI=opencode`, unless set explicitly. |
-| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run [--session <id>] <prompt>`. Explicit enum. Under `opencode` no session is minted — the runner scrapes the id the run used and reports it at close — and Remote Control, skip-permissions and the kubernetes executor are refused at startup. |
+| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run [--session <id>] <prompt>`. Explicit enum. Under `opencode` no session is minted — the runner scrapes the id the run used and reports it at close — and Remote Control and skip-permissions are refused at startup. Both executors carry both CLIs; the cache watch is the one opencode feature that stays docker-only (see `RUNNER_CACHE_WATCH`). |
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, passed to both runners as `OTEL_EXPORTER_OTLP_ENDPOINT`. The default names the compose collector, so the endpoint is always provided — a runner's telemetry reaches the collector whether or not the compose network is there to make the baked image default resolve. The chart overrides it with the in-chart collector. |
@@ -240,8 +240,9 @@ provider state it names usually outlives a re-queue. First observed 2026-09-09 o
 model: cache served for fourteen turns, then stopped — turns went from ~25s to 2.5-4.5 minutes
 re-reading 63-84k tokens, and the run died on the timeout having explored and edited nothing.
 The watch is opencode-only (the message rows record per-turn cache tokens; a claude-code
-transcript answers nothing to the query), refused at startup under claude-code, docker-only and
-headless by composition — opencode refuses the kubernetes executor and Remote Control itself.
+transcript answers nothing to the query), refused at startup under claude-code, and docker-only:
+each tick is one throwaway container on a warm daemon, while the kubernetes form would be a Job
+per tick — pod admission every poll period, refused at startup under `EXECUTOR=kubernetes`.
 
 **`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own
