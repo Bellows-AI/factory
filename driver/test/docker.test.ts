@@ -259,6 +259,15 @@ describe('the board\'s environment', () => {
         expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
     });
 
+    it('drops a member CRED_HELPER from the claim env and the env file', () => {
+        // CRED_HELPER is the sync fetch's credential-helper CODE, a value the driver alone
+        // chooses; a member's `!` helper riding the claim env into the sync container would be
+        // member-controlled code execution, run by git as helper code.
+        const hijacked = { ...job, env: { CRED_HELPER: '!evil', OTHER: 'fine' } };
+        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
+        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
+    });
+
     it('forwards no board env to a Remote Control runner, and writes no env file for one', () => {
         // The same exclusion RUNNER_ENV obeys: a forwarded credential does not fail there, it
         // degrades the session in silence.
@@ -2603,6 +2612,13 @@ describe('publishing the produced work', () => {
         await runner.syncCheckout({ ...repoJob, env: { CORE_TOKEN: 'shh' } });
         const plain = calls.filter((a) => a[0] === 'run')[1]!;
         expect(plain.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+
+        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
+        // break the public-repo plain fetch it exists to preserve — and a private repo with an
+        // empty token fails auth either way. Property presence is not the test; the VALUE is.
+        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: '' } });
+        const empty = calls.filter((a) => a[0] === 'run')[2]!;
+        expect(empty.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
     });
 
     /*

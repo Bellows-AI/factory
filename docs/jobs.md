@@ -622,11 +622,20 @@ with `--autostash`, keeping its own commits AND any uncommitted edits the previo
 which is what makes a follow-up, which lands in this same tree by design, work whether or not
 the last run finished tidy, and what keeps a kubernetes thread (where nothing commits for you)
 alive across turns. The fetch's credential: the claim env rides the env file as before, and
-when it carries a `GITHUB_TOKEN` the fetch runs under the push's own token-backed credential
-helper (the helper CODE travels as an env value; the token itself only ever the env) — git
+when it carries a NON-EMPTY `GITHUB_TOKEN` (empty counts as absent — a helper answering an
+empty password would break the public-repo fetch it exists to preserve) the fetch runs under
+the push's own token-backed credential helper (the helper CODE travels as an env value;
+the token itself only ever the env) — git
 reads no token from the environment, so a private-repo fetch without a helper cannot
-authenticate; a public repo with no token keeps its plain unauthenticated fetch, which a
-helper answering an empty password would break. The sync is the first WRITER on the tree, so
+authenticate; a public repo with no token keeps its plain unauthenticated fetch. The helper
+is CONTEXT-FREE — it answers the token to whatever host or transport asks — so a credentialed
+fetch is fenced twice on the transport: origin must be an `https://` URL (the remote is the
+member tree's state and a prior session can re-point it; anything else refuses the sync with
+a named reason rather than send the token toward a cleartext or local transport), and the
+fetch carries `http.followRedirects=initial`, which permits same-host redirects only. `CRED_HELPER`,
+the env name carrying the helper code, is reserved from member configuration (see
+[env.md](env.md)) — the driver's own helper is the only possible one. The sync is the first
+WRITER on the tree, so
 each platform's re-claim
 fence runs inside the sync, before the script: docker sweeps the `factory.job` label's
 leftovers (the runner's own sweep after it is the documented twice-per-attempt idempotency),

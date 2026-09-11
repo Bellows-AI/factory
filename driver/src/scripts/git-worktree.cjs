@@ -9,11 +9,18 @@
 //   WORKTREE    — the task's own tree;
 //   BRANCH      — the branch the worktree runs on (`factory/<thread root id>`);
 //   CRED_HELPER — optional: the git credential-helper program the fetch runs (`-c
-//                 credential.helper=`), set only when the claim env carries GITHUB_TOKEN. The
-//                 token itself still arrives only via the environment, which git hands the
-//                 helper it spawns; git reads no token from the environment itself, so a
-//                 private-repo fetch without a helper cannot authenticate. Absent: the fetch
-//                 runs plain, which is what a public repo wants.
+//                 credential.helper=`), set only when the claim env carries a NON-EMPTY
+//                 GITHUB_TOKEN. The token itself still arrives only via the environment, which
+//                 git hands the helper it spawns; git reads no token from the environment
+//                 itself, so a private-repo fetch without a helper cannot authenticate. Absent:
+//                 the fetch runs plain, which is what a public repo wants. When set, the fetch
+//                 runs under two credential-safety rules, because this helper is CONTEXT-FREE —
+//                 it answers the token to whatever host or transport asks: origin must be an
+//                 https URL (read via `git remote get-url origin`; the remote is the member
+//                 tree's state, and a prior session can re-point it — anything else refuses the
+//                 sync rather than send the token toward a cleartext or local transport), and
+//                 the fetch carries `-c http.followRedirects=initial`, which permits same-host
+//                 redirects only, never a hop to another host or scheme.
 //
 // WORKTREE present: rebased onto the new default with --autostash, so a follow-up — which
 // lands in this same tree by design — works whether or not the previous run left uncommitted
@@ -46,8 +53,18 @@ const fail = (r) => {
 };
 
 try {
-    if (process.env.CRED_HELPER) git('-c', 'credential.helper=' + process.env.CRED_HELPER, 'fetch', 'origin', '--prune');
-    else git('fetch', 'origin', '--prune');
+    if (process.env.CRED_HELPER) {
+        const origin = git('remote', 'get-url', 'origin');
+        if (!origin.startsWith('https://')) {
+            fail(
+                'the credentialed fetch refuses origin ' + origin + ': the credential helper answers the token to ' +
+                    'whatever asks, so only an https origin may fetch with it — re-point origin at the https URL ' +
+                    'the clone was made from and re-run',
+            );
+            process.exit(0);
+        }
+        git('-c', 'credential.helper=' + process.env.CRED_HELPER, '-c', 'http.followRedirects=initial', 'fetch', 'origin', '--prune');
+    } else git('fetch', 'origin', '--prune');
     let def = 'main';
     try {
         def = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');

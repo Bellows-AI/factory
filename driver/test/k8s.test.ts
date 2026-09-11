@@ -550,6 +550,13 @@ describe('the worktree sync', () => {
         const noToken = syncJobSpec(cfg(), { ...repoJob, env: { CORE_TOKEN: 'shh' } }, 'the-secret')
             .spec.template.spec.containers[0];
         expect(noToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+
+        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
+        // break the public-repo plain fetch it exists to preserve — and a private repo with an
+        // empty token fails auth either way. Property presence is not the test; the VALUE is.
+        const emptyToken = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: '' } }, 'the-secret')
+            .spec.template.spec.containers[0];
+        expect(emptyToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
     });
 
     // An env-less claim is a supported board configuration (docs/jobs.md: AUTH_MODE=none, no

@@ -686,12 +686,20 @@ function workspacePath(job: BoardJob): string {
 
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
- * sets, TRUST_WORKDIR is the Remote Control trust answer, and the two BELLOWS_GATE_ names are the
- * ad-hoc gate credentials the loop mints per attempt — which a claim env must never carry.
+ * sets, TRUST_WORKDIR is the Remote Control trust answer, the two BELLOWS_GATE_ names are the
+ * ad-hoc gate credentials the loop mints per attempt, and CRED_HELPER is the credential-helper
+ * CODE the sync fetch runs — which a claim env must never carry. CRED_HELPER above all: a member
+ * value there is member-controlled code the sync container's git executes as helper code.
  * Mirrored at the board (RESERVED_ENV_NAMES in server/src/routes/env.ts, where a PUT is refused);
  * copied rather than imported, per this package's zero-dependency rule.
  */
-export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR', 'BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'] as const;
+export const RESERVED_ENV_NAMES = [
+    'WORKDIR',
+    'TRUST_WORKDIR',
+    'BELLOWS_GATE_URL',
+    'BELLOWS_GATE_TOKEN',
+    'CRED_HELPER',
+] as const;
 
 /**
  * The environment the board resolved for this job, minus the reserved names. Pure and exported for
@@ -711,14 +719,16 @@ export function claimEnv(job: BoardJob): Record<string, string> {
 }
 
 /**
- * Whether the claim env carries GITHUB_TOKEN — the condition under which the startup sync's
- * fetch is handed the credential-helper CODE. Git reads no token from the environment, and the
- * executor images ship no helper, so a private-repo fetch needs one; a public repo with no
+ * Whether the claim env carries a NON-EMPTY GITHUB_TOKEN — the condition under which the startup
+ * sync's fetch is handed the credential-helper CODE. Git reads no token from the environment, and
+ * the executor images ship no helper, so a private-repo fetch needs one; a public repo with no
  * token must keep its plain unauthenticated fetch, which a helper answering an empty password
- * would break. Shared with the kubernetes syncJobSpec, which embeds the same code as a literal.
+ * would break. A present-but-empty token therefore counts as no token: the helper would break the
+ * public-repo fetch it exists to preserve, and a private repo with an empty token fails auth
+ * either way, honestly. Shared with the kubernetes syncJobSpec, which embeds the same code as a
+ * literal.
  */
-export const claimCarriesGithubToken = (job: BoardJob): boolean =>
-    Object.prototype.hasOwnProperty.call(claimEnv(job), 'GITHUB_TOKEN');
+export const claimCarriesGithubToken = (job: BoardJob): boolean => Boolean(claimEnv(job).GITHUB_TOKEN);
 
 /**
  * One `NAME=value` line, refusing a newline in either half: the file is line-structured and docker

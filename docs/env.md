@@ -41,7 +41,11 @@ real value.
   paths to one working directory. `BELLOWS_GATE_URL` and `BELLOWS_GATE_TOKEN` are reserved the
   same way: they are the ad-hoc gate credentials the DRIVER mints per attempt (see
   [jobs.md](jobs.md)), and a member-configured value for either would be a claim telling the
-  runner to send its gate calls somewhere else.
+  runner to send its gate calls somewhere else. `CRED_HELPER` is reserved for a sharper reason:
+  it names the credential-helper CODE the startup sync's fetch executes (`-c credential.helper=`
+  hands the value to git as a program), so a member value there would be member-controlled code
+  running in the sync container — reserving the name is what makes the driver's own helper the
+  only possible one.
 - **`REPO`, `WORKTREE` and `BRANCH` are driver-owned inside the startup sync's container only**
   (issue #35): the sync's literal env names the clone, the task worktree and its branch, and the
   driver's literals win a collision on both platforms — docker's last `--env-file`/`-e` order and

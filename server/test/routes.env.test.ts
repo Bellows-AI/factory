@@ -259,6 +259,11 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the credential-helper code the driver passes the fetch',
+            { vars: [{ name: 'CRED_HELPER', value: '!evil', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'a null value on a non-secret',
             { vars: [{ name: 'PLAIN', value: null, isSecret: false }] },
             'BAD_VALUE',
