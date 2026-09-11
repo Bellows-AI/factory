@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
-import type { Claim, FollowUpRefusal, GateReport, Job, JobStatus, JobStore, LeaseResult, RuntimeVitals } from '../src/db/job-store.js';
+import type { Claim, FollowUpRefusal, GateReport, Job, JobStatus, JobStore, LeaseResult, ReclaimClaim, RemoveResult, RuntimeVitals, StopResult } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import { stubClient, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -27,6 +27,10 @@ interface StoreStub extends JobStore {
     markedDone: string[];
     gatesReported: { id: string; results: GateReport[] }[];
     gatesReread: { id: string }[];
+    stopped: string[];
+    removed: string[];
+    reclaimClaims: { worker: string; leaseSeconds: number }[];
+    reclaimAcks: { id: string; worker: string }[];
 }
 
 /**
@@ -48,6 +52,11 @@ function stubStore(
         followUp?: FollowUpRefusal;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
         reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
+        stop?: StopResult;
+        remove?: RemoveResult;
+        reclaimClaim?: ReclaimClaim | null;
+        ackReclaim?: 'ok' | 'lost' | 'missing';
+        heartbeatCancelRequested?: boolean;
     } = {},
 ): StoreStub {
     const boom = () => {
@@ -65,6 +74,10 @@ function stubStore(
         followUps: [],
         markedDone: [],
         gatesReported: [],
+        stopped: [],
+        removed: [],
+        reclaimClaims: [],
+        reclaimAcks: [],
         async suspend(id) {
             boom();
             stub.suspended.push(id);
@@ -102,7 +115,31 @@ function stubStore(
         async heartbeat() {
             boom();
             const result = options.verdict ?? 'ok';
-            return { result, leaseExpiresAt: result === 'ok' ? '2026-08-21T12:05:00.000Z' : null };
+            return {
+                result,
+                leaseExpiresAt: result === 'ok' ? '2026-08-21T12:05:00.000Z' : null,
+                cancelRequested: result === 'ok' ? (options.heartbeatCancelRequested ?? false) : false,
+            };
+        },
+        async stop(id) {
+            boom();
+            stub.stopped.push(id);
+            return options.stop ?? { result: 'parked' };
+        },
+        async removeThread(id) {
+            boom();
+            stub.removed.push(id);
+            return options.remove ?? { result: 'ok', rootJobId: ID, repo: null, workspacePath: null };
+        },
+        async claimReclaim(worker, leaseSeconds) {
+            boom();
+            stub.reclaimClaims.push({ worker, leaseSeconds });
+            return options.reclaimClaim ?? null;
+        },
+        async ackReclaim(id, worker) {
+            boom();
+            stub.reclaimAcks.push({ id, worker });
+            return options.ackReclaim ?? 'ok';
         },
         async session(id, _token, sessionId, remoteSessionId) {
             boom();
@@ -345,6 +382,16 @@ describe('POST /api/jobs/:id/heartbeat', () => {
         const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
         expect(response.statusCode).toBe(200);
         expect(response.json().leaseExpiresAt).toBe('2026-08-21T12:05:00.000Z');
+        expect(response.json().cancelRequested).toBe(false);
+    });
+
+    // The stop channel: the user's /stop stamped the row, and this beat delivers the request. The
+    // worker kills its runner and parks with suspend, which clears the stamp.
+    it('answers cancelRequested once a stop has been asked', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'ok', heartbeatCancelRequested: true }));
+        const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().cancelRequested).toBe(true);
     });
 
     // The only signal a superseded worker gets. The driver kills the container on this.
@@ -684,6 +731,187 @@ describe('parking and resuming', () => {
     });
 });
 
+describe('POST /api/jobs/:id/stop', () => {
+    // A queued job never started, so parking it IS stopping it — nothing needs to be aborted and
+    // the session (there is none yet) is untouched. The task stays resumable.
+    it('parks a queued task directly', async () => {
+        const store = stubStore({ stop: { result: 'parked' } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, status: 'standby' });
+        expect(store.stopped).toEqual([ID]);
+    });
+
+    it('parks an already-parked task idempotently', async () => {
+        const store = stubStore({ stop: { result: 'parked' } });
+        const instance = await harnessWith(store);
+
+        expect((await post(instance, `/api/jobs/${ID}/stop`, {})).statusCode).toBe(200);
+        expect((await post(instance, `/api/jobs/${ID}/stop`, {})).statusCode).toBe(200);
+        expect(store.stopped).toEqual([ID, ID]);
+    });
+
+    // A running task keeps running until the worker parks it — the request RIDES the heartbeat —
+    // and the 202 says so with the request's timestamp.
+    it('asks a running task\'s worker to stop, answering 202 with the request', async () => {
+        const instance = await harnessWith(
+            stubStore({ stop: { result: 'requested', cancelRequestedAt: '2026-08-21T12:05:00.000Z' } }),
+        );
+        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
+        expect(response.statusCode).toBe(202);
+        expect(response.json()).toEqual({
+            id: ID,
+            status: 'running',
+            cancelRequestedAt: '2026-08-21T12:05:00.000Z',
+        });
+    });
+
+    it('refuses a finished task, naming its status', async () => {
+        const instance = await harnessWith(stubStore({ stop: { result: 'conflict', status: 'succeeded' } }));
+        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('NOT_STOPPABLE');
+        expect(response.json().status).toBe('succeeded');
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ stop: 'missing' }));
+        expect((await post(instance, `/api/jobs/${ID}/stop`, {})).statusCode).toBe(404);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id', async () => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, '/api/jobs/nope/stop', {})).statusCode).toBe(400);
+    });
+});
+
+describe('POST /api/jobs/:id/remove', () => {
+    it('removes the thread', async () => {
+        const store = stubStore({ remove: { result: 'ok', rootJobId: ID, repo: 'acme/web', workspacePath: 'test-org/user-7' } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/remove`, {});
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, removed: true });
+        expect(store.removed).toEqual([ID]);
+    });
+
+    // The thread's worktree is a live runner's checkout; removal must not tear it out from under
+    // the container. The user stops the task first.
+    it('refuses while any member is running', async () => {
+        const instance = await harnessWith(stubStore({ remove: 'conflict' }));
+        const response = await post(instance, `/api/jobs/${ID}/remove`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('TASK_RUNNING');
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ remove: 'missing' }));
+        expect((await post(instance, `/api/jobs/${ID}/remove`, {})).statusCode).toBe(404);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/remove`, {});
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id', async () => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, '/api/jobs/nope/remove', {})).statusCode).toBe(400);
+    });
+});
+
+describe('POST /api/reclaims/claim', () => {
+    const claim: ReclaimClaim = {
+        id: '55555555-5555-4555-8555-555555555555',
+        rootJobId: ID,
+        repo: 'acme/web',
+        workspacePath: 'test-org/user-7',
+        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+    };
+
+    it('hands the driver a reclaim with its work order and lease', async () => {
+        const instance = await harnessWith(stubStore({ reclaimClaim: claim }));
+        const response = await post(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(claim);
+    });
+
+    // The idle poll is the common case: recognisable without parsing a body, like the job claim.
+    it('answers 204 when the queue is empty', async () => {
+        const instance = await harnessWith(stubStore({ reclaimClaim: null }));
+        const response = await post(instance, '/api/reclaims/claim', { worker: 'w1' });
+        expect(response.statusCode).toBe(204);
+        expect(response.body).toBe('');
+    });
+
+    it('requires a worker id and a sane lease window', async () => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, '/api/reclaims/claim', {})).statusCode).toBe(400);
+        expect((await post(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 0 })).statusCode).toBe(400);
+    });
+
+    it('answers 503 when the store is down', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, '/api/reclaims/claim', { worker: 'w1' });
+        expect(response.statusCode).toBe(503);
+    });
+});
+
+describe('POST /api/reclaims/:id/ack', () => {
+    const RECLAIM_ID = '55555555-5555-4555-8555-555555555555';
+
+    it('acks the reclaim in the driver\'s name', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w1' });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: RECLAIM_ID });
+        expect(store.reclaimAcks).toEqual([{ id: RECLAIM_ID, worker: 'w1' }]);
+    });
+
+    // The lease guard: only the worker holding the claim may ack it. A foreign ack is refused, so
+    // a slow worker's row survives and finishes on its next try.
+    it('refuses a foreign worker', async () => {
+        const instance = await harnessWith(stubStore({ ackReclaim: 'lost' }));
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w2' });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('LEASE_LOST');
+    });
+
+    it('answers 404 for a reclaim that never existed', async () => {
+        const instance = await harnessWith(stubStore({ ackReclaim: 'missing' }));
+        expect((await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w1' })).statusCode).toBe(404);
+    });
+
+    it('refuses a malformed id or a missing worker', async () => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, '/api/reclaims/nope/ack', { worker: 'w1' })).statusCode).toBe(400);
+        expect((await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, {})).statusCode).toBe(400);
+    });
+
+    it('answers 503 when the store is down', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/reclaims/${RECLAIM_ID}/ack`, { worker: 'w1' });
+        expect(response.statusCode).toBe(503);
+    });
+});
+
 describe('POST /api/jobs/:id/follow-up', () => {
     // The executor is NOT taken from the body, even if a stale client sends one: the adjustment
     // is bound to the executor that ran the task, copied from the parent at insert.
@@ -910,6 +1138,7 @@ describe('GET /api/jobs', () => {
         executor: 'main',
         followUpTo: null,
         doneAt: null,
+        cancelRequestedAt: null,
         workspacePath: null,
         createdAt: '2026-08-21T12:00:00.000Z',
         startedAt: '2026-08-21T12:00:01.000Z',

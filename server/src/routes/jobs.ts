@@ -209,7 +209,11 @@ export const jobRoutes =
             if (beat.value.result === 'lost') {
                 return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
             }
-            return reply.code(200).send({ leaseExpiresAt: beat.value.leaseExpiresAt });
+            // `cancelRequested` is the stop channel: the user's /stop stamped the row, and this is
+            // the worker reading that it must park. False on every ordinary beat.
+            return reply
+                .code(200)
+                .send({ leaseExpiresAt: beat.value.leaseExpiresAt, cancelRequested: beat.value.cancelRequested });
         });
 
         // Reported separately from the completion, and not folded into the claim: the driver mints
@@ -481,6 +485,110 @@ export const jobRoutes =
                 return reply.code(409).send({ error: 'Task is not finished', code: 'NOT_FINISHED' });
             }
             return reply.code(200).send({ id, status: result.value.status, doneAt: result.value.doneAt });
+        });
+
+        // The user's stop. Two fates in one answer: a queued (or already parked) row is parked
+        // directly — there is no run to abort — while a running row is left running and stamped,
+        // and the WORKER parks it when its next heartbeat reports the stamp. Nothing is lost either
+        // way: standby keeps the session, so the task can be resumed, which is the whole point of
+        // stopping rather than killing. 202 for the moving case, because the request RIDES to the
+        // worker and the parking lands moments later.
+        app.post('/api/jobs/:id/stop', { bodyLimit: 4096 }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job stop failed'), () =>
+                store.stop(id),
+            );
+            if (!result.ok) return reply;
+            if (result.value === 'missing') {
+                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+            }
+            if (result.value.result === 'conflict') {
+                return reply.code(409).send({
+                    error: `Task is ${result.value.status} — nothing to stop`,
+                    code: 'NOT_STOPPABLE',
+                    status: result.value.status,
+                });
+            }
+            if (result.value.result === 'requested') {
+                return reply
+                    .code(202)
+                    .send({ id, status: 'running', cancelRequestedAt: result.value.cancelRequestedAt });
+            }
+            return reply.code(200).send({ id, status: 'standby' });
+        });
+
+        // The user's remove: the thread is gone and a worktree reclaim is queued. Person-gated like
+        // every job write here, not just because the driver has no use for it — a worker token
+        // deleting the audit rows of jobs it never held would be exactly the thread-read hole again.
+        app.post('/api/jobs/:id/remove', { bodyLimit: 4096 }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job remove failed'), () =>
+                store.removeThread(id),
+            );
+            if (!result.ok) return reply;
+            if (result.value === 'missing') {
+                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+            }
+            if (result.value === 'conflict') {
+                return reply
+                    .code(409)
+                    .send({ error: 'The task is still running — stop it first', code: 'TASK_RUNNING' });
+            }
+            return reply.code(200).send({ id, removed: true });
+        });
+
+        // The driver's poll of the worktree-reclaim queue: the rows POST /remove left behind for
+        // worktrees no live driver holds a lease on. Claim and ack are the worker routes the job
+        // claim/complete are, and the body matches: the worker name is required (it is queued for
+        // exactly this claim), and an idle poll answers 204 rather than a parsed null.
+        app.post('/api/reclaims/claim', { bodyLimit: 4096 }, async (request, reply) => {
+            const { worker, leaseSeconds: requested } = body(request.body);
+            if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
+                return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
+            }
+            const lease = leaseSeconds(requested);
+            if (lease === null) {
+                return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
+            }
+
+            const claim = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'reclaim claim failed'),
+                () => store.claimReclaim(worker, lease),
+            );
+            if (!claim.ok) return reply;
+            if (claim.value === null) return reply.code(204).send();
+            return reply.code(200).send(claim.value);
+        });
+
+        // The driver's proof that a parked worktree is gone. Only the worker that holds the claim
+        // may ack it, so a slow worker's row survives a foreign ack and finishes on its next try.
+        app.post('/api/reclaims/:id/ack', { bodyLimit: 4096 }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const { worker } = body(request.body);
+            if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
+                return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
+            }
+
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'reclaim ack failed'),
+                () => store.ackReclaim(id, worker),
+            );
+            if (!result.ok) return reply;
+            if (result.value === 'missing') {
+                return reply.code(404).send({ error: 'No such reclaim', code: 'NOT_FOUND' });
+            }
+            if (result.value === 'lost') {
+                return reply.code(409).send({ error: 'Reclaim is not yours', code: 'LEASE_LOST' });
+            }
+            return reply.code(200).send({ id });
         });
 
         // The worker's verdict that the run is over. The 200 body carries `threadTerminal` — the
