@@ -38,7 +38,7 @@ POST /api/jobs/:id/resume   {}                  -> queued, claimed again with re
 
 **Person-gated routes meet the same loop through the same states.** `POST /api/jobs/:id/stop`
 parks a task — queued or already-parked rows land on `standby` directly, a moving run answers
-`200 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the beat above,
+`202 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the beat above,
 kills its runner and suspends. `POST /api/jobs/:id/remove` deletes the whole thread and hands the
 driver the worktree to remove through a separate queue (see the sections below).
 

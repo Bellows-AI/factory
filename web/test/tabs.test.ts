@@ -207,6 +207,29 @@ describe('taskStatus', () => {
         expect(taskStatus('b', [job('a'), job('b', { followUpTo: 'a' }), newest])).toEqual(expected);
     });
 
+    it('falls back to the named run when its ancestors are outside the poll window', () => {
+        // The poll holds only the newest rows: a follow-up whose parent fell out of the window
+        // still carries its own live status, and the dot must not drop just because the root is
+        // no longer in the poll.
+        expect(taskStatus('b', [job('b', { followUpTo: 'a', status: 'running' })])).toEqual({
+            status: 'running',
+            cancelRequestedAt: null,
+            doneAt: null,
+        });
+    });
+
+    it('falls back to the newest member the window can still reach', () => {
+        // Root a fell out of the poll window; the segment the poll still holds is b <- c, so the
+        // newest reachable run c answers for the task, not a blank.
+        const window = [
+            job('b', { followUpTo: 'a' }),
+            job('c', { followUpTo: 'b', status: 'failed', doneAt: '2026-09-01T14:00:00.000Z' }),
+        ];
+        const expected = { status: 'failed', cancelRequestedAt: null, doneAt: '2026-09-01T14:00:00.000Z' };
+        expect(taskStatus('b', window)).toEqual(expected);
+        expect(taskStatus('c', window)).toEqual(expected);
+    });
+
     it('answers nothing about a task the poll does not know', () => {
         expect(taskStatus('nope', [job('a')])).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });
         expect(taskStatus('a', null)).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });

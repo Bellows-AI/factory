@@ -24,12 +24,27 @@ let sql: Sql;
 let store: JobStore;
 
 const ORG = 'test-org';
-const AUTHOR = 'user-7';
+
+/** A real account for created_by to point at — the workspace-path derivation reads it. Resolved in
+ * beforeAll: `created_by` is a uuid foreign key, so a literal login will not do. */
+let AUTHOR: string;
+
+/** Written directly rather than through the auth store, like the sibling suites: this file is about
+ * stop and remove, and a sign-in round trip would fail these cases for reasons foreign to them. */
+const account = async (githubUserId: number, login: string): Promise<string> => {
+    const [row] = await sql<{ id: string }[]>`
+        insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
+        on conflict (github_user_id) do update set github_login = excluded.github_login
+        returning id
+    `;
+    return row!.id;
+};
 
 beforeAll(async () => {
     if (!enabled) return;
     sql = postgres(url as string, { max: 8 });
     await migrate(sql, { orgId: ORG, attempts: 3 });
+    AUTHOR = await account(6101, 'stop-remove-cat');
     store = createJobStore({ sql, orgId: ORG });
 });
 
@@ -51,7 +66,7 @@ const craft = async (shape: {
     lease?: 'live' | 'expired';
     createdBy?: string | null;
     repo?: string | null;
-}): Promise<string> => {
+} = {}): Promise<string> => {
     const id = randomUUID();
     await sql`
         insert into job (org_id, id, command, status, parent_job_id, created_by, repo, lease_expires_at, created_at)
@@ -179,7 +194,7 @@ describe.skipIf(!enabled)('removing a task', () => {
         const root = await craft({ status: 'running', lease: 'live' });
         await craft({ parent: root, status: 'running', lease: 'live' });
 
-        expect(await store.removeThread(root)).toEqual({ result: 'conflict' });
+        expect(await store.removeThread(root)).toBe('conflict');
 
         expect(await store.thread(root)).not.toBeNull();
         expect(await store.claimReclaim('w1', 300)).toBeNull();
@@ -189,7 +204,7 @@ describe.skipIf(!enabled)('removing a task', () => {
         const root = await craft({ status: 'succeeded' });
         await craft({ parent: root, status: 'running', lease: 'live' });
 
-        expect(await store.removeThread(root)).toEqual({ result: 'conflict' });
+        expect(await store.removeThread(root)).toBe('conflict');
     });
 
     it('says missing when the id is not here', async () => {
@@ -212,7 +227,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
         expect(await store.claimReclaim('w1', 300)).toBeNull();
     });
 
-    it('hands the oldest row, oldest first, and leases only one at a time', async () => {
+    it('hands the oldest row, oldest first, one row per claim', async () => {
         const a = await craft();
         const b = await craft();
         await store.removeThread(a);
@@ -222,7 +237,29 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
         const second = await store.claimReclaim('w2', 300);
 
         expect(first).toMatchObject({ rootJobId: a });
-        expect(second).toBeNull();
+        expect(second).toMatchObject({ rootJobId: b });
+    });
+
+    it('re-leases by the expiry GRANTED to the holder, never by the polling worker\'s requested lease', async () => {
+        const a = await craft();
+        await store.removeThread(a);
+
+        const first = await store.claimReclaim('w1', 300);
+        expect(first).not.toBeNull();
+
+        // Twenty seconds into w1's 300-second lease — long past any 10-second lease, nowhere near
+        // its expiry. Backdated rather than slept: what decides is the persisted expiry, not the
+        // wall clock since claiming.
+        await sql`update task_reclaim set lease_expires_at = now() + interval '280 seconds' where id = ${first!.id}`;
+
+        // A poller asking for a 10-second lease must not inherit the row: the check reads the
+        // granted expiry, never the polling worker's own leaseSeconds against claimed_at.
+        expect(await store.claimReclaim('w2', 10)).toBeNull();
+
+        // Once the granted expiry itself has passed, the row is claimable again — by the persisted
+        // column, whatever the next poller asks for.
+        await sql`update task_reclaim set lease_expires_at = now() - interval '1 second' where id = ${first!.id}`;
+        expect((await store.claimReclaim('w2', 10))?.rootJobId).toBe(a);
     });
 
     it('re-leases a claim whose lease has expired, without touching a live one', async () => {

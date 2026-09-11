@@ -60,7 +60,13 @@ const NO_STATUS: TaskStatus = { status: null, cancelRequestedAt: null, doneAt: n
  *
  * The chain has no stored head. The newest member is the one nobody continues — a follow-up always
  * names the run it was asked on, so the member no chain job references as its parent IS the newest,
- * whatever order the rows arrive in. Nulls when the id names no job at all.
+ * whatever order the rows arrive in.
+ *
+ * The poll carries a capped window of rows, so a chain can outgrow it: the climb to the root may
+ * land on a run the poll no longer holds, leaving the full-chain resolution with no members at all.
+ * When that happens the fallback answers the chain SEGMENT anchored at the named id — itself plus
+ * every polled job whose spine reaches it — whose head is the newest run the window can still vouch
+ * for, or the named run alone when nothing reaches it. Nulls when the id names no job at all.
  */
 export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus {
     if (jobs === null) return NO_STATUS;
@@ -94,6 +100,24 @@ export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus 
     }
     for (const member of members.values()) {
         if (!continued.has(member.id)) {
+            return { status: member.status, cancelRequestedAt: member.cancelRequestedAt, doneAt: member.doneAt };
+        }
+    }
+
+    // The climb above can land on a root the poll window no longer holds, so no job's spine
+    // reaches it and the head loop fell through with no answer. Fall back to the chain SEGMENT
+    // anchored at the named id — the runs the window can still see — whose head is the newest
+    // of them, or the named run alone when nothing reaches it.
+    const segment = new Map<string, Job>([[named.id, named]]);
+    for (const job of jobs) {
+        if (job.id !== id && inChain(job, byId, id)) segment.set(job.id, job);
+    }
+    const continuedSegment = new Set<string>();
+    for (const job of segment.values()) {
+        if (job.followUpTo !== null && segment.has(job.followUpTo)) continuedSegment.add(job.followUpTo);
+    }
+    for (const member of segment.values()) {
+        if (!continuedSegment.has(member.id)) {
             return { status: member.status, cancelRequestedAt: member.cancelRequestedAt, doneAt: member.doneAt };
         }
     }

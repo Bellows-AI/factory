@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Board, BoardJob, LeaseState, Reclaim, RuntimeReport } from './board.js';
+import type { Board, BoardJob, LeaseState, Reclaim, ReclaimAck, RuntimeReport } from './board.js';
 import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
@@ -712,9 +712,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      *
      * A removed thread has no follow-ups — every row was deleted — so there is no reclaim barrier
      * entry to take here: nothing can claim that root again, and this loop's owns each root it is
-     * handed once. A refused tree or a throw simply skips the ack, and the row is offered again
-     * when its lease expires; the tree stays on the disk, exactly as a refused terminal reclaim
-     * leaves it.
+     * handed once. A refused tree or a throw — in the reclaim or its ack — simply skips the ack,
+     * and the row is offered again when its lease expires; a refused tree also stays on the disk,
+     * exactly as a refused terminal reclaim leaves it.
      */
     async function drainReclaims(): Promise<void> {
         while (running) {
@@ -754,7 +754,13 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 log(`reclaim ${reclaim.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
                 continue;
             }
-            const ack = await board.ackReclaim(reclaim.id, config.worker);
+            let ack: ReclaimAck;
+            try {
+                ack = await board.ackReclaim(reclaim.id, config.worker);
+            } catch (e) {
+                log(`reclaim ${reclaim.id}: the ack threw, leaving it to the lease: ${(e as Error).message}`);
+                continue;
+            }
             if (ack === 'lost') {
                 log(`reclaim ${reclaim.id}: ack refused, the row is re-leased to another worker`);
             } else if (ack === 'missing') {

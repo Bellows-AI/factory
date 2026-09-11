@@ -54,6 +54,7 @@ function stubBoard(
         removedOnBeat?: boolean;
         reclaims?: Reclaim[];
         ackReclaimLease?: 'ok' | 'lost' | 'missing';
+        failAckReclaim?: boolean;
     } = {},
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -110,6 +111,7 @@ function stubBoard(
             return next ?? null;
         },
         async ackReclaim(id) {
+            if (options.failAckReclaim) throw new Error('board unreachable');
             board.reclaimAcks.push(id);
             return options.ackReclaimLease ?? 'ok';
         },
@@ -886,6 +888,36 @@ describe('the poll loop', () => {
         // the refusal is said out loud exactly as a refused terminal reclaim is.
         expect(board.board.reclaimAcks).toEqual([]);
         expect(logs.some((m) => m.includes('could not be reclaimed: the checkout is held'))).toBe(true);
+    });
+
+    // A transient board error after the tree is already down must not take the driver with it:
+    // like a refused reclaim, a throwing ack is left to the lease — the row is re-offered when it
+    // expires — and the drain loop goes on polling.
+    it('survives a reclaim ack failure instead of crashing the drain loop', async () => {
+        const rowId = '55555555-5555-4555-8555-555555555555';
+        const root = job(1).id;
+        const logs: string[] = [];
+        const board = stubBoard([], {
+            idleBeforeStop: 1,
+            reclaims: [{ id: rowId, rootJobId: root, repo: null, workspacePath: null, leaseExpiresAt: '2026-08-21T12:05:00.000Z' }],
+            failAckReclaim: true,
+        });
+        const runner = stubRunner(async () => ok());
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config(),
+            sleep,
+            log: (m) => logs.push(m),
+        });
+        board.attach(loop);
+
+        await loop.start();
+
+        // The ack never landed, so the row survives for its lease to expire and hand it back —
+        // and start() resolved, where before the fix the rejection ended the driver.
+        expect(board.board.reclaimAcks).toEqual([]);
+        expect(logs.some((m) => m.includes('leaving it to the lease'))).toBe(true);
     });
 
     it('never runs more than the configured number at once', async () => {

@@ -255,7 +255,9 @@ export type RemoveResult =
     | 'missing'
     | 'conflict';
 
-/** A worktree reclaim a driver just leased. Acking by id removes the row. */
+/** A worktree reclaim a driver just leased. Acking by id removes the row. `leaseExpiresAt` is the
+ * expiry the claim granted, read back from the row it was persisted on — the holder keeps the row
+ * to it whatever later pollers ask for. */
 export interface ReclaimClaim {
     id: string;
     rootJobId: string;
@@ -309,7 +311,9 @@ export interface JobStore {
      * can never slip a running row between the refusal check and the delete.
      */
     removeThread(id: string): Promise<RemoveResult>;
-    /** The driver's poll of the worktree-reclaim queue. The oldest claimable row, or null. */
+    /** The driver's poll of the worktree-reclaim queue. The oldest claimable row, or null —
+     * claimable by the expiry a previous claim GRANTED it, never by the polling worker's own
+     * leaseSeconds. */
     claimReclaim(worker: string, leaseSeconds: number): Promise<ReclaimClaim | null>;
     /** Removes the reclaim row once the driver has actually taken the tree. The claim's worker only. */
     ackReclaim(id: string, worker: string): Promise<'ok' | 'lost' | 'missing'>;
@@ -1135,21 +1139,28 @@ export function createJobStore({
             // nothing else to assert — a row that passed the predicate is the whole claim. `for
             // update skip locked` keeps two drivers from claiming the same tree: the loser's
             // candidate list finds nothing and answers null, exactly as an idle job poll does.
+            // The expiry read here is the one GRANTED to the current holder — stamped on the row
+            // by the claim that took it — and never re-measured from the polling worker's own
+            // leaseSeconds, or a worker granted 300s would lose its row to the first 10s poll ten
+            // seconds in. The CTE exposes only claim_id, so the RETURNING columns read the target
+            // table unambiguously.
             const rows = await sql<
-                { id: string; root_job_id: string; repo: string | null; workspace_path: string | null; claimed_at: Date }[]
+                { id: string; root_job_id: string; repo: string | null; workspace_path: string | null; lease_expires_at: Date }[]
             >`
                 with candidate as (
-                    select id from task_reclaim
+                    select id as claim_id from task_reclaim
                     where org_id = ${orgId}
-                      and (claimed_by is null or claimed_at < now() - make_interval(secs => ${leaseSeconds}::int))
+                      and (claimed_by is null or lease_expires_at <= now())
                     order by created_at, id
                     limit 1
                     for update skip locked
                 )
-                update task_reclaim set claimed_by = ${worker}, claimed_at = now()
+                update task_reclaim
+                set claimed_by = ${worker},
+                    lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
                 from candidate
-                where task_reclaim.id = candidate.id
-                returning id, root_job_id, repo, workspace_path, claimed_at
+                where task_reclaim.id = candidate.claim_id
+                returning id, root_job_id, repo, workspace_path, lease_expires_at
             `;
             const row = rows[0];
             if (!row) return null;
@@ -1158,7 +1169,7 @@ export function createJobStore({
                 rootJobId: row.root_job_id,
                 repo: row.repo,
                 workspacePath: row.workspace_path,
-                leaseExpiresAt: new Date(row.claimed_at.getTime() + leaseSeconds * 1000).toISOString(),
+                leaseExpiresAt: row.lease_expires_at.toISOString(),
             };
         },
 
