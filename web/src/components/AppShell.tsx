@@ -7,6 +7,8 @@ import type { UseJobs } from '../api/useJobs.js';
 import { DEFAULT_RANGE, rangeQuery } from './RangeSelector.js';
 import type { RangeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
+import { useTaskTabs } from '../tabs.js';
+import type { TaskTabs } from '../tabs.js';
 import { TopBar } from './TopBar.js';
 
 /**
@@ -26,6 +28,8 @@ export interface ShellContext {
     refresh: () => void;
     /** The one task-list poll, shared by the tasks pages the way the stats poll is. */
     tasks: UseJobs;
+    /** Task groups and their tabs — shared by the sidenav tree and the tasks-area strip. */
+    tabs: TaskTabs;
 }
 
 /** Typed access to what the layout route publishes. */
@@ -64,11 +68,15 @@ export function AppShell() {
     const onTasks = pathname === '/tasks' || pathname.startsWith('/tasks/');
     const tasks = useJobs(onTasks);
 
-    const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh, tasks };
+    // The task tabs persist in localStorage and are needed by both the sidenav (the group tree)
+    // and the tasks strip, so they live here, beside the task poll they refer to.
+    const tabs = useTaskTabs();
+
+    const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh, tasks, tabs };
 
     return (
         <div className="shell">
-            <SideNav tasks={onTasks ? tasks.jobs : null} />
+            <SideNav tasks={onTasks ? tasks.jobs : null} tabs={tabs} />
             <div className="shell-main">
                 <TopBar data={data} refreshing={refreshing} onRefresh={refresh} />
                 <Outlet context={context} />

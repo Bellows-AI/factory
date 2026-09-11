@@ -4,16 +4,29 @@ import { describe, expect, it } from 'vitest';
 import { RepoPickerDialog } from '../src/components/RepoPickerDialog.js';
 import { SideNav } from '../src/components/SideNav.js';
 import type { Job } from '../src/api/useJobs.js';
+import type { TaskGroup, TaskTabs } from '../src/tabs.js';
 
 /**
  * `MemoryRouter` rather than a browser router: this suite has no DOM, and a router that reads
  * `window.location` cannot run here. It is also the one router that exists under the same name in
  * both v6 and v7.
  */
-const render = (path: string, tasks: readonly Job[] | null = null) =>
+
+/** A fixed group arrangement — the sidenav is a pure function of what it is handed. */
+function tabsFixture(groups: TaskGroup[], activeId = groups[0]!.id): TaskTabs {
+    return {
+        groups,
+        active: groups.find((group) => group.id === activeId) ?? groups[0]!,
+        activateGroup: () => {},
+        createGroup: () => {},
+        removeTab: () => {},
+    };
+}
+
+const render = (path: string, tasks: readonly Job[] | null = null, tabs: TaskTabs = tabsFixture([{ id: '1', tabs: [] }])) =>
     renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
-            <SideNav tasks={tasks} />
+            <SideNav tasks={tasks} tabs={tabs} />
         </MemoryRouter>,
     );
 
@@ -63,7 +76,7 @@ describe('SideNav', () => {
 
 });
 
-describe('SideNav task list', () => {
+describe('SideNav task tree', () => {
     it('lists the recent tasks under the Tasks item, newest first, each linking to its detail view', () => {
         // The API serves newest first and the nav reads top-down, so no reversal happens here —
         // the deliberate inverse of the chat's reading order.
@@ -80,11 +93,57 @@ describe('SideNav task list', () => {
         expect(html.indexOf('newer task')).toBeLessThan(html.indexOf('older task'));
     });
 
-    it('marks the open task as current alongside its section', () => {
-        // Tree semantics: the section link and the task link are both current, and nothing else is.
+    it('renders the task groups as the tree\'s top level, labelled by number', () => {
+        const html = render('/tasks', [job()], tabsFixture([{ id: '1', tabs: [] }, { id: '2', tabs: [] }]));
+        expect(html).toContain('Group 1');
+        expect(html).toContain('Group 2');
+        // A group is a heading the member clicks to focus it, not a link the router follows, so
+        // every group acts on the tab arrangement instead of navigating to the same URL.
+        expect(html).toContain('sidenav-group');
+        expect(html).not.toMatch(/<a[^>]*>Group 1<\/a>/);
+    });
+
+    it('opens a way to create the next group, numbered automatically', () => {
+        const html = render('/tasks', [job()], tabsFixture([{ id: '1', tabs: [] }, { id: '2', tabs: [] }]));
+        expect(html).toContain('+ Group');
+        expect(html).toContain('sidenav-add-group');
+    });
+
+    it('nests a group\'s tabs under it and marks the selected group', () => {
+        const task = job();
+        const html = render(
+            `/tasks/${task.id}`,
+            [task],
+            tabsFixture([{ id: '1', tabs: [task.id] }], '1'),
+        );
+        // The section, the group heading and the group's tab carry the current marker, in that
+        // order — the group's class reads like the section's so the tree's selection is uniform.
+        const active = html.match(/is-active/g) ?? [];
+        expect(active).toHaveLength(3);
+        expect(html.indexOf('sidenav-link is-active')).toBeLessThan(html.indexOf('sidenav-group is-active'));
+        expect(html.indexOf('sidenav-group is-active')).toBeLessThan(html.indexOf('sidenav-task is-active'));
+        const current = html.match(/aria-current="page"/g) ?? [];
+        expect(current).toHaveLength(2);
+        expect(html).toContain('sidenav-group is-active');
+        expect(html).toContain('aria-pressed="true"');
+    });
+
+    it('keeps a tabbed task out of Recent, and leaves the work-in-progress ones in it', () => {
+        const open = job({ id: '11111111-1111-4111-8111-111111111111', command: 'open task' });
+        const loose = job({ id: '33333333-3333-4333-8333-333333333333', command: 'loose task' });
+        const html = render('/tasks', [open, loose], tabsFixture([{ id: '1', tabs: [open.id] }]));
+        const recent = html.slice(html.indexOf('Recent'));
+        expect(recent).toContain('loose task');
+        expect(recent).not.toContain('open task');
+        expect(html).toContain('href="/tasks/11111111-1111-4111-8111-111111111111"');
+    });
+
+    it('marks the open task as current alongside its section and group', () => {
+        // Tree semantics: the section, the selected group heading and the current task are all
+        // marked, and nothing else is.
         const html = render('/tasks/22222222-2222-4222-8222-222222222222', [job()]);
         const active = html.match(/is-active/g) ?? [];
-        expect(active).toHaveLength(2);
+        expect(active).toHaveLength(3);
         const current = html.match(/aria-current="page"/g) ?? [];
         expect(current).toHaveLength(2);
         expect(html).toContain('href="/workspace"'); // sanity: the other sections are present
@@ -94,11 +153,21 @@ describe('SideNav task list', () => {
         expect(render('/tasks', [])).toContain('No tasks yet');
     });
 
-    it('shows no task list until there is one to show', () => {
+    it('keeps the group tree and its controls when there are no tasks yet', () => {
+        // Groups are tab state, not task state: a fresh board already has Group 1, so hiding it
+        // for want of tasks would also hide the only way to create or focus a group.
+        const html = render('/tasks', [], tabsFixture([{ id: '1', tabs: [] }]));
+        expect(html).toContain('sidenav-group');
+        expect(html).toContain('+ Group');
+        expect(html).toContain('sidenav-add-group');
+    });
+
+    it('shows no task tree until there is one to show', () => {
         // Null is what the shell hands over off /tasks*, where the list is not polled: neither an
         // empty sentence nor dead links, just no list.
         const html = render('/', null);
         expect(html).not.toContain('sidenav-subitems');
+        expect(html).not.toContain('sidenav-group');
         expect(html).not.toContain('No tasks yet');
         expect(html).not.toContain('href="/tasks/22222222-2222-4222-8222-222222222222"');
     });
