@@ -17,6 +17,8 @@ import {
     jobPath,
     jobsPath,
     runnerJobSpec,
+    reclaimJobName,
+    reclaimJobSpec,
     secretName,
     serviceDnsSpec,
     servicePodSpec,
@@ -24,7 +26,7 @@ import {
     syncJobName,
     syncJobSpec,
 } from '../src/k8s.js';
-import { CREDENTIAL_HELPER, gitWorktreeScript } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -823,6 +825,84 @@ describe('the worktree sync', () => {
         await r.syncCheckout(repoJob);
         const outcome = await r.run(repoJob, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
+    });
+});
+
+/*
+ * The terminal reclaim (issue #47), ported the same way the sync was: the remove script as an
+ * aux Job over the workspaces PVC. The contrast that matters — no claim, no Secret, no env — is
+ * exactly why the shape differs from the sync's: the tree is reclaimed only when the whole
+ * thread is terminal, so nobody can be writing it, and removing it needs nothing the claim held.
+ */
+describe('the worktree reclaim', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+
+    it('runs the remove script as an aux Job over a read-write PVC, naming only paths', () => {
+        const s = reclaimJobSpec(cfg(), repoJob);
+        expect(s.apiVersion).toBe('batch/v1');
+        expect(s.kind).toBe('Job');
+        expect(s.metadata.name).toBe(reclaimJobName(repoJob));
+        expect(s.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
+        const container = s.spec.template.spec.containers[0];
+        expect(container.command).toEqual(['node', '-e', gitWorktreeRemoveScript]);
+        expect(container.env).toEqual([
+            { name: 'REPO', value: `/workspaces/bellows/${USER}/factory` },
+            { name: 'WORKTREE', value: `/workspaces/bellows/${USER}/.worktrees/${repoJob.id}` },
+        ]);
+        // No BRANCH, no credential-helper code, no envFrom: reclaim authenticates nothing.
+        expect(container.envFrom).toBeUndefined();
+        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        expect(s.spec.backoffLimit).toBe(0);
+        expect(s.spec.template.spec.restartPolicy).toBe('Never');
+    });
+
+    it('refuses to build a reclaim for a worktree path it cannot assert', () => {
+        expect(() => reclaimJobSpec(cfg(), { ...repoJob, rootJobId: 'not-a-uuid' })).toThrow(/worktree/);
+    });
+
+    it('reclaims through a real Job: verdict from the log, Job reaped, no Secret and no claim', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"removed":true,"reason":null}\n' } });
+        const result = await runner(request).reclaimWorktree(repoJob);
+
+        expect(result).toEqual({ ok: true, removed: true, reason: null });
+        // No claim is taken (configmaps) and no Secret is created; the Job POST is the whole
+        // write side, and its name is this attempt's.
+        expect(calls.some((call) => call.path?.includes('/configmaps'))).toBe(false);
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+        const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(reclaimJobName(repoJob));
+        // The Job goes away on the success path too, Background and fire-and-forget — a missing
+        // defendant is swept by the next fence.
+        expect(
+            calls.some(
+                (call) =>
+                    call.method === 'DELETE' &&
+                    call.path === `${jobsPath(namespace)}/${reclaimJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    it('answers the script verdict when the reclaim script refuses', async () => {
+        const { request } = fakeRequest({
+            log: { status: 200, body: '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}\n' },
+        });
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('registered worktree');
+    });
+
+    it('answers ok:false, not a throw, when the reclaim Job poll gives up', async () => {
+        const { request } = fakeRequest({ job: { status: 500, body: 'nope' } });
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('500');
+    });
+
+    it('reclaims nothing for a job that names no repository', async () => {
+        const { request, calls } = fakeRequest();
+        expect(await runner(request).reclaimWorktree(job)).toEqual({ ok: true, removed: false, reason: null });
+        expect(calls).toHaveLength(0);
     });
 });
 

@@ -6,7 +6,7 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { CACHE_WATCH_TURNS, cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
-import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeScript, isBranchName, parseGitState, publishPlan, repoPath, worktreeBranch, worktreeDir, worktreeRelDir } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript, isBranchName, parseGitState, publishPlan, repoPath, worktreeBranch, worktreeDir, worktreeRelDir } from '../src/publish.js';
 
 /*
  * The env-file write is the one await between the setup's final kill-check and the spawn, and a
@@ -2619,6 +2619,64 @@ describe('publishing the produced work', () => {
         await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: '' } });
         const empty = calls.filter((a) => a[0] === 'run')[2]!;
         expect(empty.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+    });
+
+    /* The terminal reclaim (issue #47): the same one-container shape as the sync it undoes,
+     * but naming only the clone and the tree — no BRANCH, no credential helper, no env file. */
+    it('reclaims the worktree in a throwaway container, naming only paths', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+        const result = await runner.reclaimWorktree(repoJob);
+
+        expect(result).toEqual({ ok: true, removed: true, reason: null });
+        const run = calls.find((a) => a[0] === 'run')!;
+        expect(run).toEqual(expect.arrayContaining(['-e', `REPO=/workspaces/bellows/${USER}/factory`]));
+        expect(run).toEqual(expect.arrayContaining(['-e', `WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`]));
+        expect(run).toEqual(expect.arrayContaining(['--entrypoint', 'node', 'claude-executor', '-e', gitWorktreeRemoveScript]));
+        // Reclaim touches no credential and no branch: the thread is terminal, so there is no
+        // fetch to authenticate and no follow-up branch to preserve.
+        expect(run.some((arg) => arg.startsWith('BRANCH='))).toBe(false);
+        expect(run.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+        expect(run.some((arg) => arg.startsWith('--env-file'))).toBe(false);
+    });
+
+    it('reclaims nothing, run untouched, for a job that never had a worktree', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+        expect(await runner.reclaimWorktree(job)).toEqual({ ok: true, removed: false, reason: null });
+        expect(calls).toHaveLength(0);
+    });
+
+    it('answers the refusal verbatim when the reclaim script refuses', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run') return { stdout: '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+        const result = await runner.reclaimWorktree(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('registered worktree');
     });
 
     /*

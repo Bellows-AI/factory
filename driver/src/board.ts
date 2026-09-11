@@ -146,6 +146,14 @@ export interface Board {
             contextCostUsd?: number | null;
         },
     ): Promise<LeaseState>;
+    /**
+     * Whether EVERY job in the task's thread is terminal (succeeded, failed, or dead) — the
+     * signal a worker uses right after a verdict to decide the task worktree can be reclaimed
+     * (issue #47). A follow-up still queued, parked, or running keeps it false, so a thread that
+     * might continue keeps its tree. A board that answers nothing means "keep the tree" — this
+     * read is best-effort by contract, like rereadGates.
+     */
+    threadTerminal(job: BoardJob): Promise<boolean>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -184,6 +192,17 @@ export function createBoard({
         // 409 is a verdict, not a failure; everything else outside 2xx is the board being broken or
         // the driver being wrong, and neither should be swallowed into a silent no-op.
         if (!response.ok && response.status !== 409) {
+            throw new Error(`${path} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
+        }
+        return response;
+    };
+
+    const get = async (path: string): Promise<Response> => {
+        const response = await fetch(`${url}${path}`, {
+            method: 'GET',
+            headers: token ? { authorization: `Bearer ${token}` } : {},
+        });
+        if (!response.ok) {
             throw new Error(`${path} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
         }
         return response;
@@ -265,6 +284,20 @@ export function createBoard({
                 ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
             });
             return response.status === 409 ? 'lost' : 'held';
+        },
+
+        async threadTerminal(job) {
+            // Best-effort by contract, like rereadGates: a board that will not answer this read
+            // means "keep the tree", never a crash that strands a verified third attempt.
+            try {
+                const response = await get(`/api/jobs/${job.id}/thread`);
+                const body = (await response.json()) as { jobs?: { status?: string }[] };
+                const statuses = (body.jobs ?? []).map((j) => j.status ?? '');
+                const every = statuses.length > 0 && statuses.every((s) => 'succeeded|failed|dead'.includes(s));
+                return every;
+            } catch {
+                return false;
+            }
         },
     };
 }

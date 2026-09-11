@@ -28,6 +28,7 @@ interface BoardStub extends Board {
     beats: number;
     gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
     gatesReread: number;
+    threadReads: string[];
 }
 
 /**
@@ -45,6 +46,8 @@ function stubBoard(
         failClaims?: number;
         failSession?: boolean;
         rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
+        threadTerminal?: boolean;
+        completeLease?: LeaseState;
     } = {},
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -60,6 +63,7 @@ function stubBoard(
         beats: 0,
         gatesReported: [],
         gatesReread: 0,
+        threadReads: [],
         async suspend(claimed) {
             board.suspended.push(claimed.id);
             return 'held';
@@ -95,7 +99,11 @@ function stubBoard(
         },
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
-            return 'held';
+            return options.completeLease ?? 'held';
+        },
+        async threadTerminal(claimed) {
+            board.threadReads.push(claimed.id);
+            return options.threadTerminal ?? false;
         },
         async gates(claimed, results) {
             board.gatesReported.push({ id: claimed.id, results });
@@ -112,13 +120,22 @@ function stubRunner(
     sample: Omit<RuntimeSample, 'sampledAt'> | null = null,
     publish: PublishResult | null = null,
     sync: SyncResult | null = null,
-): Runner & { killed: string[]; lookups: number; samples: number; published: BoardJob[]; synced: BoardJob[] } {
+    reclaim: { ok: boolean; removed: boolean; reason: string | null } | null = null,
+): Runner & {
+    killed: string[];
+    lookups: number;
+    samples: number;
+    published: BoardJob[];
+    synced: BoardJob[];
+    reclaimed: BoardJob[];
+} {
     const runner = {
         killed: [] as string[],
         lookups: 0,
         samples: 0,
         published: [] as BoardJob[],
         synced: [] as BoardJob[],
+        reclaimed: [] as BoardJob[],
         run: outcome,
         async remoteSessionId() {
             runner.lookups += 1;
@@ -138,6 +155,10 @@ function stubRunner(
         async syncCheckout(syncedJob: BoardJob) {
             runner.synced.push(syncedJob);
             return sync ?? { ok: true, reason: null };
+        },
+        async reclaimWorktree(reclaimedJob: BoardJob) {
+            runner.reclaimed.push(reclaimedJob);
+            return reclaim ?? { ok: true, removed: true, reason: null };
         },
     };
     return runner;
@@ -476,6 +497,98 @@ describe('the poll loop', () => {
 
         expect(board.board.gatesReread).toBe(1);
         expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    // The terminal reclaim (issue #47): after the whole thread is done, the per-thread task
+    // worktree is removed so a finished task does not leave its tree squatting on the volume.
+    it('reclaims the task worktree when the thread is terminal after the verdict', async () => {
+        const board = stubBoard([job(1)], { threadTerminal: true });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(board.board.threadReads).toEqual([job(1).id]);
+        expect(runner.reclaimed).toEqual([job(1)]);
+    });
+
+    it('keeps the task worktree when any job of the thread is not terminal', async () => {
+        // The default answer is "the thread is not terminal" — a follow-up still queued.
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(board.board.threadReads).toEqual([job(1).id]);
+        expect(runner.reclaimed).toHaveLength(0);
+    });
+
+    it('reclaims after a pre-run failure, once the whole thread is terminal', async () => {
+        // A job whose checkout cannot be synced is completed failed without ever running; the
+        // reclaim is the same downstream-of-the-verdict step it is for a run.
+        const repoJob = { ...job(1), repo: 'Bellows-AI/factory', workspacePath: `bellows/${USER}` };
+        const board = stubBoard([repoJob], { threadTerminal: true });
+        const runner = stubRunner(async () => ok(), null, null, null, { ok: false, reason: 'no disk' });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(runner.synced).toHaveLength(1);
+        expect(runner.reclaimed).toEqual([repoJob]);
+    });
+
+    it('reports the verdict untouched when the reclaim refuses, and logs the reason', async () => {
+        const logs: string[] = [];
+        const board = stubBoard([job(1)], { threadTerminal: true });
+        const runner = stubRunner(async () => ok(), null, null, null, null, {
+            ok: false,
+            removed: false,
+            reason: 'refusing to remove /workspaces/bellows/44444444-4444-4444-8444-444444444444/.worktrees/0000000',
+        });
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config(),
+            sleep,
+            log: (m) => logs.push(m),
+        });
+        board.attach(loop);
+        await loop.start();
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(logs.some((m) => m.includes('task worktree could not be reclaimed'))).toBe(true);
+    });
+
+    it('reports the verdict untouched when the reclaim throws, and logs the error', async () => {
+        const logs: string[] = [];
+        const board = stubBoard([job(1)], { threadTerminal: true });
+        const runner = stubRunner(async () => ok());
+        runner.reclaimWorktree = async () => {
+            throw new Error('daemon refused');
+        };
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config(),
+            sleep,
+            log: (m) => logs.push(m),
+        });
+        board.attach(loop);
+        await loop.start();
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(logs.some((m) => m.includes('daemon refused'))).toBe(true);
+    });
+
+    it('does not reclaim a job whose verdict was lost to the board', async () => {
+        const board = stubBoard([job(1)], { completeLease: 'lost' });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(runner.reclaimed).toHaveLength(0);
+        expect(board.board.threadReads).toHaveLength(0);
     });
 
     // The cache watch killed the run mid-tool-call, so the scrape reads finish `tool-calls` — the

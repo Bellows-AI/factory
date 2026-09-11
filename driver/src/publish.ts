@@ -32,6 +32,9 @@ export const gitProbeScript = script('git-probe.cjs');
 /** The startup sync's node script: see scripts/git-worktree.cjs. */
 export const gitWorktreeScript = script('git-worktree.cjs');
 
+/** The terminal reclaim's node script: see scripts/git-worktree-remove.cjs. */
+export const gitWorktreeRemoveScript = script('git-worktree-remove.cjs');
+
 /** What the board intends to publish for one job. */
 export interface PublishPlan {
     /** The task branch: `fix/<issue>` when the command names an issue, `task/<date>` otherwise. */
@@ -85,6 +88,18 @@ export interface PublishResult {
 /** What the startup sync answers: ok, or the reason the run should not start from a stale tree. */
 export interface SyncResult {
     ok: boolean;
+    reason: string | null;
+}
+
+/** What the terminal reclaim answers: ok, whether anything was removed, or the reason it did not. */
+export interface ReclaimResult {
+    ok: boolean;
+    /**
+     * True when the task tree no longer exists after the call: it was removed, or it was already
+     * gone. False when the reclaim refused (the tree stays) or there was nothing to reclaim because
+     * the thread never touched the volume.
+     */
+    removed: boolean;
     reason: string | null;
 }
 

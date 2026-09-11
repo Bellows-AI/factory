@@ -13,7 +13,7 @@ function recorder(respond: () => Response) {
         calls.push({
             url,
             headers: init.headers as Record<string, string>,
-            body: JSON.parse(init.body as string),
+            body: init.body ? JSON.parse(init.body as string) : undefined,
         });
         return respond();
     }) as unknown as typeof globalThis.fetch;
@@ -186,5 +186,63 @@ describe('rereading the gates after the startup sync', () => {
             throw new Error('board unreachable');
         });
         expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).rereadGates(job)).toBeNull();
+    });
+});
+
+describe('reading the thread terminality after a verdict', () => {
+    const job = {
+        id: 'job-1',
+        command: 'echo hi',
+        attempts: 1,
+        leaseToken: 'token-1',
+        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+        resumeSessionId: null,
+        userId: null,
+    };
+
+    const thread = (statuses: string[]) =>
+        Response.json({ jobs: statuses.map((status) => ({ id: `job-${statuses.indexOf(status)}`, status })) }, { status: 200 });
+
+    it('reads the thread as a GET on the job, with the worker token', async () => {
+        const { calls, fetch } = recorder(() => thread(['succeeded']));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+
+        expect(await board.threadTerminal(job)).toBe(true);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/thread');
+        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+    });
+
+    it('is true only when EVERY job of the thread is terminal', async () => {
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['succeeded'])).fetch });
+        expect(await board.threadTerminal(job)).toBe(true);
+
+        const failed = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['failed', 'succeeded'])).fetch });
+        expect(await failed.threadTerminal(job)).toBe(true);
+
+        const dead = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['dead'])).fetch });
+        expect(await dead.threadTerminal(job)).toBe(true);
+
+        // Any non-terminal member — a follow-up still queued, parked, or running — keeps it false.
+        const queued = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['succeeded', 'queued'])).fetch });
+        expect(await queued.threadTerminal(job)).toBe(false);
+
+        const standby = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => thread(['standby'])).fetch });
+        expect(await standby.threadTerminal(job)).toBe(false);
+    });
+
+    it('answers false — keep the tree — when the board refuses or fails', async () => {
+        // Best-effort by contract, like rereadGates: the verdict is already on the board, so the
+        // reclaim must never wait on a board that will not answer the child question.
+        const broken = recorder(() => {
+            throw new Error('board unreachable');
+        });
+        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).threadTerminal(job)).toBe(false);
+
+        const refused = recorder(() => Response.json({ error: 'gone' }, { status: 404 }));
+        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: refused.fetch }).threadTerminal(job)).toBe(false);
+
+        const empty = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
+        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: empty.fetch }).threadTerminal(job)).toBe(false);
     });
 });

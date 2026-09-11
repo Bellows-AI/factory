@@ -670,6 +670,24 @@ session. The clone's own working tree is never touched — under the worktree mo
 finally literally true, where the old sync hard-reset the clone's default branch and destroyed
 whatever stray edits sat there.
 
+**The task worktree is reclaimed when the thread ends — finishing or deleting a task cleans up
+its tree (issue #47).** The sync created the tree, and every commit on it belongs to one thread;
+once the whole thread is terminal the tree holds nothing worth keeping, so after the verdict the
+driver asks `GET /api/jobs/:id/thread` and, when EVERY job of the thread is terminal
+(`succeeded`/`failed`/`dead`), removes the tree via the worktree script run as the sync's twin —
+a throwaway `docker run` naming the clone and the tree, or a reclaim Job over the PVC whose name
+carries the lease token. A follow-up still queued, parked, or running keeps the thread
+non-terminal and the tree in place; a follow-up created after the reclaim simply recreates the
+tree on the surviving `factory/<root>` branch the next time it syncs. The reclaim deletes only
+what the sync would have — a registered worktree of the clone, or the bare leftover directory
+the sync itself would have removed — and REFUSES, like the sync, a path that holds a git tree
+that is not this clone's worktree, logging the reason rather than touching it. It is
+best-effort by contract: the verdict is already on the board when it runs, so a board that
+refuses the thread read, a runner that refuses the tree, or a daemon that says no costs the
+reclaim, never the verdict — the tree stays and the branch survives for a later follow-up. Who
+reclaims: the driver's last completing attempt. Deleting a task by hand is covered because the
+board's `done` action and the driver's verdict both land on the same terminal statuses.
+
 **The claim's gates answer is re-read after the sync.** The board reads `.bellows.yaml` at CLAIM
 time, which is before the sync — so the claim's answer can predate the tree the run will see,
 and a repository whose gates file just arrived would run ungated for its whole first task. After

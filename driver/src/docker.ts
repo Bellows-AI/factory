@@ -11,6 +11,7 @@ import type { ServiceSpec } from './services.js';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
+    gitWorktreeRemoveScript,
     gitWorktreeScript,
     isBranchName,
     parseGitState,
@@ -21,6 +22,7 @@ import {
     worktreeBranch,
     worktreeDir,
     type PublishResult,
+    type ReclaimResult,
     type SyncResult,
 } from './publish.js';
 
@@ -156,6 +158,17 @@ export interface Runner {
      * { ok: false, reason } rather than throwing; the loop turns that into the verdict.
      */
     syncCheckout(job: BoardJob): Promise<SyncResult>;
+    /**
+     * Reclaims the task worktree after the thread's LAST job is terminal: removes the per-thread
+     * tree and prunes its admin entry, so a finished or deleted task does not leave its tree
+     * squatting on the member volume forever (issue #47). Best-effort by contract: the loop calls
+     * it after a verdict precisely because the verdict is already safe on the board — a reclaim
+     * that refuses (a path that is not the sync's own worktree, a daemon that says no) must never
+     * turn a done task back into a failed one, and the loop logs and moves on. Refusal keeps the
+     * tree by design: the script it runs deletes only what the sync itself created, and the
+     * surviving factory/<root> branch lets a later follow-up recreate the tree with a fresh sync.
+     */
+    reclaimWorktree(job: BoardJob): Promise<ReclaimResult>;
     /**
      * Hands back whatever the startup sync's fence took — the kubernetes checkout claim, which
      * syncCheckout acquires and HOLDS through the run. The loop calls this only on the terminal
@@ -1216,6 +1229,50 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 return { ok: false, reason: `the worktree sync container failed: ${detail.slice(0, 300)}` };
             } finally {
                 if (file) await rm(file).catch(() => undefined);
+            }
+        },
+
+        /*
+         * The terminal reclaim, one container one script like the sync it undoes: the clone (whose
+         * admin dir registers the worktree) and the worktree, by env, nothing else — no env file,
+         * no credential. Removing the tree needs nothing the claim held; a `docker run` with no
+         * --env-file is simpler and leaves nothing to clean on either side. A job that names no
+         * repository never had a tree, so the answer is "reclaimed, nothing was there".
+         */
+        async reclaimWorktree(job: BoardJob): Promise<ReclaimResult> {
+            const clone = repoPath(config, job);
+            const worktree = worktreeDir(config, job);
+            if (!clone || !worktree) return { ok: true, removed: false, reason: null };
+            try {
+                const out = await execDocker([
+                    'run',
+                    '--rm',
+                    '-v',
+                    `${config.workspaceVolume}:${config.workspaceMount}`,
+                    '-e',
+                    `REPO=${clone}`,
+                    '-e',
+                    `WORKTREE=${worktree}`,
+                    '--entrypoint',
+                    'node',
+                    config.image,
+                    '-e',
+                    gitWorktreeRemoveScript,
+                ]);
+                const line = out.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+                try {
+                    return JSON.parse(line) as ReclaimResult;
+                } catch {
+                    return { ok: false, removed: false, reason: 'the worktree reclaim answered nothing readable' };
+                }
+            } catch (e) {
+                const err = e as { stderr?: string | Buffer; message?: string };
+                const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+                const detail =
+                    stderr.trim() ||
+                    (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
+                    (err.message ?? 'failed');
+                return { ok: false, removed: false, reason: `the worktree reclaim container failed: ${detail.slice(0, 300)}` };
             }
         },
 

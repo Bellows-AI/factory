@@ -7,8 +7,8 @@ import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, OUTPUT_L
 import type { RunOutcome, RunSession, Runner } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
-import { CREDENTIAL_HELPER, gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
-import type { SyncResult } from './publish.js';
+import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
+import type { ReclaimResult, SyncResult } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
 
@@ -559,6 +559,65 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                                     : []),
                             ],
                             ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                        },
+                    ],
+                    volumes: [
+                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+                    ],
+                },
+            },
+        },
+    };
+}
+
+/**
+ * The terminal reclaim (issue #47), ported to the aux shape like every other one-off: the SAME
+ * worktree-remove script the docker runner passes to its container, as a Job over the same
+ * read-write PVC. The contrast with the sync is deliberate — no claim, no Secret, no env: the
+ * tree is reclaimed only when the whole thread is terminal, so nobody else can be writing it,
+ * and removing it needs nothing the claim held. The juice is the name carrying the lease token,
+ * so a superseded attempt can never remove anything of a replacement's.
+ */
+const RECLAIM_DEADLINE_SECONDS = 600;
+
+export const reclaimJobName = (job: BoardJob): string => `factory-reclaim-${hash8(`${job.id}|${job.leaseToken}`)}`;
+
+export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
+    if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
+        throw new Error(`refusing to reclaim job ${job.id}: its ids are not the uuids the board claims`);
+    }
+    const clone = repoPath(config, job);
+    const worktree = worktreeDir(config, job);
+    if (!clone || !worktree) {
+        throw new Error(`refusing to reclaim job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`);
+    }
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: reclaimJobName(job), labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: RECLAIM_DEADLINE_SECONDS,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            name: 'worktree-reclaim',
+                            image: config.image,
+                            imagePullPolicy: config.imagePullPolicy,
+                            command: ['node', '-e', gitWorktreeRemoveScript],
+                            env: [
+                                { name: 'REPO', value: clone },
+                                { name: 'WORKTREE', value: worktree },
+                            ],
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
@@ -1966,6 +2025,92 @@ export function createKubernetesRunner(
                 if (secret) {
                     void request('DELETE', `${secretsPath}/${secret}`).then(() => undefined, () => undefined);
                 }
+            }
+        },
+
+        /*
+         * The terminal reclaim, the kubernetes shape: the remove script as a Job over the PVC,
+         * no claim, no Secret, no env — the thread is terminal, so nobody writes the tree, and
+         * removing it needs nothing the claim held. The poll is bounded exactly like the sync's:
+         * a blink or a 503 is not the script's verdict, but an apiserver that will not answer is
+         * not a tree worth waiting on either, and the deadline (RECLAIM_DEADLINE_SECONDS) is what
+         * guarantees the Job itself terminates if this driver dies first. Best-effort by contract
+         * — the loop calls this only AFTER the verdict is safely on the board, and a refusal must
+         * never turn a done task back into a failed one.
+         */
+        async reclaimWorktree(job: BoardJob): Promise<ReclaimResult> {
+            const clone = repoPath(config, job);
+            const worktree = worktreeDir(config, job);
+            if (!clone || !worktree) return { ok: true, removed: false, reason: null };
+            try {
+                const create = await request('POST', jobsPath(config.k8sNamespace), reclaimJobSpec(config, job));
+                if (create.status >= 300) {
+                    return { ok: false, removed: false, reason: `creating the worktree reclaim job answered ${create.status}: ${create.body.slice(0, 200)}` };
+                }
+                let failures = 0;
+                for (;;) {
+                    let response: K8sResponse;
+                    try {
+                        response = await request('GET', jobPath(config.k8sNamespace, reclaimJobName(job)));
+                    } catch (e) {
+                        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                            return { ok: false, removed: false, reason: `the worktree reclaim job could not be read: ${(e as Error).message}` };
+                        }
+                        await sleep(POLL_MS);
+                        continue;
+                    }
+                    if (response.status === 429 || response.status >= 500) {
+                        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                            return {
+                                ok: false,
+                                removed: false,
+                                reason: `reading the worktree reclaim job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                            };
+                        }
+                        await sleep(POLL_MS);
+                        continue;
+                    }
+                    if (response.status >= 300) {
+                        return { ok: false, removed: false, reason: `reading the worktree reclaim job answered ${response.status}: ${response.body.slice(0, 200)}` };
+                    }
+                    failures = 0;
+                    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+                    if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) break;
+                    await sleep(POLL_MS);
+                }
+                let body = '';
+                try {
+                    const pods = await request(
+                        'GET',
+                        `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
+                            `job-name=${reclaimJobName(job)}`,
+                        )}`,
+                    );
+                    const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+                    if (pod?.metadata?.name) {
+                        const log = await request(
+                            'GET',
+                            `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`,
+                        );
+                        if (log.status < 300) body = log.body;
+                    }
+                } catch {
+                    body = '';
+                }
+                const line = body.trim().split('\n').filter(Boolean).pop() ?? '';
+                try {
+                    return JSON.parse(line) as ReclaimResult;
+                } catch {
+                    return { ok: false, removed: false, reason: 'the worktree reclaim answered nothing readable' };
+                }
+            } finally {
+                // Every exit path, like the sync's own finally: a reclaim Job left running is a
+                // pod still mounted on the volume, so it goes down Background (fire-and-forget,
+                // best-effort — a miss is swept by the next attempt's fence).
+                void request(
+                    'DELETE',
+                    `${jobPath(config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Background`,
+                ).then(() => undefined, () => undefined);
             }
         },
 

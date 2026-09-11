@@ -7,7 +7,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeScript } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import { bellowsReadScript } from '../src/services.js';
 import { opencodeCacheProbeScript, opencodeReadoutScript, remoteSessionScript } from '../src/docker.js';
 
@@ -47,6 +47,7 @@ function hasOpenssl(): boolean {
 const FILES: [string, 'node' | 'sh'][] = [
     ['git-probe.cjs', 'node'],
     ['git-worktree.cjs', 'node'],
+    ['git-worktree-remove.cjs', 'node'],
     ['bellows-read.sh', 'sh'],
     ['opencode-readout.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
@@ -79,6 +80,7 @@ describe('the container scripts', () => {
     it('loads every script from its file, byte for byte', () => {
         expect(gitProbeScript).toBe(readFileSync(pathOf('git-probe.cjs'), 'utf8'));
         expect(gitWorktreeScript).toBe(readFileSync(pathOf('git-worktree.cjs'), 'utf8'));
+        expect(gitWorktreeRemoveScript).toBe(readFileSync(pathOf('git-worktree-remove.cjs'), 'utf8'));
         expect(bellowsReadScript).toBe(readFileSync(pathOf('bellows-read.sh'), 'utf8'));
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
