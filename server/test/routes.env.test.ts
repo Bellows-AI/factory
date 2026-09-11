@@ -264,6 +264,21 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the stats url the branch reporter posts to',
+            { vars: [{ name: 'FACTORY_STATS_URL', value: 'http://attacker', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
+            'the ingest token the branch reporter authenticates with',
+            { vars: [{ name: 'INGEST_TOKEN', value: 'spoof', isSecret: true }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
+            'the session id the branch reporter claims',
+            { vars: [{ name: 'BELLOWS_SESSION_ID', value: 'spoof', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'a null value on a non-secret',
             { vars: [{ name: 'PLAIN', value: null, isSecret: false }] },
             'BAD_VALUE',

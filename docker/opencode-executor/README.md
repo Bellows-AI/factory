@@ -14,6 +14,7 @@ flag.
 | --- | --- |
 | `Dockerfile` | the image — Node 24 (debian), `opencode-ai` (pinned), `@gcornut/opencode-otel` (pinned), `context-mode` (pinned), `gh`, `acli` |
 | `entrypoint.sh` | `/usr/local/bin/opencode-executor` — the `ENTRYPOINT` |
+| `branch-reporter.cjs` | `/usr/local/bin/branch-reporter.cjs` — the branch reporter the entrypoint launches beside the CLI |
 | `test.sh` | builds the image and smoke-tests it — not shipped inside it |
 | `opencode-home/opencode.json` | the baked permission policy plus the plugin references (telemetry, context mode), at `OPENCODE_CONFIG` |
 | `opencode-home/otel.json` | the telemetry plugin's config: the compose collector, http/json, delta temporality |
@@ -123,6 +124,20 @@ run the driver reads the newest root session out of the database with one throwa
 container (`node:sqlite`, read-only) and reports the id to the board, which is what makes the
 task follow-up-able. A job run by this image still shows no session link — the link is built from
 claude-code's Remote Control id, which opencode does not have. Its runs still emit OTLP through the image's baked plugin, and the server's metric map prices the `opencode.*` metrics under the `opencode` agent.
+
+## Branch reporter
+
+`branch-reporter.cjs` samples `session → (repo, branch)` from `$WORKDIR` while the CLI runs and
+POSTs it to `FACTORY_STATS_URL` (`/api/sessions/branch`) — the side channel that lets the board
+attribute a run's tokens to the PR its branch became, which OTLP metrics alone cannot (they
+carry a session id and nothing else). The driver supplies the endpoint (`RUNNER_STATS_URL`,
+defaulted to the board) and, when the board requires one, the ingest token
+(`RUNNER_INGEST_TOKEN`). The session id is the one thing opencode will not take in advance: on a
+fresh run the reporter discovers it live from the session database under `XDG_DATA_HOME` — the
+newest root session, the exact query the driver's close-time readout uses — and on a follow-up
+the driver hands the id over (`BELLOWS_SESSION_ID`) so both runs name the same conversation.
+Nothing is logged, nothing retries, and every failure is a silent no-op: the run is
+unattributed, never failed.
 
 ## Telemetry
 

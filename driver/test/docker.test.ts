@@ -177,6 +177,46 @@ describe('the docker run arguments', () => {
         expect(args({ RUNNER_SKIP_PERMISSIONS: '1' })).toContain('--dangerously-skip-permissions');
     });
 
+    // The branch reporter posts to the board's API, and the endpoint rides beside the OTEL one:
+    // a URL, not a credential, defaulted from JOB_BOARD_URL and forwarded under Remote Control
+    // too — attribution is as wanted on a drivable session as on a headless one.
+    it('points the runner at the board so it can report its branch', () => {
+        expect(args()).toEqual(expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://127.0.0.1:8080']));
+        expect(args({ RUNNER_STATS_URL: 'http://stats.internal:8080' })).toEqual(
+            expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://stats.internal:8080']),
+        );
+        expect(args({ RUNNER_REMOTE_CONTROL: '1' })).toEqual(
+            expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://127.0.0.1:8080']),
+        );
+    });
+
+    // The claude runner is told the session id before the container starts (the driver mints it),
+    // so the reporter never has to scrape a transcript. A resumed session keeps its id — the
+    // parked job's spans must join to the same conversation.
+    it('tells the claude runner which session to report', () => {
+        expect(args()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
+        expect(resumed()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
+    });
+
+    it('gives the opencode runner a session id only when one exists', () => {
+        const open = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = null) =>
+            dockerArgs(loadDriverConfig({ RUNNER_CLI: 'opencode', ...env }), job, session);
+        // A fresh opencode run has no id yet — the reporter discovers it from the session
+        // database. An unvalidated id must never be interpolated.
+        expect(open().some((arg) => arg.includes('BELLOWS_SESSION_ID'))).toBe(false);
+        const followUp = dockerArgs(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            { ...job, followUp: true },
+            { id: SESSION, resume: true },
+        );
+        expect(followUp).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
+        // BEFORE the image name: docker stops option parsing there, and an `-e` past it is the
+        // CLI's argv — `opencode run` has no `-e` flag, and the reporter would never see the id.
+        expect(followUp.indexOf(`BELLOWS_SESSION_ID=${SESSION}`)).toBeLessThan(
+            followUp.indexOf('opencode-executor'),
+        );
+    });
+
     // --rm is gone deliberately: cleanup is explicit (a `docker rm` after close), so the runner
     // can ask the daemon whether a 125 run left a container behind before removing it.
     it('leaves nothing behind, by explicit cleanup rather than --rm', () => {
@@ -224,6 +264,40 @@ describe('the board\'s environment', () => {
         expect(() => dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false })).toThrow(
             /no env file/,
         );
+    });
+
+    // The token is a credential: it rides the 0600 env file, as the LAST line (docker's
+    // --env-file is last-duplicate-wins, so the order is the precedence rule), and it never
+    // appears on an argv any `ps` on the host can read. Without it the file's body is
+    // byte-identical to what it always was.
+    it('carries the ingest token in the env file, last, and never on the argv', () => {
+        const config = loadDriverConfig({ RUNNER_INGEST_TOKEN: ' tok ' });
+        expect(envFileBody(envJob, config)).toBe('MY_TOKEN=board-secret\nINGEST_TOKEN=tok\n');
+        expect(envFileBody(envJob, loadDriverConfig({}))).toBe('MY_TOKEN=board-secret\n');
+        const line = dockerArgs(config, envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
+        expect(line.some((arg) => arg.includes('INGEST_TOKEN'))).toBe(false);
+    });
+
+    // A token with no claim env and no gates still needs the file — without it the runner is
+    // silently unauthenticated, and on an ingest-token board every report 401s into silence.
+    it('needs the env file when only the ingest token would ride it', () => {
+        const config = loadDriverConfig({ RUNNER_INGEST_TOKEN: 'tok' });
+        expect(() => dockerArgs(config, job, { id: SESSION, resume: false })).toThrow(/no env file/);
+        const line = dockerArgs(config, job, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
+    });
+
+    // The reporter's env names are the runner's own contract, like WORKDIR: a member value in
+    // one of them steers where the report goes, what authenticates it, and which session it
+    // claims — a cross-tenant write into the telemetry store.
+    it('refuses the reporter env names from a claim', () => {
+        expect(
+            claimEnv({
+                ...job,
+                env: { FACTORY_STATS_URL: 'http://evil', INGEST_TOKEN: 'spoof', BELLOWS_SESSION_ID: 'spoof' },
+            }),
+        ).toEqual({});
     });
 
     it('writes one NAME=value line per variable, reserved names dropped', () => {
@@ -467,6 +541,8 @@ describe('an opencode runner', () => {
             id: 'ses_f86188c3dffeZGYO4yZq4atba9',
             resume: true,
         });
+        // The BELLOWS_SESSION_ID env rides before the image (it is a container env, not a CLI
+        // flag), naming the SAME conversation the `--session` below restores.
         expect(line.slice(-5)).toEqual([
             'opencode-executor',
             'run',
@@ -474,6 +550,7 @@ describe('an opencode runner', () => {
             'ses_f86188c3dffeZGYO4yZq4atba9',
             'fix the failing build',
         ]);
+        expect(line).toEqual(expect.arrayContaining(['-e', 'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9']));
     });
 
     /**

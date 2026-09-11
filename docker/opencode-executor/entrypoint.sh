@@ -72,4 +72,16 @@ if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
     fi
 fi
 
-exec opencode "$@"
+# The branch reporter samples session -> (repo, branch) beside the run, so the board can
+# attribute the session's tokens to a PR. A background SIBLING of the CLI, never its child — a
+# CLI crash must not take the reporter down mid-run — with stdio discarded: the output stream
+# this container prints is the run's, and the reporter never speaks. The CLI moves from exec
+# to foreground child so one close-time sample can run after it; the exit status is captured
+# and re-raised, which is the one behavior exec had that must survive.
+node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
+set +e
+opencode "$@"
+STATUS=$?
+set -e
+node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
+exit "$STATUS"

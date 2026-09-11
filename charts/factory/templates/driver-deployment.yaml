@@ -102,6 +102,15 @@ spec:
                       - name: RUNNER_OTEL_ENDPOINT
                         value: {{ $otelEndpoint | quote }}
                       {{- end }}
+                      # The credential the runner's branch reporter presents to the board's ingest
+                      # route — the same Secret key the dashboard and the collector read. The value
+                      # travels by reference: it lands in the per-attempt runner Secret, never in a
+                      # pod spec or an env var of this driver's own.
+                      - name: RUNNER_INGEST_TOKEN
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: ingest-token
                       {{- if or .Values.runner.credentialsExistingSecret .Values.secret.create }}
                       - name: RUNNER_CREDENTIALS_SECRET
                         value: {{ include "factory.runnerSecretName" . | quote }}

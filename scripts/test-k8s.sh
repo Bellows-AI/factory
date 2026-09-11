@@ -190,6 +190,13 @@ expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.
 render | grep -q 'value: "1800000"' && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
 
+# The driver forwards the branch reporter's credential by reference — the same Secret key the
+# dashboard and collector read — so the value never lands in the driver's own pod spec.
+driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' "$work/rendered.yaml")"
+expect_contains 'the driver reads the ingest token for its runners' "$driver" 'key: ingest-token'
+next="$(grep -A1 -- '- name: RUNNER_INGEST_TOKEN' <<<"$driver" | sed -n '2p' | tr -d ' ')"
+[ "$next" = 'valueFrom:' ] || bad 'RUNNER_INGEST_TOKEN travels by secretKeyRef' "next line: '$next'"
+
 # The dashboard pod must not start its server until the in-chart database accepts connections: the
 # server's migration retry gives up after ~55s and then serves every DB-backed route as a 500
 # forever — a state no amount of client-side polling recovers. On a cold cluster the database

@@ -98,6 +98,37 @@ describe('the driver config', () => {
         ).toBe('http://telemetry.internal:4318');
     });
 
+    // The branch reporter posts to the board's own API. Defaulting it to JOB_BOARD_URL means a
+    // compose or chart driver needs zero configuration — the runner can already reach the board,
+    // which is what JOB_BOARD_URL is for. The override is for the split topology (host driver,
+    // containerized runners) where only a host-gateway address reaches the API.
+    it('defaults RUNNER_STATS_URL to the board url, overridable', () => {
+        expect(loadDriverConfig({}).statsUrl).toBe('http://127.0.0.1:8080');
+        expect(loadDriverConfig({ JOB_BOARD_URL: 'http://dashboard:8080/' }).statsUrl).toBe(
+            'http://dashboard:8080',
+        );
+        expect(loadDriverConfig({ RUNNER_STATS_URL: 'http://stats.internal:8080' }).statsUrl).toBe(
+            'http://stats.internal:8080',
+        );
+        // The reporter concatenates request paths onto this string — a trailing slash would 404
+        // every report into the silence its error handling promises.
+        expect(loadDriverConfig({ RUNNER_STATS_URL: 'http://stats.internal:8080/' }).statsUrl).toBe(
+            'http://stats.internal:8080',
+        );
+        // Same scheme rule as JOB_BOARD_URL: a URL without a scheme parses as a path, and a
+        // reporter pointed at a path posts nowhere, silently.
+        expect(() => loadDriverConfig({ RUNNER_STATS_URL: 'stats:8080' })).toThrow(/RUNNER_STATS_URL/);
+    });
+
+    // The credential the reporter presents to the board's ingest route. A value, not a name list
+    // like RUNNER_ENV: there is exactly one consumer. Empty is unset, so compose can pass it
+    // through unconditionally.
+    it('takes RUNNER_INGEST_TOKEN trimmed, empty meaning unset', () => {
+        expect(loadDriverConfig({}).ingestToken).toBe('');
+        expect(loadDriverConfig({ RUNNER_INGEST_TOKEN: '  tok  ' }).ingestToken).toBe('tok');
+        expect(loadDriverConfig({ RUNNER_INGEST_TOKEN: '' }).ingestToken).toBe('');
+    });
+
     // The kubernetes executor forwards runner credentials the way the docker one forwards `-e NAME`:
     // the NAMES travel, the values live in a Secret the cluster already holds. Off unless named.
     it('leaves RUNNER_CREDENTIALS_SECRET off unless set', () => {

@@ -238,9 +238,14 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
   an `authorization` header in `board.ts`. It stays that way because that package depends on nothing
   — see `AGENTS.md`. The header is **omitted** rather than sent empty against an open board: an empty
   Bearer is a credential that failed, where no header is one that was never offered.
-- **The ingest token is optional, and unset means today's behaviour.** Two callers, and the second is
+- **The ingest token is optional, and unset means today's behaviour.** Three callers, and the
+  second is
   the awkward one: a collector on the compose network, and the `agent-telemetry` plugin installed at
-  user scope on developer laptops. Requiring it would break both with no migration path. Header only,
+  user scope on developer laptops. The third is the branch reporter baked into both executor
+  images, which presents the same optional credential from `INGEST_TOKEN` — forwarded by the
+  driver (`RUNNER_INGEST_TOKEN`, from the chart's `ingest-token` Secret key) through the env file
+  or the per-attempt Secret, never an argv. Requiring the token would break all three with no
+  migration path. Header only,
   never a query parameter, which would land in every access log. Honest limitation: `metric_point`
   has no `org_id` by design (`docs/organizations.md`), so this is an *authenticity* check, not an
   authorization one.

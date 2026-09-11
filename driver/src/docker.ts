@@ -698,9 +698,11 @@ function workspacePath(job: BoardJob): string {
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
  * sets, TRUST_WORKDIR is the Remote Control trust answer, the two BELLOWS_GATE_ names are the
- * ad-hoc gate credentials the loop mints per attempt, and CRED_HELPER is the credential-helper
- * CODE the sync fetch runs — which a claim env must never carry. CRED_HELPER above all: a member
- * value there is member-controlled code the sync container's git executes as helper code.
+ * ad-hoc gate credentials the loop mints per attempt, CRED_HELPER is the credential-helper CODE
+ * the sync fetch runs, and the three reporter names steer the branch reporter — where it posts,
+ * what authenticates it, and which session it claims. A member value in any of them is a
+ * cross-tenant write into the telemetry store; CRED_HELPER above all: a member value there is
+ * member-controlled code the sync container's git executes as helper code.
  * Mirrored at the board (RESERVED_ENV_NAMES in server/src/routes/env.ts, where a PUT is refused);
  * copied rather than imported, per this package's zero-dependency rule.
  */
@@ -710,6 +712,9 @@ export const RESERVED_ENV_NAMES = [
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',
+    'FACTORY_STATS_URL',
+    'INGEST_TOKEN',
+    'BELLOWS_SESSION_ID',
 ] as const;
 
 /**
@@ -760,9 +765,11 @@ const envLine = (job: BoardJob, name: string, value: string): string => {
 
 /**
  * The `--env-file` body for the runner: the claim env's lines, then the loop's minted gate
- * credentials. Pure and exported for the same pinning as dockerArgs.
+ * credentials, then the reporter's ingest token. Pure and exported for the same pinning as
+ * dockerArgs. The config argument is optional and only ever adds the token line — aux containers
+ * (sync, publish, gates) are called without it and get no credential that reports telemetry.
  */
-export function envFileBody(job: BoardJob): string {
+export function envFileBody(job: BoardJob, config?: DriverConfig): string {
     const lines = Object.entries(claimEnv(job)).map(([name, value]) => envLine(job, name, value));
     // The driver's own gate credentials go LAST. Docker's --env-file is last-duplicate-wins, so
     // the order is the precedence rule: a `BELLOWS_GATE_TOKEN` a member configured in any env
@@ -771,6 +778,12 @@ export function envFileBody(job: BoardJob): string {
     // what makes "the driver wins a collision" readable in one place.
     for (const [name, value] of Object.entries(job.gateEnv ?? {})) {
         lines.push(envLine(job, name, value));
+    }
+    // The token is the one driver-side credential in the file, and it goes after everything:
+    // same precedence rule, and the line a reader audits for "what can authenticate as this
+    // runner" is always the last one.
+    if (config?.ingestToken) {
+        lines.push(envLine(job, 'INGEST_TOKEN', config.ingestToken));
     }
     return lines.length ? `${lines.join('\n')}\n` : '';
 }
@@ -875,9 +888,10 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         const claim = claimEnv(job);
         const claimNames = Object.keys(claim);
         // The loop's minted gate credentials ride the same file — envFileBody appends them after
-        // the claim's lines — so a gated job whose claim resolves to nothing needs one too:
-        // without it the runner has neither credential and can never make an ad-hoc gate call.
-        const needsFile = claimNames.length > 0 || Object.keys(job.gateEnv ?? {}).length > 0;
+        // the claim's lines — and so does the reporter's ingest token, so a job whose claim
+        // resolves to nothing still needs one: without it the runner has neither its gate
+        // credentials nor the credential its attribution reports authenticate with.
+        const needsFile = claimNames.length > 0 || Object.keys(job.gateEnv ?? {}).length > 0 || Boolean(config.ingestToken);
         if (needsFile && !envFile) {
             throw new Error(`refusing to run job ${job.id}: claim or gate env exists but no env file was given`);
         }
@@ -903,6 +917,12 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
     // docker read OTEL_EXPORTER_OTLP_ENDPOINT from this process's environment — a different
     // variable from the RUNNER_OTEL_ENDPOINT this config was built from.
     args.push('-e', `OTEL_EXPORTER_OTLP_ENDPOINT=${config.otelEndpoint}`);
+
+    // Where the runner's branch reporter posts. The board's own URL — the same reasoning as the
+    // OTEL endpoint beside it: a literal URL, not a credential, forwarded under Remote Control
+    // too (attribution is as wanted on a drivable session as on a headless one). Unset in the
+    // config would have refused at boot; the default names the board JOB_BOARD_URL names.
+    args.push('-e', `FACTORY_STATS_URL=${config.statsUrl}`);
 
     // opencode: headless only — Remote Control is refused in the config, so there is no RC branch
     // here and no permissions flag either (the image's baked opencode.json decides them).
@@ -930,13 +950,18 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         // dot-directory the workspace reconcile never mistakes for a checkout (it clones only
         // rows it selected, and its naming rules refuse a leading dot).
         args.push('-e', `XDG_DATA_HOME=${config.workspaceMount}/${workspacePath(job)}/.opencode`);
-        args.push(config.image, 'run');
+        // Only a follow-up has a session here, and the reporter must name it: the follow-up's
+        // tokens belong to the SAME conversation the parent ran. A fresh run is discovered live
+        // by the reporter from the session database this argv's XDG_DATA_HOME keeps. BEFORE the
+        // image name — docker stops option parsing there, and an `-e` past it is the CLI's argv.
         if (session) {
             if (!SESSION_ID.test(session.id)) {
                 throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
             }
-            args.push('--session', session.id);
+            args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
         }
+        args.push(config.image, 'run');
+        if (session) args.push('--session', session.id);
         args.push(job.command);
         return args;
     }
@@ -944,6 +969,10 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
     if (!session) {
         throw new Error(`refusing to run job ${job.id}: the claude-code runner runs every job as a session`);
     }
+    // The session id the reporter claims. It is safe by construction — minted here as a uuid, or
+    // arriving on the claim only after the board's own token check — which is the same guarantee
+    // `--session-id` below has always ridden on.
+    args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
 
     // Restoring a session versus starting one. `--resume` keeps the original id — forking it is a
     // separate flag — which is what makes a parked job's link survive being parked.
@@ -1469,11 +1498,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
              * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
              * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
              * in argv and never in this process's environment. The body is the claim env PLUS the
-             * loop's minted gate credentials, so a gated job whose claim resolves to nothing still
-             * carries its BELLOWS_GATE_URL/TOKEN. Skipped under Remote Control, exactly like every
-             * other forwarded credential.
+             * loop's minted gate credentials PLUS the reporter's ingest token, so a gated job whose
+             * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN. Skipped under
+             * Remote Control, exactly like every other forwarded credential.
              */
-            const body = config.remoteControl ? '' : envFileBody(job);
+            const body = config.remoteControl ? '' : envFileBody(job, config);
             const file = body ? envFilePath(job) : null;
             if (file) await writeFile(file, body, { mode: 0o600 });
             // The write above is an await, so the kill-check must run once more: a lease lost

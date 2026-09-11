@@ -54,6 +54,23 @@ export interface DriverConfig {
      * kubernetes runner has no network to join and would silently drop telemetry without this.
      */
     otelEndpoint: string;
+    /**
+     * Where the runner's branch reporter posts its `session -> (repo, branch)` samples: the
+     * board's own base URL, because `/api/sessions/branch` is a board route and the runner's
+     * OTLP metrics carry a session id and nothing else — attribution needs this side channel.
+     * Defaults to JOB_BOARD_URL (validated identically): on compose and in the chart the runner
+     * can already reach the board, so zero configuration is the common case. RUNNER_STATS_URL
+     * overrides it for a split topology the default cannot name — and where it cannot reach the
+     * board, the reporter's reports silently no-op, exactly as its other failures do.
+     */
+    statsUrl: string;
+    /**
+     * The board's optional ingest token, forwarded so the reporter's reports authenticate on a
+     * board that requires one. Empty forwards nothing. A credential: it travels the env file
+     * (docker) or the per-attempt Secret (kubernetes), never an argv — and never under Remote
+     * Control, where no forwarded credential of any kind rides (docs/jobs.md).
+     */
+    ingestToken: string;
     /** Joins the runner to a docker network, which is what lets its telemetry reach the collector. */
     network: string | null;
     concurrency: number;
@@ -233,6 +250,23 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         throw new Error(`JOB_BOARD_URL must be an http(s) URL, got "${boardUrl}"`);
     }
 
+    // The branch reporter's endpoint, defaulted to the board itself — one URL, already checked
+    // and already trailing-slash-stripped. An explicit RUNNER_STATS_URL is validated under its
+    // own name (strip included, for the same reason: agents concatenate request paths onto this
+    // string, and a double slash 404s into the reporter's silence), so a bad override is blamed
+    // on the variable that caused it, not on the board URL it displaced.
+    const statsUrl = ((env.RUNNER_STATS_URL ?? '').trim() || boardUrl).replace(/\/+$/, '');
+    const statsScheme = (() => {
+        try {
+            return new URL(statsUrl).protocol;
+        } catch {
+            return null;
+        }
+    })();
+    if (statsScheme !== 'http:' && statsScheme !== 'https:') {
+        throw new Error(`RUNNER_STATS_URL must be an http(s) URL, got "${statsUrl}"`);
+    }
+
     // Which CLI the runner speaks. An explicit enum, fatal on an unknown value: a typo must not
     // read as claude-code and hand every prompt to a CLI that exits on "unknown flag" — the job
     // would burn its attempts looking like a command that keeps failing.
@@ -342,6 +376,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // Empty is unset, like every other optional value here: default to the collector on the
         // compose network, so the endpoint is always provided to the runner.
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,
+        statsUrl,
+        ingestToken: (env.RUNNER_INGEST_TOKEN ?? '').trim(),
         network: (env.RUNNER_NETWORK ?? '').trim() || null,
         concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, 1, 32),
         pollMs: int(env.DRIVER_POLL_MS, 'DRIVER_POLL_MS', DEFAULTS.pollMs, 250, 300_000),

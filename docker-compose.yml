@@ -191,6 +191,10 @@ services:
             # compose network cannot name — the same override the kubernetes runner applies in the
             # pod spec. Explicit here so the driver forwards it to the runner container.
             RUNNER_OTEL_ENDPOINT: ${RUNNER_OTEL_ENDPOINT:-http://collector:4318}
+            # The credential the runner's branch reporter presents to the board's ingest route —
+            # the same INGEST_TOKEN the dashboard and collector consume. Empty keeps the ingest
+            # routes open exactly as it does for them.
+            RUNNER_INGEST_TOKEN: ${INGEST_TOKEN:-}
             # The gate endpoint binds all interfaces INSIDE this container — loopback would leave
             # it reachable from nothing, and host.docker.internal from a runner resolves to the
             # host, where nothing listens. The runner reaches it by this container's DNS name on
