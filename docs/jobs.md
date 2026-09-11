@@ -709,7 +709,9 @@ a request, not an error path.
 **A succeeded run whose work exists only in a local checkout is not a success.** After the agent
 finishes and the gates pass — and only then — the driver deterministically publishes: task branch
 (when the checkout sits on the default one), commit, push, and a PR, each step a separate
-throwaway container over the workspaces volume. The executor's baked `AGENTS.md` tells the agent
+throwaway container over the workspaces volume (docker) or a separate batch Job over the
+workspaces PVC (kubernetes) — the same `publishCheckout` workflow over both, so the two
+executors cannot drift on what a publish decides. The executor's baked `AGENTS.md` tells the agent
 this is the shape of a finished task (branch, commit as you go, gates green, never ask); the
 driver-side publish is what makes it enforcement rather than hope — instructions are what the
 model follows, and this is what happens regardless. Nothing is ever pushed past a failing gate,
@@ -720,7 +722,8 @@ mid-thought, and pushing it would publish work no verdict was ever given on.
 **A publish failure fails the verdict.** The work did not land; a green badge over a tree that
 exists on one machine only is the exact lie this exists to prevent. The reason (which git step,
 what it said) rides the output the author reads. No credential passes through an argv: the claim
-env rides the same 0600 env file the runner got, and the push credential helper reads
+env rides the same 0600 env file the runner got (docker) or the same per-attempt Secret the
+runner's pod reads through `envFrom` (kubernetes), and the push credential helper reads
 `GITHUB_TOKEN` from the container's environment.
 
 **Idempotence and limits.** An existing task branch is reused, never reset (`switch -c` only when
@@ -730,13 +733,12 @@ which is fatal for a never-pushed branch and once read a two-commit task branch 
 publish". The push is `--force-with-lease`: the startup sync legitimately rewrites a task branch's
 base, and the lease refuses to clobber a remote that moved under us. No uncommitted changes and
 nothing unpushed is the ordinary no-op; a checkout that was never cloned is the other one.
-`EXECUTOR=kubernetes` cannot publish (the publish steps are sibling containers over a docker
-volume) and its runner implements no `publishGit` at all, so the loop skips it: a clean run
-reports succeeded with its work left unpushed in the task worktree — stated here as the
-limitation it is, not discovered by a user. The startup sync it DOES run: the worktree script is
-a Job like every other aux Job (read-write PVC, the claim env by a per-attempt Secret), because
-the worktree does not exist until something creates it and a refusal there would fail every
-claimed job. Under
+`EXECUTOR=kubernetes` publishes the same way, one aux Job per step — the step Jobs carry the
+attempt's `factory.job`/`factory.lease` labels, so the re-claim fence sweeps a dead driver's
+half-finished publish before a replacement touches the tree. The startup sync runs on both
+executors too: the worktree script is a Job like every other aux Job (read-write PVC, the claim
+env by a per-attempt Secret), because the worktree does not exist until something creates it and
+a refusal there would fail every claimed job. Under
 `AUTH_MODE=none` a board with no `GITHUB_TOKEN` in any env scope will fail the publish at push
 with the daemon's authentication error — the work stays local, loudly.
 

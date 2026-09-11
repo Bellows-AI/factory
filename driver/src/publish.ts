@@ -220,3 +220,154 @@ export const isBranchName = (name: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._
  * file deliberately carries no comments — its documentation lives here.
  */
 export const CREDENTIAL_HELPER = script('credential-helper.sh');
+
+/**
+ * One publish step, as the platform-agnostic workflow hands it to a platform transport. The
+ * decisions the two executors must never let drift — branch reuse, the fallback identity,
+ * `--force-with-lease`, PR reuse — live in `publishCheckout` below; this is only WHAT to run,
+ * and the transport decides where a container running it comes from (`docker run --rm` with a
+ * swapped entrypoint on one platform, a batch Job whose `command` is the same argv on the other).
+ */
+export interface PublishStep {
+    /** The step's name in failure messages — "git push", the tool's own words. */
+    label: string;
+    /** The executable the container runs: docker's `--entrypoint`, the k8s command head. */
+    entrypoint: 'git' | 'gh' | 'node';
+    /** The full argv after the entrypoint, exactly what the docker runner passes after the image. */
+    args: string[];
+    /** Whether the step needs the claim env — the token the push and the PR calls read. */
+    env: boolean;
+    /** Literal env values, always paths or code and never credentials: the `REPO` the probe reads. */
+    envLiterals?: Record<string, string>;
+    /** Whether the step runs inside the task worktree (a working directory). */
+    inRepo: boolean;
+}
+
+/**
+ * Runs one publish step and answers its stdout. Rejects on a nonzero exit with the tool's own
+ * output — the same extraction the docker runner performs on execFile's stderr — because the
+ * workflow wraps it with the step's name, and a failure must name its step and carry the one
+ * line a human can act on ("remote: Permission to ..." lives in git's stderr).
+ */
+export type RunPublishStep = (step: PublishStep) => Promise<{ stdout: string }>;
+
+/**
+ * The publish workflow both executors run: probe the checkout, branch, commit, push, open (or
+ * reuse) the PR — every decision that must not drift between platforms, over an injected
+ * transport. The docker runner's transport is one `docker run` per step; the kubernetes
+ * runner's is one aux Job per step. Same steps, same order, same failure messages, so a
+ * publish that fails reads identically wherever it ran.
+ */
+export async function publishCheckout(config: DriverConfig, job: BoardJob, runStep: RunPublishStep): Promise<PublishResult> {
+    const repo = worktreeDir(config, job);
+    if (!repo) return publishFailed('the job names no checkout this driver can publish');
+
+    /** Wraps the transport's rejection with the step's name — docker's own runStep shape. */
+    const step = async (publish: PublishStep): Promise<{ stdout: string }> => {
+        try {
+            return await runStep(publish);
+        } catch (e) {
+            throw new Error(`${publish.label}: ${(e as Error).message.slice(0, 300)}`);
+        }
+    };
+
+    try {
+        const plan = publishPlan(job);
+
+        // What is there to publish? A checkout that was never cloned and a clean, fully-pushed
+        // tree are the two ordinary no-ops; everything else flows. A probe that cannot run
+        // reads as no state at all — the no-op with the reason, never a crash.
+        const probe = await runStep({
+            label: 'probe',
+            entrypoint: 'node',
+            args: ['-e', gitProbeScript],
+            env: false,
+            envLiterals: { REPO: repo },
+            inRepo: false,
+        }).catch(() => null);
+        const state = parseGitState(probe?.stdout ?? '');
+        if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
+        if (!state.dirty && state.unpushed === 0) {
+            return publishNothing('no uncommitted changes and nothing unpushed');
+        }
+
+        // A task never lands on the default branch. An existing task branch is reused —
+        // `switch -c` only when the branch is not there yet, so earlier attempts' commits
+        // survive.
+        const onDefault = !state.branch || state.branch === state.defaultBranch;
+        const branch = onDefault ? plan.branch : state.branch;
+        if (!isBranchName(branch)) {
+            return publishFailed(`refusing to publish a branch named "${branch}"`);
+        }
+        if (onDefault) {
+            const switched = await runStep({
+                label: 'git switch',
+                entrypoint: 'git',
+                args: ['switch', branch],
+                env: false,
+                inRepo: true,
+            }).catch(() => null);
+            if (!switched) {
+                await step({ label: 'git switch', entrypoint: 'git', args: ['switch', '-c', branch], env: false, inRepo: true });
+            }
+        }
+
+        if (state.dirty) {
+            await step({ label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true });
+            // The checkout usually has no committer identity (the agent does not need one to
+            // edit); a fallback is applied only when the probe found none, so a member-configured
+            // identity is never overridden.
+            const identity = state.hasIdentity
+                ? []
+                : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
+            await step({ label: 'git commit', entrypoint: 'git', args: [...identity, 'commit', '-m', plan.title], env: false, inRepo: true });
+        }
+
+        await step({
+            label: 'git push',
+            entrypoint: 'git',
+            args: [
+                '-c',
+                `credential.helper=${CREDENTIAL_HELPER}`,
+                'push',
+                '-u',
+                '--force-with-lease',
+                'origin',
+                'HEAD',
+            ],
+            env: true,
+            inRepo: true,
+        });
+
+        // Reuse the branch's PR when one exists — a task that already shipped its PR gets
+        // idempotent publishes, not duplicates. A `pr view` that fails is the ordinary
+        // "no PR yet", not a step failure: the next call creates one.
+        let prUrl: string | null = null;
+        const existing = await runStep({
+            label: 'gh pr view',
+            entrypoint: 'gh',
+            args: ['pr', 'view', branch, '--json', 'url', '-q', '.url'],
+            env: true,
+            inRepo: true,
+        }).catch(() => null);
+        if (existing) {
+            prUrl = existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
+        }
+        if (!prUrl) {
+            const body = plan.issueNumber
+                ? `Closes #${plan.issueNumber}.\n\nPublished by the factory board after the declared gates passed.`
+                : 'Published by the factory board after the declared gates passed.';
+            const created = await step({
+                label: 'gh pr create',
+                entrypoint: 'gh',
+                args: ['pr', 'create', '--head', branch, '--title', plan.title, '--body', body],
+                env: true,
+                inRepo: true,
+            });
+            prUrl = created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
+        }
+        return { ok: true, published: true, branch, prUrl, reason: null };
+    } catch (e) {
+        return publishFailed(`${(e as Error).message}`.slice(0, 400));
+    }
+}

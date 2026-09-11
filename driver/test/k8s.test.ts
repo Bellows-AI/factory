@@ -18,6 +18,10 @@ import {
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
+    parsePodMetrics,
+    publishEnvSecretName,
+    publishStepJobName,
+    publishStepJobSpec,
     runnerJobSpec,
     reclaimJobName,
     reclaimJobSpec,
@@ -28,7 +32,7 @@ import {
     syncJobName,
     syncJobSpec,
 } from '../src/k8s.js';
-import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -942,6 +946,308 @@ describe('the worktree reclaim', () => {
         expect(await runner(request).reclaimWorktree(job)).toEqual({ ok: true, removed: false, reason: null });
         // Not even a claim attempt: there is no tree and no checkout to fence.
         expect(calls).toHaveLength(0);
+    });
+});
+
+/*
+ * Publishing, ported (docs/jobs.md): the same publishCheckout workflow the docker runner runs,
+ * over this executor's transport — one aux Job per step, the claim env by a per-attempt Secret,
+ * the verdict off the pod's exit code and log. The spec pins mirror the sync's; the flow tests
+ * script each step's (exit code, log) pair in order, because every step asks the same routes.
+ */
+describe('publishing the produced work', () => {
+    const ISSUE_JOB: BoardJob = {
+        ...job,
+        command: '/fix https://github.com/Bellows-AI/factory/issues/10',
+        repo: 'Bellows-AI/factory',
+        env: { GITHUB_TOKEN: 't0k-3n' },
+    };
+    const WT = `/workspaces/bellows/${USER}/.worktrees/${ISSUE_JOB.id}`;
+    const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+    const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+
+    it('runs one step as an aux Job in the worktree, fenced by the attempt labels', () => {
+        const spec = publishStepJobSpec(
+            cfg(),
+            ISSUE_JOB,
+            2,
+            {
+                label: 'git push',
+                entrypoint: 'git',
+                args: ['-c', `credential.helper=${CREDENTIAL_HELPER}`, 'push', '-u', '--force-with-lease', 'origin', 'HEAD'],
+                env: true,
+                inRepo: true,
+            },
+            publishEnvSecretName(ISSUE_JOB),
+            WT,
+        );
+        expect(spec.metadata.name).toBe(publishStepJobName(ISSUE_JOB, 2));
+        expect(spec.metadata.labels).toEqual({ 'factory.job': ISSUE_JOB.id, 'factory.lease': ISSUE_JOB.leaseToken });
+        expect(spec.spec.template.metadata.labels).toEqual(spec.metadata.labels);
+        const container = spec.spec.template.spec.containers[0];
+        // The argv is exactly what the docker runner passes after the image name.
+        expect(container.command).toEqual([
+            'git',
+            '-c',
+            `credential.helper=${CREDENTIAL_HELPER}`,
+            'push',
+            '-u',
+            '--force-with-lease',
+            'origin',
+            'HEAD',
+        ]);
+        expect(container.workingDir).toBe(WT);
+        expect(container.envFrom).toEqual([{ secretRef: { name: publishEnvSecretName(ISSUE_JOB) } }]);
+        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        expect(spec.spec.template.spec.automountServiceAccountToken).toBe(false);
+        expect(spec.spec.backoffLimit).toBe(0);
+        expect(spec.spec.template.spec.restartPolicy).toBe('Never');
+        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+        // The pin that must survive: no credential VALUE anywhere in the spec — the helper is
+        // CODE (the same class as the sync's CRED_HELPER literal), the token rides the Secret.
+        expect(JSON.stringify(spec)).not.toContain('t0k-3n');
+        expect(JSON.stringify(spec)).toContain('credential.helper=');
+    });
+
+    it('takes no workingDir and only the REPO literal for the probe', () => {
+        const probe = publishStepJobSpec(
+            cfg(),
+            ISSUE_JOB,
+            1,
+            { label: 'probe', entrypoint: 'node', args: ['-e', gitProbeScript], env: false, envLiterals: { REPO: WT }, inRepo: false },
+            publishEnvSecretName(ISSUE_JOB),
+            WT,
+        ).spec.template.spec.containers[0];
+        expect(probe.workingDir).toBeUndefined();
+        expect(probe.envFrom).toBeUndefined();
+        expect(probe.env).toEqual([{ name: 'REPO', value: WT }]);
+    });
+
+    it('names no Secret at all for a step that needs no env', () => {
+        const plain = publishStepJobSpec(
+            cfg(),
+            ISSUE_JOB,
+            4,
+            { label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true },
+            publishEnvSecretName(ISSUE_JOB),
+            WT,
+        ).spec.template.spec.containers[0];
+        expect(plain.envFrom).toBeUndefined();
+        expect(plain.env).toBeUndefined();
+    });
+
+    /**
+     * A stateful fake for the publish flow: the Job routes come from fakeRequest (every create
+     * 201s, every status poll reads success), while each step's pods-list answer is scripted —
+     * one (exit code, log) pair per step, consumed in order, the log serving that step's read.
+     */
+    const scripted = (steps: { exit: number; log: string }[]) => {
+        const base = fakeRequest();
+        const queue = [...steps];
+        let current = { exit: 0, log: '' };
+        const request: K8sRequest = (method, path, body) => {
+            if (
+                method === 'GET' &&
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
+                current = queue.shift() ?? { exit: 0, log: '' };
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        items: [
+                            {
+                                metadata: { name: podName },
+                                status: { containerStatuses: [{ state: { terminated: { exitCode: current.exit } } }] },
+                            },
+                        ],
+                    }),
+                });
+            }
+            if (method === 'GET' && path.includes('/log')) {
+                return Promise.resolve({ status: 200, body: current.log });
+            }
+            return base.request(method, path, body);
+        };
+        return { request, calls: base.calls };
+    };
+
+    const DIRTY_ON_MAIN = { cloned: true, branch: 'main', defaultBranch: 'main', dirty: true, unpushed: 0, hasIdentity: false };
+
+    it('branches, commits, pushes and opens the PR — one Job per step, in order', async () => {
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) }, // probe
+            { exit: 1, log: '' }, // switch — no such branch
+            { exit: 0, log: '' }, // switch -c
+            { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // commit
+            { exit: 0, log: '' }, // push
+            { exit: 1, log: '' }, // pr view — none yet
+            { exit: 0, log: `${PR_URL}\n` }, // pr create
+        ]);
+        const result = await runner(request).publishGit(ISSUE_JOB);
+
+        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(posted.map((call) => (call.body as { metadata?: { name?: string } }).metadata?.name)).toEqual(
+            [1, 2, 3, 4, 5, 6, 7, 8].map((n) => publishStepJobName(ISSUE_JOB, n)),
+        );
+        // Every step Job is inside the fence sweep — a dead driver's publish cannot outlive the
+        // next claimant.
+        for (const call of posted) {
+            expect((call.body as { metadata?: { labels?: Record<string, string> } }).metadata?.labels).toMatchObject({
+                'factory.job': ISSUE_JOB.id,
+                'factory.lease': ISSUE_JOB.leaseToken,
+            });
+        }
+        // The decisions are the workflow's, identical to docker's: the commit carries the plan
+        // title and the fallback identity, the push is force-with-lease behind the helper.
+        const commands = posted.map(
+            (call) => (call.body as { spec?: { template?: { spec?: { containers?: { command?: string[] }[] } } } }).spec?.template?.spec?.containers?.[0]?.command ?? [],
+        );
+        const commit = commands.find((argv) => argv.includes('commit'));
+        expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
+        expect(commit).toContain('user.name=factory-ai');
+        const push = commands.find((argv) => argv.includes('push'));
+        expect(push.join(' ')).toContain('credential.helper=');
+        expect(push).toContain('--force-with-lease');
+        const create = commands.find((argv) => argv.includes('pr') && argv.includes('create'));
+        expect(create).toContain('--head');
+        expect(create).toContain('fix/10');
+        expect(JSON.stringify(commands)).not.toContain('t0k-3n');
+        // Every step's Job goes when the step is done — names carry the attempt's token, so a
+        // delete can never reach a replacement's anything.
+        for (let n = 1; n <= 8; n += 1) {
+            expect(
+                calls.some(
+                    (call) =>
+                        call.method === 'DELETE' &&
+                        call.path === `${jobsPath(namespace)}/${publishStepJobName(ISSUE_JOB, n)}?propagationPolicy=Background`,
+                ),
+            ).toBe(true);
+        }
+    });
+
+    it('creates the publish env Secret before the first step, and reaps it at the end', async () => {
+        const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) }]);
+        await runner(request).publishGit(ISSUE_JOB);
+
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        expect(secretPost?.body).toMatchObject({
+            metadata: { name: publishEnvSecretName(ISSUE_JOB) },
+            stringData: { GITHUB_TOKEN: 't0k-3n' },
+        });
+        expect(calls.findIndex((call) => call.method === 'POST' && call.path === secretsPath)).toBeLessThan(
+            calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace)),
+        );
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${publishEnvSecretName(ISSUE_JOB)}`),
+        ).toBe(true);
+    });
+
+    it('creates no Secret for an env-less claim', async () => {
+        const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
+        const result = await runner(request).publishGit({ ...ISSUE_JOB, env: undefined });
+
+        expect(result).toEqual({
+            ok: true,
+            published: false,
+            branch: null,
+            prUrl: null,
+            reason: 'the checkout has not been cloned yet',
+        });
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+    });
+
+    it('answers the clean-tree no-op after the probe alone', async () => {
+        const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) }]);
+        const result = await runner(request).publishGit(ISSUE_JOB);
+
+        expect(result).toEqual({
+            ok: true,
+            published: false,
+            branch: null,
+            prUrl: null,
+            reason: 'no uncommitted changes and nothing unpushed',
+        });
+        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
+    });
+
+    it('reuses an existing task branch and an existing PR', async () => {
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false }) },
+            { exit: 0, log: '' }, // push of the unpushed commit
+            { exit: 0, log: `${PR_URL}\n` }, // pr view finds the branch's PR
+        ]);
+        const result = await runner(request).publishGit(ISSUE_JOB);
+
+        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(3);
+    });
+
+    it('fails with the step and the tool’s own words when the push is refused', async () => {
+        const { request } = scripted([
+            { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) },
+            { exit: 1, log: '' }, // switch
+            { exit: 0, log: '' }, // switch -c
+            { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // commit
+            {
+                exit: 128,
+                log: 'remote: Permission to Bellows-AI/factory.git denied to bellows-ai[bot]\nfatal: Authentication failed\n',
+            }, // push
+        ]);
+        const result = await runner(request).publishGit(ISSUE_JOB);
+
+        expect(result.ok).toBe(false);
+        expect(result.published).toBe(false);
+        expect(result.reason).toContain('git push');
+        expect(result.reason).toContain('Permission to Bellows-AI/factory');
+    });
+});
+
+/*
+ * The runner vitals under kubernetes: the metrics API is the docker stats twin, read from the
+ * runner's own pod — and null, never an error, whenever there is nothing to read (no pod yet,
+ * no metrics-server in the cluster, a body that is not metrics).
+ */
+describe('the runner vitals', () => {
+    it('parses the PodMetrics object the metrics API answers', () => {
+        expect(
+            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '250m', memory: '150Mi' } }] })),
+        ).toEqual({ cpuPercent: 25, memUsedMb: 150, memPercent: null });
+        // Nanocores and plain bytes — the other spellings metrics-server emits.
+        expect(
+            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '1250000n', memory: '5368709120' } }] })),
+        ).toEqual({ cpuPercent: 0.125, memUsedMb: 5120, memPercent: null });
+        // Whole cores and binary memory sizes.
+        expect(
+            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '1.5', memory: '2Gi' } }] })),
+        ).toEqual({ cpuPercent: 150, memUsedMb: 2048, memPercent: null });
+        expect(parsePodMetrics('')).toBeNull();
+        expect(parsePodMetrics('{"containers":[]}')).toBeNull();
+        expect(parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: 'busy', memory: '150Mi' } }] }))).toBeNull();
+    });
+
+    it('samples through the metrics API, and answers null when the cluster runs no metrics-server', async () => {
+        const base = fakeRequest();
+        const withMetrics: K8sRequest = (method, path, body) => {
+            if (path === `/apis/metrics.k8s.io/v1beta1/namespaces/${namespace}/pods/${podName}`) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({ containers: [{ usage: { cpu: '310m', memory: '96Mi' } }] }),
+                });
+            }
+            return base.request(method, path, body);
+        };
+        expect(await runner(withMetrics).sampleRuntime(job)).toEqual({ cpuPercent: 31, memUsedMb: 96, memPercent: null });
+
+        const noMetricsServer: K8sRequest = (method, path, body) => {
+            if (path.startsWith('/apis/metrics.k8s.io/')) return Promise.resolve({ status: 404, body: 'no metrics-server' });
+            return base.request(method, path, body);
+        };
+        expect(await runner(noMetricsServer).sampleRuntime(job)).toBeNull();
     });
 });
 

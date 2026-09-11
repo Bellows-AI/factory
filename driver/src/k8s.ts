@@ -4,11 +4,11 @@ import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, SESSION_ID, workspacePathOf } from './docker.js';
-import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner } from './docker.js';
+import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
-import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, repoPath, worktreeBranch, worktreeDir } from './publish.js';
-import type { ReclaimResult, SyncResult } from './publish.js';
+import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, publishCheckout, publishFailed, repoPath, worktreeBranch, worktreeDir } from './publish.js';
+import type { PublishResult, PublishStep, ReclaimResult, SyncResult } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
 
@@ -725,6 +725,84 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
 }
 
 /**
+ * One publish step, as a Job — the ported half of docker's sibling-container publish: the same
+ * `publishCheckout` workflow (publish.ts) decides what runs; here it runs as one aux Job per
+ * step, `workingDir` at the task worktree over the same workspaces PVC. The steps carry the
+ * attempt's `factory.job`/`factory.lease` labels, which puts them inside the re-claim fence's
+ * sweep: a driver that dies mid-publish leaves Jobs the next claimant deletes before its own
+ * sync touches the tree — a cleaner handover than docker's, whose publish containers are
+ * anonymous and bounded only by their own exit.
+ *
+ * The argv is the SAME argv the docker runner passes after the image name — including, on the
+ * push, the credential-helper CODE as one `-c` argv element. A program, not a credential: the
+ * same class as the sync's `CRED_HELPER` literal, and as readable in a pod spec as it already
+ * is in a `docker run` argv. The token itself travels the per-attempt Secret, read through
+ * `envFrom` by the helper git spawns.
+ */
+const PUBLISH_STEP_DEADLINE_SECONDS = 600;
+
+/** The publish steps' per-attempt env Secret — same name discipline as the sync's. */
+export const publishEnvSecretName = (job: BoardJob): string =>
+    `factory-publish-${hash8(`${job.id}|${job.leaseToken}`)}-env`;
+
+/** One step's Job name: attempt-scoped by the hash, sequential by the counter. */
+export const publishStepJobName = (job: BoardJob, step: number): string =>
+    `factory-pub-${hash8(`${job.id}|${job.leaseToken}`)}-${step}`;
+
+export function publishStepJobSpec(
+    config: DriverConfig,
+    job: BoardJob,
+    step: number,
+    publish: PublishStep,
+    envSecret: string | null,
+    repo: string,
+): AuxJobSpec {
+    if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
+        throw new Error(`refusing to publish job ${job.id}: its ids are not the uuids the board claims`);
+    }
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: publishStepJobName(job, step), labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: PUBLISH_STEP_DEADLINE_SECONDS,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            name: `publish-${step}`,
+                            image: config.image,
+                            imagePullPolicy: config.imagePullPolicy,
+                            // The workflow's argv verbatim — the executable the docker runner
+                            // swaps in as --entrypoint is this command's head.
+                            command: [publish.entrypoint, ...publish.args],
+                            ...(publish.inRepo ? { workingDir: repo } : {}),
+                            ...(publish.envLiterals
+                                ? { env: Object.entries(publish.envLiterals).map(([name, value]) => ({ name, value })) }
+                                : {}),
+                            ...(publish.env && envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
+                            // Read-write: add/commit write the tree the run edited.
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                        },
+                    ],
+                    volumes: [
+                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+                    ],
+                },
+            },
+        },
+    };
+}
+
+/**
  * One declared service, as a Pod. A Pod and not a Job because a Job is a unit of WORK — a
  * service is a long-running neighbor the tests talk to, the k8s twin of docker's detached
  * container. `restartPolicy: Never` mirrors docker exactly: a detached container that crashes
@@ -1045,6 +1123,76 @@ function parse<T>(body: string): T {
     } catch {
         return {} as T;
     }
+}
+
+/*
+ * The runner vitals under kubernetes. `docker stats` has no direct twin here; the metrics API
+ * (`metrics.k8s.io`, served by the metrics-server a cluster may not run) is the closest one, and
+ * its absence is not an error: the interface blesses null as "no fresh sample", so a cluster
+ * without a metrics-server renders no vitals rather than a wrong number — the same answer any
+ * failed docker read gets.
+ */
+
+/** CPU quantities as the metrics API prints them: nanos, micros, millis, or whole cores. */
+const CPU_QUANTITY = /^([0-9]*\.?[0-9]+)(n|u|m)?$/;
+
+/** Millicores — the unit `cpuPercent` is a tenth of (1000m = one core = 100%). */
+const cpuMillicores = (value: string): number | null => {
+    const match = CPU_QUANTITY.exec(value.trim());
+    if (!match) return null;
+    const n = Number.parseFloat(match[1]!);
+    if (!Number.isFinite(n)) return null;
+    if (match[2] === 'n') return n / 1e6;
+    if (match[2] === 'u') return n / 1e3;
+    if (match[2] === 'm') return n;
+    return n * 1000;
+};
+
+/** Memory quantities to MiB: the binary suffixes metrics-server emits, plus plain bytes. */
+const MEM_TO_MIB: Record<string, number> = {
+    '': 1 / 1048576,
+    ki: 1 / 1024,
+    mi: 1,
+    gi: 1024,
+    ti: 1024 ** 2,
+    pi: 1024 ** 3,
+    ei: 1024 ** 4,
+    k: 1e3 / 1048576,
+    m: 1e6 / 1048576,
+    g: 1e9 / 1048576,
+    t: 1e12 / 1048576,
+    p: 1e15 / 1048576,
+    e: 1e18 / 1048576,
+};
+
+const memMbOfQuantity = (value: string): number | null => {
+    const match = /^([0-9]*\.?[0-9]+)\s*([A-Za-z]*)$/.exec(value.trim());
+    if (!match) return null;
+    const factor = MEM_TO_MIB[match[2]!.toLowerCase()];
+    if (factor === undefined) return null;
+    return Number.parseFloat(match[1]!) * factor;
+};
+
+/**
+ * Pulls the vitals out of one PodMetrics object — the first container is the runner, the only
+ * container the pod has. Pure and exported for the pinning, like `parseDockerStats`: null for
+ * anything it cannot read, because a missed sample costs freshness, never the run.
+ * `memPercent` is null by construction — the runner pod declares no memory limit, so there is
+ * no denominator to divide by, and a percentage against the node's whole memory would not be
+ * the number the docker dashboard renders either.
+ */
+export function parsePodMetrics(body: string): Omit<RuntimeSample, 'sampledAt'> | null {
+    let metrics: { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] };
+    try {
+        metrics = JSON.parse(body) as { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] };
+    } catch {
+        return null;
+    }
+    const usage = metrics.containers?.[0]?.usage;
+    const millicores = typeof usage?.cpu === 'string' ? cpuMillicores(usage.cpu) : null;
+    const memUsedMb = typeof usage?.memory === 'string' ? memMbOfQuantity(usage.memory) : null;
+    if (millicores === null || memUsedMb === null) return null;
+    return { cpuPercent: millicores / 10, memUsedMb, memPercent: null };
 }
 
 /**
@@ -1702,6 +1850,71 @@ export function createKubernetesRunner(
         }
     };
 
+    /**
+     * Runs one aux Job to its verdict: poll the Job to a terminal status with the same bounded
+     * patience every verdict-carrying read has, then read the exit code off its pod and the
+     * output off the pod's log — the same discovery (job-name label, terminating pods skipped)
+     * and the same succeeded-with-no-pod convention (one pod, never retried, so a success can
+     * only have counted an exit-0 termination) the runner's own verdict read applies. Used by
+     * the publish steps, whose every container is exactly this shape.
+     */
+    const auxVerdict = async (jobName: string): Promise<{ exitCode: number | null; output: string }> => {
+        let failures = 0;
+        for (;;) {
+            let response: K8sResponse;
+            try {
+                response = await request('GET', jobPath(config.k8sNamespace, jobName));
+            } catch (e) {
+                if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) throw e;
+                await sleep(POLL_MS);
+                continue;
+            }
+            if (response.status === 404) {
+                throw new Error(`the job ${jobName} no longer exists`);
+            }
+            if (response.status === 429 || response.status >= 500) {
+                if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
+                    throw new Error(
+                        `reading the job ${jobName} answered ${response.status} ` +
+                            `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                    );
+                }
+                await sleep(POLL_MS);
+                continue;
+            }
+            if (response.status >= 300) {
+                throw new Error(`reading the job ${jobName} answered ${response.status}: ${response.body.slice(0, 200)}`);
+            }
+            failures = 0;
+            const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+            if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) {
+                const succeeded = (status.succeeded ?? 0) >= 1;
+                const pods = await readVerdict(
+                    `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+                    `listing the pods of ${jobName}`,
+                );
+                if (pods.status >= 300) {
+                    throw new Error(`listing the pods of ${jobName} answered ${pods.status}`);
+                }
+                const pod = parse<K8sPodList>(pods.body).items?.find(
+                    (item) => !item.metadata?.deletionTimestamp,
+                );
+                const exitCode =
+                    pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
+                let output = '';
+                if (pod?.metadata?.name) {
+                    const log = await request(
+                        'GET',
+                        `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`,
+                    ).catch(() => ({ status: 0, body: '' }));
+                    if (log.status < 300) output = log.body;
+                }
+                return { exitCode, output };
+            }
+            await sleep(POLL_MS);
+        }
+    };
+
     const runner = {
         // Remote Control is refused at config under this executor, and the loop polls the remote id
         // only under Remote Control — so null is never even asked for. The interface blesses it.
@@ -1709,11 +1922,37 @@ export function createKubernetesRunner(
             return null;
         },
 
-        // No vitals here: `docker stats` has no kubernetes twin, and a pod's metrics come from
-        // the metrics-server the cluster may not run. The dashboard renders nothing rather than
-        // a wrong number.
-        async sampleRuntime() {
-            return null;
+        // The docker runner samples `docker stats`; the twin here is the metrics API, read from
+        // the runner's own pod — discovered by the same job-name label the log read uses,
+        // terminating pods skipped for the same reason. Every failure (no pod yet, no
+        // metrics-server in the cluster, a blink) answers null: "no fresh sample", never an
+        // error, exactly what a failed docker read answers.
+        async sampleRuntime(job: BoardJob) {
+            let pods: K8sResponse;
+            try {
+                pods = await request(
+                    'GET',
+                    `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${name(job)}`)}`,
+                );
+            } catch {
+                return null;
+            }
+            if (pods.status >= 300) return null;
+            const runnerPod = parse<K8sPodList>(pods.body).items?.find(
+                (item) => !item.metadata?.deletionTimestamp,
+            )?.metadata?.name;
+            if (!runnerPod) return null;
+            let metrics: K8sResponse;
+            try {
+                metrics = await request(
+                    'GET',
+                    `/apis/metrics.k8s.io/v1beta1/namespaces/${config.k8sNamespace}/pods/${runnerPod}`,
+                );
+            } catch {
+                return null;
+            }
+            if (metrics.status >= 300) return null;
+            return parsePodMetrics(metrics.body);
         },
 
         // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing
@@ -2054,15 +2293,85 @@ export function createKubernetesRunner(
             return outcome;
         },
 
-        // The publish steps are sibling containers over a named docker volume — the one feature
-        // this executor genuinely does not have. NOT implemented at all, so the loop's
-        // `runner.publishGit` guard skips it: a clean run reports succeeded with its work left
-        // in the task worktree, loudly unstated as "published" and stated plainly here and in
-        // docs/jobs.md. Porting the publish is future work.
-        //
-        // The startup sync, by contrast, IS here (see syncJobSpec): the loop calls it on every
-        // claim, the task worktree does not exist until something creates it, and a refusal
-        // would fail every claimed job.
+        // The publish, ported: the same publishCheckout workflow the docker runner runs
+        // (publish.ts — one place for every decision the two executors must not drift on), with
+        // this executor's transport underneath: one aux Job per step over the workspaces PVC,
+        // the claim env by a per-attempt Secret read through envFrom — the same discipline the
+        // sync, the gates and the runner obey — and the verdict off the pod's exit code and
+        // log. The step Jobs carry the attempt's factory.job/factory.lease labels, so the
+        // re-claim fence sweeps a dead driver's publish Jobs before a replacement touches the
+        // tree; the claim is NOT re-taken here, exactly as docker takes nothing for its
+        // publish: the publish runs in the loop's post-run position where the heartbeat is
+        // still live, so the lease — not the ConfigMap — is what excludes a replacement.
+        async publishGit(job: BoardJob): Promise<PublishResult> {
+            const repo = worktreeDir(config, job);
+            if (!repo) return publishFailed('the job names no checkout this driver can publish');
+            const env = envBodyToData(envFileBody(job));
+            const secret = Object.keys(env).length ? publishEnvSecretName(job) : null;
+            if (secret) {
+                const response = await request('POST', secretsPath, {
+                    apiVersion: 'v1',
+                    kind: 'Secret',
+                    type: 'Opaque',
+                    metadata: {
+                        name: secret,
+                        labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+                    },
+                    stringData: env,
+                });
+                if (response.status >= 300) {
+                    return publishFailed(
+                        `creating the publish secret answered ${response.status}: ${response.body.slice(0, 200)}`,
+                    );
+                }
+            }
+            let stepNumber = 0;
+            try {
+                return await publishCheckout(config, job, async (publish) => {
+                    stepNumber += 1;
+                    const jobName = publishStepJobName(job, stepNumber);
+                    try {
+                        const created = await request(
+                            'POST',
+                            jobsPath(config.k8sNamespace),
+                            publishStepJobSpec(config, job, stepNumber, publish, secret, repo),
+                        );
+                        if (created.status >= 300) {
+                            throw new Error(
+                                `creating the publish job answered ${created.status}: ${created.body.slice(0, 200)}`,
+                            );
+                        }
+                        const verdict = await auxVerdict(jobName);
+                        // A nonzero exit is the step's failure and the tool's own words are the
+                        // reason — the log tail is what the workflow's step wrapper puts under
+                        // the step's name, the exact role git's stderr plays on docker.
+                        if (verdict.exitCode !== 0) {
+                            throw new Error(
+                                verdict.output.trim() ||
+                                    `the step exited ${verdict.exitCode ?? 'without a readable code'}`,
+                            );
+                        }
+                        return { stdout: verdict.output };
+                    } finally {
+                        // The step Job goes on every path, fire-and-forget: its name carries
+                        // this attempt's lease token, and a delete that misses is swept by the
+                        // next attempt's fence anyway.
+                        void request(
+                            'DELETE',
+                            `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`,
+                        ).then(() => undefined, () => undefined);
+                    }
+                });
+            } finally {
+                if (secret) {
+                    void request('DELETE', `${secretsPath}/${secret}`).then(() => undefined, () => undefined);
+                }
+            }
+        },
+
+        // The startup sync, as ever (see syncJobSpec): the loop calls it on every claim, the
+        // task worktree does not exist until something creates it, and a refusal would fail
+        // every claimed job.
         async syncCheckout(job: BoardJob): Promise<SyncResult> {
             const clone = repoPath(config, job);
             const worktree = worktreeDir(config, job);

@@ -27,6 +27,8 @@ The two implementations decide the same things and are pinned the same way:
 | Timeout | the driver kills the container after `DRIVER_JOB_TIMEOUT_MS` | `activeDeadlineSeconds` = that value, enforced by the kubelet |
 | A failed run | the container exits, `--rm` cleans it | the pod terminates, `restartPolicy: Never`, `backoffLimit: 0`, object reaped by `ttlSecondsAfterFinished` |
 | What a runner must never hold | the docker socket (it does not) | a ServiceAccount token (`automountServiceAccountToken: false`) |
+| Publish | sibling containers over the workspaces volume, one per step | aux Jobs over the workspaces PVC, one per step — the same `publishCheckout` workflow over both |
+| Runner vitals | `docker stats --no-stream` | the metrics API (`metrics.k8s.io`), read from the runner's pod; null when the cluster runs no metrics-server |
 
 Two decisions in that table deserve their own paragraph:
 
@@ -212,8 +214,7 @@ database path as an env value, the mount read-write because a WAL needing recove
 polled to terminal and read from its pod log, its JSON line parsed into the outcome the same way
 `parseOpencodeRunOutcome` does on docker. A failed scrape never fails the verdict: the session id,
 finish reason and context stats are the run's follow-up-ability, not its work. What stays
-unported for opencode here is what stays unported for claude-code: publish (`publishGit` is a
-sibling-container feature), and the cache watch above.
+unported for opencode here is the cache watch above, refused with claude-code's.
 
 ## Gates and services on this platform
 
@@ -242,14 +243,25 @@ fails the job terminally, naming the conflict — the "wrong database came up" r
 later. The fleet is attempt-scoped by lease label, swept by the fence, and torn down when the
 run ends, the same three moments docker's is.
 
-Both start only between the fence and the runner Job: after it, so a stood-down attempt creates
-nothing; before it, so every author-facing refusal is answered while nothing of the attempt
-runs — a refused job never has a live runner to orphan. The one resource still refused throughout
-is publishing — the push and the PR need the sibling-container machinery this executor does not
-have, so the runner implements no `publishGit` and the loop skips it; a clean run's work stays
-unpushed in its task worktree, stated here rather than discovered. The startup sync, by
-contrast, IS ported: the task worktree (`docs/jobs.md`, issue #35) does not exist until something
-creates it, the loop syncs on every claim, and a refusal there would fail every claimed job.
+**Publishing runs here too — one aux Job per step.** The decisions live in `publishCheckout`
+(`driver/src/publish.ts`), shared with the docker runner so the two executors cannot drift on
+what a publish is: probe, branch, commit, push, PR — same order, same failure messages. The
+transport is this platform's: each step a batch Job whose `command` is exactly the argv the
+docker runner passes after the image name (the executable as its head, the credential-helper
+CODE as one `-c` element — a program, not a credential, the same class as the sync's
+`CRED_HELPER` literal), `workingDir` at the task worktree, the claim env by a per-attempt
+Secret read through `envFrom`, and the verdict off the pod's exit code and log — a nonzero exit
+carries the log tail as its reason, the role git's stderr plays on docker. The step Jobs carry
+the attempt's `factory.job`/`factory.lease` labels, which puts them inside the re-claim fence's
+sweep: a driver that dies mid-publish leaves Jobs the next claimant deletes (Foreground, before
+its own sync touches the tree) — a cleaner handover than docker's anonymous publish containers
+get. The checkout claim is not re-taken for the publish, exactly as docker takes nothing: the
+publish runs in the loop's post-run position where the heartbeat is still live, so the lease —
+not the ConfigMap — is what excludes a replacement writer.
+
+**The startup sync is ported the same way.** The task worktree (`docs/jobs.md`, issue #35) does
+not exist until something creates it, the loop syncs on every claim, and a refusal there would
+fail every claimed job.
 The sync is the first writer on the tree, so the checkout CLAIM is taken before the sync Job —
 the same acquireClaim protocol the runner's prepare runs, and the claim is then held through
 the run (prepare's acquire recognizes its own holder). A claim held against a live newer

@@ -381,9 +381,8 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('[driver] publish failed — the work did not land: git step failed: authentication refused');
     });
 
-    // A runner with no publishGit at all — the kubernetes shape, whose publish steps are future
-    // work — runs and reports like any other: publishing is a capability the loop asks for, not
-    // one it assumes.
+    // A runner with no publishGit at all — publishing is an optional capability the loop asks
+    // for, not one it assumes; both shipped runners carry it, a third platform need not.
     it('reports a clean run succeeded from a runner that cannot publish', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok());

@@ -153,6 +153,12 @@ expect_contains     'the driver role names the service DNS objects' "$rbac" \
 # Jobs this driver specs itself, never as exec calls into somebody else's container.
 expect_not_contains 'the driver role never execs into pods' "$rbac" 'pods/exec'
 expect_not_contains 'the driver role never watches'         "$rbac" 'watch'
+# The runner vitals: a read-only get against the metrics API, which the metrics-server serves
+# when the cluster runs one — absent it, the driver answers null ("no fresh sample").
+expect_contains     'the driver role reads the runner vitals' "$rbac" \
+    "apiGroups: ['metrics.k8s.io']
+      resources: ['pods']
+      verbs: ['get']"
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
 # The dashboard writes checkouts into the same claim the runners mount.

@@ -10,14 +10,10 @@ import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBel
 import type { ServiceSpec } from './services.js';
 import {
     CREDENTIAL_HELPER,
-    gitProbeScript,
     gitWorktreeRemoveScript,
     gitWorktreeScript,
-    isBranchName,
-    parseGitState,
+    publishCheckout,
     publishFailed,
-    publishNothing,
-    publishPlan,
     repoPath,
     worktreeBranch,
     worktreeDir,
@@ -1280,18 +1276,17 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
 
         /*
          * Publishing is attempt-scoped like everything else here: the env file is named after the
-         * lease token, every container is a throwaway over the workspaces volume (this process has
-         * no host path into it), and the credential travels by --env-file — GITHUB_TOKEN from the
-         * claim env is in no argv anywhere, only inside the container's environment where the
-         * credential helper reads it. The steps are separate daemon round-trips rather than one
-         * shell script, so a failure names its step, and no board-supplied or checkout-supplied
-         * value ever passes through a shell.
+         * lease token, and the credential travels by --env-file — GITHUB_TOKEN from the claim
+         * env is in no argv anywhere, only inside the container's environment where the
+         * credential helper reads it. The steps themselves — probe, branch, commit, push, PR —
+         * live in publishCheckout (publish.ts), shared with the kubernetes runner so the two
+         * executors cannot drift on what a publish decides; this is only the docker transport:
+         * one `docker run --rm` per step, entrypoint swapped for the tool, over the workspaces
+         * volume (this process has no host path into it).
          *
          * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
          */
         async publishGit(job: BoardJob): Promise<PublishResult> {
-            const repo = worktreeDir(config, job);
-            if (!repo) return publishFailed('the job names no checkout this driver can publish');
             let file: string | null = null;
             try {
                 file = envFilePath(job);
@@ -1299,146 +1294,39 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             } catch (e) {
                 return publishFailed(`could not write the publish env file: ${(e as Error).message}`);
             }
+            const envFile = file;
+            const repo = worktreeDir(config, job);
             try {
-                const plan = publishPlan(job);
-                // 'run' and '--rm' INCLUDED — the same full-command rule the sync above states.
-                const vol = ['run', '--rm', '-v', `${config.workspaceVolume}:${config.workspaceMount}`];
-                const inRepo = [...vol, '-w', repo];
-
-                /*
-                 * Every failure names its step and carries the tool's own STDERR, never the echoed
-                 * command. The execFile message is "Command failed: <the whole docker run argv>" —
-                 * 400 characters of that leaves no room for the one line a human can act on
-                 * ("remote: Permission to ... denied to bellows-ai[bot]" lives in git's stderr),
-                 * which is exactly how a credential problem once shipped as an unreadable verdict.
-                 */
-                const runStep = async (name: string, args: string[]): Promise<{ stdout: string }> => {
+                return await publishCheckout(config, job, async (publish) => {
+                    const args = ['run', '--rm', '-v', `${config.workspaceVolume}:${config.workspaceMount}`];
+                    if (publish.inRepo && repo) args.push('-w', repo);
+                    // Literal env values are paths and code (the probe's REPO) — the same class
+                    // as the sync's three path literals, never a credential.
+                    for (const [name, value] of Object.entries(publish.envLiterals ?? {})) {
+                        args.push('-e', `${name}=${value}`);
+                    }
+                    if (publish.env) args.push('--env-file', envFile);
+                    args.push('--entrypoint', publish.entrypoint, config.image, ...publish.args);
                     try {
                         return await execDocker(args);
                     } catch (e) {
+                        /*
+                         * The tool's own output, never the echoed command: the execFile message is
+                         * "Command failed: <the whole docker run argv>" — 400 characters of that
+                         * leaves no room for the one line a human can act on ("remote: Permission
+                         * to ... denied to bellows-ai[bot]" lives in git's stderr), which is
+                         * exactly how a credential problem once shipped as an unreadable verdict.
+                         * The step's name is added by the workflow; this is the detail under it.
+                         */
                         const err = e as { stderr?: string | Buffer; message?: string };
                         const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
                         const detail =
                             stderr.trim() ||
                             (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
                             (err.message ?? 'failed');
-                        throw new Error(`${name}: ${detail.slice(0, 300)}`);
+                        throw new Error(detail);
                     }
-                };
-
-                // What is there to publish? A checkout that was never cloned and a clean,
-                // fully-pushed tree are the two ordinary no-ops; everything else flows.
-                const probe = await execDocker([
-                    ...vol,
-                    '-e',
-                    `REPO=${repo}`,
-                    '--entrypoint',
-                    'node',
-                    config.image,
-                    '-e',
-                    gitProbeScript,
-                ]).catch(() => null);
-                const state = parseGitState(probe?.stdout ?? '');
-                if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
-                if (!state.dirty && state.unpushed === 0) {
-                    return publishNothing('no uncommitted changes and nothing unpushed');
-                }
-
-                // A task never lands on the default branch. An existing task branch is reused —
-                // `switch -c` only when the branch is not there yet, so earlier attempts' commits
-                // survive.
-                const onDefault = !state.branch || state.branch === state.defaultBranch;
-                const branch = onDefault ? plan.branch : state.branch;
-                if (!isBranchName(branch)) {
-                    return publishFailed(`refusing to publish a branch named "${branch}"`);
-                }
-                if (onDefault) {
-                    const switched = await execDocker([
-                        ...inRepo,
-                        '--entrypoint',
-                        'git',
-                        config.image,
-                        'switch',
-                        branch,
-                    ]).catch(() => null);
-                    if (!switched) {
-                        await runStep('git switch', [...inRepo, '--entrypoint', 'git', config.image, 'switch', '-c', branch]);
-                    }
-                }
-
-                if (state.dirty) {
-                    await runStep('git add', [...inRepo, '--entrypoint', 'git', config.image, 'add', '-A']);
-                    // The checkout usually has no committer identity (the agent does not need one
-                    // to edit); a fallback is applied only when the probe found none, so a
-                    // member-configured identity is never overridden.
-                    const identity = state.hasIdentity
-                        ? []
-                        : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
-                    await runStep('git commit', [...inRepo, '--entrypoint', 'git', config.image, ...identity, 'commit', '-m', plan.title]);
-                }
-
-                await runStep('git push', [
-                    ...inRepo,
-                    '--env-file',
-                    file,
-                    '--entrypoint',
-                    'git',
-                    config.image,
-                    '-c',
-                    `credential.helper=${CREDENTIAL_HELPER}`,
-                    'push',
-                    '-u',
-                    '--force-with-lease',
-                    'origin',
-                    'HEAD',
-                ]);
-
-                // Reuse the branch's PR when one exists — a task that already shipped its PR gets
-                // idempotent publishes, not duplicates.
-                let prUrl: string | null = null;
-                const existing = await execDocker([
-                    ...inRepo,
-                    '--env-file',
-                    file,
-                    '--entrypoint',
-                    'gh',
-                    config.image,
-                    'pr',
-                    'view',
-                    branch,
-                    '--json',
-                    'url',
-                    '-q',
-                    '.url',
-                ]).catch(() => null);
-                if (existing) {
-                    prUrl = existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
-                }
-                if (!prUrl) {
-                    const body = plan.issueNumber
-                        ? `Closes #${plan.issueNumber}.\n\nPublished by the factory board after the declared gates passed.`
-                        : 'Published by the factory board after the declared gates passed.';
-                    const created = await runStep('gh pr create', [
-                        ...inRepo,
-                        '--env-file',
-                        file,
-                        '--entrypoint',
-                        'gh',
-                        config.image,
-                        'pr',
-                        'create',
-                        '--head',
-                        branch,
-                        '--title',
-                        plan.title,
-                        '--body',
-                        body,
-                    ]);
-                    prUrl = created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
-                }
-                return { ok: true, published: true, branch, prUrl, reason: null };
-            } catch (e) {
-                return publishFailed(`${(e as Error).message}`.slice(0, 400));
+                });
             } finally {
                 if (file) await rm(file).catch(() => undefined);
             }
