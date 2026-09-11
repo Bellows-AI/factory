@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { useShell } from '../src/components/AppShell.js';
 import type { UseJobs } from '../src/api/useJobs.js';
 import { TasksLayout, useTasksPage } from '../src/pages/TasksLayout.js';
+import type { TaskTabs } from '../src/tabs.js';
 
 /**
  * The tasks area nests TWO context providers: the shell publishes the shared task poll one level
@@ -14,9 +15,19 @@ import { TasksLayout, useTasksPage } from '../src/pages/TasksLayout.js';
  */
 const fakeTasks = { jobs: null, error: null } as unknown as UseJobs;
 
+/** TasksLayout also reads the shell's tab groups to render the strip; a stub that carried only
+ * the poll would crash it before the pages render. */
+const fakeTabs: TaskTabs = {
+    groups: [{ id: '1', tabs: [] }],
+    active: { id: '1', tabs: [] },
+    activateGroup: () => {},
+    createGroup: () => {},
+    removeTab: () => {},
+};
+
 /** Stands in for AppShell: the tasks poll is published exactly one level above the area. */
 function ShellStub() {
-    return <Outlet context={{ tasks: fakeTasks }} />;
+    return <Outlet context={{ tasks: fakeTasks, tabs: fakeTabs }} />;
 }
 
 let seen: { shellTasks: UseJobs | undefined; workspace: unknown } = { shellTasks: undefined, workspace: undefined };

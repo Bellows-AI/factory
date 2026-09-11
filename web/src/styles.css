@@ -560,6 +560,59 @@ footer {
     padding: 0 10px 0 24px;
 }
 
+/* The task GROUPS — the tree's top level under Tasks. Each is a heading that focuses the group;
+   its open tabs nest underneath, and the selected group is coloured like the selected section. */
+.sidenav-groups {
+    list-style: none;
+    margin: 2px 0 6px;
+    padding: 0;
+}
+
+.sidenav-group {
+    background: none;
+    border: none;
+    color: var(--muted);
+    display: block;
+    font-size: 12px;
+    padding: 4px 10px;
+    text-align: left;
+    width: 100%;
+}
+
+.sidenav-group:hover {
+    color: var(--text);
+}
+
+.sidenav-group.is-active {
+    color: var(--primary);
+}
+
+.sidenav-add-group {
+    background: none;
+    border: 1px dashed var(--border);
+    color: var(--muted);
+    display: block;
+    font-size: 12px;
+    margin-top: 4px;
+    padding: 4px 10px;
+    text-align: left;
+    width: 100%;
+}
+
+.sidenav-add-group:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.sidenav-recent {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    margin: 8px 0 0;
+    padding: 0 10px 2px;
+    text-transform: uppercase;
+}
+
 /* Below this the two columns stop fitting side by side: 220 of nav leaves under 700 for a grid
    whose track floor is 440, so the panels would already be one-up and the nav is just tax. */
 @media (max-width: 900px) {
@@ -581,6 +634,87 @@ footer {
     .sidenav-brand {
         display: none;
     }
+}
+
+/* --- Task tabs ---------------------------------------------------------------------------- */
+
+/* The Chrome-style strip across the top of the tasks area: one tab per open task of the active
+   group, a close control on each, and a `+` that starts a new tab (the composer). */
+.task-tabs {
+    align-items: center;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    padding: 8px 24px;
+}
+
+.task-tabs-group {
+    color: var(--muted);
+    font-size: 12px;
+    margin-right: 8px;
+    white-space: nowrap;
+}
+
+.task-tab {
+    align-items: center;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    flex: 0 1 220px;
+    min-width: 0;
+}
+
+.task-tab.is-active {
+    border-color: var(--primary);
+}
+
+.task-tab-link {
+    color: var(--muted);
+    font-size: 12px;
+    overflow: hidden;
+    padding: 5px 4px 5px 10px;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task-tab-link:hover,
+.task-tab.is-active .task-tab-link {
+    color: var(--text);
+}
+
+.task-tab-close {
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px 8px;
+}
+
+.task-tab-close:hover {
+    background: var(--panel);
+    color: var(--text);
+}
+
+.task-tab-new {
+    background: none;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    flex: 0 0 auto;
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px 10px;
+}
+
+.task-tab-new:hover {
+    border-color: var(--primary);
+    color: var(--primary);
 }
 
 /* --- Workspace ---------------------------------------------------------------------------- */
