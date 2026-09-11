@@ -93,6 +93,15 @@ export interface Job {
      */
     doneAt: string | null;
     /**
+     * When a stop was requested on this ROW while it was running — the user's `/stop` landed on a
+     * moving run and the worker has not parked it yet. The request is delivered through the
+     * heartbeat the worker already sends (`cancelRequested`), and the flag is cleared when the
+     * stop happens — parking (suspend) or finishing (complete) — never by the request itself, so a
+     * run whose driver died mid-stop is parked as soon as its lease is reclaimed. Null on every
+     * job nobody asked to stop.
+     */
+    cancelRequestedAt: string | null;
+    /**
      * Where the author's checkouts are, RELATIVE to the workspace root: `<orgId>/<userId>` — the
      * same field the claim carries, derived here for the reads the dashboard polls so the task
      * view can show it. Null when the job has no author or this deployment has no workspace root,
@@ -216,6 +225,45 @@ export type LeaseResult = 'ok' | 'lost' | 'missing';
  */
 export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden';
 
+/**
+ * What a stop request did.
+ *
+ * - `parked`    the row now sits on standby — it was queued (never started) or already parked.
+ * - `requested` the row is running; the worker has been told and will park it. The timestamp is
+ *               the FIRST request, kept on later stops so the answer is idempotent.
+ * - `missing`   no such job in this organization.
+ * - `conflict`  the row is finished — nothing running to stop, nothing to park.
+ */
+export type StopResult =
+    | { result: 'parked' }
+    | { result: 'requested'; cancelRequestedAt: string }
+    | 'missing'
+    | { result: 'conflict'; status: JobStatus };
+
+/**
+ * What a task removal did.
+ *
+ * - `ok`        the whole thread is gone and a worktree reclaim is queued. The root the driver
+ *               must reclaim — the id, the repo label and the relative workspace path — rides the
+ *               answer and the queue row, so the worker never has to touch the job table.
+ * - `missing`   no such job in this organization.
+ * - `conflict`  a member of the thread is still running. The user stops it first; the worktree a
+ *               live runner is editing must not be torn out from under it.
+ */
+export type RemoveResult =
+    | { result: 'ok'; rootJobId: string; repo: string | null; workspacePath: string | null }
+    | 'missing'
+    | 'conflict';
+
+/** A worktree reclaim a driver just leased. Acking by id removes the row. */
+export interface ReclaimClaim {
+    id: string;
+    rootJobId: string;
+    repo: string | null;
+    workspacePath: string | null;
+    leaseExpiresAt: string;
+}
+
 export interface JobStore {
     /**
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
@@ -244,9 +292,34 @@ export interface JobStore {
      * the status rides along so the route can echo the task's state without a second read.
      */
     markDone(id: string): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
+    /**
+     * The user's stop. A QUEUED row parks directly — it never started, there is nothing to abort,
+     * and a standby row answers the same way. A RUNNING row is stamped `cancel_requested_at`
+     * (idempotently) and left running: the driver reads the request on the heartbeat it already
+     * sends, kills its runner and parks with the existing suspend route — the flag IS the stop
+     * travelling, and parking clears it. A finished row refutes with its status.
+     */
+    stop(id: string): Promise<StopResult>;
+    /**
+     * The user's remove. Deletes the WHOLE thread — the root and every follow-up — in one
+     * transaction and queues a task_reclaim row for the worktree, so the driver (which is the only
+     * thing that can remove the tree and the only thing with a live lease to do work in) reclaims
+     * it without the removed thread having any job left to hang the work on. Refuses while any
+     * member of the thread is running, under the same per-thread lock the claim takes, so a claim
+     * can never slip a running row between the refusal check and the delete.
+     */
+    removeThread(id: string): Promise<RemoveResult>;
+    /** The driver's poll of the worktree-reclaim queue. The oldest claimable row, or null. */
+    claimReclaim(worker: string, leaseSeconds: number): Promise<ReclaimClaim | null>;
+    /** Removes the reclaim row once the driver has actually taken the tree. The claim's worker only. */
+    ackReclaim(id: string, worker: string): Promise<'ok' | 'lost' | 'missing'>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
-    heartbeat(id: string, leaseToken: string, leaseSeconds: number): Promise<{ result: LeaseResult; leaseExpiresAt: string | null }>;
+    heartbeat(
+        id: string,
+        leaseToken: string,
+        leaseSeconds: number,
+    ): Promise<{ result: LeaseResult; leaseExpiresAt: string | null; cancelRequested: boolean }>;
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded
      * like every other worker write: a superseded worker must not relabel the run that replaced it.
@@ -359,6 +432,7 @@ interface JobRow {
     executor: string | null;
     parent_job_id: string | null;
     done_at: Date | null;
+    cancel_requested_at: Date | null;
     command_delivered_at: Date | null;
     created_at: Date;
     started_at: Date | null;
@@ -497,6 +571,7 @@ export function createJobStore({
         executor: row.executor,
         followUpTo: row.parent_job_id,
         doneAt: iso(row.done_at),
+        cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,
         // which is what the task view's status sidebar shows.
         workspacePath: hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null,
@@ -579,6 +654,42 @@ export function createJobStore({
             const row = rows[0];
             if (row) return { status: row.status, doneAt: row.done_at.toISOString() };
             return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
+        },
+
+        async stop(id) {
+            await gate();
+            // One statement decides the outcome by the status it sees. A queued row parks directly —
+            // it never started, there is nothing to abort; a parked row answers the same way. A
+            // running row is stamped `cancel_requested_at` and left running: the request travels on
+            // the heartbeat the worker already sends, and the parking that honours it clears the
+            // stamp (suspend). coalesce keeps the FIRST request, which is what makes /stop
+            // idempotent rather than a rewrite of when it was asked.
+            const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null }[]>`
+                update job set
+                    status = case
+                        when status = 'queued' then 'standby'
+                        else status
+                    end,
+                    cancel_requested_at = case
+                        when status = 'running' then coalesce(cancel_requested_at, now())
+                        else cancel_requested_at
+                    end
+                where org_id = ${orgId} and id = ${id}
+                  and status in ('queued','running','standby')
+                returning status, cancel_requested_at
+            `;
+            const row = rows[0];
+            if (!row) {
+                // Nothing parked or moving — a finished task has nothing to stop, and the status
+                // rides the refusal so the route can say which.
+                const [other] = await sql<{ status: JobStatus }[]>`
+                    select status from job where org_id = ${orgId} and id = ${id}
+                `;
+                return other ? { result: 'conflict', status: other.status } : 'missing';
+            }
+            return row.cancel_requested_at !== null
+                ? { result: 'requested', cancelRequestedAt: row.cancel_requested_at.toISOString() }
+                : { result: 'parked' };
         },
 
         async claim(worker, leaseSeconds) {
@@ -805,16 +916,27 @@ export function createJobStore({
 
         async heartbeat(id, leaseToken, leaseSeconds) {
             await gate();
-            const rows = await sql<{ lease_expires_at: Date }[]>`
+            // The heartbeat already travels every few seconds, which makes it the stop channel: a
+            // `cancel_requested_at` stamped by the user's /stop is read here and handed to the
+            // worker as `cancelRequested` — no new route, no separate poll. The stamp is cleared
+            // only by the parking or completion that IS the stop happening, so a beat answers
+            // false the moment the request was honoured.
+            const rows = await sql<{ lease_expires_at: Date; cancel_requested_at: Date | null }[]>`
                 update job
                 set lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
-                returning lease_expires_at
+                returning lease_expires_at, cancel_requested_at
             `;
             const row = rows[0];
-            if (row) return { result: 'ok', leaseExpiresAt: row.lease_expires_at.toISOString() };
-            return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing', leaseExpiresAt: null };
+            if (row) {
+                return {
+                    result: 'ok',
+                    leaseExpiresAt: row.lease_expires_at.toISOString(),
+                    cancelRequested: row.cancel_requested_at !== null,
+                };
+            }
+            return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing', leaseExpiresAt: null, cancelRequested: false };
         },
 
         async session(id, leaseToken, sessionId, remoteSessionId) {
@@ -905,6 +1027,10 @@ export function createJobStore({
                     -- true: the claim reads this column to keep a resumed follow-up from
                     -- re-delivering it (see claim). coalesce, so parking twice stamps once.
                     command_delivered_at = coalesce(command_delivered_at, now()),
+                    -- Parking IS the deferred stop landing (the flag was set by the user's /stop and
+                    -- delivered by the heartbeat): cleared now, or a resumed run would drown in the
+                    -- request that already happened.
+                    cancel_requested_at = null,
                     -- Hands back the attempt the claim took. A suspend is not a failed try, so
                     -- parking a job a hundred times must never exhaust max_attempts — while a run
                     -- that keeps killing its worker still does.
@@ -928,6 +1054,127 @@ export function createJobStore({
             // A job that exists but is not parked is a different answer from one that does not:
             // resuming a finished job is a caller mistake, not a missing row.
             return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
+        },
+
+        async removeThread(id) {
+            await gate();
+            // Same per-thread advisory lock the claim takes, for the same serialization reason: the
+            // refusal check and the delete must see every earlier claim of this thread commit, or a
+            // claim could walk out with a row after the check passed and before the delete ran — a
+            // removed task with a member running again afterwards. The lock queues removals against
+            // claims of the same thread and nothing else.
+            return sql.begin(async (tx) => {
+                const rootJobId = await rootOf(tx, id);
+                await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+
+                // The thread's ROOT row carries the labels the reclaim is addressed by — the repo
+                // the worktree was checked out from and the author whose checkout root it lives
+                // under. Nothing when the input never existed (rootOf answers the input id then,
+                // and there is no such row).
+                const [root] = await tx<{ id: string; repo: string | null; created_by: string | null }[]>`
+                    select id, repo, created_by from job
+                    where org_id = ${orgId} and id = ${rootJobId}
+                `;
+                if (!root) return 'missing';
+
+                // One walk, the claim's own thread shape: everything under the root. A linear chain
+                // today (each follow-up names its immediate parent); the recursive form stays correct
+                // if two adjustments ever land on one parent.
+                const members = await tx<{ id: string; status: JobStatus }[]>`
+                    with recursive up as (
+                        select id, parent_job_id from job
+                        where org_id = ${orgId} and id = ${rootJobId}
+                        union all
+                        select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
+                          where j.org_id = ${orgId}
+                    ),
+                    root as (
+                        select id from up where parent_job_id is null
+                    ),
+                    thread as (
+                        select id, status from job where org_id = ${orgId} and id = (select id from root)
+                        union all
+                        select j.id, j.status from job j join thread on j.parent_job_id = thread.id
+                          where j.org_id = ${orgId}
+                    )
+                    select id, status from thread
+                `;
+                // The one refusal: a member is running. The user stops it first — the per-task
+                // worktree is a live runner's checkout, and tearing it out under the container would
+                // corrupt a run that was happily going.
+                if (members.some((member) => member.status === 'running')) return 'conflict';
+
+                // The rows are gone for good — nothing joins through job.id at claim time (the
+                // claim copies its session labels onto its own row), so deleting the audit trail is
+                // the removal, not a cleanup that orphans something.
+                await tx`
+                    delete from job
+                    where org_id = ${orgId} and id = any(${members.map((m) => m.id)})
+                `;
+
+                // Queue the worktree reclaim. The driver polls this queue — nothing is holding a
+                // lease on a removed thread, so no live driver would ever notice the deletion
+                // otherwise — and takes the tree down, acking the row when it has. Same relative
+                // path the claim derives, empty labels included: a tree keyed only on the root id
+                // still gets reclaimed, pointing at nothing additional is fine.
+                const workspacePath =
+                    hasWorkspaces && root.created_by ? `${orgId}/${root.created_by}` : null;
+                await tx`
+                    insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
+                    values (${orgId}, ${rootJobId}, ${root.repo}, ${workspacePath})
+                `;
+
+                return { result: 'ok', rootJobId, repo: root.repo, workspacePath };
+            });
+        },
+
+        async claimReclaim(worker, leaseSeconds) {
+            await gate();
+            // The job claim's select-lock-claim shape, one statement: the candidate list reads the
+            // lease predicate under row locks, and the update re-asserts nothing because there is
+            // nothing else to assert — a row that passed the predicate is the whole claim. `for
+            // update skip locked` keeps two drivers from claiming the same tree: the loser's
+            // candidate list finds nothing and answers null, exactly as an idle job poll does.
+            const rows = await sql<
+                { id: string; root_job_id: string; repo: string | null; workspace_path: string | null; claimed_at: Date }[]
+            >`
+                with candidate as (
+                    select id from task_reclaim
+                    where org_id = ${orgId}
+                      and (claimed_by is null or claimed_at < now() - make_interval(secs => ${leaseSeconds}::int))
+                    order by created_at, id
+                    limit 1
+                    for update skip locked
+                )
+                update task_reclaim set claimed_by = ${worker}, claimed_at = now()
+                from candidate
+                where task_reclaim.id = candidate.id
+                returning id, root_job_id, repo, workspace_path, claimed_at
+            `;
+            const row = rows[0];
+            if (!row) return null;
+            return {
+                id: row.id,
+                rootJobId: row.root_job_id,
+                repo: row.repo,
+                workspacePath: row.workspace_path,
+                leaseExpiresAt: new Date(row.claimed_at.getTime() + leaseSeconds * 1000).toISOString(),
+            };
+        },
+
+        async ackReclaim(id, worker) {
+            await gate();
+            // The claim's worker only, and the row id the claim handed back is the whole proof — a
+            // reclaim's lease token IS its id. A foreign ack is refused rather than deleting a
+            // row somebody else's driver is mid-reclaim on.
+            const rows = await sql<{ id: string }[]>`
+                delete from task_reclaim
+                where org_id = ${orgId} and id = ${id} and claimed_by = ${worker}
+                returning id
+            `;
+            if (rows[0]) return 'ok';
+            const present = await sql<{ id: string }[]>`select id from task_reclaim where org_id = ${orgId} and id = ${id}`;
+            return present[0] ? 'lost' : 'missing';
         },
 
         async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd }) {
@@ -955,6 +1202,9 @@ export function createJobStore({
                         output      = ${output},
                         finished_at = now(),
                         lease_token = null,
+                        -- A stop request that never landed is settled by the run ending: the task
+                        -- finished, there is nothing left to park.
+                        cancel_requested_at = null,
                         runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
                     where org_id = ${orgId} and id = ${id}
                       and status = 'running' and lease_token = ${leaseToken}
@@ -1022,7 +1272,7 @@ export function createJobStore({
                 )
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, done_at, created_at, started_at, finished_at
+                       parent_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
                 from chain
                 order by created_at, id
             `;
@@ -1035,7 +1285,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, done_at, created_at, started_at, finished_at
+                       parent_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
                 from job where org_id = ${orgId} and id = ${id}
             `;
             const row = rows[0];
@@ -1047,7 +1297,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, repo, executor,
-                       parent_job_id, done_at, created_at, started_at, finished_at
+                       parent_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
                 from job
                 where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}
                   ${repo ? sql`and repo = ${repo}` : sql``}
