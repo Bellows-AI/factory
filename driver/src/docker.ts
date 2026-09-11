@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,16 +11,37 @@ import type { ServiceSpec } from './services.js';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
-    gitSyncScript,
+    gitWorktreeScript,
     isBranchName,
     parseGitState,
     publishFailed,
     publishNothing,
     publishPlan,
     repoPath,
+    worktreeBranch,
+    worktreeDir,
     type PublishResult,
     type SyncResult,
 } from './publish.js';
+
+/**
+ * The container scripts this module ships: real files under `driver/src/scripts/`, read at load
+ * time and passed to the container by content (`node -e`, `sh -c`) — never inline template
+ * strings in TS, and never by mounting a path (the driver talks to a remote daemon and has no
+ * host path into the volumes it names). Under tsx and vitest this resolves into `src/scripts/`;
+ * in the built driver into `dist/scripts/`, where the build copies the directory — forgetting
+ * THAT copy fails only in the container, the server/migrations trap.
+ */
+const script = (name: string): string => readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
+
+/** The `sh -c` command that reads the Remote Control id out of a live transcript: see scripts/remote-session.sh. */
+export const remoteSessionScript = script('remote-session.sh');
+
+/** The close-time opencode readout: see scripts/opencode-readout.cjs. */
+export const opencodeReadoutScript = script('opencode-readout.cjs');
+
+/** The live cache probe: see scripts/opencode-cache-probe.cjs. */
+export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
 
 const run = promisify(execFile);
 
@@ -122,17 +144,28 @@ export interface Runner {
      * one), commit, push, and a PR. The deterministic end of a task — a succeeded verdict may not
      * describe work that exists only in a local checkout. The loop decides WHEN this is called (a
      * succeeded run, gates passed, and nothing else); a runner that cannot publish answers the
-     * refusal in the result rather than throwing.
+     * refusal in the result — or does not implement the method at all, which the loop reads as
+     * "this platform does not publish".
      */
-    publishGit(job: BoardJob): Promise<PublishResult>;
+    publishGit?(job: BoardJob): Promise<PublishResult>;
     /**
-     * Brings the checkout up to the remote default before the run: fetch, then hard-reset the
-     * default branch to origin (stray uncommitted edits there are leftovers, not work) or rebase
-     * the task branch onto the new default, keeping its commits. Called before the runner spawns,
-     * so a task starts from the code — and the declared gates — that main actually has. Answers
+     * Brings the job's task worktree up to the remote default before the run: fetch, create the
+     * worktree branched off `origin/<default>` (first attempt of the thread) or rebase it onto
+     * the new default, keeping its commits (every later one). Called before the runner spawns, so
+     * a task starts from the code — and the declared gates — that main actually has. Answers
      * { ok: false, reason } rather than throwing; the loop turns that into the verdict.
      */
     syncCheckout(job: BoardJob): Promise<SyncResult>;
+    /**
+     * Hands back whatever the startup sync's fence took — the kubernetes checkout claim, which
+     * syncCheckout acquires and HOLDS through the run. The loop calls this only on the terminal
+     * pre-run refusals that complete the job failed WITHOUT runner.run, where run()'s finally —
+     * the ordinary release path — never executes; a refusal that never runs must not hold the
+     * checkout. Ownership-checked inside the runner: only the exact claim this attempt still
+     * holds is released, never one that moved on. Optional: docker's fence leaves nothing
+     * behind to release, so its runner implements nothing and a loop facing it never calls.
+     */
+    releaseFence?(job: BoardJob): Promise<void>;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -171,7 +204,9 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
  *
  * The session id is asserted to be a uuid before it is interpolated. It comes from the board on a
  * resume, and a board is not something this process should trust with a fragment of a shell
- * command.
+ * command. It travels as the script's FIRST POSITIONAL PARAMETER (`sh -c <script> sh <id>` →
+ * `$1`), a plain argv value — the script text itself (remote-session.sh) is static, so nothing
+ * board-supplied is ever part of it.
  */
 export function remoteSessionArgs(job: BoardJob, sessionId: string): string[] {
     if (!UUID.test(sessionId)) throw new Error(`refusing to read a session id that is not a uuid: ${sessionId}`);
@@ -180,10 +215,9 @@ export function remoteSessionArgs(job: BoardJob, sessionId: string): string[] {
         containerName(job),
         'sh',
         '-c',
-        // A glob over projects/, rather than deriving the slug from WORKDIR: the CLI builds that
-        // directory name itself, and reimplementing the rule here would break silently the day it
-        // changes. The file name is the session id, which is unique enough on its own.
-        `cat "$CLAUDE_CONFIG_DIR"/projects/*/${sessionId}.jsonl 2>/dev/null | grep bridge-session | tail -1`,
+        remoteSessionScript,
+        'sh',
+        sessionId,
     ];
 }
 
@@ -342,25 +376,26 @@ export const containerName = (job: BoardJob): string => `factory-job-${job.id}-$
 
 /**
  * The gate environment container's identity: `<checkout key>` under a label, `factory-env-…` as a
- * name. The KEY is the checkout the gates share with the coding agent — `<org>/<uuid>/<repo>` —
- * and it is asserted before it is interpolated into argv or a container name, exactly like
+ * name. The KEY is the checkout the gates share with the coding agent — the task worktree
+ * `<org>/<uuid>/.worktrees/<root id>` (issue #35), the tree the run actually edits — and it is
+ * asserted before it is interpolated into argv or a container name, exactly like
  * `workspacePathOf` above: it arrives from the board's claim plus a repo label, and a `..` in it
  * would work the parent of every member's tree into a container that runs arbitrary commands.
  *
- * The segments mirror what the system legally produces: org ≤ 39 (ORG_ID_PATTERN) and repo ≤ 100
- * (the create route's REPO_SEGMENT_LIMIT under the same first-char rules as `badSegment`) — a
- * validator narrower than the input domain would fail every job on a legally-named checkout.
+ * The segments mirror what the system legally produces: org ≤ 39 (ORG_ID_PATTERN) and both ids
+ * uuids (36) — a validator narrower than the input domain would fail every job on a
+ * legally-named checkout.
  */
 const GATE_KEY =
-    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/i;
+    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Same shape the board's `.bellows.yaml` parser enforces; re-asserted here, before argv. */
 const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /**
  * A container name this process will `docker exec` into: one token, no shell metacharacters. The
- * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 177
- * characters GATE_KEY allows ≈ 189) — a cap BELOW that would create containers every gate then
+ * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 123
+ * characters GATE_KEY allows ≈ 135) — a cap BELOW that would create containers every gate then
  * refuses to exec into, a checkout that can never pass.
  */
 const GATE_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/;
@@ -390,7 +425,7 @@ export function gateEnvContainerName(key: string): string {
  */
 export function gateEnvArgs(config: DriverConfig, key: string, image: string, envFile?: string): string[] {
     if (!GATE_KEY.test(key)) {
-        throw new Error(`refusing to run a gate environment from a checkout key that is not <org>/<uuid>/<repo>: ${key}`);
+        throw new Error(`refusing to run a gate environment from a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`);
     }
     if (!GATE_IMAGE.test(image)) {
         throw new Error(`refusing to run a gate environment from an image that is not a plain docker reference: "${image}"`);
@@ -453,36 +488,15 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob):
         '--rm',
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
+        // The database path travels as an env VALUE — the script (opencode-readout.cjs) is
+        // static, so nothing board-derived is ever part of its text.
+        '-e',
+        `OPENCODE_DB=${db}`,
         '--entrypoint',
         'node',
         config.image,
         '-e',
-        // CommonJS: `node -e` is CommonJS unless told otherwise. The session takes the newest ROOT
-        // session — subagents create children under a parent_id, and the conversation a follow-up
-        // continues is the run's own root. The finish reason comes from the last ASSISTANT
-        // message of that session — the run's own closing word — and its token total is the
-        // context the run reached; cost sums across every assistant message of the session. The
-        // role is a field INSIDE the message's data JSON, not a column: filtering it in SQL
-        // throws "no such column: role" on every read, and the failure reads as an empty
-        // database. A failure prints one parseable error line — an empty answer and a broken
-        // query are otherwise indistinguishable to the parse.
-        `const {DatabaseSync}=require("node:sqlite");` +
-            `try{` +
-            `const db=new DatabaseSync(${JSON.stringify(db)},{readOnly:true});` +
-            `const s=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
-            `if(s&&s.id){` +
-            `const msgs=db.prepare("select data from message where session_id=? order by id").all(s.id);` +
-            `let finish=null,tokens=0,cost=0;` +
-            `for(const m of msgs){` +
-            `const d=JSON.parse(m.data);` +
-            `if(d.role!=="assistant")continue;` +
-            `if(d.finish)finish=d.finish;` +
-            `if(d.tokens&&typeof d.tokens.total==="number")tokens=Math.max(tokens,d.tokens.total);` +
-            `if(typeof d.cost==="number")cost+=d.cost;` +
-            `}` +
-            `console.log(JSON.stringify({id:s.id,finish,tokens,cost}));` +
-            `}` +
-            `}catch(e){console.log(JSON.stringify({error:e instanceof Error?e.message:String(e)}));}`,
+        opencodeReadoutScript,
     ];
 }
 
@@ -606,29 +620,18 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
         '--rm',
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
+        // The database path and the turn count travel as env VALUES — the script
+        // (opencode-cache-probe.cjs) is static, and the count comes from this module's constant,
+        // so the trigger cannot drift between the probe and the code that judges the turns.
+        '-e',
+        `OPENCODE_DB=${db}`,
+        '-e',
+        `CACHE_WATCH_TURNS=${CACHE_WATCH_TURNS}`,
         '--entrypoint',
         'node',
         config.image,
         '-e',
-        `const {DatabaseSync}=require("node:sqlite");` +
-            `try{` +
-            `const db=new DatabaseSync(${JSON.stringify(db)},{readOnly:true});` +
-            `const s=db.prepare("select id from session where parent_id is null order by time_created desc limit 1").get();` +
-            `if(s&&s.id){` +
-            `const msgs=db.prepare("select data from message where session_id=? order by id desc limit 12").all(s.id);` +
-            `const turns=[];` +
-            `for(const m of msgs){` +
-            `const d=JSON.parse(m.data);` +
-            `if(d.role!=="assistant")continue;` +
-            `const t=d.time||{};` +
-            `if(!t.completed)continue;` +
-            `const tk=d.tokens||{};` +
-            `turns.push({input:tk.input||0,cacheRead:(tk.cache||{}).read||0,ms:t.completed-(t.created||t.completed)});` +
-            `if(turns.length>=${CACHE_WATCH_TURNS})break;` +
-            `}` +
-            `console.log(JSON.stringify({id:s.id,turns}));` +
-            `}` +
-            `}catch(e){console.log(JSON.stringify({error:e instanceof Error?e.message:String(e)}));}`,
+        opencodeCacheProbeScript,
     ];
 }
 
@@ -683,12 +686,20 @@ function workspacePath(job: BoardJob): string {
 
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
- * sets, TRUST_WORKDIR is the Remote Control trust answer, and the two BELLOWS_GATE_ names are the
- * ad-hoc gate credentials the loop mints per attempt — which a claim env must never carry.
+ * sets, TRUST_WORKDIR is the Remote Control trust answer, the two BELLOWS_GATE_ names are the
+ * ad-hoc gate credentials the loop mints per attempt, and CRED_HELPER is the credential-helper
+ * CODE the sync fetch runs — which a claim env must never carry. CRED_HELPER above all: a member
+ * value there is member-controlled code the sync container's git executes as helper code.
  * Mirrored at the board (RESERVED_ENV_NAMES in server/src/routes/env.ts, where a PUT is refused);
  * copied rather than imported, per this package's zero-dependency rule.
  */
-export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR', 'BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'] as const;
+export const RESERVED_ENV_NAMES = [
+    'WORKDIR',
+    'TRUST_WORKDIR',
+    'BELLOWS_GATE_URL',
+    'BELLOWS_GATE_TOKEN',
+    'CRED_HELPER',
+] as const;
 
 /**
  * The environment the board resolved for this job, minus the reserved names. Pure and exported for
@@ -706,6 +717,18 @@ export function claimEnv(job: BoardJob): Record<string, string> {
     }
     return env;
 }
+
+/**
+ * Whether the claim env carries a NON-EMPTY GITHUB_TOKEN — the condition under which the startup
+ * sync's fetch is handed the credential-helper CODE. Git reads no token from the environment, and
+ * the executor images ship no helper, so a private-repo fetch needs one; a public repo with no
+ * token must keep its plain unauthenticated fetch, which a helper answering an empty password
+ * would break. A present-but-empty token therefore counts as no token: the helper would break the
+ * public-repo fetch it exists to preserve, and a private repo with an empty token fails auth
+ * either way, honestly. Shared with the kubernetes syncJobSpec, which embeds the same code as a
+ * literal.
+ */
+export const claimCarriesGithubToken = (job: BoardJob): boolean => Boolean(claimEnv(job).GITHUB_TOKEN);
 
 /**
  * One `NAME=value` line, refusing a newline in either half: the file is line-structured and docker
@@ -759,6 +782,18 @@ const envFilePath = (job: BoardJob): string => {
 };
 
 export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null, servicesNetwork: string | null = null, envFile?: string): string[] {
+    /*
+     * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
+     * the remote default — when the job names a repository, and at the member root when it does
+     * not (a command-only job names no repo, so no worktree exists; the root is where it always
+     * started, and the argv stays byte-identical for it).
+     */
+    const worktree = job.repo ? worktreeDir(config, job) : null;
+    if (job.repo && !worktree) {
+        throw new Error(
+            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`,
+        );
+    }
     const args = [
         'run',
         '--name',
@@ -782,7 +817,7 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         // `<mount>/<orgId>` is a safe fallback now: both are the PARENT of every member's tree, and
         // handing that to a container that may be running --dangerously-skip-permissions is a
         // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
-        `WORKDIR=${config.workspaceMount}/${workspacePath(job)}`,
+        `WORKDIR=${worktree ?? `${config.workspaceMount}/${workspacePath(job)}`}`,
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
     ];
@@ -1012,19 +1047,123 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         await serviceTeardown(job);
     };
 
+    /*
+     * The re-claim fence — the only JOB-scoped sweep this runner performs, and the one component
+     * allowed to be job-scoped: it runs BEFORE this attempt creates anything, so whatever it
+     * finds is by construction a previous attempt's leftover. Names are attempt-scoped now, so
+     * no name can find a previous attempt's leftovers — the `factory.job` label is the one
+     * identifier every attempt of the job shares, and the sweep is by label: every leftover
+     * container (runners and services alike), then every leftover network. This claim exists
+     * only because those attempts' leases are gone, so removing them delivers the same verdict
+     * their heartbeats would have, had the driver survived to receive it — and the alternative
+     * to leaving a live leftover runner running is two writers on one checkout, which is the
+     * thing actually worth preventing.
+     *
+     * It runs TWICE per attempt by design: once in syncCheckout — the loop calls the sync
+     * before run(), and the sync is the first writer on the task worktree, so the previous
+     * attempt's runner must be off the daemon before the worktree script starts, not only
+     * before the runner does — and once in run(), which keeps its own call so the guarantee
+     * never depends on the loop's ordering. The sweep is idempotent; removing twice what was
+     * removed once removes nothing.
+     *
+     * Failures PROPAGATE, and for one reason: a swallowed daemon refusal would be
+     * indistinguishable from "nothing left", and the sync would start while the leftover
+     * runner still writes the worktree. A refusal here is INFRASTRUCTURE — syncCheckout lets
+     * it throw (the loop leaves the job to its lease), and run()'s own call propagates the
+     * same way — never the command's verdict. The one tolerated shape is docker's already-gone
+     * answer on a removal: a container exiting between the ps and its rm is the fence
+     * succeeding, not failing. The transitional unlabelled-network rm below keeps tolerating
+     * absent outright — it removes by a NAME that may never have existed.
+     */
+
+    /**
+     * Docker's already-gone answer, in either of its spellings, on stderr or the execFile
+     * message. Read from the removal's own error only — never from a LIST, where "not found"
+     * could never mean anything.
+     */
+    const alreadyGone = (e: unknown): boolean => {
+        const err = e as { stderr?: string | Buffer; message?: string };
+        const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+        return /no such (container|network)|not found/i.test(`${stderr} ${err.message ?? ''}`);
+    };
+
+    const reclaimFence = async (job: BoardJob): Promise<void> => {
+        let leftovers: { stdout: string };
+        try {
+            leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]);
+        } catch (e) {
+            throw new Error(
+                `the re-claim fence could not list the leftover containers of job ${job.id}: ${(e as Error).message}`,
+            );
+        }
+        for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
+            try {
+                await execDocker(['rm', '-f', id]);
+            } catch (e) {
+                if (alreadyGone(e)) continue;
+                throw new Error(
+                    `the re-claim fence could not remove the leftover container ${id} of job ${job.id}: ${(e as Error).message}`,
+                );
+            }
+        }
+        let staleNetworks: { stdout: string };
+        try {
+            staleNetworks = await execDocker([
+                'network',
+                'ls',
+                '--filter',
+                `label=factory.job=${job.id}`,
+                '--format',
+                '{{.Name}}',
+            ]);
+        } catch (e) {
+            throw new Error(
+                `the re-claim fence could not list the leftover networks of job ${job.id}: ${(e as Error).message}`,
+            );
+        }
+        for (const name of staleNetworks.stdout.split('\n').map((name) => name.trim()).filter(Boolean)) {
+            try {
+                await execDocker(['network', 'rm', name]);
+            } catch (e) {
+                if (alreadyGone(e)) continue;
+                throw new Error(
+                    `the re-claim fence could not remove the leftover network ${name} of job ${job.id}: ${(e as Error).message}`,
+                );
+            }
+        }
+        // TRANSITIONAL: networks created before the lease token joined the name carry no
+        // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
+        // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
+        // can exist any more.
+        await execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
+    };
+
     return {
         kill,
 
         /*
-         * The startup sync is one container, one script: fetch (credential by env-file, the same
-         * as every step that touches the remote), then default branch hard-reset to origin or
-         * task branch rebased onto it. A conflicting rebase aborts itself in the script and
-         * answers { ok: false } with the reason — the loop fails the run before it starts rather
-         * than leaving the checkout mid-rebase for every later turn to trip over.
+         * The startup sync is one container, one script: fetch, then create the task's worktree
+         * branched off origin/<default> or rebase the existing one onto it. The env names the
+         * three paths the script needs — the clone (where origin lives), the worktree, the branch
+         * — literal values, not credentials; the claim env rides the env file exactly as before.
+         * A conflicting rebase aborts itself in the script and answers { ok: false } with the
+         * reason — the loop fails the run before it starts rather than leaving the worktree
+         * mid-rebase for every later turn to trip over.
          */
         async syncCheckout(job: BoardJob): Promise<SyncResult> {
-            const repo = repoPath(config, job);
-            if (!repo) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+            const clone = repoPath(config, job);
+            const worktree = worktreeDir(config, job);
+            if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+
+            /*
+             * The fence BEFORE the sync: the loop calls syncCheckout before run(), so without
+             * this the worktree script would start while a previous attempt's runner was still
+             * writing the same shared task worktree — mixed edits, or a rebase conflict nobody
+             * is awake to resolve. The sweep is idempotent, and run() keeps its own: twice per
+             * attempt is already the fence's documented shape, the same way the service
+             * teardown half runs twice.
+             */
+            await reclaimFence(job);
             let file: string | null = null;
             try {
                 file = envFilePath(job);
@@ -1042,21 +1181,30 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     '--rm',
                     '-v',
                     `${config.workspaceVolume}:${config.workspaceMount}`,
-                    '-w',
-                    repo,
                     '--env-file',
                     file,
+                    '-e',
+                    `REPO=${clone}`,
+                    '-e',
+                    `WORKTREE=${worktree}`,
+                    '-e',
+                    `BRANCH=${worktreeBranch(job)}`,
+                    // The fetch's credential helper, as CODE in an env VALUE — the same class
+                    // of value as the three paths above, and the same mechanism as the push's
+                    // `-c credential.helper=`. Only when the claim env carries the token the
+                    // helper reads; the token itself travels the env file, never argv.
+                    ...(claimCarriesGithubToken(job) ? ['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`] : []),
                     '--entrypoint',
                     'node',
                     config.image,
                     '-e',
-                    gitSyncScript,
+                    gitWorktreeScript,
                 ]);
                 const line = out.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
                 try {
                     return JSON.parse(line) as SyncResult;
                 } catch {
-                    return { ok: false, reason: 'the checkout sync answered nothing readable' };
+                    return { ok: false, reason: 'the worktree sync answered nothing readable' };
                 }
             } catch (e) {
                 const err = e as { stderr?: string | Buffer; message?: string };
@@ -1065,7 +1213,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     stderr.trim() ||
                     (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
                     (err.message ?? 'failed');
-                return { ok: false, reason: `the checkout sync container failed: ${detail.slice(0, 300)}` };
+                return { ok: false, reason: `the worktree sync container failed: ${detail.slice(0, 300)}` };
             } finally {
                 if (file) await rm(file).catch(() => undefined);
             }
@@ -1079,9 +1227,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
          * credential helper reads it. The steps are separate daemon round-trips rather than one
          * shell script, so a failure names its step, and no board-supplied or checkout-supplied
          * value ever passes through a shell.
+         *
+         * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
          */
         async publishGit(job: BoardJob): Promise<PublishResult> {
-            const repo = repoPath(config, job);
+            const repo = worktreeDir(config, job);
             if (!repo) return publishFailed('the job names no checkout this driver can publish');
             let file: string | null = null;
             try {
@@ -1260,40 +1410,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             // token keying exists to keep down. See the killed set above.
 
             /*
-             * The re-claim fence — the ONLY job-scoped sweep this runner performs, and the one
-             * component allowed to be job-scoped: it runs BEFORE this attempt creates anything,
-             * so whatever it finds is by construction a previous attempt's leftover. Names are
-             * attempt-scoped now, so no name can find a previous attempt's leftovers — the
-             * `factory.job` label is the one identifier every attempt of the job shares, and the
-             * sweep is by label: every leftover container (runners and services alike), then
-             * every leftover network. This claim exists only because those attempts' leases are
-             * gone, so removing them delivers the same verdict their heartbeats would have, had
-             * the driver survived to receive it — and the alternative to leaving a live leftover
-             * runner running is two writers on one checkout, which is the thing actually worth
-             * preventing.
+             * The fence before anything this attempt creates — the job-scoped sweep documented
+             * on reclaimFence above. It already ran once, in syncCheckout; run() keeps its own
+             * call so the guarantee never depends on the loop's ordering.
              */
-            const leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]).catch(
-                () => ({ stdout: '' }),
-            );
-            for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
-                await execDocker(['rm', '-f', id]).catch(() => undefined);
-            }
-            const staleNetworks = await execDocker([
-                'network',
-                'ls',
-                '--filter',
-                `label=factory.job=${job.id}`,
-                '--format',
-                '{{.Name}}',
-            ]).catch(() => ({ stdout: '' }));
-            for (const name of staleNetworks.stdout.split('\n').map((name) => name.trim()).filter(Boolean)) {
-                await execDocker(['network', 'rm', name]).catch(() => undefined);
-            }
-            // TRANSITIONAL: networks created before the lease token joined the name carry no
-            // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
-            // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
-            // can exist any more.
-            await execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
+            await reclaimFence(job);
 
             /*
              * Auxiliary services (issue #6): read the checkouts' .bellows.yaml, then network and

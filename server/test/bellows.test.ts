@@ -292,6 +292,73 @@ describe('readGatesFile', () => {
         expect(result.config).toBeNull();
         expect(result.error).toMatch(/workspace path is not <orgId>\/<userId>/);
     });
+
+    /*
+     * The per-task worktree (issue #35): the run edits `<ws>/.worktrees/<root id>`, and the
+     * gates it must satisfy live THERE. The read prefers the worktree's file and falls back to
+     * the clone — at claim time the worktree does not exist yet, so the clone's file is the
+     * claim's answer, and the post-sync re-read finds the worktree's.
+     */
+    const ROOT = '55555555-5555-4555-8555-555555555555';
+
+    it('reads the worktree first and falls back to the clone when the worktree has none', async () => {
+        const seen: string[] = [];
+        const result = await readGatesFile({
+            root: '/workspaces',
+            workspacePath: `o/${USER}`,
+            repo: 'o/r',
+            worktreeId: ROOT,
+            readFile: (path) => {
+                seen.push(path);
+                return seen.length === 1
+                    ? Promise.reject(Object.assign(new Error('nope'), { code: 'ENOENT' }))
+                    : Promise.resolve(EXAMPLE);
+            },
+        });
+        expect(seen).toEqual([
+            `/workspaces/o/${USER}/.worktrees/${ROOT}/.bellows.yaml`,
+            `/workspaces/o/${USER}/r/.bellows.yaml`,
+        ]);
+        expect(result).toEqual({
+            config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+            error: null,
+        });
+    });
+
+    it('takes the worktree’s declaration when the worktree has one', async () => {
+        const seen: string[] = [];
+        const result = await readGatesFile({
+            root: '/workspaces',
+            workspacePath: `o/${USER}`,
+            repo: 'o/r',
+            worktreeId: ROOT,
+            readFile: (path) => {
+                seen.push(path);
+                return Promise.resolve('environment:\n    image: node:20\n    gates:\n        - name: wt\n          command: "npm test"\n');
+            },
+        });
+        // One read, one answer: the worktree's file is authoritative once it exists.
+        expect(seen).toEqual([`/workspaces/o/${USER}/.worktrees/${ROOT}/.bellows.yaml`]);
+        expect(result.config?.image).toBe('node:20');
+        expect(result.error).toBeNull();
+    });
+
+    it('refuses a worktree id that is not a uuid, before it joins a path', async () => {
+        const seen: string[] = [];
+        const result = await readGatesFile({
+            root: '/workspaces',
+            workspacePath: `o/${USER}`,
+            repo: 'o/r',
+            worktreeId: '../../etc',
+            readFile: (path) => {
+                seen.push(path);
+                return Promise.resolve(EXAMPLE);
+            },
+        });
+        expect(seen).toEqual([]);
+        expect(result.config).toBeNull();
+        expect(result.error).toMatch(/worktree id is not a uuid/);
+    });
 });
 
 /**

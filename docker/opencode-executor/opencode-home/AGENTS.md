@@ -11,9 +11,10 @@ precedence over anything here.
 You are running as a headless task on the factory board. Nobody is watching a terminal — never
 stop to ask; unanswered questions go in the final report, where a human reads them.
 
-- Work happens in the checkout mounted at your working directory. Never commit to the default
-  branch: create or reuse a task branch — `fix/<issue-number>` when the task names an issue,
-  otherwise `task/<short-slug>`.
+- Work happens in the checkout mounted at your working directory — your run's own worktree,
+  branched off the remote default, one per task, so concurrent tasks never share a tree. Never
+  commit to the default branch: work on the branch your worktree is on, or create a task branch —
+  `fix/<issue-number>` when the task names an issue, otherwise `task/<short-slug>`.
 - Commit as you go. One logical change per commit, messages in the imperative mood, the issue
   reference (e.g. `(#12)`) in the commit that closes the task.
 - Run the declared gates (below) before you finish, and never leave the tree failing.

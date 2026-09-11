@@ -370,33 +370,44 @@ describe('the bellows readout arguments', () => {
     // busybox: every job already needs it present.
     it('cats every checkout\'s .bellows.yaml over the workspaces volume, marked per checkout', () => {
         const line = readBellowsArgs(loadDriverConfig({}), job);
-        expect(line.slice(0, 8)).toEqual([
+        expect(line.slice(0, 14)).toEqual([
             'run',
             '--rm',
             '-v',
             // Read-only: the script only cats, and the mount covers every member's tree.
             'factory-ai_workspaces:/workspaces:ro',
+            // The readout's parameters travel as env values, never interpolated into the
+            // script text: the member tree to walk, the size bound, and the error marker —
+            // the last passed from the splitter's own constant, so they cannot drift.
+            '-e',
+            `BELLOWS_ROOT=/workspaces/bellows/${USER}`,
+            '-e',
+            'BELLOWS_MAX_BYTES=65536',
+            '-e',
+            'BELLOWS_ERROR_PREFIX=###__bellows_error:',
             '--entrypoint',
             'sh',
             'claude-executor',
             '-c',
         ]);
-        const script = line[8];
-        expect(script).toContain(`/workspaces/bellows/${USER}/*/.bellows.yaml`);
+        const script = line.at(-1) as string;
+        // The script is the static file: its glob reads the root from the environment, so no
+        // board-derived value is ever part of its text.
+        expect(script).toContain('"$BELLOWS_ROOT"/*/.bellows.yaml');
         expect(script).toContain('###__bellows:');
         expect(script).toContain('basename');
         expect(script).toContain('[ -f "$f" ] || continue');
         // The readout's output crosses execFile's maxBuffer, so the script bounds each file and
         // refuses an oversize one in place — an author refusal, not a failed read.
         expect(script).toContain('wc -c');
-        expect(script).toContain('65536');
-        expect(script).toContain('###__bellows_error:');
+        expect(script).toContain('$BELLOWS_MAX_BYTES');
+        expect(script).toContain('$BELLOWS_ERROR_PREFIX');
     });
 
     it('refuses a workspace path that is not <org>/<uuid>', () => {
         // COPIED from docker.ts, which states the full why: the board is not something this
-        // process trusts with a fragment of a command, and here it is interpolated into a shell
-        // script run by a container this process spawns.
+        // process trusts with a fragment of a command, and here it becomes an env value the
+        // readout script globs under — a container this process spawns.
         expect(() => readBellowsArgs(loadDriverConfig({}), { ...job, workspacePath: `bellows/../../etc` })).toThrow(
             /no usable workspace path/,
         );

@@ -12,8 +12,19 @@
  * therefore COPIED from docker.ts rather than shared — the same package-internal copy the
  * server's own rules get when they cross a boundary this file must not depend on.
  */
+import { readFileSync } from 'node:fs';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
+
+/**
+ * The readout's shell script: a real file (scripts/bellows-read.sh) read at load time and
+ * passed to the container by content — never an inline template string, and never a mounted
+ * path (the driver has no host path into the volumes it names). Under tsx and vitest this
+ * resolves into `src/scripts/`; in the built driver into `dist/scripts/`, where the build
+ * copies the directory — forgetting THAT copy fails only in the container, the
+ * server/migrations trap.
+ */
+export const bellowsReadScript: string = readFileSync(new URL('./scripts/bellows-read.sh', import.meta.url), 'utf8');
 
 /** One requested service, parsed. `environment` preserves the file's order. */
 export interface ServiceSpec {
@@ -446,61 +457,49 @@ export function collectServices(sections: { repo: string; text: string }[]): Ser
 
 /**
  * The `docker run` argv for the throwaway container that reads the checkouts' `.bellows.yaml`
- * files. Pure, and exported, because it is the part worth pinning: it interpolates a
- * board-supplied path into a shell script. The runner image is used rather than pulling a
- * dedicated one — every job already needs it present, and the image's own entrypoint is swapped
- * away exactly as the opencode session readout does.
+ * files. Pure, and exported, because it is the part worth pinning: it carries a board-derived
+ * path as an env VALUE, never interpolated into the script text. The runner image is used
+ * rather than pulling a dedicated one — every job already needs it present, and the image's own
+ * entrypoint is swapped away exactly as the opencode session readout does.
  */
 export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
-    const script = bellowsReadScript(config, job);
     return [
         'run',
         '--rm',
         '-v',
         // Read-only: the script only cats, and the mount covers every member's tree.
         `${config.workspaceVolume}:${config.workspaceMount}:ro`,
+        ...Object.entries(bellowsReadEnv(config, job)).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         '--entrypoint',
         'sh',
         config.image,
         '-c',
-        script,
+        bellowsReadScript,
     ];
 }
 
 /**
- * The shell the readout runs, shared by both platforms: docker wraps it in `docker run` argv
- * (readBellowsArgs), kubernetes puts it in a Job's `command` over a read-only PVC mount. Pure,
- * and exported, because it interpolates a board-supplied path into a shell script — the same
- * pinning readBellowsArgs got.
+ * The readout's environment, shared by both platforms: docker passes it as `-e NAME=value`
+ * (readBellowsArgs), kubernetes as literal pod env (bellowsJobSpec). Every entry is a literal
+ * path or a constant shared with the splitter below — never a credential. The workspace path is
+ * re-asserted here, exactly as the script's predecessor did before it interpolated anything:
+ * the value names a directory inside a shell script's glob, and the board is not something this
+ * process trusts with a fragment of a command.
  */
-export function bellowsReadScript(config: DriverConfig, job: BoardJob): string {
+export function bellowsReadEnv(config: DriverConfig, job: BoardJob): Record<string, string> {
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
         throw new Error(
             `refusing to read .bellows.yaml for job ${job.id}: ` +
                 `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
         );
     }
-    const root = `${config.workspaceMount}/${job.workspacePath}`;
-    return (
-        // A glob over the checkout directories, each file preceded by a marker naming its
-        // checkout. The `[ -f ]` guard is what a glob with no matches produces in sh — the
-        // pattern itself — so a workspace with no `.bellows.yaml` prints nothing at all. Each
-        // file is size-checked before it is read: stdio readers on both platforms bound the
-        // output (execFile at 1 MiB, a pod log at its server-side limit), and an oversize file
-        // must come back as the author's refusal, not as a failed read that reads as
-        // infrastructure and burns the job's attempts.
-        `for f in ${root}/*/.bellows.yaml; do\n` +
-        `[ -f "$f" ] || continue\n` +
-        `echo "###__bellows:$(basename "$(dirname "$f")")"\n` +
-        `if [ "$(wc -c <"$f")" -gt ${MAX_BELLOWS_BYTES} ]; then\n` +
-        `echo "${ERROR_PREFIX}$f is larger than ${MAX_BELLOWS_BYTES} bytes"\n` +
-        `else\n` +
-        `cat "$f"\n` +
-        `fi\n` +
-        // A file with no trailing newline would otherwise glue the next marker onto its last
-        // line; the newline between sections is padding splitBellowsSections drops.
-        `echo\ndone`
-    );
+    return {
+        BELLOWS_ROOT: `${config.workspaceMount}/${job.workspacePath}`,
+        BELLOWS_MAX_BYTES: String(MAX_BELLOWS_BYTES),
+        // Passed from this constant rather than hardcoded in the script, so the marker the
+        // splitter detects (sectionOf) and the marker the script prints cannot drift.
+        BELLOWS_ERROR_PREFIX: ERROR_PREFIX,
+    };
 }
 
 /**

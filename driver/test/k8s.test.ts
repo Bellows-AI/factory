@@ -20,7 +20,11 @@ import {
     secretName,
     serviceDnsSpec,
     servicePodSpec,
+    syncEnvSecretName,
+    syncJobName,
+    syncJobSpec,
 } from '../src/k8s.js';
+import { CREDENTIAL_HELPER, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -93,6 +97,29 @@ describe('the runner job spec', () => {
             persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
         });
         expect(container.volumeMounts).toContainEqual({ name: 'workspaces', mountPath: '/workspaces' });
+    });
+
+    // Executor parity for the task worktree (issue #35): a repo job starts in the thread's
+    // worktree here exactly as the docker runner does — same WORKDIR rule, one code path on the
+    // board side.
+    it('starts a repo job in its task worktree', () => {
+        const repoSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), { ...job, repo: 'Bellows-AI/factory' }, {
+            id: SESSION,
+            resume: false,
+        });
+        expect(repoSpec.spec.template.spec.containers[0].env).toContainEqual({
+            name: 'WORKDIR',
+            value: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+        });
+    });
+
+    it('refuses to run a repo job whose worktree path cannot be asserted', () => {
+        expect(() =>
+            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), { ...job, repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' }, {
+                id: SESSION,
+                resume: false,
+            }),
+        ).toThrow(/worktree/);
     });
 
     it('refuses a workspace path that is not <org>/<uuid>', () => {
@@ -458,6 +485,346 @@ const claimServer = () => {
         return undefined;
     };
 };
+
+/*
+ * The startup sync (issue #35), ported: the docker runner creates the task worktree with a
+ * `docker run` of the worktree script; here the same script is the same Job shape every other
+ * aux Job uses — the declared image over the workspaces PVC, read-write this time, because the
+ * whole point is creating the worktree the run will edit. Executor parity is why this exists:
+ * without it, every claimed job fails at the loop's sync step.
+ */
+describe('the worktree sync', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+
+    it('runs the worktree script as an aux Job over a read-write PVC', () => {
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const s = syncJobSpec(cfg(), envJob, syncEnvSecretName(envJob));
+        expect(s.apiVersion).toBe('batch/v1');
+        expect(s.kind).toBe('Job');
+        expect(s.metadata.name).toBe(syncJobName(repoJob));
+        expect(s.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
+        const container = s.spec.template.spec.containers[0];
+        expect(container.command).toEqual(['node', '-e', gitWorktreeScript]);
+        // The three paths the script needs, as literal values — paths, not credentials.
+        expect(container.env).toContainEqual({ name: 'REPO', value: `/workspaces/bellows/${USER}/factory` });
+        expect(container.env).toContainEqual({
+            name: 'WORKTREE',
+            value: `/workspaces/bellows/${USER}/.worktrees/${repoJob.id}`,
+        });
+        expect(container.env).toContainEqual({ name: 'BRANCH', value: `factory/${repoJob.id}` });
+        // Read-write: the Job's whole purpose is creating the worktree.
+        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        expect(s.spec.template.spec.volumes).toContainEqual({
+            name: 'workspaces',
+            persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
+        });
+        expect(s.spec.template.spec.automountServiceAccountToken).toBe(false);
+        expect(s.spec.backoffLimit).toBe(0);
+        expect(s.spec.template.spec.restartPolicy).toBe('Never');
+    });
+
+    it('carries the claim env by reference, and a literal value only for the three paths', () => {
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const container = syncJobSpec(cfg(), envJob, syncEnvSecretName(envJob)).spec.template.spec.containers[0];
+        expect(container.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(envJob) } }]);
+        for (const entry of container.env ?? []) {
+            expect(entry.name === 'REPO' || entry.name === 'WORKTREE' || entry.name === 'BRANCH', entry.name).toBe(true);
+            expect(entry.valueFrom, entry.name).toBeUndefined();
+        }
+    });
+
+    // The sync's fetch needs a credential helper to read the token git never reads from the
+    // environment — but only when there IS a token: a public repo must keep its plain
+    // unauthenticated fetch. What travels as the literal is helper CODE (the same class as the
+    // three path literals), never the credential value — that stays in the Secret.
+    it('passes the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', () => {
+        const tokenJob: BoardJob = { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } };
+        const withToken = syncJobSpec(cfg(), tokenJob, syncEnvSecretName(tokenJob)).spec.template.spec.containers[0];
+        expect(withToken.env).toContainEqual({ name: 'CRED_HELPER', value: CREDENTIAL_HELPER });
+        // The pin that must survive: no credential VALUE travels as a literal, and the claim
+        // env still rides the Secret by reference.
+        expect(JSON.stringify(withToken.env)).not.toContain('t0k-3n');
+        expect(withToken.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(tokenJob) } }]);
+
+        const noToken = syncJobSpec(cfg(), { ...repoJob, env: { CORE_TOKEN: 'shh' } }, 'the-secret')
+            .spec.template.spec.containers[0];
+        expect(noToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+
+        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
+        // break the public-repo plain fetch it exists to preserve — and a private repo with an
+        // empty token fails auth either way. Property presence is not the test; the VALUE is.
+        const emptyToken = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: '' } }, 'the-secret')
+            .spec.template.spec.containers[0];
+        expect(emptyToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+    });
+
+    // An env-less claim is a supported board configuration (docs/jobs.md: AUTH_MODE=none, no
+    // GITHUB_TOKEN in any scope). The sync pod must not reference a Secret that will never
+    // exist — a pod that does sits in CreateContainerConfigError until the deadline kills the
+    // Job, and every such repo job would stall ten minutes and fail.
+    it('names no Secret at all when the claim resolved to no environment', () => {
+        const container = syncJobSpec(cfg(), repoJob, null).spec.template.spec.containers[0];
+        expect(container.envFrom).toBeUndefined();
+    });
+
+    it('refuses to build a sync for a worktree path it cannot assert', () => {
+        expect(() => syncJobSpec(cfg(), { ...repoJob, rootJobId: 'not-a-uuid' }, 'the-secret')).toThrow(/worktree/);
+    });
+
+    it('syncs through a real Job: Secret before Job, verdict from the log, Secret reaped', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const result = await runner(request).syncCheckout(envJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(secretPost?.body).toMatchObject({
+            metadata: { name: syncEnvSecretName(envJob), labels: { 'factory.job': envJob.id } },
+            stringData: { CORE_TOKEN: 'shh' },
+        });
+        // The Job the sync POSTs is the sync's own, named after this attempt.
+        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(syncJobName(envJob));
+        const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
+        expect(order.indexOf(`POST ${secretsPath}`)).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
+        // Reaped with the verdict, the same accepted-leak posture the runner env Secret has.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${syncEnvSecretName(envJob)}`)).toBe(true);
+    });
+
+    it('creates no Secret for an env-less claim', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        await runner(request).syncCheckout(repoJob);
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+    });
+
+    it('answers ok:false with the script’s reason when the sync job fails', async () => {
+        const { request } = fakeRequest({ log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('no space left');
+    });
+
+    it('syncs nothing for a job that names no repository', async () => {
+        const { request, calls } = fakeRequest();
+        expect(await runner(request).syncCheckout(job)).toEqual({ ok: true, reason: null });
+        expect(calls).toHaveLength(0);
+    });
+
+    it('answers ok:false when the sync Job never reaches a verdict it can read', async () => {
+        const { request } = fakeRequest({ job: { status: 500, body: 'nope' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('500');
+    });
+
+    it('answers ok:false when the log answers nothing parseable', async () => {
+        const { request } = fakeRequest({ log: { status: 404, body: 'gone' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({ ok: false, reason: 'the worktree sync answered nothing readable' });
+    });
+
+    /*
+     * The fence before the sync (PR #46 review): the loop calls syncCheckout before run(), so
+     * the sync is the FIRST writer on the task worktree — and the only mutual exclusion it can
+     * get is the checkout claim, taken here under the same acquireClaim protocol prepare()
+     * runs. The claim is then held through the run: prepare()'s acquire recognizes its own
+     * holder and proceeds.
+     */
+    it('takes the checkout claim before creating anything for the sync, and holds it on success', async () => {
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const result = await runner(request).syncCheckout(envJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
+        const claimPost = order.indexOf(`POST ${configmapsPath}`);
+        expect(claimPost).toBe(0);
+        expect(claimPost).toBeLessThan(order.indexOf(`POST /api/v1/namespaces/${namespace}/secrets`));
+        expect(claimPost).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
+        // Success KEEPS the claim: the runner's own acquire follows within the same lease, and
+        // releasing here would open a window another claimant could walk through.
+        expect(order).not.toContain(`DELETE ${claimPathFor(envJob.id)}`);
+    });
+
+    // The replacement-with-an-active-runner shape of the review comment: a claim POST that
+    // answers 409 against a LIVE newer attempt is the run path's stand-down, and the sync must
+    // honor it before creating anything — no sync Secret, no sync Job, nothing to sweep later.
+    it('stands down without creating anything when a live newer attempt holds the claim', async () => {
+        const calls: Call[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.resolve({ status: 409, body: '{"reason":"AlreadyExists"}' });
+            }
+            if (path === claimPathFor(job.id) && method === 'GET') {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        metadata: { uid: 'claim-uid-9' },
+                        data: { holder: NEW_TOKEN, attempt: '2' },
+                    }),
+                });
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/stands down/);
+        expect(calls.some((call) => call.method === 'POST' && call.path?.includes('/secrets'))).toBe(false);
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
+    });
+
+    /*
+     * The sync Job used to survive every exit path until its own Kubernetes deadline — the
+     * review's "overlap with a replacement" hazard. It is attempt-scoped by its lease token,
+     * so deleting it on every exit can never reach a replacement's Job.
+     */
+    it('deletes its sync Job when the sync succeeds', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        await runner(request).syncCheckout(repoJob);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    it('deletes its sync Job when the poll gives up and the sync fails', async () => {
+        const { request, calls } = fakeRequest({ job: { status: 500, body: 'nope' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    it('deletes its sync Job even when the sync throws mid-flight', async () => {
+        const calls: Call[] = [];
+        const serve = claimServer();
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) return Promise.resolve(claimAnswer);
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.reject(new Error('the apiserver closed the connection'));
+            }
+            if (method === 'DELETE' && path.startsWith('/api/v1/namespaces/')) {
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/closed the connection/);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    // A failed sync means no runner follows, so nobody else would give the checkout back:
+    // the claim goes, conditionally on this attempt still holding its exact incarnation.
+    it('releases the claim when the sync fails after taking it', async () => {
+        const { request, calls } = fakeRequest({
+            log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' },
+        });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
+        expect(release).toBeDefined();
+        // The uid precondition is what keeps a stale release from reaching a newer claim.
+        expect((release?.body as { preconditions?: { uid?: string } }).preconditions?.uid).toBeDefined();
+    });
+
+    /*
+     * A failure hands the checkout over to a replacement — and a replacement's sync must not
+     * overlap the leftover sync pod on the shared worktree. So the failure arms delete the sync
+     * Job with Foreground propagation (the delete returns only after the pod is gone) and AWAIT
+     * it BEFORE releaseClaim; the finally's Background delete alone returns immediately and
+     * leaves the pod terminating while the next claimant acquires. Modeled with a delay on the
+     * sync Job delete: a release issued before the await would complete (and be recorded) first.
+     */
+    it('takes the sync Job down Foreground, and only then releases the claim, when the sync fails', async () => {
+        const base = fakeRequest({
+            log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' },
+        });
+        const completions: string[] = [];
+        const gated: K8sRequest = async (method, path, body) => {
+            const response = await base.request(method, path, body);
+            if (method === 'DELETE' && path === `${jobPath(namespace, syncJobName(repoJob))}?propagationPolicy=Foreground`) {
+                // Foreground returns only once the dependents are gone — that takes time.
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                completions.push('sync-job-gone');
+            } else if (method === 'DELETE' && path === claimPathFor(repoJob.id)) {
+                completions.push('claim-released');
+            }
+            return response;
+        };
+        const result = await runner(gated).syncCheckout(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(completions).toEqual(['sync-job-gone', 'claim-released']);
+    });
+
+    // The same handover discipline on the THROW arm: a poll that died mid-flight leaves a sync
+    // pod that may still be running, and the rethrow follows the release — so the take-down
+    // must be complete before the claim goes.
+    it('takes the sync Job down Foreground, and only then releases the claim, when the sync throws mid-flight', async () => {
+        const completions: string[] = [];
+        const serve = claimServer();
+        const request: K8sRequest = async (method, path, body) => {
+            const claimAnswer = serve(method, path, body);
+            if (claimAnswer) {
+                if (method === 'DELETE' && path === claimPathFor(repoJob.id)) completions.push('claim-released');
+                return claimAnswer;
+            }
+            if (method === 'POST' && path === jobsPath(namespace)) {
+                return Promise.reject(new Error('the apiserver closed the connection'));
+            }
+            // Both API groups a delete can name: the claim (/api/v1) and the sync Job
+            // (/apis/batch/v1).
+            if (method === 'DELETE' && path?.startsWith('/api')) {
+                if (path.includes(syncJobName(repoJob))) {
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                    completions.push('sync-job-gone');
+                }
+                return { status: 200, body: '{}' };
+            }
+            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
+        };
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/closed the connection/);
+        expect(completions).toEqual(['sync-job-gone', 'claim-released']);
+    });
+
+    // The mirror pin: success keeps ownership, so its delete stays fire-and-forget Background
+    // and no Foreground delete is issued at all — the claim is held through the run.
+    it('keeps the success-path sync Job delete Background and never deletes Foreground', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const result = await runner(request).syncCheckout(repoJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes('propagationPolicy=Foreground'))).toBe(false);
+        expect(
+            calls.some(
+                (call) =>
+                    call.method === 'DELETE' &&
+                    call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
+            ),
+        ).toBe(true);
+    });
+
+    // The sync takes the claim, the run follows within the same lease: prepare()'s acquire must
+    // read the claim it meets as ITS OWN (holder === lease token) and proceed, never stand down
+    // against itself.
+    it('hands the claim to the run that follows without standing down against itself', async () => {
+        const { request } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const r = runner(request);
+        await r.syncCheckout(repoJob);
+        const outcome = await r.run(repoJob, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+    });
+});
 
 describe('the kubernetes runner', () => {
     it('sweeps the job label, then creates the job in the configured namespace and reports success', async () => {
@@ -2787,8 +3154,9 @@ const gatedConfig = loadDriverConfig({
 });
 
 describe('the gate job spec', () => {
+    const ROOT_KEY = '55555555-5555-4555-8555-555555555555';
     const gateSpec = (overrides: Parameters<typeof gateJobSpec>[6] = 1, envSecret: string | null = 'the-secret') =>
-        gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, 'node:24', 'test', 'npm test', overrides, envSecret, 30_000);
+        gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, 'node:24', 'test', 'npm test', overrides, envSecret, 30_000);
 
     it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
         expect(gateSpec().apiVersion).toBe('batch/v1');
@@ -2806,7 +3174,7 @@ describe('the gate job spec', () => {
 
     it("works at the checkout the coding agent edits — the same tree, via the same PVC", () => {
         const container = gateSpec().spec.template.spec.containers[0];
-        expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/factory`);
+        expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/.worktrees/${ROOT_KEY}`);
         expect(container.image).toBe('node:24');
         expect(gateSpec().spec.template.spec.volumes).toEqual([
             { name: 'workspaces', persistentVolumeClaim: { claimName: 'factory-ai_workspaces' } },
@@ -2842,7 +3210,7 @@ describe('the gate job spec', () => {
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
-        const s = gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, 'node:24', 'UPPER Case!!', 'npm test', 1, null, 30_000);
+        const s = gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, 'node:24', 'UPPER Case!!', 'npm test', 1, null, 30_000);
         expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{8}$/);
         expect(s.metadata.name).not.toContain('UPPER');
         expect(s.metadata.name).not.toContain('Case');
@@ -2854,7 +3222,7 @@ describe('the gate job spec', () => {
             gateJobSpec(gatedConfig, job, '../other-member/repo', 'node:24', 'test', 'npm test', 1, null, 30_000),
         ).toThrow(/checkout key/);
         expect(() =>
-            gateJobSpec(gatedConfig, job, `bellows/${USER}/factory`, '-flag-image', 'test', 'npm test', 1, null, 30_000),
+            gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, '-flag-image', 'test', 'npm test', 1, null, 30_000),
         ).toThrow(/image reference/);
     });
 });
@@ -2871,7 +3239,7 @@ describe('the gate env body', () => {
 });
 
 describe('the kubernetes gate manager', () => {
-    const KEY = `bellows/${USER}/factory`;
+    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
     const GATE_JOB = /^factory-gate-test-[0-9a-f]{8}$/;
 
     /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
@@ -3081,7 +3449,7 @@ describe('the service pod and DNS specs', () => {
 });
 
 describe('the kubernetes services flow', () => {
-    const KEY = `bellows/${USER}/factory`;
+    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
     const BELLOWS_OUTPUT =
         '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
 

@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
+import { readFileSync } from 'node:fs';
 
 /**
  * Publishing the work a run produced. The policy lives in the loop — a successful run, gates
@@ -14,6 +15,22 @@ import type { DriverConfig } from './config.js';
  * run that "succeeded" while leaving its work uncommitted in a local checkout did not land
  * anywhere, and nobody was asked.
  */
+
+/**
+ * The container scripts this module ships: real files under `driver/src/scripts/`, read at load
+ * time and passed to the container by content (`node -e`, `sh -c`, a git credential helper) —
+ * never inline template strings in TS, and never by mounting a path (the driver talks to a
+ * remote daemon and has no host path into the volumes it names). Under tsx and vitest this
+ * resolves into `src/scripts/`; in the built driver into `dist/scripts/`, where the build copies
+ * the directory — forgetting THAT copy fails only in the container, the server/migrations trap.
+ */
+const script = (name: string): string => readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
+
+/** The probe's node script: see scripts/git-probe.cjs. */
+export const gitProbeScript = script('git-probe.cjs');
+
+/** The startup sync's node script: see scripts/git-worktree.cjs. */
+export const gitWorktreeScript = script('git-worktree.cjs');
 
 /** What the board intends to publish for one job. */
 export interface PublishPlan {
@@ -89,7 +106,7 @@ export const publishFailed = (reason: string): PublishResult => ({
 });
 
 /**
- * The repo directory of the job's checkout: `<mount>/<workspacePath>/<repo segment>`. Both halves
+ * The repo directory of the job's clone: `<mount>/<workspacePath>/<repo segment>`. Both halves
  * are asserted before they join a path — the same rule every board-supplied value obeys before it
  * becomes part of an argv or a filesystem location, because the board's own shape validation is
  * not this process's to trust.
@@ -102,56 +119,55 @@ export function repoPath(config: DriverConfig, job: BoardJob): string | null {
     return `${config.workspaceMount}/${job.workspacePath}/${segment}`;
 }
 
-/**
- * The probe's node script: one read-only answer about the checkout, JSON on stdout, no shell —
- * every git call is execFileSync so no path or branch name can become a command. Printed values
- * decide the flow; none of them are secrets.
- *
- * "Unpushed" counts commits the REMOTE default branch does not have — never `@{u}..HEAD`, which
- * is fatal for a branch that was never pushed at all (no upstream) and would read a local-only
- * branch full of work as fully landed. That exact miscount once reported a two-commit task
- * branch as "nothing to publish".
- */
-export const gitProbeScript = `const {execFileSync}=require("node:child_process");const repo=process.env.REPO;` +
-    `const out={cloned:false,branch:"",defaultBranch:"main",dirty:false,unpushed:0,hasIdentity:false};` +
-    `try{` +
-    `const git=(...a)=>execFileSync("git",a,{cwd:repo,encoding:"utf8"}).trim();` +
-    `git("rev-parse","--is-inside-work-tree");` +
-    `out.cloned=true;` +
-    `out.branch=git("branch","--show-current");` +
-    `try{out.defaultBranch=git("symbolic-ref","refs/remotes/origin/HEAD").replace("refs/remotes/origin/","")}catch{}` +
-    `out.dirty=git("status","--porcelain").length>0;` +
-    `try{out.unpushed=Number(git("rev-list","--count","origin/"+out.defaultBranch+"..HEAD"))||0}catch{out.unpushed=0}` +
-    `out.hasIdentity=(()=>{try{return git("config","user.email").length>0}catch{return false}})();` +
-    `}catch{}` +
-    `console.log(JSON.stringify(out));`;
+/** A uuid, asserted before it names a worktree directory or a branch segment. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The startup sync's node script: fetch, then make the checkout reflect the remote default —
- * the default branch is hard-reset to origin (stray uncommitted edits there are pre-publish
- * leftovers, not work: the publish commits everything a run produced), and a task branch is
- * rebased onto the new default so its next turn sees the current tree (declared gates included)
- * while keeping its own commits. A conflicting rebase aborts itself and names the failure — it
- * must not leave the checkout mid-rebase for every later turn to trip over.
+ * The workspace half, COPIED from docker.ts's WORKSPACE_PATH (which copied it from the server's
+ * ORG_ID_PATTERN): the value becomes the agent's working directory, and a validator narrower
+ * than the input domain would fail every job on a legally-named workspace — the trap every
+ * copied pattern here exists to avoid.
  */
-export const gitSyncScript = `const {execFileSync}=require("node:child_process");const repo=process.env.REPO;` +
-    `const git=(...a)=>execFileSync("git",a,{cwd:repo,encoding:"utf8"}).trim();` +
-    `const fail=(r)=>{try{git("rebase","--abort")}catch{}console.log(JSON.stringify({ok:false,reason:r}))};` +
-    `try{` +
-    `git("fetch","origin","--prune");` +
-    `let def="main";` +
-    `try{def=git("symbolic-ref","refs/remotes/origin/HEAD").replace("refs/remotes/origin/","")}catch{}` +
-    `const branch=git("branch","--show-current");` +
-    `if(branch&&branch!==def){` +
-    `try{git("rebase","origin/"+def)}` +
-    `catch(e){fail("the task branch could not be rebased onto origin/"+def+": "+String((e&&e.stderr)||(e&&e.message)||e).slice(0,200));process.exit(0)}` +
-    `}` +
-    `else{` +
-    `git("checkout","-f",def);` +
-    `git("reset","--hard","origin/"+def);` +
-    `}` +
-    `console.log(JSON.stringify({ok:true}));` +
-    `}catch(e){fail("checkout sync failed: "+String((e&&e.stderr)||(e&&e.message)||e).slice(0,200))}`;
+const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The task worktree of the job's clone, RELATIVE to the mount:
+ * `<workspacePath>/.worktrees/<thread root id>` — or null when the job names no repository (a
+ * command-only job runs at the member root, where it always did) or any half fails its assertion.
+ *
+ * The key is the thread's ROOT job id — this job's own, unless it is a follow-up, and then the
+ * chain's first job. One task thread = one workspace (issue #35): every attempt of the job, and
+ * every follow-up resuming its session, lands in the same tree, branched off the remote default.
+ * Per-JOB keying was rejected because a follow-up would then start a fresh tree off main,
+ * orphaning the conversation and the parent's unmerged work.
+ *
+ * The `.worktrees/` segment is the driver's own namespace beside the checkouts, which the
+ * workspace reconcile never creates, reads, or prunes (its naming rules refuse a leading dot, the
+ * same protection `.opencode` relies on).
+ */
+export function worktreeRelDir(job: BoardJob): string | null {
+    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) return null;
+    const segment = job.repo?.split('/')[1];
+    if (!segment || segment === '.' || segment === '..' || !/^[A-Za-z0-9._-]+$/.test(segment)) return null;
+    const root = job.rootJobId ?? job.id;
+    if (!UUID.test(root)) return null;
+    return `${job.workspacePath}/.worktrees/${root}`;
+}
+
+/** The absolute worktree path inside the mounted volume, or null when the job has none. */
+export function worktreeDir(config: DriverConfig, job: BoardJob): string | null {
+    const rel = worktreeRelDir(job);
+    return rel ? `${config.workspaceMount}/${rel}` : null;
+}
+
+/**
+ * The branch the task worktree runs on: `factory/<thread root id>`. Created at
+ * `origin/<default>` on the first sync; rebased onto it on every later one. A branch per thread,
+ * never per attempt — a re-claimed attempt continues the same branch its predecessor edited.
+ */
+export function worktreeBranch(job: BoardJob): string {
+    return `factory/${job.rootJobId ?? job.id}`;
+}
 
 /** Pulls the probe's answer out of its stdout, tolerating anything else. */
 export function parseGitState(stdout: string): GitState {
@@ -183,6 +199,9 @@ export const isBranchName = (name: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._
  * git itself spawns through a shell — the same `-e NAME`, never `-e NAME=value` rule the runner
  * obeys, so the token is in no argv anywhere. Pinned because it is the one place this feature
  * touches a secret.
+ *
+ * The helper is a FILE (scripts/credential-helper.sh) read verbatim, because its content IS the
+ * value of `-c credential.helper=`: a comment line would ship inside the helper, so that one
+ * file deliberately carries no comments — its documentation lives here.
  */
-export const CREDENTIAL_HELPER =
-    '!f(){ printf "username=x-access-token\\n"; printf "password=%s\\n" "$GITHUB_TOKEN"; }; f';
+export const CREDENTIAL_HELPER = script('credential-helper.sh');

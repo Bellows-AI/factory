@@ -1,4 +1,4 @@
-import type { Sql, TransactionSql } from 'postgres';
+import type { Fragment, Sql, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
@@ -135,6 +135,14 @@ export interface Claim {
      * FAILS such a job rather than falling back — see driver/src/loop.ts.
      */
     workspacePath: string | null;
+    /**
+     * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
+     * chain's first job, resolved through `parent_job_id`. The task worktree (issue #35) is keyed
+     * by it, so every attempt of a task and every follow-up resuming its session lands in the
+     * same tree, branched off the remote default. The driver cannot walk the chain — the board
+     * owns the rows — so the claim is where the root travels.
+     */
+    rootJobId: string;
     /**
      * Set only when this claim is picking a parked job back up, and it is the whole resume protocol:
      * the worker restores that session instead of starting a new one, and the command is not
@@ -422,19 +430,42 @@ export function createJobStore({
     /**
      * The gates reader, when the deployment has a workspace root to read checkouts from. Declared
      * inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a claim
-     * hands it the workspace path and repo label, and gets the parsed `.bellows.yaml` or the
-     * reason the file could not be honoured. Present in index.ts, absent in the tests that
-     * predate gates — a claim then simply carries none.
+     * hands it the workspace path, the repo label and the thread's root id (the worktree the run
+     * edits), and gets the parsed `.bellows.yaml` or the reason the file could not be honoured.
+     * Present in index.ts, absent in the tests that predate gates — a claim then simply carries
+     * none.
      */
     gates?: {
         readFor(
             workspacePath: string,
             repo: string,
+            worktreeId: string | null,
         ): Promise<{ config: BellowsConfig | null; error: string | null }>;
     };
 }): JobStore {
     const gate = async () => {
         if (ready) await ready;
+    };
+
+    /**
+     * The thread's ROOT id for a job — the job itself, unless it is a follow-up, and then the
+     * chain's first job, walked up through parent_job_id (the `thread` walk, up half). The task
+     * worktree (`docs/jobs.md`, issue #35) is keyed by it, which is what makes every attempt of
+     * a task and every follow-up on it land in the same tree. `exec` is the caller's connection
+     * — the claim's transaction, so a claim holds one connection rather than two.
+     */
+    const rootOf = async (exec: Sql | TransactionSql, id: string): Promise<string> => {
+        const [root] = await exec<{ id: string }[]>`
+            with recursive up as (
+                select id, parent_job_id from job
+                where org_id = ${orgId} and id = ${id}
+                union all
+                select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
+                  where j.org_id = ${orgId}
+            )
+            select id from up where parent_job_id is null
+        `;
+        return root?.id ?? id;
     };
 
     // Inside the factory, so the reads' `workspacePath` derivation closes over the org and the
@@ -545,13 +576,61 @@ export function createJobStore({
             await gate();
 
             /*
-             * One transaction, not two autocommitted statements. The UPDATE makes the job running
-             * with a fresh lease before the env resolver and the token mint answer; if either then
-             * throws, a half-claim must not survive — a row that is `running` with a lease nobody
-             * holds is stranded until that lease expires on every retry, walking the job to dead on
-             * an infrastructure blip. The rollback puts it back: queued, attempt unburned, claimable
-             * by the very next poll. (The resolver reads env_var, not job, and the mint reads
-             * GitHub, so neither needs a share of this transaction — only their failures do.)
+             * The thread-exclusion, rendered once and used twice below. `id` is the candidate
+             * row: a correlated expression in the select, a bound parameter in the update.
+             *
+             * A row whose thread's ROOT already has another row running waits. The per-task
+             * worktree (issue #35) is keyed by that root, so two claimed rows of one thread
+             * would run two runners and two sync jobs into the same tree. The blocker is
+             * status = 'running' and nothing else: an expired lease is still a run the board
+             * believes in until the claim reclaims it (the same-row reclaim, o.id <> <candidate>,
+             * is the heartbeat-409 path and stays), and a standby row neither blocks nor is
+             * claimable. The walk is the thread() walk, up to the root and down to every
+             * descendant, so the exclusion is symmetric and terminal rows block nothing.
+             */
+            const sameThreadRunning = (id: string | Fragment) => sql`
+                not exists (
+                    with recursive up as (
+                        select j2.id, j2.parent_job_id from job j2
+                        where j2.org_id = ${orgId} and j2.id = ${id}
+                        union all
+                        select j3.id, j3.parent_job_id from job j3 join up on j3.id = up.parent_job_id
+                          where j3.org_id = ${orgId}
+                    ),
+                    root as (
+                        select id from up where parent_job_id is null
+                    ),
+                    thread as (
+                        select id from job where org_id = ${orgId} and id = (select id from root)
+                        union all
+                        select j4.id from job j4 join thread on j4.parent_job_id = thread.id
+                          where j4.org_id = ${orgId}
+                    )
+                    select 1
+                    from thread t
+                    join job o on o.id = t.id and o.org_id = ${orgId}
+                    where o.id <> ${id} and o.status = 'running'
+                )
+            `;
+
+            /*
+             * One transaction, not two autocommit statements. The UPDATE makes the job running
+             * with a fresh lease before the env resolver and the token mint answer; if either
+             * then throws, a half-claim must not survive — a row that is `running` with a lease
+             * nobody holds is stranded until that lease expires on every retry, walking the job
+             * to dead on an infrastructure blip. The rollback puts it back: queued, attempt
+             * unburned, claimable by the very next poll. (The resolver reads env_var, not job,
+             * and the mint reads GitHub, so neither needs a share of this transaction — only
+             * their failures do.)
+             *
+             * The selection is a select-lock-claim loop, because the exclusion reads OTHER rows
+             * without locking them and so cannot by itself see a same-thread claim that is
+             * still uncommitted: under READ COMMITTED two racing claims could both pass it and
+             * both walk out with rows of one thread. Each round selects one candidate (skip
+             * locked, holding its row), takes the thread ROOT's advisory lock, and only then
+             * claims — the claim update re-asserts the whole claimability predicate where the
+             * lock can vouch for it. A candidate that moved under us falls through to the next
+             * round, exactly as a single statement skipped a row that was not claimable.
              */
             return sql.begin(async (tx) => {
                 // Retire what has burned its attempts, before looking for work. Without this a
@@ -562,119 +641,156 @@ export function createJobStore({
                       and lease_expires_at <= now() and attempts >= max_attempts
                 `;
 
-                const rows = await tx<
-                {
-                    id: string;
-                    command: string;
-                    attempts: number;
-                    lease_token: string;
-                    lease_expires_at: Date;
-                    created_by: string | null;
-                    session_id: string | null;
-                    repo: string | null;
-                    parent_job_id: string | null;
-                    follow_up: boolean;
-                }[]
-            >`
-                update job set
-                    status           = 'running',
-                    claimed_by       = ${worker},
-                    lease_token      = gen_random_uuid(),
-                    attempts         = attempts + 1,
-                    -- Unconditional, not coalesce(started_at, now()): this must describe the
-                    -- attempt that is about to run, or every duration is measured from attempt 1.
-                    started_at       = now(),
-                    -- Kept when the job was parked and put back in the queue, and on a follow-up,
-                    -- whose session IS the parent conversation it continues. The status read here
-                    -- is the row's value BEFORE this update, so 'running' means a lease that
-                    -- expired: for an ordinary job that attempt's session is not this one, and
-                    -- leaving it would show a link to a run whose output was thrown away. A
-                    -- follow-up keeps its copied session through a crash, because the session
-                    -- carries the whole conversation, not just the dead attempt's work.
-                    session_id       = case
-                        when status = 'queued' or parent_job_id is not null then session_id
-                        else null
-                    end,
-                    remote_session_id = case
-                        when status = 'queued' or parent_job_id is not null then remote_session_id
-                        else null
-                    end,
-                    -- The previous attempt's vitals are not this attempt's, and a new container
-                    -- starts unsampled: the started_at reset, one row down.
-                    runtime          = null,
-                    lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
-                where org_id = ${orgId} and id = (
-                    select id from job
-                    where org_id = ${orgId}
-                      and status in ('queued','running')
-                      and lease_expires_at <= now()
-                      and attempts < max_attempts
-                    order by created_at, id
-                    limit 1
-                    -- Below the limit in the plan, so a row another claimer holds is skipped
-                    -- rather than counted and then discarded. The bare id = above is safe ONLY
-                    -- because this subquery is holding the row lock.
-                    for update skip locked
-                )
-                -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
-                -- their pre-update values: delivered-so-far is exactly "this row was suspended at
-                -- least once with its command in the transcript". A fresh or crashed follow-up has
-                -- never been parked, so its command still has to go out; a resumed parked one has,
-                -- so it must not.
-                returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                          session_id, repo,
-                          (parent_job_id is not null and command_delivered_at is null) as follow_up
-            `;
+                for (;;) {
+                    const [candidate] = await tx<{ id: string; parent_job_id: string | null }[]>`
+                        select j.id, j.parent_job_id from job j
+                        where j.org_id = ${orgId}
+                          and j.status in ('queued','running')
+                          and j.lease_expires_at <= now()
+                          and j.attempts < j.max_attempts
+                          and ${sameThreadRunning(sql`j.id`)}
+                        order by j.created_at, j.id
+                        limit 1
+                        -- Below the limit in the plan, so a row another claimer holds is skipped
+                        -- rather than counted and then discarded. Holding the candidate's row
+                        -- lock from here through the claim update below is what lets that update
+                        -- target this id directly.
+                        for update skip locked
+                    `;
+                    if (!candidate) return null;
 
-                const row = rows[0];
-                if (!row) return null;
-                // Resolved here rather than in the route, because the org is bound here and
-                // the author and repo label are in hand — and ON THE TRANSACTION, so a claim
-                // holds one connection. A resolver failure propagates: the claim route's
-                // guard answers 503, the driver retries the claim, and a job is never handed
-                // out with half an environment. The minted installation token goes under it
-                // as the base layer, and its failure rolls back exactly the same way.
-                const resolvedEnv = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined;
-                // The mint fills only the gap: when the stacked env already carries a
-                // GITHUB_TOKEN, the mint would be discarded — so it is not made at all, rather
-                // than spend a GitHub call and leave a live token nothing holds.
-                const claimEnv =
-                    githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
-                        ? withMintedToken(await githubToken.fresh(), resolvedEnv)
-                        : resolvedEnv;
-                // Read off the filesystem, inside the claim but OFF the transaction's tables: a
-                // broken `.bellows.yaml` travels to the driver as `gateError` — the job fails at
-                // the worker with the reason, where the run's author can see it — rather than as
-                // a 503 that would retry the claim forever. Gates ride only when the job has both
-                // a repo label (the checkout the file lives in) and a workspace to read it from.
-                let claimGates: BellowsConfig | null = null;
-                let gateError: string | null = null;
-                const claimPath = hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null;
-                if (gatesReader && row.repo && claimPath) {
-                    const read = await gatesReader.readFor(claimPath, row.repo);
-                    if (read.error) gateError = read.error;
-                    else claimGates = read.config;
+                    // The thread's ROOT id: the job itself, unless it is a follow-up — and then
+                    // the chain's first job (the walk above). A root job answers without the
+                    // query. Resolved before the lock, because the lock is keyed by it.
+                    const rootJobId =
+                        candidate.parent_job_id !== null ? await rootOf(tx, candidate.id) : candidate.id;
+                    // The serialization point: one transaction-scoped advisory lock per claim,
+                    // keyed on the resolved root. Deliberately not `for update` on the root ROW:
+                    // that row is the one a running thread heartbeats and completes against, and
+                    // a claim parked on it would stall those writes for as long as its env
+                    // resolution and token mint take. An advisory xact lock queues claims
+                    // against each other and nothing else, is keyed per root so different
+                    // threads never block each other, and one lock per transaction means no
+                    // lock-ordering deadlock. Claims of one thread therefore fully serialize,
+                    // and the re-check below sees every earlier claim committed.
+                    await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+
+                    const rows = await tx<
+                        {
+                            id: string;
+                            command: string;
+                            attempts: number;
+                            lease_token: string;
+                            lease_expires_at: Date;
+                            created_by: string | null;
+                            session_id: string | null;
+                            repo: string | null;
+                            parent_job_id: string | null;
+                            follow_up: boolean;
+                        }[]
+                    >`
+                        update job set
+                            status           = 'running',
+                            claimed_by       = ${worker},
+                            lease_token      = gen_random_uuid(),
+                            attempts         = attempts + 1,
+                            -- Unconditional, not coalesce(started_at, now()): this must describe the
+                            -- attempt that is about to run, or every duration is measured from attempt 1.
+                            started_at       = now(),
+                            -- Kept when the job was parked and put back in the queue, and on a follow-up,
+                            -- whose session IS the parent conversation it continues. The status read here
+                            -- is the row's value BEFORE this update, so 'running' means a lease that
+                            -- expired: for an ordinary job that attempt's session is not this one, and
+                            -- leaving it would show a link to a run whose output was thrown away. A
+                            -- follow-up keeps its copied session through a crash, because the session
+                            -- carries the whole conversation, not just the dead attempt's work.
+                            session_id       = case
+                                when status = 'queued' or parent_job_id is not null then session_id
+                                else null
+                            end,
+                            remote_session_id = case
+                                when status = 'queued' or parent_job_id is not null then remote_session_id
+                                else null
+                            end,
+                            -- The previous attempt's vitals are not this attempt's, and a new container
+                            -- starts unsampled: the started_at reset, one row down.
+                            runtime          = null,
+                            lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
+                        where org_id = ${orgId} and id = ${candidate.id}
+                          and status in ('queued','running')
+                          and lease_expires_at <= now()
+                          and attempts < max_attempts
+                          -- Re-asserted under the root lock: whatever the select saw, this is the
+                          -- decision the lock serializes. A same-thread claim that committed while
+                          -- this transaction waited is visible here, and the candidate's own row
+                          -- has been locked since the select.
+                          and ${sameThreadRunning(candidate.id)}
+                        -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
+                        -- their pre-update values: delivered-so-far is exactly "this row was suspended at
+                        -- least once with its command in the transcript". A fresh or crashed follow-up has
+                        -- never been parked, so its command still has to go out; a resumed parked one has,
+                        -- so it must not.
+                        returning id, command, attempts, lease_token, lease_expires_at, created_by,
+                                  session_id, repo, parent_job_id,
+                                  (parent_job_id is not null and command_delivered_at is null) as follow_up
+                    `;
+
+                    const row = rows[0];
+                    // The candidate moved between the select and the lock: the previous lock
+                    // holder claimed this thread first. Fall through to the next candidate.
+                    if (!row) continue;
+
+                    // Resolved here rather than in the route, because the org is bound here and
+                    // the author and repo label are in hand — and ON THE TRANSACTION, so a claim
+                    // holds one connection. A resolver failure propagates: the claim route's
+                    // guard answers 503, the driver retries the claim, and a job is never handed
+                    // out with half an environment. The minted installation token goes under it
+                    // as the base layer, and its failure rolls back exactly the same way.
+                    const resolvedEnv = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined;
+                    // The mint fills only the gap: when the stacked env already carries a
+                    // GITHUB_TOKEN, the mint would be discarded — so it is not made at all, rather
+                    // than spend a GitHub call and leave a live token nothing holds.
+                    const claimEnv =
+                        githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
+                            ? withMintedToken(await githubToken.fresh(), resolvedEnv)
+                            : resolvedEnv;
+                    // Read off the filesystem, inside the claim but OFF the transaction's tables: a
+                    // broken `.bellows.yaml` travels to the driver as `gateError` — the job fails at
+                    // the worker with the reason, where the run's author can see it — rather than as
+                    // a 503 that would retry the claim forever. Gates ride only when the job has both
+                    // a repo label (the checkout the file lives in) and a workspace to read it from.
+                    // The reader is handed the thread root, because the worktree the run edits — and
+                    // the gates file it must satisfy — is keyed by it.
+                    let claimGates: BellowsConfig | null = null;
+                    let gateError: string | null = null;
+                    const claimPath = hasWorkspaces && row.created_by ? `${orgId}/${row.created_by}` : null;
+                    if (gatesReader && row.repo && claimPath) {
+                        const read = await gatesReader.readFor(claimPath, row.repo, rootJobId);
+                        if (read.error) gateError = read.error;
+                        else claimGates = read.config;
+                    }
+                    return {
+                        id: row.id,
+                        command: row.command,
+                        attempts: row.attempts,
+                        leaseToken: row.lease_token,
+                        leaseExpiresAt: row.lease_expires_at.toISOString(),
+                        userId: row.created_by,
+                        // Built here rather than in the route, because this is where the org is bound. Null
+                        // for an unattributed job — no member, so no workspace — and null when this
+                        // deployment has no workspace root, where no directory exists to point at.
+                        workspacePath: claimPath,
+                        rootJobId,
+                        // Survived the case above, so this claim is a resume.
+                        resumeSessionId: row.session_id,
+                        followUp: row.follow_up,
+                        ...(claimEnv ? { env: claimEnv } : {}),
+                        ...(row.repo !== null ? { repo: row.repo } : {}),
+                        ...(claimGates || gateError
+                            ? { gates: claimGates, gateError: gateError }
+                            : {}),
+                    };
                 }
-                return {
-                    id: row.id,
-                    command: row.command,
-                    attempts: row.attempts,
-                    leaseToken: row.lease_token,
-                    leaseExpiresAt: row.lease_expires_at.toISOString(),
-                    userId: row.created_by,
-                    // Built here rather than in the route, because this is where the org is bound. Null
-                    // for an unattributed job — no member, so no workspace — and null when this
-                    // deployment has no workspace root, where no directory exists to point at.
-                    workspacePath: claimPath,
-                    // Survived the case above, so this claim is a resume.
-                    resumeSessionId: row.session_id,
-                    followUp: row.follow_up,
-                    ...(claimEnv ? { env: claimEnv } : {}),
-                    ...(row.repo !== null ? { repo: row.repo } : {}),
-                    ...(claimGates || gateError
-                        ? { gates: claimGates, gateError: gateError }
-                        : {}),
-                };
             });
         },
 
@@ -745,8 +861,8 @@ export function createJobStore({
             await gate();
             // Lease-guarded like every worker route: the freshness answer goes only to the worker
             // that holds the run, and only while it still does.
-            const rows = await sql<{ created_by: string | null; repo: string | null }[]>`
-                select created_by, repo
+            const rows = await sql<{ created_by: string | null; repo: string | null; parent_job_id: string | null }[]>`
+                select created_by, repo, parent_job_id
                 from job
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
@@ -758,7 +874,10 @@ export function createJobStore({
             if (!gatesReader || !row.repo || !workspacePath) {
                 return { result: 'ok', gates: null, gateError: null };
             }
-            const read = await gatesReader.readFor(workspacePath, row.repo);
+            // The same root resolution the claim does: the re-read must answer for the worktree
+            // the run edits, which is keyed by the thread's root, not by this row.
+            const rootJobId = row.parent_job_id !== null ? await rootOf(sql, id) : id;
+            const read = await gatesReader.readFor(workspacePath, row.repo, rootJobId);
             return { result: 'ok', gates: read.config, gateError: read.error };
         },
 

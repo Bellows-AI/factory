@@ -49,6 +49,12 @@ variable no user could change.
   by somebody else, so a login-keyed directory eventually hands a stranger the previous holder's
   checkouts and their `.git/config` — the account-takeover path `docs/auth.md` names, except the
   prize is a working tree.
+- **Beside the checkouts sits `<userId>/.worktrees/<root job id>` — the driver's, not ours.**
+  Each task run works in a `git worktree` of one of the member's clones, branched off the remote
+  default, keyed by the task thread's root job id (`docs/jobs.md`, issue #35). The reconcile never
+  creates, reads, prunes, or lists that directory — its naming rules refuse a leading dot (the
+  same protection `.opencode` relies on), so the segment cannot collide with a repo name — and the
+  driver is the only writer, because the worktree is attempt machinery, not provisioning.
 - **Legibility is the real cost, and it is paid with a breadcrumb rather than with a key.**
   `<userId>/.factory-workspace.json` names the login, so `ls` is not a wall of uuids. It is
   deliberately never read by any code: a breadcrumb something resolves against is a second source of
@@ -166,12 +172,16 @@ against this list — and still nothing runs.
 - **Nothing prunes, and per-member checkouts multiply that by the number of members.** Deselecting a
   repository frees nothing; `docker compose down -v` is the only reclaim. The reason has not changed
   and is the reason nothing can be built here safely: this process cannot tell a stale clone from
-  one holding an agent's uncommitted work.
+  one holding an agent's uncommitted work. The driver's task worktrees grow the same way — one
+  working tree per task thread, never pruned by anything — for the identical reason, and they are
+  invisible to the workspace page, which walks checkout directories only.
 - **What exists instead:** a per-member cap of 20 repositories, so one click cannot clone an entire
   GitHub organization onto a shared volume; a reported `sizeBytes` per checkout; and an `orphaned`
   list of deselected repositories that are still on disk, so growth is at least visible on the page
   rather than only in `df`. That list is where a prune button would attach.
-- **Clones drift from their remotes**, because nothing fetches.
+- **Clones drift from their remotes**, because nothing fetches — but a task never works on the
+  drift: the driver's startup sync creates the task worktree from `origin/<default>` fresh at
+  every attempt, which is why the drift is survivable at all.
 
 ## Tests
 

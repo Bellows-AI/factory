@@ -4,9 +4,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
+import { CACHE_WATCH_TURNS, cacheCollapse, claimEnv, containerName, createDockerRunner, currentActivity, dockerArgs, envFileBody, gateEnvArgs, gateEnvContainerName, gateExecArgs, opencodeCacheProbeArgs, opencodeSessionReadoutArgs, parseDockerStats, parseOpencodeCacheProbe, parseOpencodeRunOutcome, parseRemoteSessionId, remoteSessionArgs, reportTail, stripAnsi, tailBytes } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
-import { CREDENTIAL_HELPER, gitProbeScript, gitSyncScript, isBranchName, parseGitState, publishPlan, repoPath } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeScript, isBranchName, parseGitState, publishPlan, repoPath, worktreeBranch, worktreeDir, worktreeRelDir } from '../src/publish.js';
 
 /*
  * The env-file write is the one await between the setup's final kill-check and the spawn, and a
@@ -259,6 +259,15 @@ describe('the board\'s environment', () => {
         expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
     });
 
+    it('drops a member CRED_HELPER from the claim env and the env file', () => {
+        // CRED_HELPER is the sync fetch's credential-helper CODE, a value the driver alone
+        // chooses; a member's `!` helper riding the claim env into the sync container would be
+        // member-controlled code execution, run by git as helper code.
+        const hijacked = { ...job, env: { CRED_HELPER: '!evil', OTHER: 'fine' } };
+        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
+        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
+    });
+
     it('forwards no board env to a Remote Control runner, and writes no env file for one', () => {
         // The same exclusion RUNNER_ENV obeys: a forwarded credential does not fail there, it
         // degrades the session in silence.
@@ -327,8 +336,13 @@ describe('reading the remote session id', () => {
     it('reads the bridge record out of the running container, by session id', () => {
         const line = remoteSessionArgs(job, SESSION);
         expect(line.slice(0, 4)).toEqual(['exec', containerName(job), 'sh', '-c']);
-        expect(line[4]).toContain(`${SESSION}.jsonl`);
+        // The script is the static file; the session id rides as its first positional
+        // parameter, a plain argv value — never interpolated into the script text.
+        expect(line[5]).toBe('sh');
+        expect(line[6]).toBe(SESSION);
         expect(line[4]).toContain('bridge-session');
+        expect(line[4]).toContain('"$1".jsonl');
+        expect(line[4]).not.toContain(SESSION);
     });
 
     // The id arrives from the board on a resume, and a board is not something this process should
@@ -605,27 +619,30 @@ describe('scraping the session opencode used', () => {
      */
     it('reads the session database out of the member’s data directory, root sessions only', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
-        expect(line.slice(0, 8)).toEqual([
+        expect(line.slice(0, 6)).toEqual([
             'run',
             '--rm',
             '-v',
             'factory-ai_workspaces:/workspaces',
-            '--entrypoint',
-            'node',
-            'opencode-executor',
             '-e',
+            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
         ]);
-        expect(line[8]).toContain(`/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`);
-        expect(line[8]).toContain('parent_id is null');
+        expect(line.slice(6, 10)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[10] as string;
+        // The script is the static file: the database path arrives by env, so no board-derived
+        // value is ever part of its text.
+        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
+        expect(script).toContain('process.env.OPENCODE_DB');
+        expect(script).toContain('parent_id is null');
         // The role is a field INSIDE the message's data JSON, not a column — a SQL role filter
         // throws "no such column: role" on every read and the scrape answers nothing. Filtered in
         // JS instead, where the parsed role actually is.
-        expect(line[8]).not.toContain("role='assistant'");
-        expect(line[8]).toContain('d.role!=="assistant"');
-        expect(line[8]).toContain('readOnly');
+        expect(script).not.toContain("role='assistant'");
+        expect(script).toContain("d.role !== 'assistant'");
+        expect(script).toContain('readOnly');
         // A failure prints one parseable error line — the empty output of a broken query is
         // otherwise indistinguishable from an empty database.
-        expect(line[8]).toContain('{error:');
+        expect(script).toContain('{ error:');
     });
 
     it('pulls the session id, finish reason and context stats out of the readout’s answer', () => {
@@ -703,19 +720,24 @@ describe('the cache watch', () => {
             '--rm',
             '-v',
             'factory-ai_workspaces:/workspaces',
-            '--entrypoint',
-            'node',
-            'opencode-executor',
             '-e',
+            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+            '-e',
+            // The turn count rides from the driver's own constant, so the probe and the verdict
+            // cannot drift apart.
+            `CACHE_WATCH_TURNS=${CACHE_WATCH_TURNS}`,
         ]);
-        expect(line[8]).toContain(`/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`);
+        expect(line.slice(8, 12)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[12] as string;
+        expect(script).toContain('process.env.OPENCODE_DB');
+        expect(script).toContain('process.env.CACHE_WATCH_TURNS');
         // Newest-first, so the probe can answer from the run's last handful of messages without
         // reading the session whole.
-        expect(line[8]).toContain('order by id desc');
-        expect(line[8]).toContain('parent_id is null');
-        expect(line[8]).toContain('d.role!=="assistant"');
-        expect(line[8]).toContain('readOnly');
-        expect(line[8]).toContain('{error:');
+        expect(script).toContain('order by id desc');
+        expect(script).toContain('parent_id is null');
+        expect(script).toContain("d.role !== 'assistant'");
+        expect(script).toContain('readOnly');
+        expect(script).toContain('{ error:');
     });
 
     it('parses the probe’s answer, error lines included', () => {
@@ -837,29 +859,30 @@ describe('the cache watch', () => {
 });
 
 /**
- * The gate environment container: one long-lived `docker run -d` per member+repo, a `docker exec`
+ * The gate environment container: one long-lived `docker run -d` per task worktree, a `docker exec`
  * per gate. Pure and pinned for the same reason dockerArgs is — everything security-relevant about
  * the environment runner is decided in these arrays, and the values they interpolate arrive from
  * the board and from a file in a member's checkout.
  */
 describe('the gate environment container', () => {
-    const KEY = `bellows/${USER}/factory`;
+    const ROOT = '55555555-5555-4555-8555-555555555555';
+    const KEY = `bellows/${USER}/.worktrees/${ROOT}`;
     const config = loadDriverConfig({});
 
-    it('names the container after the checkout key, exec-able and orphan-findable', () => {
-        expect(gateEnvContainerName(KEY)).toBe(`factory-env-bellows-${USER}-factory`);
+    it('names the container after the worktree key, exec-able and orphan-findable', () => {
+        expect(gateEnvContainerName(KEY)).toBe(`factory-env-bellows-${USER}-.worktrees-${ROOT}`);
         expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
             expect.arrayContaining([
                 '-d',
                 '--name',
-                `factory-env-bellows-${USER}-factory`,
+                `factory-env-bellows-${USER}-.worktrees-${ROOT}`,
                 '--label',
                 `factory.gates=${KEY}`,
             ]),
         );
     });
 
-    it('mounts the checkouts volume and works inside the checkout, like the coding agent does', () => {
+    it('mounts the checkouts volume and works inside the worktree, like the coding agent does', () => {
         expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
             expect.arrayContaining([
                 '-v',
@@ -901,14 +924,18 @@ describe('the gate environment container', () => {
     });
 
     // The key is interpolated into argv (-w) and into a container NAME. It arrives from the
-    // board's claim plus a repo label — asserted, not trusted, the WORKSPACE_PATH posture.
-    it('refuses a checkout key that is not <org>/<uuid>/<repo>', () => {
+    // board's claim plus a repo label — asserted, not trusted, the WORKSPACE_PATH posture. The
+    // worktree key is the only shape now: gates run in the tree the agent edits, and that tree
+    // is `<org>/<uuid>/.worktrees/<root id>`, never the pristine clone.
+    it('refuses a key that is not <org>/<uuid>/.worktrees/<uuid>', () => {
         for (const key of [
             '../../etc',
             `bellows/${USER}`,
-            `bellows/not-a-uuid/factory`,
+            `bellows/not-a-uuid/.worktrees/${ROOT}`,
+            `bellows/${USER}/.worktrees/not-a-uuid`,
+            `bellows/${USER}/factory`,
             `bellows/${USER}/../..`,
-            `bellows/${USER}/-rf`,
+            `bellows/${USER}/.worktrees/${ROOT}/../..`,
             '',
         ]) {
             expect(() => gateEnvArgs(config, key, 'node:24'), key).toThrow();
@@ -921,11 +948,12 @@ describe('the gate environment container', () => {
         expect(() => gateExecArgs('bad name; rm -rf', 'x')).toThrow();
     });
 
-    // The name validator and the name generator must agree: a long org + long repo produces the
-    // longest key the pattern allows (org 39 + uuid 36 + repo 100), and every gate of that
-    // checkout must still be exec-able.
-    it('accepts the longest container name the checkout-key pattern can produce', () => {
-        const key = `${'a'.repeat(39)}/${USER}/${'r'.repeat(100)}`;
+    // The name validator and the name generator must agree: a long org + long uuid produces the
+    // longest key the pattern allows (org 39 + uuid 36 + the worktree segment + root uuid 36),
+    // and every gate of that checkout must still be exec-able.
+    it('accepts the longest container name the worktree-key pattern can produce', () => {
+        const longestUuid = `${'f'.repeat(8)}-${'f'.repeat(4)}-${'f'.repeat(4)}-${'f'.repeat(4)}-${'f'.repeat(12)}`;
+        const key = `${'a'.repeat(39)}/${USER}/.worktrees/${longestUuid}`;
         const name = gateEnvContainerName(key);
         expect(() => gateExecArgs(name, 'npm test')).not.toThrow();
         expect(gateEnvArgs(config, key, 'node:24')).toEqual(expect.arrayContaining(['--name', name]));
@@ -2458,6 +2486,354 @@ describe('publishing the produced work', () => {
         expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'o/.' })).toBeNull();
     });
 
+    /*
+     * The per-task workspace (issue #35): one `git worktree` of the job's repo, branched off the
+     * remote default, per task THREAD. Keyed by the thread's ROOT job id — stable across attempts
+     * of the same job, and shared by follow-ups, because a follow-up resumes the parent session
+     * and a session is only coherent in the tree it ran in. The clone itself stays pristine.
+     */
+    const ROOT = '55555555-5555-4555-8555-555555555555';
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+
+    it('computes the worktree path and branch from the thread root', () => {
+        expect(worktreeRelDir(repoJob)).toBe(`bellows/${USER}/.worktrees/${job.id}`);
+        // A follow-up is a NEW job row resuming the parent conversation: its worktree is the
+        // thread's, so it lands in the tree the session (and the parent's work) lives in.
+        expect(worktreeRelDir({ ...repoJob, rootJobId: ROOT })).toBe(`bellows/${USER}/.worktrees/${ROOT}`);
+        expect(worktreeDir(loadDriverConfig({}), { ...repoJob, rootJobId: ROOT })).toBe(
+            `/workspaces/bellows/${USER}/.worktrees/${ROOT}`,
+        );
+        expect(worktreeBranch({ ...repoJob, rootJobId: ROOT })).toBe(`factory/${ROOT}`);
+    });
+
+    it('refuses a worktree path it could not assert', () => {
+        // The same posture repoPath pins above: every board-supplied half is asserted before it
+        // joins a path, and here the value becomes the agent's working directory.
+        const broken: BoardJob[] = [
+            { ...repoJob, workspacePath: null },
+            { ...repoJob, workspacePath: '../etc' },
+            { ...repoJob, workspacePath: `bellows/not-a-uuid` },
+            { ...repoJob, repo: 'just-a-name' },
+            { ...repoJob, repo: 'o/..' },
+            { ...repoJob, repo: 'o/.' },
+            { ...repoJob, rootJobId: 'not-a-uuid' },
+            { ...repoJob, rootJobId: '../../etc' },
+        ];
+        for (const job of broken) expect(worktreeRelDir(job), job.repo).toBeNull();
+    });
+
+    it('runs a repo job inside its worktree, and a repo-less job at the member root', () => {
+        const withRepo = dockerArgs(loadDriverConfig({}), repoJob, { id: SESSION, resume: false });
+        expect(withRepo).toContain(`WORKDIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
+        // A command-only job names no repo: no worktree exists, and the member root is where it
+        // always started — the argv stays byte-identical to what it was.
+        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false })).toContain(
+            `WORKDIR=/workspaces/bellows/${USER}`,
+        );
+    });
+
+    it('refuses to run a repo job whose worktree path cannot be asserted', () => {
+        expect(() =>
+            dockerArgs(loadDriverConfig({}), { ...repoJob, rootJobId: 'not-a-uuid' }, { id: SESSION, resume: false }),
+        ).toThrow(/worktree/);
+    });
+
+    it('creates the worktree off the remote default, rebasing an existing one', () => {
+        // Every git call in the script is execFileSync — no value can become a command.
+        expect(gitWorktreeScript).toContain('execFileSync');
+        expect(gitWorktreeScript).not.toContain('execSync(');
+        // The remote is fetched with the env file's credential; nothing on a command line.
+        expect(gitWorktreeScript).toContain("git('fetch', 'origin', '--prune')");
+        // Stale worktree admin entries are pruned before an add, so a directory that was
+        // removed underneath git can be recreated instead of failing forever.
+        expect(gitWorktreeScript).toContain("git('worktree', 'prune')");
+        expect(gitWorktreeScript).toContain("git('worktree', 'add', wt, branch)");
+        // An existing worktree keeps its commits by rebasing onto the new default — with
+        // --autostash, so a follow-up in the same tree works even when the previous run left
+        // uncommitted edits: the edits are stashed for the rebase and reapplied after it.
+        expect(gitWorktreeScript).toContain("inw('rebase', '--autostash', 'origin/' + def)");
+        // A conflicted rebase aborts itself — the worktree must never sit mid-rebase — and the
+        // failure names what happened.
+        expect(gitWorktreeScript).toContain("inw('rebase', '--abort')");
+        expect(gitWorktreeScript).toContain('rebased onto');
+        // A path that holds a git tree this sync did not create is refused, never deleted.
+        expect(gitWorktreeScript).toContain("fs.existsSync(wt + '/.git')");
+    });
+
+    it('hands the sync the clone, the worktree and the branch, by env', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+        const result = await runner.syncCheckout(repoJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const run = calls.find((a) => a[0] === 'run')!;
+        // The clone — where origin lives and the worktree is created FROM. Paths, not
+        // credentials: the claim env rides the env file exactly as before.
+        expect(run).toEqual(expect.arrayContaining(['-e', `REPO=/workspaces/bellows/${USER}/factory`]));
+        expect(run).toEqual(expect.arrayContaining(['-e', `WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`]));
+        expect(run).toEqual(expect.arrayContaining(['-e', `BRANCH=factory/${job.id}`]));
+    });
+
+    // git reads no token from the environment, and the executor images ship no credential
+    // helper — so a private-repo fetch needs the same token-backed helper the push uses. It
+    // rides CONDITIONALLY: only when the claim env actually carries GITHUB_TOKEN, because a
+    // public repo must keep its plain unauthenticated fetch (a helper answering an empty
+    // password would break it). The VALUE passed is helper CODE, never the credential — the
+    // token itself travels only in the env file, where the helper reads it.
+    it('hands the sync the credential-helper code only when the claim env carries GITHUB_TOKEN', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        const run = calls.find((a) => a[0] === 'run')!;
+        expect(run).toEqual(expect.arrayContaining(['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`]));
+        // The token itself rides the env file, never argv.
+        expect(run.some((arg) => arg.includes('t0k-3n'))).toBe(false);
+
+        // Any other claim env — even a non-empty one — keeps the plain fetch, no helper.
+        await runner.syncCheckout({ ...repoJob, env: { CORE_TOKEN: 'shh' } });
+        const plain = calls.filter((a) => a[0] === 'run')[1]!;
+        expect(plain.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+
+        // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
+        // break the public-repo plain fetch it exists to preserve — and a private repo with an
+        // empty token fails auth either way. Property presence is not the test; the VALUE is.
+        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: '' } });
+        const empty = calls.filter((a) => a[0] === 'run')[2]!;
+        expect(empty.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+    });
+
+    /*
+     * A minimal stateful daemon for the sync's fence: containers and networks live in maps,
+     * `ps` and `network ls` honor their `--filter label=` pairs, and rm removes what it names.
+     * The sync container itself answers the script's success verdict. `fail`, when given, turns
+     * the matching call into an execFile-shaped rejection — stderr on the error, the way the
+     * promisified execFile carries a daemon refusal — so a test can script the daemon saying no.
+     */
+    const fenceDaemon = (fail?: (args: string[]) => string | null) => {
+        const containers = new Map<string, Record<string, string>>();
+        const networks = new Map<string, Record<string, string>>();
+        const calls: string[][] = [];
+        const matches = (args: string[], labels: Record<string, string>): boolean => {
+            for (let i = 0; i < args.length; i += 1) {
+                if (args[i] === '--filter' && (args[i + 1] ?? '').startsWith('label=')) {
+                    const [key, value] = (args[i + 1] ?? '').slice('label='.length).split('=');
+                    if (labels[key] !== value) return false;
+                }
+            }
+            return true;
+        };
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            const refused = fail?.(args);
+            if (refused) {
+                throw Object.assign(new Error(`Command failed: docker ${args.join(' ')}`), { stderr: refused });
+            }
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                return { stdout: '{"ok":true,"reason":null}' };
+            }
+            if (args[0] === 'ps') {
+                return {
+                    stdout: [...containers.entries()]
+                        .filter(([, labels]) => matches(args, labels))
+                        .map(([id]) => id)
+                        .join('\n'),
+                };
+            }
+            if (args[0] === 'rm') {
+                for (const id of args.slice(1)) containers.delete(id);
+                return { stdout: '' };
+            }
+            if (args[0] === 'network' && args[1] === 'ls') {
+                return {
+                    stdout: [...networks.entries()]
+                        .filter(([, labels]) => matches(args, labels))
+                        .map(([name]) => name)
+                        .join('\n'),
+                };
+            }
+            if (args[0] === 'network' && args[1] === 'rm') {
+                for (const name of args.slice(2)) networks.delete(name);
+                return { stdout: '' };
+            }
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        return { containers, networks, calls, exec };
+    };
+
+    // The fence before the sync (PR #46 review): the loop calls syncCheckout before the
+    // runner's own fence, so the sweep has to come here — the sync is the first writer on the
+    // task worktree, and starting it over a previous attempt's live runner would mix edits.
+    it('sweeps the job label before the sync container is created', async () => {
+        const d = fenceDaemon();
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+        const result = await runner.syncCheckout(repoJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        const shapes = d.calls.map((a) => a[0]);
+        expect(shapes).toContain('ps');
+        expect(shapes.indexOf('ps')).toBeLessThan(shapes.indexOf('run'));
+    });
+
+    // The replacement-with-an-active-previous-runner shape of the review comment: the old
+    // attempt's runner is still on the daemon when the replacement's sync starts, and the
+    // fence's removal must land BEFORE the sync container runs — not after it.
+    it('removes a previous attempt’s still-running runner before the sync runs', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const NEW_TOKEN = 'bbbbbbbb-2222-4222-8222-222222222222';
+        const d = fenceDaemon();
+        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+        const result = await runner.syncCheckout({ ...repoJob, leaseToken: NEW_TOKEN });
+
+        expect(result).toEqual({ ok: true, reason: null });
+        // The previous runner is off the daemon by the time the sync container is created.
+        expect(d.containers.size).toBe(0);
+        const rmIndex = d.calls.findIndex((a) => a[0] === 'rm');
+        const runIndex = d.calls.findIndex((a) => a[0] === 'run');
+        expect(rmIndex).toBeGreaterThanOrEqual(0);
+        expect(rmIndex).toBeLessThan(runIndex);
+    });
+
+    // A fence that converts a failed `docker ps` into an empty answer reads "nothing left" —
+    // and the sync would start while a previous attempt's runner is still writing the worktree.
+    // The fence is infrastructure, not the command's verdict: it must throw, and the loop's
+    // try/catch around syncCheckout leaves the job to its lease.
+    it('fails the sync when the fence cannot list the job’s leftover containers', async () => {
+        const d = fenceDaemon((args) =>
+            args[0] === 'ps' ? 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' : null,
+        );
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        // No sync container over an unfenced checkout: the throw precedes the run argv entirely.
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    it('fails the sync when the fence cannot list the job’s stale networks', async () => {
+        const d = fenceDaemon((args) =>
+            args[0] === 'network' && args[1] === 'ls' ? 'Cannot connect to the Docker daemon' : null,
+        );
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    it('fails the sync when a leftover container refuses to be removed', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = fenceDaemon((args) => (args[0] === 'rm' ? 'Error: cannot remove container: device is busy' : null));
+        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    it('fails the sync when a leftover network refuses to be removed', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = fenceDaemon((args) =>
+            args[0] === 'network' && args[1] === 'rm' ? 'Error: cannot remove network: in use' : null,
+        );
+        d.networks.set(networkName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/re-claim fence/);
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
+    });
+
+    // The one tolerated shape: a container exiting between the fence's ps and its rm answers
+    // "No such container" — the fence SUCCEEDED, the runner is gone. Failing there would burn
+    // attempts on the daemon confirming a removal already finished.
+    it('proceeds when the fence’s rm answers that the container is already gone', async () => {
+        const OLD_TOKEN = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const d = fenceDaemon((args) =>
+            args[0] === 'rm'
+                ? `Error response from daemon: No such container: ${containerName({ ...job, leaseToken: OLD_TOKEN })}`
+                : null,
+        );
+        d.containers.set(containerName({ ...job, leaseToken: OLD_TOKEN }), {
+            'factory.job': job.id,
+            'factory.lease': OLD_TOKEN,
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            d.exec,
+        );
+
+        expect(await runner.syncCheckout(repoJob)).toEqual({ ok: true, reason: null });
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(true);
+    });
+
+    it('runs every publish step inside the task worktree', async () => {
+        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
+            fail: (a) => a.includes('switch') && !a.includes('-c'),
+        });
+        await runner.publishGit(ISSUE_JOB);
+
+        const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
+        expect(calls.length).toBeGreaterThan(0);
+        for (const call of calls) {
+            if (call.some((x) => typeof x === 'string' && x.includes('execFileSync'))) {
+                expect(call).toEqual(expect.arrayContaining(['-e', `REPO=${wt}`]));
+            } else if (call.includes('-w')) {
+                expect(call[call.indexOf('-w') + 1]).toBe(wt);
+            }
+        }
+    });
+
     it('refuses branch names that could read as something else', () => {
         expect(isBranchName('fix/10')).toBe(true);
         expect(isBranchName('task/20260909')).toBe(true);
@@ -2475,25 +2851,11 @@ describe('publishing the produced work', () => {
         // was never pushed has no upstream, and the fatal rev-list would read its local-only
         // commits as fully landed — which once reported a two-commit task branch as "nothing to
         // publish".
-        expect(gitProbeScript).toContain('origin/"+out.defaultBranch+"..HEAD');
+        expect(gitProbeScript).toContain("'origin/' + out.defaultBranch + '..HEAD'");
         expect(gitProbeScript).not.toContain('@{u}');
         // The helper reads the token from the container's environment — the env file's job —
         // and the literal appears in no argv the publisher builds.
         expect(CREDENTIAL_HELPER).toContain('$GITHUB_TOKEN');
-    });
-
-    it('syncs by fetch, default hard-reset, task-branch rebase — aborting a conflicted rebase', () => {
-        // The remote is reached with the env file's credential; nothing on a command line.
-        expect(gitSyncScript).toContain('fetch');
-        expect(gitSyncScript).toContain('"--prune"');
-        // A task branch keeps its commits by rebasing onto the new default; the default branch
-        // itself is reset hard, because stray uncommitted edits there are leftovers, not work.
-        expect(gitSyncScript).toContain('"rebase","origin/"+def');
-        expect(gitSyncScript).toContain('"reset","--hard","origin/"+def');
-        // A conflicted rebase aborts itself — the checkout must never sit mid-rebase — and the
-        // failure names what happened.
-        expect(gitSyncScript).toContain('"rebase","--abort"');
-        expect(gitSyncScript).toContain('rebased onto');
     });
 
     it('parses the probe’s answer, defaulting anything missing', () => {
@@ -2650,12 +3012,15 @@ describe('publishing the produced work', () => {
             expect(args[0]).toBe('run');
             expect(args).toContain('--rm');
         }
-        // And the sync, which takes no part in the publish flow above.
+        // And the sync, which takes no part in the publish flow above. The re-claim fence now
+        // precedes the sync container (ps / network reads and removals — argv-only, no
+        // container among them), so the pin counts CONTAINER starts: one, a full
+        // `docker run --rm`.
         const { calls: syncCalls, runner: syncRunner } = publishRunner(DIRTY_ON_MAIN);
         await syncRunner.syncCheckout(ISSUE_JOB);
-        expect(syncCalls).toHaveLength(1);
-        expect(syncCalls[0]![0]).toBe('run');
-        expect(syncCalls[0]).toContain('--rm');
+        const syncContainers = syncCalls.filter((a) => a[0] === 'run');
+        expect(syncContainers).toHaveLength(1);
+        expect(syncContainers[0]).toContain('--rm');
     });
 
     it('fails with the step’s reason when a git step refuses', async () => {

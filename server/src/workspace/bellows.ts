@@ -226,7 +226,7 @@ export interface GatesRead {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Reads `<root>/<orgId>/<userId>/<repoName>/.bellows.yaml` for a claim.
+ * Reads a checkout's `.bellows.yaml` for a claim or a gates re-read.
  *
  * The server reads the file, not the driver: the board created these checkouts and mounts the
  * volume at `workspaceRoot`, while the driver only ever passes volume names to docker and cannot
@@ -237,6 +237,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * The checkout directory is the repo NAME, not the owner/name label: two owners' same-named
  * repositories share one directory per member by the `user_repo_dir_uk` decision, so the label's
  * second segment is the one that exists on disk.
+ *
+ * The task worktree (issue #35) is read FIRST: the run edits `<ws>/.worktrees/<root id>`, and
+ * the gates it must satisfy live there. At claim time the worktree does not exist yet — the
+ * driver's sync creates it moments later — so the read falls back to the clone, which is what
+ * keeps the claim's answer the same one it always was; after the sync, the re-read finds the
+ * worktree's file, which is the tree that actually holds the run's gates. `worktreeId` is
+ * re-asserted as a uuid before it joins a path, exactly like the user segment.
  */
 export async function readGatesFile(options: {
     /** Null = this deployment has no workspace root, so no checkout and no gates anywhere. */
@@ -245,10 +252,12 @@ export async function readGatesFile(options: {
     workspacePath: string;
     /** The job's `owner/name` label, or null on a job queued without one. */
     repo: string | null;
+    /** The thread's ROOT job id — the worktree the run edits — or null when unknown. */
+    worktreeId?: string | null;
     /** Test seam: lets the suite assert the path and simulate failures without a filesystem. */
     readFile?: (path: string) => Promise<string>;
 }): Promise<GatesRead> {
-    const { root, workspacePath, repo, readFile = defaultRead } = options;
+    const { root, workspacePath, repo, worktreeId, readFile = defaultRead } = options;
     if (!root || !repo) return { config: null, error: null };
 
     const name = repo.includes('/') ? repo.slice(repo.indexOf('/') + 1) : repo;
@@ -261,15 +270,27 @@ export async function readGatesFile(options: {
     if (!UUID.test(userId)) {
         return { config: null, error: `workspace path is not <orgId>/<userId>: ${workspacePath}` };
     }
-
-    const path = join(root, workspacePath, name, GATES_FILE);
-    let text: string;
-    try {
-        text = await readFile(path);
-    } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { config: null, error: null };
-        return { config: null, error: (e as Error).message };
+    if (worktreeId !== undefined && worktreeId !== null && !UUID.test(worktreeId)) {
+        return { config: null, error: `worktree id is not a uuid: ${worktreeId}` };
     }
+
+    const paths = worktreeId
+        ? [join(root, workspacePath, '.worktrees', worktreeId, GATES_FILE), join(root, workspacePath, name, GATES_FILE)]
+        : [join(root, workspacePath, name, GATES_FILE)];
+    let text: string | null = null;
+    for (const path of paths) {
+        try {
+            text = await readFile(path);
+            break;
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+            // A worktree file that exists but cannot be read is the run's answer — the same
+            // named-error channel a clone file's failure takes. Only a missing file falls
+            // through to the next candidate.
+            return { config: null, error: (e as Error).message };
+        }
+    }
+    if (text === null) return { config: null, error: null };
     try {
         return { config: parseBellows(text), error: null };
     } catch (e) {

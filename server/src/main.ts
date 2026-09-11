@@ -124,13 +124,15 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         ready,
         env: envVarStore,
         // Gates are read off the server's own workspace mount, per claim, for the job's author and
-        // repo label. Without a workspace root nothing was ever checked out, so there is no reader
-        // and the claim simply carries no gates — the same shape `env` takes when its store is absent.
+        // repo label — worktree-first (the thread's worktree, once the driver's sync has created
+        // it), falling back to the clone. Without a workspace root nothing was ever checked out, so
+        // there is no reader and the claim simply carries no gates — the same shape `env` takes when
+        // its store is absent.
         ...(config.workspaceRoot
             ? {
                   gates: {
-                      readFor: (workspacePath: string, repo: string) =>
-                          readGatesFile({ root: config.workspaceRoot, workspacePath, repo }),
+                      readFor: (workspacePath: string, repo: string, worktreeId: string | null) =>
+                          readGatesFile({ root: config.workspaceRoot, workspacePath, repo, worktreeId }),
                   },
               }
             : {}),

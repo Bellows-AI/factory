@@ -23,11 +23,18 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
 /**
  * The names the driver's own contract with the runner claims. A claim env named WORKDIR would be
  * two different paths to one runner's working directory; TRUST_WORKDIR is how a Remote Control
- * runner is told its checkout is trusted. Reserved at the route, restated at the driver
- * (RESERVED_ENV_NAMES in driver/src/docker.ts — copied, not imported, per that package's
- * zero-dependency rule).
+ * runner is told its checkout is trusted; CRED_HELPER is the credential-helper CODE the sync
+ * fetch runs — a member value there would be member-controlled code executed by the sync
+ * container's git. Reserved at the route, restated at the driver (RESERVED_ENV_NAMES in
+ * driver/src/docker.ts — copied, not imported, per that package's zero-dependency rule).
  */
-export const RESERVED_ENV_NAMES = ['WORKDIR', 'TRUST_WORKDIR', 'BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'] as const;
+export const RESERVED_ENV_NAMES = [
+    'WORKDIR',
+    'TRUST_WORKDIR',
+    'BELLOWS_GATE_URL',
+    'BELLOWS_GATE_TOKEN',
+    'CRED_HELPER',
+] as const;
 
 /**
  * A per-value ceiling. Far past any real variable, and the bound that keeps one value from being
