@@ -6,12 +6,23 @@ import { join } from 'node:path';
 import { createServer as createHttpsServer } from 'node:https';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import { bellowsReadScript } from '../src/services.js';
 import { opencodeCacheProbeScript, opencodeReadoutScript, remoteSessionScript } from '../src/docker.js';
 
 const execFile = promisify(execFileCb);
+
+/** node:sqlite is flagged experimental and its landing version varies; the suite skips, not breaks. */
+function hasNodeSqlite(): boolean {
+    try {
+        new DatabaseSync(':memory:').close();
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 /**
  * The scripts this driver hands to containers are REAL FILES under `driver/src/scripts/`, read at
@@ -238,6 +249,139 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', 
         const marker = join(dir, 'helper-invoked');
         expect((await sync({})).ok).toBe(true);
         expect(existsSync(marker)).toBe(false);
+    });
+});
+
+/**
+ * The close-time opencode session readout, against a real sqlite database — the artifact both
+ * runners hand to a throwaway container. The scope is the part worth executing: the session
+ * database is per MEMBER (that is what makes a follow-up's `--session` resumable at all), so two
+ * concurrent tasks share one file and the readout must answer only the session that ran in
+ * OPENCODE_DIR — the newest root session whose `directory` is that path, which is the working
+ * directory the runner gave the run. The last provider error is lifted beside the finish reason,
+ * because a premature stop whose cause stayed in the session database reads as a mystery on the
+ * board (observed 2026-09-11: a 429 rate limit cut a run off mid-tool-call, and the verdict
+ * named only the finish reason).
+ */
+describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
+    /** One root session row, with the columns the script reads. */
+    const insertSession = (db: DatabaseSync, id: string, directory: string, created: number): void => {
+        db.prepare('insert into session (id, parent_id, directory, time_created) values (?, null, ?, ?)').run(
+            id,
+            directory,
+            created,
+        );
+    };
+
+    /** One message row; `data` is the JSON blob the script reads fields out of. */
+    const insertMessage = (db: DatabaseSync, sessionId: string, data: object): void => {
+        db.prepare('insert into message (session_id, data) values (?, ?)').run(sessionId, JSON.stringify(data));
+    };
+
+    const run = (dbPath: string, dir: string): { answer: Record<string, unknown> } => {
+        const stdout = execFileSync('node', [pathOf('opencode-readout.cjs')], {
+            env: { ...process.env, OPENCODE_DB: dbPath, OPENCODE_DIR: dir },
+            encoding: 'utf8',
+        });
+        return { answer: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
+    };
+
+    let dir: string;
+    let dbPath: string;
+    const MINE = '/workspaces/org/member/.worktrees/mine';
+    const OTHER = '/workspaces/org/member/.worktrees/other';
+
+    beforeEach(() => {
+        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-ocread-')));
+        dbPath = join(dir, 'opencode.db');
+        const db = new DatabaseSync(dbPath);
+        db.exec('create table session (id text primary key, parent_id text, directory text, time_created integer)');
+        db.exec('create table message (id integer primary key, session_id text, data text)');
+        // The other task's session is the OLDER one; today's newest-root-session scrape answers it
+        // for both tasks, which is the contamination the directory scope exists to end.
+        insertSession(db, 'ses_other', OTHER, 1000);
+        insertMessage(db, 'ses_other', { role: 'assistant', finish: 'stop', tokens: { total: 11 }, cost: 0.01 });
+        // This task's, newer — the one the readout must answer.
+        insertSession(db, 'ses_mine', MINE, 2000);
+        db.close();
+    });
+
+    it('answers the newest root session of its directory, and never another task’s', () => {
+        const { answer } = run(dbPath, MINE);
+        expect(answer.id).toBe('ses_mine');
+    });
+
+    it('answers nothing when no session ran in its directory, though the database has sessions', () => {
+        // The loud failure: a scope key that matches nothing must NOT fall back to the newest
+        // session in the file — that fallback is the cross-task contamination.
+        const { answer } = run(dbPath, '/workspaces/org/member/.worktrees/nobody');
+        expect(answer.id).toBeUndefined();
+        expect(String(answer.error)).toContain('no session');
+    });
+
+    it('refuses to run without a directory to scope to', () => {
+        const { OPENCODE_DIR: _omit, ...env } = process.env;
+        const stdout = execFileSync('node', [pathOf('opencode-readout.cjs')], {
+            env: { ...env, OPENCODE_DB: dbPath },
+            encoding: 'utf8',
+        });
+        expect(JSON.parse(stdout.trim()).error).toContain('OPENCODE_DIR');
+    });
+
+    it('carries the finish reason, context and cost of the in-scope session', () => {
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', {
+            role: 'assistant',
+            finish: 'stop',
+            tokens: { total: 90433.4 },
+            cost: 0.31,
+        });
+        db.close();
+
+        const { answer } = run(dbPath, MINE);
+        // Raw, not rounded: rounding is the driver parse's job (parseOpencodeRunOutcome), and the
+        // script carries the database's own number.
+        expect(answer).toMatchObject({ id: 'ses_mine', finish: 'stop', tokens: 90433.4, cost: 0.31, error: null });
+    });
+
+    it('lifts the last provider error the session recorded', () => {
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'tool-calls', tokens: { total: 100016 }, cost: 0 });
+        insertMessage(db, 'ses_mine', {
+            role: 'assistant',
+            error: { name: 'APIError', data: { message: 'Error from provider (Console): Rate limit exceeded.', statusCode: 429 } },
+        });
+        db.close();
+
+        const { answer } = run(dbPath, MINE);
+        expect(answer).toMatchObject({
+            id: 'ses_mine',
+            finish: 'tool-calls',
+            tokens: 100016,
+            error: 'Error from provider (Console): Rate limit exceeded.',
+        });
+    });
+
+    it('reports the LAST error when the run errored, retried through it, and errored again', () => {
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', {
+            role: 'assistant',
+            error: { name: 'APIError', data: { message: 'transient 500, retried through', statusCode: 500 } },
+        });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', tokens: { total: 5 }, cost: 0 });
+        db.close();
+
+        const { answer } = run(dbPath, MINE);
+        expect(answer.error).toBe('transient 500, retried through');
+    });
+
+    it('answers a session with no errors as error null', () => {
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', tokens: { total: 5 }, cost: 0 });
+        db.close();
+
+        const { answer } = run(dbPath, MINE);
+        expect(answer.error).toBeNull();
     });
 });
 

@@ -508,6 +508,36 @@ describe('an opencode runner', () => {
     });
 
     /**
+     * The session line may also carry the last provider error the run recorded — the premature
+     * stop's cause, which only the session database knows. With a session scraped it is NOT a
+     * readout failure: it rides the outcome as its own field, so the verdict can name the 429
+     * instead of leaving the author a finish reason to decode.
+     */
+    it('carries the session’s last provider error on the outcome beside the session', async () => {
+        const exec = vitest.fn((args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                return Promise.resolve({
+                    stdout:
+                        '{"id":"ses_f86188c3dffeZGYO4yZq4atba9","finish":"tool-calls","tokens":100016,"cost":0,"error":"Error from provider (Console): Rate limit exceeded. Please try again later."}\n',
+                });
+            }
+            return Promise.resolve({ stdout: '' });
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        const outcome = await runner.run({ ...job, followUp: false }, null);
+        expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
+        expect(outcome.finishReason).toBe('tool-calls');
+        expect(outcome.providerError).toBe('Error from provider (Console): Rate limit exceeded. Please try again later.');
+        // A scraped session means the readout itself worked — the error is the run's, not the read's.
+        expect(outcome.readoutError).toBeUndefined();
+    });
+
+    /**
      * The readout answers one of three ways — a session line, an error line, or nothing — and the
      * retries must fire on ALL but the first: the WAL-mid-checkpoint read that fails outright and
      * succeeds milliseconds later presents as an error or as silence, never as a session. A run
@@ -619,21 +649,31 @@ describe('scraping the session opencode used', () => {
      */
     it('reads the session database out of the member’s data directory, root sessions only', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
-        expect(line.slice(0, 6)).toEqual([
+        expect(line.slice(0, 8)).toEqual([
             'run',
             '--rm',
             '-v',
             'factory-ai_workspaces:/workspaces',
             '-e',
             `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+            '-e',
+            // The scope: the session database is per member, so the readout answers only the
+            // session whose `directory` is the working directory the RUN container had — the
+            // member root here, since this job names no repo. Without it, two concurrent tasks
+            // of one member share the database and the newest-root-session scrape answers
+            // whichever task closed last (observed 2026-09-11: two /fix tasks recorded one
+            // session id, and both their follow-ups resumed the same conversation).
+            `OPENCODE_DIR=/workspaces/bellows/${USER}`,
         ]);
-        expect(line.slice(6, 10)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
-        const script = line[10] as string;
+        expect(line.slice(8, 12)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[12] as string;
         // The script is the static file: the database path arrives by env, so no board-derived
         // value is ever part of its text.
         expect(script).not.toContain(`/workspaces/bellows/${USER}`);
         expect(script).toContain('process.env.OPENCODE_DB');
+        expect(script).toContain('process.env.OPENCODE_DIR');
         expect(script).toContain('parent_id is null');
+        expect(script).toContain('directory = ?');
         // The role is a field INSIDE the message's data JSON, not a column — a SQL role filter
         // throws "no such column: role" on every read and the scrape answers nothing. Filtered in
         // JS instead, where the parsed role actually is.
@@ -643,6 +683,14 @@ describe('scraping the session opencode used', () => {
         // A failure prints one parseable error line — the empty output of a broken query is
         // otherwise indistinguishable from an empty database.
         expect(script).toContain('{ error:');
+    });
+
+    it('scopes the readout to the task worktree when the job names a repo', () => {
+        const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), {
+            ...job,
+            repo: 'Bellows-AI/factory',
+        });
+        expect(line).toContain(`OPENCODE_DIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
     });
 
     it('pulls the session id, finish reason and context stats out of the readout’s answer', () => {
@@ -699,6 +747,19 @@ describe('scraping the session opencode used', () => {
             contextTokens: null,
             costUsd: null,
             error: null,
+        });
+        // A session line that also carries the last provider error: both ride — the session makes
+        // the task follow-up-able, the error is the premature stop's cause.
+        expect(
+            parseOpencodeRunOutcome(
+                '{"id":"ses_x1","finish":"tool-calls","tokens":100016,"cost":0,"error":"Error from provider (Console): Rate limit exceeded. Please try again later."}',
+            ),
+        ).toEqual({
+            sessionId: 'ses_x1',
+            finishReason: 'tool-calls',
+            contextTokens: 100016,
+            costUsd: 0,
+            error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
         });
     });
 });

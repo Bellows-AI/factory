@@ -210,7 +210,10 @@ minted by the driver — and the Job carries `XDG_DATA_HOME=<mount>/<org>/<user>
 session database persists on the workspaces PVC, which is what makes a follow-up's `--session`
 resumable at all. The close-time session scrape is the docker readout as an aux Job: the
 `opencode-readout.cjs` script passed by content to `node -e` over a READ-WRITE PVC mount — the
-database path as an env value, the mount read-write because a WAL needing recovery has to write —
+database path and the directory scope (`OPENCODE_DIR`, the run's working directory, the same
+string the docker readout passes: the per-member database is shared by concurrent tasks, and the
+scope is what keeps a scrape answering its own task's session) as env values, the mount read-write
+because a WAL needing recovery has to write —
 polled to terminal and read from its pod log, its JSON line parsed into the outcome the same way
 `parseOpencodeRunOutcome` does on docker. A failed scrape never fails the verdict: the session id,
 finish reason and context stats are the run's follow-up-ability, not its work. What stays

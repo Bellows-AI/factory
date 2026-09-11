@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, SESSION_ID, workspacePathOf } from './docker.js';
+import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, runWorkingDir, SESSION_ID, workspacePathOf } from './docker.js';
 import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
@@ -136,14 +136,16 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // keeps it out of the pod spec, which anyone who can `get pods` can read.
     //
     // A repo job starts in its task worktree (issue #35), the same tree the docker runner's
-    // WORKDIR names; a command-only job starts at the member root, where it always did.
+    // WORKDIR names; a command-only job starts at the member root, where it always did. One
+    // expression with docker's (runWorkingDir), because the close-time readout scopes the session
+    // scrape by this exact string — a scope key that drifted from the runner's would answer nothing.
     const worktree = job.repo ? worktreeDir(config, job) : null;
     if (job.repo && !worktree) {
         throw new Error(
             `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`,
         );
     }
-    const env: EnvVar[] = [{ name: 'WORKDIR', value: worktree ?? `${config.workspaceMount}/${path}` }];
+    const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }];
     if (config.credentialsSecret) {
         for (const name of config.passEnv) {
             env.push({
@@ -570,7 +572,15 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob): Aux
                             image: config.image,
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['node', '-e', opencodeReadoutScript],
-                            env: [{ name: 'OPENCODE_DB', value: opencodeDbPath(config, job) }],
+                            // Both travel as env VALUES — the script is static, so nothing
+                            // board-derived is ever part of its text. The directory scope is the
+                            // run's own working directory (the same string opencode records on the
+                            // session), because the database is per MEMBER: without it, two
+                            // concurrent tasks of one member scrape each other's runs.
+                            env: [
+                                { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
+                                { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
+                            ],
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
@@ -2285,6 +2295,10 @@ export function createKubernetesRunner(
                     if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
                     if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
                     if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+                    // With a session scraped, the line's error is the RUN's last provider error,
+                    // not the read's failure — carried as its own field so the verdict can name
+                    // the cause of a premature stop, exactly as the docker runner does.
+                    if (scraped.error) outcome.providerError = scraped.error;
                 } else {
                     outcome.readoutError =
                         reason ?? 'the readout answered nothing (no session in the database)';

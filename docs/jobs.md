@@ -83,7 +83,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `DRIVER_CONCURRENCY` | `2` | |
 | `DRIVER_POLL_MS` | `5000` | |
 | `DRIVER_LEASE_SECONDS` | `300` | Heartbeat is a third of this. |
-| `DRIVER_JOB_TIMEOUT_MS` | `1800000` | The container is `docker kill`ed and the job reported failed, with a note. **Not armed under Remote Control.** |
+| `DRIVER_JOB_TIMEOUT_MS` | `7200000` | The container is `docker kill`ed and the job reported failed, with a note. **Not armed under Remote Control.** |
 | `RUNNER_IDLE_MS` | `3600000` | Remote Control only: silence for this long parks the job on standby. |
 | `RUNNER_CACHE_WATCH` | off | Kills a job whose provider stopped serving prompt cache: three consecutive completed turns with no cached input over ≥20k tokens, each turn over a minute. Opencode only — see the section below. |
 | `RUNNER_CACHE_WATCH_POLL_MS` | `30000` | How often the watch probes the session database. One throwaway container per poll. |
@@ -265,15 +265,24 @@ on the board that the runner never used. Instead the runner **scrapes the id the
 used** after the container exits: opencode keeps its sessions in a sqlite database, the driver
 persists that database per member by pointing `XDG_DATA_HOME` at a `.opencode` directory in the
 member's own tree on the workspaces volume (which is also what makes a session resumable at all —
-a fresh container starts with an empty one), and one throwaway node container reads the newest
-root session out of it. The same read answers **how the run's last message ended** — opencode
+a fresh container starts with an empty one), and one throwaway node container reads the newest root
+session **recorded in the run's own working directory** out of it — the `directory` column is the
+runner's WORKDIR, passed to the readout as `OPENCODE_DIR`, because the shared per-member database
+means two concurrent tasks would otherwise scrape whichever task closed last (observed 2026-09-11:
+two `/fix` tasks recorded one session id, and both their follow-ups resumed the same conversation;
+a readout whose scope matches nothing answers nothing, loudly, rather than falling back to the
+newest row). The same read answers **how the run's last message ended** — opencode
 exits 0 even when the model's context limit cuts a task short mid-investigation, and only the
 session database knows — so a finish reason that is not `stop` is reported as a FAILED run, the
 reason in the output, despite the exit code. The read also lifts the **context the run reached**
-(the last assistant message's token total) and the run's summed cost, which ride the verdict and
-merge into the runtime vitals — the finished task shows `ctx 90,433 tok`, which is where a
-context death is legible. The id is reported while the lease is still live, before the verdict,
-because a follow-up resumes exactly that row. These jobs show no session link (the link is built
+(the last assistant message's token total), the run's summed cost, and the **last provider error**
+the session recorded — so a premature stop names its cause (`Rate limit exceeded`, observed the
+same day: a 429 cut a run off mid-tool-call) instead of leaving the author a finish reason to
+decode. The error rides the verdict only beside a premature stop: a run that finished cleanly is
+not footnoted with an error it already retried through. The context and cost merge into the
+runtime vitals — the finished task shows `ctx 90,433 tok`, which is where a context death is
+legible. The id is reported while the lease is still live, before the verdict, because a follow-up
+resumes exactly that row. These jobs show no session link (the link is built
 from `remote_session_id`, which stays claude-only). Their runs still emit OTLP, but the server's
 metric map carries no opencode rows yet, so spend records as an unmapped agent — null, never zero
 — until those rows are added (see [limits.md](limits.md)). The combination is refused at startup
@@ -467,7 +476,7 @@ the HTTP board and of docker, and of nothing else. Asking the board, or the tele
 make it a client of something it has no business knowing about.
 
 **`DRIVER_JOB_TIMEOUT_MS` is not armed under Remote Control.** With both bounds running the shorter
-one always wins, so at the defaults every drivable job would be killed at thirty minutes and
+one always wins, so at the defaults every drivable job would be killed at two hours and
 reported `failed` — and standby would never happen once, which reads as a feature that does not
 exist rather than as a misconfiguration. An interactive session has no meaningful total duration:
 being driven for three hours is the point. Silence is the bound there.

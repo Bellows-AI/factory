@@ -613,7 +613,14 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         'burning its time budget without progressing. Retry when the cache is healthy again, or on another model.';
                 }
                 if (premature) {
-                    output = `${output}\n[driver] the agent's run ended before it finished (opencode finish reason: "${finish}") — exit 0, but no completed final message. Re-queue the task, or follow up to continue the session.`;
+                    // The finish reason says the run stopped talking; the session's last provider
+                    // error, when the scrape lifted one, says WHY. Observed 2026-09-11: a 429 rate
+                    // limit cut a run off mid-tool-call and the note named only "tool-calls",
+                    // sending its reader into the session database for the cause.
+                    const cause = outcome.providerError ? ` The session's last provider error: ${outcome.providerError}.` : '';
+                    output =
+                        `${output}\n[driver] the agent's run ended before it finished (opencode finish reason: "${finish}") — ` +
+                        `exit 0, but no completed final message.${cause} Re-queue the task, or follow up to continue the session.`;
                 }
                 if (failure) {
                     output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;

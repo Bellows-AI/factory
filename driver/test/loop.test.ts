@@ -317,6 +317,43 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('finish reason: "length"');
     });
 
+    /**
+     * The finish reason says the run stopped talking; the session's last provider error says WHY.
+     * Observed 2026-09-11: a 429 rate limit cut a run off mid-tool-call and the verdict named
+     * only "tool-calls", sending its reader into the session database for the cause. When the
+     * scrape carried an error, the note names it.
+     */
+    it('names the provider error beside the premature stop, when the scrape carried one', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({
+                output: 'reads only',
+                finishReason: 'tool-calls',
+                providerError: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
+            }),
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 0 });
+        expect(board.board.completed[0]?.output).toContain('finish reason: "tool-calls"');
+        expect(board.board.completed[0]?.output).toContain('Rate limit exceeded. Please try again later.');
+    });
+
+    // A run that finished cleanly is not explained by an error it already retried through — the
+    // provider error is only the premature stop's cause, never a healthy verdict's footnote.
+    it('leaves a stopped run’s provider error out of the verdict', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({ finishReason: 'stop', providerError: 'Error from provider (Console): Rate limit exceeded.' }),
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', exitCode: 0 });
+        expect(board.board.completed[0]?.output).not.toContain('Rate limit exceeded');
+    });
+
     it('keeps a stop finish a success, whatever the session scrape reads', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok({ finishReason: 'stop' }));

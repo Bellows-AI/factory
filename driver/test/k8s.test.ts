@@ -4079,7 +4079,22 @@ describe('the opencode session readout job', () => {
                 name: 'OPENCODE_DB',
                 value: `/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
             },
+            {
+                // The scope: only the session that ran in this job's working directory — the
+                // member root here, since the fixture names no repo. The session database is per
+                // member, and without the scope two concurrent tasks scrape each other's runs.
+                name: 'OPENCODE_DIR',
+                value: `/workspaces/bellows/${USER}`,
+            },
         ]);
+    });
+
+    it('scopes the readout to the task worktree when the job names a repo', () => {
+        const spec = opencodeReadoutJobSpec(config, { ...job, repo: 'Bellows-AI/factory' });
+        expect(spec.spec.template.spec.containers[0].env).toContainEqual({
+            name: 'OPENCODE_DIR',
+            value: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+        });
     });
 
     it('mounts the workspaces volume READ-WRITE: a WAL needing recovery has to write it', () => {
@@ -4193,6 +4208,26 @@ describe('the kubernetes runner under opencode', () => {
         );
         expect(created).toBeGreaterThan(0);
         expect(deleted).toBeGreaterThan(created);
+    });
+
+    // A session line that also carries the session's last provider error: the run's cause, not
+    // the read's failure — it rides the outcome as its own field, exactly as the docker runner's.
+    it('carries the session’s last provider error on the outcome beside the session', async () => {
+        const { request } = opencodeFake({
+            log: JSON.stringify({
+                id: 'ses_n3w',
+                finish: 'tool-calls',
+                tokens: 100016,
+                cost: 0,
+                error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
+            }),
+        });
+        const outcome = await ocRunner(request).run(job, null);
+
+        expect(outcome.sessionId).toBe('ses_n3w');
+        expect(outcome.finishReason).toBe('tool-calls');
+        expect(outcome.providerError).toBe('Error from provider (Console): Rate limit exceeded. Please try again later.');
+        expect(outcome.readoutError).toBeUndefined();
     });
 
     it('retries the scrape while the database is mid-checkpoint, then reports the session', async () => {

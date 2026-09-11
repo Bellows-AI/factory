@@ -96,6 +96,15 @@ export interface RunOutcome {
      */
     readoutError?: string | null;
     /**
+     * The last provider error the scraped session recorded — the rejection the provider returned
+     * as the run's dying word (an HTTP 429 rate limit, observed 2026-09-11, cutting a run off
+     * mid-tool-call with exit 0). Lifted from the session database beside the finish reason; set
+     * only when the scrape found the session, and absent for claude-code, which never scrapes.
+     * The loop names it in the premature-stop note, because a finish reason of `tool-calls` says
+     * the run stopped talking without saying what stopped it.
+     */
+    providerError?: string | null;
+    /**
      * Why the cache watch killed the run, when it did — the observed turns, so the verdict the
      * author reads names what the provider stopped doing instead of just "failed". Undefined
      * when the watch is off or never fired; never set by claude-code, and the watch itself is
@@ -481,6 +490,17 @@ export function opencodeDbPath(config: DriverConfig, job: BoardJob): string {
 }
 
 /**
+ * The working directory the runner gives a run: the task worktree when the job names a repository,
+ * the member root where a command-only job always started. This is the exact string opencode
+ * records as the session's `directory` column, which makes it the close-time readout's scope key
+ * too — one expression here because the run's WORKDIR and the readout's OPENCODE_DIR must never
+ * drift apart: a scope key that misses is a scrape that answers nothing.
+ */
+export function runWorkingDir(config: DriverConfig, job: BoardJob): string {
+    return worktreeDir(config, job) ?? `${config.workspaceMount}/${workspacePath(job)}`;
+}
+
+/**
  * The full `docker run` argv that reads what a finished opencode run left behind — pure, and
  * exported, because it is the part worth pinning: the readout is a throwaway container over the
  * workspaces volume, entrypoint swapped for node, whose only work is one read-only query pair for
@@ -499,10 +519,16 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob):
         '--rm',
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
-        // The database path travels as an env VALUE — the script (opencode-readout.cjs) is
-        // static, so nothing board-derived is ever part of its text.
+        // The database path and the directory scope travel as env VALUES — the script
+        // (opencode-readout.cjs) is static, so nothing board-derived is ever part of its text.
+        // The scope is the run's own working directory (runWorkingDir — the same string opencode
+        // records on the session), because the database is per MEMBER: without it, two
+        // concurrent tasks of one member share the file and the newest-root-session scrape
+        // answers whichever task closed last, recording one task's session on both rows.
         '-e',
         `OPENCODE_DB=${db}`,
+        '-e',
+        `OPENCODE_DIR=${runWorkingDir(config, job)}`,
         '--entrypoint',
         'node',
         config.image,
@@ -828,7 +854,7 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         // `<mount>/<orgId>` is a safe fallback now: both are the PARENT of every member's tree, and
         // handing that to a container that may be running --dangerously-skip-permissions is a
         // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
-        `WORKDIR=${worktree ?? `${config.workspaceMount}/${workspacePath(job)}`}`,
+        `WORKDIR=${runWorkingDir(config, job)}`,
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
     ];
@@ -1688,6 +1714,10 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                                     if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
                                     if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
                                     if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+                                    // With a session scraped, the line's error is the RUN's last
+                                    // provider error, not the read's failure — carried as its own
+                                    // field so the verdict can name the cause of a premature stop.
+                                    if (scraped.error) outcome.providerError = scraped.error;
                                 } else {
                                     outcome.readoutError =
                                         reason ?? 'the readout answered nothing (no session in the database)';
