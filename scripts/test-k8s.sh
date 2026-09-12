@@ -187,7 +187,7 @@ expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.
 
 # Numbers arrive as integers, not whatever helm's float stringifier felt like — a `1.8e+06` here
 # would be refused by the driver's own integer check at boot.
-render | grep -q 'value: "1800000"' && ok 'the job timeout renders as an integer' ||
+render | grep -q 'value: "7200000"' && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
 
 # The driver forwards the branch reporter's credential by reference — the same Secret key the

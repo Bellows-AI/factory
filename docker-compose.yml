@@ -205,7 +205,7 @@ services:
             DRIVER_CONCURRENCY: ${DRIVER_CONCURRENCY:-2}
             DRIVER_POLL_MS: ${DRIVER_POLL_MS:-5000}
             DRIVER_LEASE_SECONDS: ${DRIVER_LEASE_SECONDS:-300}
-            DRIVER_JOB_TIMEOUT_MS: ${DRIVER_JOB_TIMEOUT_MS:-1800000}
+            DRIVER_JOB_TIMEOUT_MS: ${DRIVER_JOB_TIMEOUT_MS:-7200000}
             # Off by default. On, the agent edits and runs whatever it likes inside the runner
             # without asking; off, most jobs stall at a permission prompt nobody can answer. Read
             # docs/jobs.md before setting it.

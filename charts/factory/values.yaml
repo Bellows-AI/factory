@@ -114,7 +114,7 @@ driver:
     concurrency: '2'
     pollMs: '5000'
     leaseSeconds: '300'
-    jobTimeoutMs: '1800000'
+    jobTimeoutMs: '7200000'
     # Off by default and a real decision, here as everywhere: on, the agent edits and runs whatever
     # it likes inside the runner without asking. Read docs/jobs.md first.
     skipPermissions: ''

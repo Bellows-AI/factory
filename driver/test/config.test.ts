@@ -15,7 +15,7 @@ describe('the driver config', () => {
             concurrency: 2,
             pollMs: 5_000,
             leaseSeconds: 300,
-            jobTimeoutMs: 1_800_000,
+            jobTimeoutMs: 7_200_000,
             skipPermissions: false,
             remoteControl: false,
             idleMs: 3_600_000,

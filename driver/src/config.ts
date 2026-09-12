@@ -208,7 +208,7 @@ const DEFAULTS = {
     concurrency: 2,
     pollMs: 5_000,
     leaseSeconds: 300,
-    jobTimeoutMs: 30 * 60_000,
+    jobTimeoutMs: 2 * 3600_000,
     idleMs: 60 * 60_000,
     authVolume: 'claude-executor-auth',
     otelEndpoint: 'http://collector:4318',
