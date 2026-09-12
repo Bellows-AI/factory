@@ -886,11 +886,17 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
 
                 /*
                  * Before anything reads the tree — the gates refusal just below, the agent this
-                 * run — the task worktree is brought up to the remote default: fetch, create the
-                 * worktree branched off origin/<default> or rebase the existing one onto it,
-                 * autostashing uncommitted edits. Clones are created once and otherwise left
-                 * untouched by the workspace reconcile, so without this every task after a main
-                 * update starts from stale code and a stale gates file. A sync failure fails the
+                 * run — the task worktree is made ready to run on. A STARTING claim syncs it
+                 * with the remote default: fetch, create the worktree branched off
+                 * origin/<default> or rebase the existing one onto it, autostashing uncommitted
+                 * edits. Clones are created once and otherwise left untouched by the workspace
+                 * reconcile, so without this every task after a main update starts from stale
+                 * code and a stale gates file. A claim that CONTINUES a session — a follow-up,
+                 * or a parked job resumed — RESTORES instead (issue #58): no fetch, no rebase,
+                 * the tree kept as the run before it left it or recreated from the surviving
+                 * thread branch, because git operations that touch the remote belong to a task's
+                 * beginning and end, never its middle. The runners read the claim and pick the
+                 * mode. A sync failure fails the
                  * attempt with the reason (the tree's state is unknown enough that running on it
                  * would compound whatever went wrong), the same author's-problem channel the
                  * gates refusal below uses.

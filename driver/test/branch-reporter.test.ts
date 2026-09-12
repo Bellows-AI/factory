@@ -267,17 +267,20 @@ describe('the branch reporter', () => {
     });
 
     // A fresh opencode run is given no session id: the reporter discovers it live, the same way
-    // the close-time readout does — the newest ROOT session (subagents create children).
+    // the close-time readout does — the newest ROOT session recorded in THIS run's own working
+    // directory (subagents create children, and the database is per member, so a newer root
+    // from another directory of the same member must not cross-report into this run's span).
     it('discovers the newest root opencode session from the session database', async () => {
         const { url, requests } = await board();
         const dir = gitRepo();
         const data = tempDir();
         mkdirSync(join(data, 'opencode'), { recursive: true });
         const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
-        db.exec('create table session (id text primary key, parent_id text, time_created text)');
-        db.prepare('insert into session values (?, ?, ?)').run('ses_old', null, '2026-01-01 00:00:00.000');
-        db.prepare('insert into session values (?, ?, ?)').run('ses_child', 'ses_old', '2026-01-02 00:00:00.000');
-        db.prepare('insert into session values (?, ?, ?)').run('ses_new', null, '2026-01-03 00:00:00.000');
+        db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
+        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_old', null, '2026-01-01 00:00:00.000', dir);
+        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_child', 'ses_old', '2026-01-02 00:00:00.000', dir);
+        // A NEWER root, but from another task's working directory: the scoping must keep it out.
+        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_foreign', null, '2026-01-03 00:00:00.000', join(data, 'elsewhere'));
         db.close();
         try {
             const { status, stdout, stderr } = await run(OPENCODE_REPORTER, {
@@ -289,9 +292,10 @@ describe('the branch reporter', () => {
             expect(stdout).toBe('');
             expect(stderr).toBe('');
             expect(requests).toHaveLength(1);
-            // The child is NOT the session, however much newer it is than nothing — the query
-            // filters to roots, and this is the assertion that catches the filter being lost.
-            expect(requests[0].body).toMatchObject({ agent: 'opencode', sessionId: 'ses_new' });
+            // Neither the child nor the foreign-directory root is the session, however much
+            // newer they are — the query filters to roots of THIS directory, and these are the
+            // assertions that catch either filter being lost.
+            expect(requests[0].body).toMatchObject({ agent: 'opencode', sessionId: 'ses_old' });
         } finally {
             rmSync(dir, { recursive: true, force: true });
             rmSync(data, { recursive: true, force: true });
@@ -304,8 +308,8 @@ describe('the branch reporter', () => {
         const data = tempDir();
         mkdirSync(join(data, 'opencode'), { recursive: true });
         const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
-        db.exec('create table session (id text primary key, parent_id text, time_created text)');
-        db.prepare('insert into session values (?, ?, ?)').run('ses_db', null, '2026-01-01 00:00:00.000');
+        db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
+        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_db', null, '2026-01-01 00:00:00.000', 'somewhere/else');
         db.close();
         try {
             await run(OPENCODE_REPORTER, {
@@ -360,8 +364,8 @@ describe('the branch reporter', () => {
         const data = tempDir();
         mkdirSync(join(data, 'opencode'), { recursive: true });
         const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
-        db.exec('create table session (id text primary key, parent_id text, time_created text)');
-        db.prepare('insert into session values (?, ?, ?)').run('ses_first', null, '2026-01-01 00:00:00.000');
+        db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
+        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_first', null, '2026-01-01 00:00:00.000', dir);
         const untilRequest = (count: number) =>
             new Promise<void>((resolve, reject) => {
                 const startedAt = Date.now();
@@ -390,7 +394,7 @@ describe('the branch reporter', () => {
                 // The row appears AFTER the first report — mid-loop, the state a live run is in
                 // when its conversation starts — and the change must be reported on the very
                 // next discovery, not a full sampling cycle later.
-                db.prepare('insert into session values (?, ?, ?)').run('ses_second', null, '2026-01-02 00:00:00.000');
+                db.prepare('insert into session values (?, ?, ?, ?)').run('ses_second', null, '2026-01-02 00:00:00.000', dir);
                 await untilRequest(2);
                 expect(requests[1].body?.sessionId).toBe('ses_second');
                 expect(stderr).toBe('');

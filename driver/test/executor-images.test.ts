@@ -84,11 +84,13 @@ describe('the executor branch reporter', () => {
     });
 
     // opencode mints its own session ids and tells nobody before the run starts — discovery
-    // polls the session database live. The query must be the shipped readout's: the readout is
-    // what decided "newest root session" means the run's own conversation (subagents create
-    // children), and the two readers must never disagree about which row that is.
+    // polls the session database live. The query must be the shipped readout's exact query:
+    // the readout is what decided "newest root session in the run's own directory" means the
+    // run's own conversation (subagents create children, and the per-member database would
+    // otherwise cross-report two concurrent fresh runs), and the two readers must never
+    // disagree about which row that is.
     it('discovers the opencode session with the shipped readout’s exact query', () => {
-        const query = 'select id from session where parent_id is null order by time_created desc limit 1';
+        const query = 'select id from session where parent_id is null and directory = ? order by time_created desc limit 1';
         expect(read(OPENCODE_REPORTER)).toContain(query);
         expect(read('driver/src/scripts/opencode-readout.cjs')).toContain(query);
     });

@@ -265,7 +265,9 @@ publish runs in the loop's post-run position where the heartbeat is still live, 
 not the ConfigMap — is what excludes a replacement writer.
 
 **The startup sync is ported the same way.** The task worktree (`docs/jobs.md`, issue #35) does
-not exist until something creates it, the loop syncs on every claim, and a refusal there would
+not exist until something creates it, the loop syncs on every claim — fetch-and-rebase for
+starting claims, restore-without-fetch for claims that continue a session (`docs/jobs.md`,
+issue #58) — and a refusal there would
 fail every claimed job.
 The sync is the first writer on the tree, so the checkout CLAIM is taken before the sync Job —
 the same acquireClaim protocol the runner's prepare runs, and the claim is then held through

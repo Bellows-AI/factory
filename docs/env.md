@@ -55,7 +55,11 @@ real value.
   driver's literals win a collision on both platforms — docker's last `--env-file`/`-e` order and
   kubernetes's `env`-over-`envFrom` precedence. They are deliberately NOT in
   `RESERVED_ENV_NAMES`: a runner never sees them, so reserving them board-wide would refuse
-  member names nothing ever conflicted with outside one throwaway container.
+  member names nothing ever conflicted with outside one throwaway container. `CRED_HELPER` and
+  `RESTORE` belong to the same container and are reserved for what a member value would do there:
+  `CRED_HELPER` is member-controlled helper code the sync's git executes, and `RESTORE` is the
+  sync's restore-mode switch (issue #58) — a member value would flip starting claims into
+  restore mode, silently skipping the fetch and rebase a fresh task needs.
 
 ## Secrets are write-only, not encrypted
 

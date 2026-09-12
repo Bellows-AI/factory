@@ -264,6 +264,11 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the sync restore-mode switch',
+            { vars: [{ name: 'RESTORE', value: '1', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'the stats url the branch reporter posts to',
             { vars: [{ name: 'FACTORY_STATS_URL', value: 'http://attacker', isSecret: false }] },
             'RESERVED_ENV_NAME',

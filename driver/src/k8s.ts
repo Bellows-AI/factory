@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, runWorkingDir, SESSION_ID, workspacePathOf } from './docker.js';
+import { claimCarriesGithubToken, claimContinuesSession, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, runWorkingDir, SESSION_ID, workspacePathOf } from './docker.js';
 import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
@@ -671,13 +671,19 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                                 { name: 'REPO', value: clone },
                                 { name: 'WORKTREE', value: worktree },
                                 { name: 'BRANCH', value: worktreeBranch(job) },
+                                // Restore mode, as a literal: a claim that continues a session
+                                // (a follow-up, or a parked job resumed) keeps the tree exactly
+                                // as the run before it left it — no fetch, no rebase, nothing
+                                // that touches the remote (issue #58).
+                                ...(claimContinuesSession(job) ? [{ name: 'RESTORE', value: '1' }] : []),
                                 // The fetch's credential helper CODE — a literal that is code,
                                 // the same class as the three path literals above (the pin on
                                 // literal credentials stays intact). Only when the claim env
                                 // carries the token the helper reads; the token itself travels
                                 // the Secret below, which git's spawned helper reads from the
-                                // pod's environment.
-                                ...(claimCarriesGithubToken(job)
+                                // pod's environment. A restore fetches nothing, so it never
+                                // carries one.
+                                ...(!claimContinuesSession(job) && claimCarriesGithubToken(job)
                                     ? [{ name: 'CRED_HELPER', value: CREDENTIAL_HELPER }]
                                     : []),
                             ],
@@ -2458,9 +2464,12 @@ export function createKubernetesRunner(
                      * The fetch credential: the claim env, by reference — the same Secret discipline the
                      * runner and every gate obey. Created before the Job; reaped in the finally, on the
                      * verdict or on a throw. The name carries the lease token, so a superseded attempt
-                     * can never delete a replacement's Secret.
+                     * can never delete a replacement's Secret. A claim that continues a session creates
+                     * none at all: its restore fetches nothing, so there is no credential to hold — and
+                     * the Job spec references no env (issue #58).
                      */
-                    const env = envBodyToData(envFileBody(job));
+                    const restore = claimContinuesSession(job);
+                    const env = restore ? {} : envBodyToData(envFileBody(job));
                     if (Object.keys(env).length) {
                         const response = await request('POST', secretsPath, {
                             apiVersion: 'v1',
