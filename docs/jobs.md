@@ -363,7 +363,10 @@ connection and retry, which is what agents are for.
   is what makes a pasted Drone pipeline fail loudly instead of doing nothing — and `ports:` is an
   unknown key. There is no host port publishing and no volume mounting: the daemon executing these
   argv is root on the host, and a published port is the one step from "a database for my tests" to
-  "a listener on somebody's machine". Size is bounded where author content crosses into this
+  "a listener on somebody's machine". One exception, not leniency: a top-level `environment:` block
+  is the gates half of the file (read by the board's own parser, below), and one file may carry
+  both halves — the services parser skips it wholesale and judges only its own grammar. Size is
+  bounded where author content crosses into this
   process or onto an argv: a `.bellows.yaml` is read only to its first 64 KiB (the readout refuses
   the rest in place), an environment value is at most 8192 characters. A parse refusal fails the
   job terminally with the reason in the output, rather than burning attempts on a file that cannot
@@ -636,9 +639,11 @@ gates; a file that exists but is outside the accepted
 strict-YAML subset travels as `gateError` on the claim, and the driver **fails the job with that
 reason before anything runs** — running the work while pretending its gates do not exist is the
 one outcome worse than the failure. The parser accepts no YAML package: one `environment:` block,
-`image:` plus a `- name:`/`- command:` list, bare or quoted scalars, comments and blank lines.
-Anything else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — is a named error
-with the line number.
+`image:` plus a `- name:`/`- command:` list, bare or quoted scalars, comments and blank lines. A
+top-level `services:` block is the one tolerated foreign key — the services half of the file,
+read by the driver's own parser, which skips the `environment:` block in return; a file may carry
+both halves. Anything else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — is a
+named error with the line number.
 
 **One environment container per task worktree, a `docker exec` per gate.** The container
 (`factory-env-…`, labelled `factory.gates=<key>`) runs the declared image as a `sleep infinity`

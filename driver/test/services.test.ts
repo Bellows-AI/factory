@@ -72,6 +72,55 @@ describe('parseBellows', () => {
         expect(parseBellows('services:\n')).toEqual([]);
     });
 
+    it('skips a top-level environment block — the gates half is the board parser\'s grammar', () => {
+        // One file may carry both halves: the board reads `environment:`, this parser reads
+        // `services:`, and each skips the other's block wholesale rather than judging its
+        // grammar. Both orders parse, and the gates list's `- name:` items are never mistaken
+        // for service items.
+        const gates = [
+            'environment:',
+            '    image: node:24-alpine',
+            '    gates:',
+            '         - name: test',
+            '           command: "npm test"',
+            '',
+        ];
+        const services = [
+            'services:',
+            '    - name: timescale',
+            '      image: timescale/timescaledb:latest-pg17',
+            '      environment:',
+            '          POSTGRES_PASSWORD: factory',
+        ];
+        expect(parseBellows([...gates, ...services].join('\n'))).toEqual([
+            {
+                name: 'timescale',
+                image: 'timescale/timescaledb:latest-pg17',
+                environment: [{ key: 'POSTGRES_PASSWORD', value: 'factory' }],
+            },
+        ]);
+        expect(parseBellows([...services, ...gates].join('\n'))).toEqual([
+            {
+                name: 'timescale',
+                image: 'timescale/timescaledb:latest-pg17',
+                environment: [{ key: 'POSTGRES_PASSWORD', value: 'factory' }],
+            },
+        ]);
+    });
+
+    it('reads a gates-only file as no services', () => {
+        // Every checkout's file is read out, gated or not: a workspace holding a repo that ships
+        // only the gates half must parse, not fail the readout.
+        const text = [
+            'environment:',
+            '    image: node:24-alpine',
+            '    gates:',
+            '         - name: test',
+            '           command: "npm test"',
+        ].join('\n');
+        expect(parseBellows(text)).toEqual([]);
+    });
+
     it('strips comments, including one after a value, but not inside quotes', () => {
         const text = [
             'services:',

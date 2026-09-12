@@ -14,6 +14,12 @@
  *              - name: test
  *                command: "npm test"
  *
+ * One exception, and it is not leniency: a top-level `services:` block is the SERVICES half of
+ * the file, read by the driver's own parser (driver/src/services.ts), and one file may carry both
+ * halves. This parser skips the block wholesale — it does not judge the services grammar, and a
+ * services-only file parses to no gates — while every other unknown top-level key is still
+ * refused.
+ *
  * Comments, blank lines, and bare / single- / double-quoted scalars are tolerated. Everything
  * else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — throws with the line
  * number, and `readGatesFile` turns that into the job's `gateError`.
@@ -91,6 +97,9 @@ export function parseBellows(text: string): BellowsConfig | null {
     let image: string | null = null;
     let inEnvironment = false;
     let inGates = false;
+    /** Inside a top-level `services:` block — the services half, not this parser's grammar. */
+    let inServices = false;
+    let seenServices = false;
     let itemIndent = -1;
     /** Where the gate currently being read began — the line its errors name. */
     let itemLine = 0;
@@ -129,6 +138,15 @@ export function parseBellows(text: string): BellowsConfig | null {
             fail(line, 'tabs are not allowed for indentation, use spaces');
         }
 
+        // The services half of the file: every line of its body is deeper than the top level, so
+        // indentation alone ends the block and hands the next top-level key back to this loop.
+        // The check sits before the list-item branch — a `- name:` inside `services:` is Drone's,
+        // not a gate list item.
+        if (inServices) {
+            if (indent > 0) continue;
+            inServices = false;
+        }
+
         if (indent === 0) {
             finish();
             inGates = false;
@@ -137,8 +155,17 @@ export function parseBellows(text: string): BellowsConfig | null {
             if (!match) {
                 fail(line, `expected "environment:" at the top level, got "${trimmed}"`);
             }
+            if (match[1] === 'services') {
+                if (seenServices) fail(line, 'a second "services:" block');
+                if (match[3] !== undefined && match[3] !== '') {
+                    fail(line, 'services takes a list, not a value');
+                }
+                seenServices = true;
+                inServices = true;
+                continue;
+            }
             if (match[1] !== 'environment') {
-                fail(line, `unknown top-level key "${match[1]}" — only "environment:" is read`);
+                fail(line, `unknown top-level key "${match[1]}" — only "environment:" and "services:" are read`);
             }
             if (inEnvironment) fail(line, 'a second "environment:" block');
             if (match[3] !== undefined && match[3] !== '') {

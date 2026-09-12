@@ -246,6 +246,12 @@ const ERROR_PREFIX = '###__bellows_error:';
  * feature that failed. A file without a `services` key parses to no services — a checkout
  * carries the file only when it wants services, so nothing is an error until a service is
  * actually being defined.
+ *
+ * One exception, and it is not leniency: a top-level `environment:` block is the GATES half of
+ * the file, read by the board's own parser (server/src/workspace/bellows.ts), and one file may
+ * carry both halves. This parser skips the block wholesale — it does not judge the gates
+ * grammar, and a gates-only file parses to no services — while every other unknown top-level
+ * key is still refused.
  */
 export function parseBellows(text: string): ServiceSpec[] {
     interface Item {
@@ -259,6 +265,8 @@ export function parseBellows(text: string): ServiceSpec[] {
     }
     const specs: ServiceSpec[] = [];
     let seenServices = false;
+    /** Inside a top-level `environment:` block — the gates half, not this parser's grammar. */
+    let inGatesBlock = false;
     let current: Item | null = null;
     // A Windows editor's byte-order mark would otherwise make the first line `\uFEFFservices:`
     // and the refusal would print an invisible character at the user.
@@ -320,9 +328,22 @@ export function parseBellows(text: string): ServiceSpec[] {
         const indent = line.length - line.trimStart().length;
         const content = line.trim();
 
+        // The gates half of the file: every line of its body is deeper than the top level, so
+        // indentation alone ends the block and hands the next top-level key back to this loop.
+        if (inGatesBlock) {
+            if (indent > 0) continue;
+            inGatesBlock = false;
+        }
+
         if (!seenServices) {
             const emptyList = content.match(/^services:\s*\[\s*\]$/);
-            if (content !== 'services:' && !emptyList) refuseTopLevel(content);
+            if (content !== 'services:' && !emptyList) {
+                if (content.startsWith('environment:')) {
+                    inGatesBlock = true;
+                    continue;
+                }
+                refuseTopLevel(content);
+            }
             seenServices = true;
             continue;
         }
@@ -342,7 +363,13 @@ export function parseBellows(text: string): ServiceSpec[] {
             continue;
         }
 
-        if (indent === 0) refuseTopLevel(content);
+        if (indent === 0) {
+            if (content.startsWith('environment:')) {
+                inGatesBlock = true;
+                continue;
+            }
+            refuseTopLevel(content);
+        }
 
         if (!current) {
             throw new Error(`.bellows.yaml: expected a "- name: …" list item under services, got "${content}"`);

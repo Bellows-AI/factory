@@ -90,6 +90,50 @@ describe('parseBellows', () => {
         });
     });
 
+    it('skips a top-level services block — the services half is the driver parser\'s grammar', () => {
+        // One file may carry both halves: the driver reads `services:`, this parser reads
+        // `environment:`, and each skips the other's block wholesale rather than judging its
+        // grammar — a `- name:` item inside `services:` is Drone's, never a gate list item.
+        const text = [
+            'environment:',
+            '    image: node:24',
+            '    gates:',
+            '        - name: test',
+            '          command: npm test',
+            '',
+            'services:',
+            '    - name: timescale',
+            '      image: timescale/timescaledb:latest-pg17',
+            '      environment:',
+            '          POSTGRES_PASSWORD: factory',
+        ].join('\n');
+        expect(parseBellows(text)).toEqual({
+            image: 'node:24',
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
+    });
+
+    it('answers null for a services-only file — it declares no gates', () => {
+        const text = [
+            'services:',
+            '    - name: db',
+            '      image: postgres:16',
+        ].join('\n');
+        expect(parseBellows(text)).toBeNull();
+    });
+
+    it('rejects a second services block', () => {
+        expect(() =>
+            parseBellows('services:\n    - name: db\n      image: postgres\nservices:\n    - name: cache\n      image: redis\n'),
+        ).toThrow(/second "services:" block/);
+    });
+
+    it('rejects services with an inline value', () => {
+        expect(() => parseBellows('services: [db]\nenvironment:\n    image: node:24\n')).toThrow(
+            /services takes a list, not a value/,
+        );
+    });
+
     it('accepts gates: with a trailing space, as environment: is accepted', () => {
         expect(
             parseBellows('environment: \n    image: node:24\n    gates: \n        - name: test\n          command: npm test\n'),

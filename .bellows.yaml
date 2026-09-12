@@ -3,3 +3,11 @@ environment:
     gates:
          - name: test
            command: "npm test"
+
+services:
+    - name: timescale
+      image: timescale/timescaledb:latest-pg17
+      environment:
+          POSTGRES_USER: factory
+          POSTGRES_PASSWORD: factory
+          POSTGRES_DB: factory_dev
