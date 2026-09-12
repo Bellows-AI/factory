@@ -76,6 +76,15 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
             BRANCH: `factory/${root}`,
         });
 
+    /** The restore mode a continuation claim gets (RESTORE=1): no fetch, no rebase. */
+    const restore = (root = ROOT): { ok: boolean; reason: string | null } =>
+        runScript({
+            REPO: clone,
+            WORKTREE: join(dir, 'bellows', USER, '.worktrees', root),
+            BRANCH: `factory/${root}`,
+            RESTORE: '1',
+        });
+
     /** A commit on the remote default branch, pushed from the fixture's work copy. */
     const pushToOrigin = (file: string, content: string, message: string): void => {
         writeFileSync(join(work, file), content);
@@ -238,6 +247,122 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('git tree this sync did not create');
         expect(readFileSync(join(worktree, 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
+    });
+
+    it('restores an existing worktree untouched: no fetch, no rebase', () => {
+        // A follow-up continues the task where it stands (issue #58): git operations that touch
+        // the remote belong to the task's beginning and end, never mid-flight. The tree must be
+        // byte-for-byte what the previous run left — no rebase onto a moved main, no fetch
+        // dragging upstream commits in, no autostash dance over the session's edits.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        commitIn(worktree, 'TASK.md', 'task work\n', 'the task commit');
+        writeFileSync(join(worktree, 'TASK.md'), 'task work, mid-edit\n');
+        pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+        const before = git(worktree, 'rev-parse', 'HEAD');
+
+        expect(restore()).toEqual({ ok: true, reason: null });
+
+        expect(git(worktree, 'rev-parse', 'HEAD')).toBe(before);
+        expect(existsSync(join(worktree, 'NEWS.md'))).toBe(false);
+        expect(readFileSync(join(worktree, 'TASK.md'), 'utf8')).toBe('task work, mid-edit\n');
+        expect(git(worktree, 'stash', 'list')).toBe('');
+    });
+
+    it('recreates a reclaimed worktree from the surviving branch, without adopting upstream moves', () => {
+        // The thread went terminal and its tree was reclaimed; the follow-up then restores the
+        // tree from the surviving factory/<root> branch — its own work, not a fresh start off a
+        // freshly fetched main.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        commitIn(worktree, 'KEPT.md', 'kept work\n', 'kept committed work');
+        rmSync(worktree, { recursive: true });
+        pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+
+        expect(restore()).toEqual({ ok: true, reason: null });
+
+        expect(git(worktree, 'branch', '--show-current')).toBe(branch);
+        expect(git(worktree, 'log', '--format=%s')).toContain('kept committed work');
+        expect(existsSync(join(worktree, 'NEWS.md'))).toBe(false);
+    });
+
+    it('fails a restore whose branch is gone, instead of restarting the thread from main', () => {
+        // A follow-up with no thread branch has nothing to continue: creating the tree at
+        // origin/<default> would look like a continuation while carrying none of the work over.
+        // The attempt fails with the branch named, the way every sync refusal names its reason.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        // The reclaim's own sequence: the tree removed AND its registration pruned, leaving the
+        // branch in the clone — which is then deleted, as a thread whose session was lost would be.
+        git(clone, 'worktree', 'remove', '--force', worktree);
+        git(clone, 'branch', '-D', branch);
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain(branch);
+        expect(existsSync(worktree)).toBe(false);
+    });
+
+    it('refuses a foreign git tree at the worktree path when restoring too', () => {
+        // The creation arm's one guard must hold in restore mode as well: whatever holds a .git
+        // the sync did not create may hold uncommitted work, and restore deletes nothing either.
+        mkdirSync(worktree, { recursive: true });
+        writeFileSync(join(worktree, '.git'), 'gitdir: /somewhere/else\n');
+        writeFileSync(join(worktree, 'PRECIOUS.md'), 'uncommitted work\n');
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('git tree this sync did not create');
+        expect(readFileSync(join(worktree, 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
+    });
+
+    it('replaces garbage at the worktree path when restoring, the same as a sync does', () => {
+        // Restore recreates a reclaimed tree from the branch, and the path it needs may hold a
+        // bare leftover — the same driver-owned namespace the sync arm clears, so the same
+        // replacement applies: never a failed-forever attempt over a directory nobody owns.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        rmSync(worktree, { recursive: true });
+        mkdirSync(worktree, { recursive: true });
+        writeFileSync(join(worktree, 'leftover.txt'), 'not a worktree');
+
+        expect(restore()).toEqual({ ok: true, reason: null });
+        expect(git(worktree, 'rev-parse', '--is-inside-work-tree')).toBe('true');
+        expect(existsSync(join(worktree, 'leftover.txt'))).toBe(false);
+    });
+
+    it('refuses a restore whose worktree belongs to another clone', () => {
+        // A whole independent checkout stands at the worktree path: rev-parse succeeds inside
+        // it, but continuing the thread there would run a resumed job in another clone's tree.
+        // The restore must name the ownership mismatch and leave the foreign tree alone.
+        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, worktree], { stdio: 'ignore' });
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('not a worktree of this clone');
+        expect(git(worktree, 'rev-parse', '--is-inside-work-tree')).toBe('true');
+    });
+
+    it('refuses a restore whose worktree sits on another branch', () => {
+        // The tree is ours, but the checkout moved off the task branch: a follow-up must not
+        // run there, and must not reset or recreate it either — the refusal names the branch
+        // it found against the branch it expected, and the tree stays as it stands.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        git(worktree, 'switch', '-c', 'rogue');
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('rogue');
+        expect(result.reason).toContain(branch);
+        expect(git(worktree, 'branch', '--show-current')).toBe('rogue');
+    });
+
+    it('refuses a restore whose worktree is on a detached HEAD', () => {
+        // A detached checkout is no thread to continue either: no branch survives under it,
+        // so the refusal names the detached state instead of answering success.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        git(worktree, 'checkout', '--detach');
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('detached');
+        expect(git(worktree, 'rev-parse', '--is-inside-work-tree')).toBe('true');
     });
 });
 

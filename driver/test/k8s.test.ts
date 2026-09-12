@@ -620,6 +620,31 @@ describe('the worktree sync', () => {
         expect(emptyToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
     });
 
+    // A claim that CONTINUES a session — a follow-up, or a parked job resumed — is mid-task,
+    // and git operations that touch the remote belong to the task's beginning and end (issue
+    // #58). Its sync is a RESTORE: the Job carries the literal, the fetch's credential helper
+    // is absent even with a token, and no claim env is referenced at all.
+    it('carries RESTORE for a claim that continues a session, with no helper and no Secret', () => {
+        const tokenJob: BoardJob = { ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } };
+        const container = syncJobSpec(cfg(), tokenJob, null).spec.template.spec.containers[0];
+        expect(container.env).toContainEqual({ name: 'RESTORE', value: '1' });
+        expect(container.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
+        // The pin that must survive: no credential VALUE travels as a literal.
+        expect(JSON.stringify(container.env)).not.toContain('t0k-3n');
+        // Nothing here talks to the remote — no claim env Secret to reference.
+        expect(container.envFrom).toBeUndefined();
+
+        // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard.
+        const parked = syncJobSpec(cfg(), { ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } }, null)
+            .spec.template.spec.containers[0];
+        expect(parked.env).toContainEqual({ name: 'RESTORE', value: '1' });
+
+        // A starting claim — even with a token — carries no RESTORE.
+        const fresh = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, 'the-secret')
+            .spec.template.spec.containers[0];
+        expect(fresh.env.some((entry) => entry.name === 'RESTORE')).toBe(false);
+    });
+
     // An env-less claim is a supported board configuration (docs/jobs.md: AUTH_MODE=none, no
     // GITHUB_TOKEN in any scope). The sync pod must not reference a Secret that will never
     // exist — a pod that does sits in CreateContainerConfigError until the deadline kills the
@@ -658,6 +683,30 @@ describe('the worktree sync', () => {
         const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
         await runner(request).syncCheckout(repoJob);
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+    });
+
+    // The runner half of restore (issue #58): a continuation claim skips the claim-env Secret
+    // entirely, but every other property of the sync stands — the checkout claim is still taken
+    // and held, and the Job still carries the RESTORE literal.
+    it('creates no Secret for a continuation claim, and still takes the checkout claim', async () => {
+        const followJob: BoardJob = {
+            ...repoJob,
+            followUp: true,
+            resumeSessionId: '77777777-7777-4777-8777-777777777777',
+            env: { GITHUB_TOKEN: 't0k-3n' },
+        };
+        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const result = await runner(request).syncCheckout(followJob);
+
+        expect(result).toEqual({ ok: true, reason: null });
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+        const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(syncJobName(followJob));
+        expect(JSON.stringify(jobPost?.body)).toContain('"name":"RESTORE","value":"1"');
+        // The checkout claim is taken and, on success, held through the run as ever.
+        const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
+        expect(order.indexOf(`POST ${configmapsPath}`)).toBe(0);
+        expect(order).not.toContain(`DELETE ${claimPathFor(followJob.id)}`);
     });
 
     it('answers ok:false with the script’s reason when the sync job fails', async () => {

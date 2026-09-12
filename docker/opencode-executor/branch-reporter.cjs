@@ -65,8 +65,10 @@ function repoSlug() {
  * actually given, and on a follow-up the whole point is to keep reporting the SAME
  * conversation. Otherwise — an opencode fresh run — discover it live: opencode mints its own
  * ids (`ses_…`) and cannot adopt one, so nobody can hand it in advance. The newest ROOT
- * session is the run's own conversation (subagents create children); the same query and the
- * same judgement as the close-time readout the driver ships.
+ * session RECORDED IN THIS RUN'S OWN WORKING DIRECTORY is the run's own conversation
+ * (subagents create children, and the database is per member, so two concurrent fresh runs
+ * of one member would otherwise cross-report each other's session id); the same query and
+ * the same judgement as the close-time readout the driver ships.
  */
 function resolveSessionId() {
     const handed = (process.env.BELLOWS_SESSION_ID ?? '').trim();
@@ -77,8 +79,8 @@ function resolveSessionId() {
         const { DatabaseSync } = require('node:sqlite');
         const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'), { readOnly: true });
         const row = db.prepare(
-            'select id from session where parent_id is null order by time_created desc limit 1',
-        ).get();
+            'select id from session where parent_id is null and directory = ? order by time_created desc limit 1',
+        ).get(CWD);
         db.close();
         return row?.id ?? null;
     } catch {

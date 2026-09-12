@@ -276,11 +276,10 @@ conversation) or, for a fresh opencode run, discovered live from the session dat
 close-time readout's exact query. The names are reserved from member configuration on both
 sides, exactly like the gate credentials: a member value in `FACTORY_STATS_URL`,
 `INGEST_TOKEN` or `BELLOWS_SESSION_ID` would be a cross-tenant write into the telemetry store
-(see [env.md](env.md)). One honest edge, shared with the shipped readout and cache probe that
-read the same database: discovery reads the member's NEWEST root session, so two concurrent
-fresh runs of one member can briefly cross-report each other's session id — the window is the
-time between one run's start and opencode creating its row, and a follow-up avoids it entirely
-by carrying the id.
+(see [env.md](env.md)). Discovery reads the member's NEWEST root session RECORDED IN THE RUN'S
+OWN WORKING DIRECTORY — the same directory-scoped query the shipped readout runs, without which
+two concurrent fresh runs of one member would cross-report each other's session id; a follow-up
+avoids the residual window entirely by carrying the id.
 
 **`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own
@@ -707,14 +706,20 @@ the same race every CI-on-first-commit system lives with. The k8s form is in
 
 **The task worktree is synced before anything reads it — under the re-claim fence.** The
 workspace reconcile clones a repository once and otherwise leaves the checkout untouched, and
-the startup sync is what makes each run start from the code — and the declared gates — that
-main actually has. At the start of each attempt, before the runner spawns, one container
-fetches the remote and then: the task's worktree is created
-branched off `origin/<default>` (first attempt of the thread) or rebased onto the new default
-with `--autostash`, keeping its own commits AND any uncommitted edits the previous run left —
-which is what makes a follow-up, which lands in this same tree by design, work whether or not
-the last run finished tidy, and what keeps a kubernetes thread (where nothing commits for you)
-alive across turns. The fetch's credential: the claim env rides the env file as before, and
+the startup sync is what makes each run start from the code it is meant to continue. The
+principle (issue #58): git operations that touch the remote belong to a task's BEGINNING and
+END — the first sync, and the publish — never its middle. So before the runner spawns, one
+container runs the worktree script in one of two modes, decided by the claim: a claim that
+CONTINUES a session — a follow-up, or a parked job resumed — RESTORES (the paragraph after
+this one); every other claim SYNCES.
+
+**A starting claim SYNCES.** One container fetches the remote and then: the task's worktree is
+created branched off `origin/<default>` (first attempt of the thread) or rebased onto the new
+default with `--autostash`, keeping its own commits AND any uncommitted edits the previous run
+left — which is what keeps a kubernetes thread (where nothing commits for you) alive across
+turns, and what makes a lease-expired re-claim of an ordinary job honest: the claim cleared
+the dead attempt's session, so that run starts — and syncs — fresh.
+The fetch's credential: the claim env rides the env file as before, and
 when it carries a NON-EMPTY `GITHUB_TOKEN` (empty counts as absent — a helper answering an
 empty password would break the public-repo fetch it exists to preserve) the fetch runs under
 the push's own token-backed credential helper (the helper CODE travels as an env value;
@@ -763,6 +768,21 @@ session. The clone's own working tree is never touched — under the worktree mo
 finally literally true, where the old sync hard-reset the clone's default branch and destroyed
 whatever stray edits sat there.
 
+**A claim that continues a session RESTORES, and never touches the remote.** A follow-up — or a
+parked job resumed — is a task MID-FLIGHT: rebasing its tree onto a freshly fetched main would
+move the conversation's base underneath it, the "sync with main on task follow up commands"
+that must not happen (issue #58). So its claim's git work is a restore: the script runs with
+`RESTORE=1` and no credential — the env file (docker) and the claim-env Secret (kubernetes) are
+not written at all — and the existing tree is left byte-for-byte as the run before it left it:
+no fetch, no rebase, no autostash, whatever state that is, ugly included; mid-flight is not the
+board's business to tidy. A tree the reclaim removed is recreated from the surviving
+`factory/<root>` branch — at its OWN tip, never a fresh start off `origin/<default>`: a
+follow-up whose thread branch is gone has nothing to continue, and the attempt fails naming the
+branch instead of silently restarting the task from main. The fence stands unchanged (docker's
+sweep, kubernetes's checkout claim) — it fences containers, not git — and the gates re-read
+that follows the sync stays, because a restored tree can still differ from the clone fallback
+the claim was read from.
+
 **The task worktree is reclaimed when the thread ends — finishing or deleting a task cleans up
 its tree (issue #47).** The sync created the tree, and every commit on it belongs to one thread;
 once the whole thread is terminal the tree holds nothing worth keeping. The signal is the
@@ -778,7 +798,7 @@ at the verdict moment also closes a race the read had: a follow-up inserted betw
 and the read made the thread non-terminal at the last possible moment, where the verdict-moment
 answer is final. A follow-up still queued, parked, or running keeps `threadTerminal` false and
 the tree in place; a follow-up created after the reclaim simply recreates the tree on the
-surviving `factory/<root>` branch the next time it syncs. The reclaim deletes only
+surviving `factory/<root>` branch the next time a claim restores it. The reclaim deletes only
 what the sync would have — a registered worktree of the clone, or the bare leftover directory
 the sync itself would have removed — and REFUSES, like the sync, a path that holds a git tree
 that is not this clone's worktree, logging the reason rather than touching it. It is

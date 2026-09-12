@@ -342,6 +342,16 @@ describe('the board\'s environment', () => {
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
 
+    it('drops a member RESTORE from the claim env and the env file', () => {
+        // RESTORE is the sync's restore-mode switch (issue #58), and the claim env rides the
+        // same sync container: a member value there would flip STARTING claims into restore
+        // mode — no fetch, no rebase, a first attempt dead-ending on "the branch is gone" —
+        // so the driver alone chooses it.
+        const hijacked = { ...job, env: { RESTORE: '1', OTHER: 'fine' } };
+        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
+        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
+    });
+
     it('forwards no board env to a Remote Control runner, and writes no env file for one', () => {
         // The same exclusion RUNNER_ENV obeys: a forwarded credential does not fail there, it
         // degrades the session in silence.
@@ -2757,6 +2767,44 @@ describe('publishing the produced work', () => {
         await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: '' } });
         const empty = calls.filter((a) => a[0] === 'run')[2]!;
         expect(empty.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+    });
+
+    // A claim that CONTINUES a session — a follow-up, or a parked job resumed — is mid-task,
+    // and git operations that touch the remote belong to the task's beginning and end (issue
+    // #58). Its sync is a RESTORE: the script runs with RESTORE=1, the claim env file is not
+    // written (restore talks only to the local clone — nothing to credential), and the fetch's
+    // helper code is absent even when the claim carries a token.
+    it('restores a claim that continues a session instead of syncing it', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '{"ok":true,"reason":null}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+        );
+
+        await runner.syncCheckout({ ...repoJob, followUp: true, env: { GITHUB_TOKEN: 't0k-3n' } });
+        const follow = calls.filter((a) => a[0] === 'run')[0]!;
+        expect(follow).toEqual(expect.arrayContaining(['-e', 'RESTORE=1']));
+        expect(follow).not.toContain('--env-file');
+        expect(follow.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
+
+        // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard:
+        // the session's tree must not move under it either.
+        await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } });
+        const parked = calls.filter((a) => a[0] === 'run')[1]!;
+        expect(parked).toEqual(expect.arrayContaining(['-e', 'RESTORE=1']));
+        expect(parked).not.toContain('--env-file');
+
+        // A starting claim — even with a token — keeps the sync shape: no RESTORE, env file on.
+        await runner.syncCheckout({ ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } });
+        const fresh = calls.filter((a) => a[0] === 'run')[2]!;
+        expect(fresh.some((arg) => arg.startsWith('RESTORE='))).toBe(false);
+        expect(fresh.indexOf('--env-file')).toBeGreaterThan(-1);
     });
 
     /* The terminal reclaim (issue #47): the same one-container shape as the sync it undoes,

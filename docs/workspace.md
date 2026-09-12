@@ -175,7 +175,8 @@ against this list — and still nothing runs.
   one holding an agent's uncommitted work. The driver's task worktrees only LOOK like that — a
   finished or deleted task does clean its tree up: when the whole thread is terminal the driver
   removes the per-thread worktree and prunes its admin entry (issue #47, `docs/jobs.md`), keeping
-  the surviving `factory/<root>` branch so a follow-up can recreate the tree on a fresh sync. What
+  the surviving `factory/<root>` branch so a follow-up can recreate the tree when its claim
+  restores. What
   still grows unbounded is the member CLONES, which hold the per-thread worktrees' branches; those
   are invisible to the workspace page, which walks checkout directories only.
 - **What exists instead:** a per-member cap of 20 repositories, so one click cannot clone an entire
@@ -184,7 +185,9 @@ against this list — and still nothing runs.
   rather than only in `df`. That list is where a prune button would attach.
 - **Clones drift from their remotes**, because nothing fetches — but a task never works on the
   drift: the driver's startup sync creates the task worktree from `origin/<default>` fresh at
-  every attempt, which is why the drift is survivable at all.
+  each task's starting claim, which is why the drift is survivable at all. A claim that
+  continues a session (a follow-up, a parked resume) restores the tree without fetching —
+  mid-flight is exactly when a task must not sync with main (issue #58).
 
 ## Tests
 

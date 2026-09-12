@@ -157,11 +157,15 @@ export interface Runner {
      */
     publishGit?(job: BoardJob): Promise<PublishResult>;
     /**
-     * Brings the job's task worktree up to the remote default before the run: fetch, create the
-     * worktree branched off `origin/<default>` (first attempt of the thread) or rebase it onto
-     * the new default, keeping its commits (every later one). Called before the runner spawns, so
-     * a task starts from the code — and the declared gates — that main actually has. Answers
-     * { ok: false, reason } rather than throwing; the loop turns that into the verdict.
+     * Prepares the job's task worktree before the run. A STARTING claim syncs it with the
+     * remote default: fetch, create the worktree branched off `origin/<default>` (first attempt
+     * of the thread) or rebase it onto the new default, keeping its commits. A claim that
+     * CONTINUES a session (a follow-up, or a parked job resumed) RESTORES instead: no fetch, no
+     * rebase — the tree is kept exactly as the run before it left it, or recreated from the
+     * surviving thread branch (issue #58: git operations that touch the remote belong to the
+     * task's beginning and end, never its middle). Called before the runner spawns, so a task
+     * starts from the code it is meant to continue. Answers { ok: false, reason } rather than
+     * throwing; the loop turns that into the verdict.
      */
     syncCheckout(job: BoardJob): Promise<SyncResult>;
     /**
@@ -725,8 +729,10 @@ function workspacePath(job: BoardJob): string {
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
  * sets, TRUST_WORKDIR is the Remote Control trust answer, the two BELLOWS_GATE_ names are the
  * ad-hoc gate credentials the loop mints per attempt, CRED_HELPER is the credential-helper CODE
- * the sync fetch runs, and the three reporter names steer the branch reporter — where it posts,
- * what authenticates it, and which session it claims. A member value in any of them is a
+ * the sync fetch runs, RESTORE is the sync's restore-mode switch (a member value there would
+ * flip starting claims into restore mode, silently skipping the fetch and rebase issue #58
+ * reserves for continuations), and the three reporter names steer the branch reporter — where it
+ * posts, what authenticates it, and which session it claims. A member value in any of them is a
  * cross-tenant write into the telemetry store; CRED_HELPER above all: a member value there is
  * member-controlled code the sync container's git executes as helper code.
  * Mirrored at the board (RESERVED_ENV_NAMES in server/src/routes/env.ts, where a PUT is refused);
@@ -738,6 +744,7 @@ export const RESERVED_ENV_NAMES = [
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',
+    'RESTORE',
     'FACTORY_STATS_URL',
     'INGEST_TOKEN',
     'BELLOWS_SESSION_ID',
@@ -771,6 +778,17 @@ export function claimEnv(job: BoardJob): Record<string, string> {
  * literal.
  */
 export const claimCarriesGithubToken = (job: BoardJob): boolean => Boolean(claimEnv(job).GITHUB_TOKEN);
+
+/**
+ * Whether the claim CONTINUES a session rather than starting a task: a follow-up, or a parked
+ * job resumed. Either way the task is mid-flight, and the startup git work is a RESTORE, not a
+ * sync — no fetch, no rebase onto the remote default (issue #58): the conversation's tree is
+ * what the run continues from, and moving its base underneath it is the mid-task "sync with
+ * main" the follow-up flow must not do. Lease-expired RE-claims of ordinary jobs are not
+ * continuation: the claim clears a dead attempt's session, so the run starts — and syncs —
+ * fresh. Shared with the kubernetes runner, which must restore identically.
+ */
+export const claimContinuesSession = (job: BoardJob): boolean => job.followUp || job.resumeSessionId !== null;
 
 /**
  * One `NAME=value` line, refusing a newline in either half: the file is line-structured and docker
@@ -1208,13 +1226,15 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         kill,
 
         /*
-         * The startup sync is one container, one script: fetch, then create the task's worktree
-         * branched off origin/<default> or rebase the existing one onto it. The env names the
-         * three paths the script needs — the clone (where origin lives), the worktree, the branch
-         * — literal values, not credentials; the claim env rides the env file exactly as before.
-         * A conflicting rebase aborts itself in the script and answers { ok: false } with the
-         * reason — the loop fails the run before it starts rather than leaving the worktree
-         * mid-rebase for every later turn to trip over.
+         * The startup sync (or, for a claim that continues a session, the restore): one
+         * container, one script. A starting claim gets fetch + create-or-rebase; a continuing
+         * claim gets RESTORE=1 — no fetch, no rebase, nothing that touches the remote (issue
+         * #58) — so its env file is not written at all and the credential helper is absent even
+         * when the claim carries a token. The env names the three paths the script needs — the
+         * clone (where origin lives), the worktree, the branch — literal values, not
+         * credentials. A conflicting rebase aborts itself in the script and answers
+         * { ok: false } with the reason — the loop fails the run before it starts rather than
+         * leaving the worktree mid-rebase for every later turn to trip over.
          */
         async syncCheckout(job: BoardJob): Promise<SyncResult> {
             const clone = repoPath(config, job);
@@ -1230,12 +1250,15 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
              * teardown half runs twice.
              */
             await reclaimFence(job);
+            const restore = claimContinuesSession(job);
             let file: string | null = null;
-            try {
-                file = envFilePath(job);
-                await writeFile(file, envFileBody(job), { mode: 0o600 });
-            } catch (e) {
-                return { ok: false, reason: `could not write the sync env file: ${(e as Error).message}` };
+            if (!restore) {
+                try {
+                    file = envFilePath(job);
+                    await writeFile(file, envFileBody(job), { mode: 0o600 });
+                } catch (e) {
+                    return { ok: false, reason: `could not write the sync env file: ${(e as Error).message}` };
+                }
             }
             try {
                 // 'run' and '--rm' INCLUDED — every execDocker argv here is a full `docker run`:
@@ -1247,19 +1270,22 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     '--rm',
                     '-v',
                     `${config.workspaceVolume}:${config.workspaceMount}`,
-                    '--env-file',
-                    file,
+                    ...(file ? (['--env-file', file] as string[]) : []),
                     '-e',
                     `REPO=${clone}`,
                     '-e',
                     `WORKTREE=${worktree}`,
                     '-e',
                     `BRANCH=${worktreeBranch(job)}`,
+                    // Restore mode, as a literal: the script's "keep the tree as the task left
+                    // it, remote untouched" switch (issue #58).
+                    ...(restore ? ['-e', 'RESTORE=1'] : []),
                     // The fetch's credential helper, as CODE in an env VALUE — the same class
                     // of value as the three paths above, and the same mechanism as the push's
                     // `-c credential.helper=`. Only when the claim env carries the token the
-                    // helper reads; the token itself travels the env file, never argv.
-                    ...(claimCarriesGithubToken(job) ? ['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`] : []),
+                    // helper reads; the token itself travels the env file, never argv. A
+                    // restore fetches nothing, so it never carries one.
+                    ...(!restore && claimCarriesGithubToken(job) ? ['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`] : []),
                     '--entrypoint',
                     'node',
                     config.image,

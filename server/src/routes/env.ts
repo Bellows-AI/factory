@@ -25,7 +25,9 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * two different paths to one runner's working directory; TRUST_WORKDIR is how a Remote Control
  * runner is told its checkout is trusted; CRED_HELPER is the credential-helper CODE the sync
  * fetch runs — a member value there would be member-controlled code executed by the sync
- * container's git. The three reporter names steer the branch reporter — where it posts, what
+ * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
+ * starting claims into restore mode, silently skipping the fetch and rebase (issue #58). The
+ * three reporter names steer the branch reporter — where it posts, what
  * authenticates it, and which session it claims — and a member value in any of them is a
  * cross-tenant write into the telemetry store. Reserved at the route, restated at the driver
  * (RESERVED_ENV_NAMES in driver/src/docker.ts — copied, not imported, per that package's
@@ -37,6 +39,7 @@ export const RESERVED_ENV_NAMES = [
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',
+    'RESTORE',
     'FACTORY_STATS_URL',
     'INGEST_TOKEN',
     'BELLOWS_SESSION_ID',
