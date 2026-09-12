@@ -326,6 +326,44 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         expect(git(worktree, 'rev-parse', '--is-inside-work-tree')).toBe('true');
         expect(existsSync(join(worktree, 'leftover.txt'))).toBe(false);
     });
+
+    it('refuses a restore whose worktree belongs to another clone', () => {
+        // A whole independent checkout stands at the worktree path: rev-parse succeeds inside
+        // it, but continuing the thread there would run a resumed job in another clone's tree.
+        // The restore must name the ownership mismatch and leave the foreign tree alone.
+        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, worktree], { stdio: 'ignore' });
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('not a worktree of this clone');
+        expect(git(worktree, 'rev-parse', '--is-inside-work-tree')).toBe('true');
+    });
+
+    it('refuses a restore whose worktree sits on another branch', () => {
+        // The tree is ours, but the checkout moved off the task branch: a follow-up must not
+        // run there, and must not reset or recreate it either — the refusal names the branch
+        // it found against the branch it expected, and the tree stays as it stands.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        git(worktree, 'switch', '-c', 'rogue');
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('rogue');
+        expect(result.reason).toContain(branch);
+        expect(git(worktree, 'branch', '--show-current')).toBe('rogue');
+    });
+
+    it('refuses a restore whose worktree is on a detached HEAD', () => {
+        // A detached checkout is no thread to continue either: no branch survives under it,
+        // so the refusal names the detached state instead of answering success.
+        expect(sync()).toEqual({ ok: true, reason: null });
+        git(worktree, 'checkout', '--detach');
+
+        const result = restore();
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('detached');
+        expect(git(worktree, 'rev-parse', '--is-inside-work-tree')).toBe('true');
+    });
 });
 
 /**

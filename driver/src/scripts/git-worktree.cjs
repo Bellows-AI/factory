@@ -14,7 +14,11 @@
 //                 no rebase: the existing tree is left byte-for-byte as the run before it
 //                 left it, and a reclaimed tree is recreated from the surviving branch —
 //                 its own tip, never a fresh start off origin/<default> (a missing branch is
-//                 a named failure: there is nothing to continue). No credential helper is
+//                 a named failure: there is nothing to continue). An existing tree is kept
+//                 only when it is this clone's own worktree standing on the task branch — a
+//                 foreign checkout, or the worktree on another branch or a detached HEAD,
+//                 is a named refusal, never a recreation: a resumed job must never run in
+//                 the wrong checkout. No credential helper is
 //                 needed, because nothing here talks to the remote.
 //   CRED_HELPER — optional, STARTING claims only: the git credential-helper program the fetch
 //                 runs (`-c credential.helper=`), set only when the claim env carries a
@@ -47,6 +51,7 @@
 // working tree is never touched — the worktree model is what makes that literally true.
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
+const path = require('node:path');
 
 const repo = process.env.REPO;
 const wt = process.env.WORKTREE;
@@ -75,6 +80,35 @@ try {
             existing = true;
         } catch {}
         if (existing) {
+            // An existing tree is accepted only when it is this clone's worktree standing on
+            // the task branch — anything else (another clone's checkout, or this worktree on
+            // another branch or a detached HEAD) is a named refusal, never a recreation: a
+            // resumed job must never run in the wrong checkout.
+            let common = inw('rev-parse', '--git-common-dir');
+            if (!path.isAbsolute(common)) common = path.resolve(wt, common);
+            const found = fs.realpathSync(common);
+            const ours = fs.realpathSync(repo + '/.git');
+            if (found !== ours) {
+                fail(
+                    'the worktree path holds a git tree that is not a worktree of this clone: its git dir is ' +
+                        found +
+                        ', but the task tree must belong to ' +
+                        ours +
+                        ' — remove it by hand if it is truly stale',
+                );
+                process.exit(0);
+            }
+            const on = inw('branch', '--show-current');
+            if (on !== branch) {
+                fail(
+                    'the task worktree stands on ' +
+                        (on ? 'branch ' + on : 'a detached HEAD') +
+                        ' instead of the task branch ' +
+                        branch +
+                        ' — a resumed job must never run in the wrong checkout',
+                );
+                process.exit(0);
+            }
             console.log(JSON.stringify({ ok: true, reason: null }));
             process.exit(0);
         }
