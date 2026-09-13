@@ -1385,7 +1385,7 @@ describe('the kubernetes runner', () => {
             'GET /api/v1/namespaces/factory/pods',
             'GET /api/v1/namespaces/factory/services',
         ]);
-        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
+        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true, services: null });
     });
 
     it('creates the per-job Secret before the Job when the claim carries env, and reaps it with the verdict', async () => {
@@ -1563,7 +1563,7 @@ describe('the kubernetes runner', () => {
         );
 
         expect(tails).toEqual(['partial output\n']);
-        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
+        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true, services: null });
     });
 
     // A pod that has not been scheduled yet, or a log endpoint that hiccups, is a skipped preview —
@@ -4111,6 +4111,54 @@ describe('the kubernetes services flow', () => {
             return servicesFake().request(method, path, body);
         };
         await expect(servicesRunner(failing).run(job, { id: SESSION, resume: false })).rejects.toThrow();
+    });
+
+    // The fleet's last status rides the verdict, read before the run's finally tears it down: the
+    // pod phases answer Running as running, Failed as stopped, and a still-quiet phase as unknown.
+    it('reports the service fleet\'s last status with the verdict', async () => {
+        const { request } = servicesFake();
+        const pods = JSON.stringify({
+            items: [
+                {
+                    metadata: { name: 'svc-cache', labels: { 'factory.service': 'cache' } },
+                    status: { phase: 'Running' },
+                },
+                {
+                    metadata: { name: 'svc-session', labels: { 'factory.service': 'session' } },
+                    status: { phase: 'Failed' },
+                },
+                {
+                    metadata: { name: 'svc-metrics', labels: { 'factory.service': 'metrics' } },
+                    status: { phase: 'Pending' },
+                },
+            ],
+        });
+        const withPhases: K8sRequest = (method, path, body) => {
+            if (path.includes('pods?') && decodeURIComponent(path).includes('factory.service')) {
+                return Promise.resolve({ status: 200, body: pods });
+            }
+            return request(method, path, body);
+        };
+        const outcome = await servicesRunner(withPhases).run(job, { id: SESSION, resume: false });
+
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome.services).toEqual([
+            { name: 'cache', status: 'running' },
+            { name: 'session', status: 'stopped' },
+            { name: 'metrics', status: 'unknown' },
+        ]);
+    });
+
+    it('describes a fleet the API server cannot list as nothing to report, not a guess', async () => {
+        const { request } = servicesFake();
+        const failing: K8sRequest = (method, path, body) => {
+            if (path.includes('pods?') && decodeURIComponent(path).includes('factory.service')) {
+                return Promise.resolve({ status: 500, body: '{}' });
+            }
+            return request(method, path, body);
+        };
+        const outcome = await servicesRunner(failing).run(job, { id: SESSION, resume: false });
+        expect(outcome.services).toBeNull();
     });
 });
 

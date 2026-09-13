@@ -4,7 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, runWorkingDir, SESSION_ID, workspacePathOf } from './docker.js';
-import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
+import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample, ServiceVitals } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
 import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, publishCheckout, publishFailed, repoPath, worktreeBranch, worktreeDir } from './publish.js';
@@ -1324,6 +1324,40 @@ export function createKubernetesRunner(
     };
 
     /**
+     * The service fleet's last status, read while the fleet still stands — run0 reads it just
+     * before the outcome returns, and run()'s finally tears the fleet down only after the outcome
+     * is resolved. Same lease-scoped selector `teardownServices` uses (lease label + the service
+     * key requirement), so a superseded attempt's close cannot read a replacement's pods. The
+     * pod's phase is the honest status at close: Running or Succeeded is running, Failed is
+     * stopped, and anything quieter (Pending, Unknown, a read that answered nothing) is `unknown`
+     * — never a guess.
+     */
+    const readServiceStatus = async (job: BoardJob): Promise<ServiceVitals[] | null> => {
+        if (!config.servicesEnabled) return null;
+        let response: K8sResponse;
+        try {
+            response = await request('GET', podsByLeasePath(config.k8sNamespace, job));
+        } catch {
+            return null;
+        }
+        if (response.status >= 300) return null;
+        const items =
+            parse<{
+                items?: { metadata?: { labels?: Record<string, string> }; status?: { phase?: string } }[];
+            }>(response.body).items ?? [];
+        const services: ServiceVitals[] = [];
+        for (const item of items) {
+            const name = item.metadata?.labels?.['factory.service'];
+            if (!name) continue;
+            const phase = item.status?.phase ?? '';
+            const status: ServiceVitals['status'] =
+                phase === 'Running' || phase === 'Succeeded' ? 'running' : phase === 'Failed' ? 'stopped' : 'unknown';
+            services.push({ name, status });
+        }
+        return services.length > 0 ? services : null;
+    };
+
+    /**
      * The `.bellows.yaml` readout, as a Job: the same script docker runs in a throwaway
      * container, over a read-only PVC mount. Runs to terminal status, its log IS the output the
      * section splitter consumes, and the Job goes as soon as it is read. A readout that cannot
@@ -2332,6 +2366,9 @@ export function createKubernetesRunner(
                         reason ?? 'the readout answered nothing (no session in the database)';
                 }
             }
+            // The fleet still stands here — the run() finally tears it down only after this
+            // outcome resolves — so this is the last moment a service status can be read honestly.
+            outcome.services = await readServiceStatus(job);
             return outcome;
         },
 

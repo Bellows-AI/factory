@@ -47,6 +47,17 @@ const run = promisify(execFile);
  * What the board is told afterwards. `timedOut` is reported as a failure, with a reason; `idled` is
  * not a failure at all — the job is parked and keeps its session.
  */
+
+/**
+ * One auxiliary service the run stood up, reported at close. The status is the last state the
+ * platform could honestly read — docker answers from the container's `State.Status`, kubernetes
+ * from the service pod's phase; `unknown` is a read that answered nothing, not a guess.
+ */
+export interface ServiceVitals {
+    name: string;
+    status: 'running' | 'stopped' | 'unknown';
+}
+
 export interface RunOutcome {
     exitCode: number | null;
     output: string;
@@ -87,6 +98,12 @@ export interface RunOutcome {
      */
     contextTokens?: number | null;
     costUsd?: number | null;
+    /**
+     * The auxiliary services this attempt stood up, read at close before the fleet is torn down —
+     * each one's last status. Null when services are off or the attempt declared none; a read that
+     * answered nothing reports `unknown` per service, never a guess.
+     */
+    services?: ServiceVitals[] | null;
     /**
      * Why the post-run session scrape failed, when it failed: the readout's own error line, the
      * docker rejection, or null when it answered nothing at all. The loop logs it beside the
@@ -1079,6 +1096,51 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * idempotent — it runs twice per attempt by design, as the fence's service half before the
      * run and as the teardown after it.
      */
+    /**
+     * The service fleet's last status, read just before the teardown takes it down — the only
+     * point the containers still exist to be asked. Same label filters as `serviceTeardown`:
+     * job + lease + the service label, which is what keeps a late close from reading a
+     * replacement attempt's fleet. One line per container from a single `docker inspect`, the
+     * declared name from the service label and the status from `State.Status`; a status of
+     * `running` is running, any other settled state is stopped, and a container whose inspect
+     * answered nothing is `unknown` — never a guess.
+     */
+    const readServices = async (job: BoardJob): Promise<ServiceVitals[] | null> => {
+        if (!config.servicesEnabled) return null;
+        const found = await execDocker([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            `label=factory.lease=${job.leaseToken}`,
+            '--filter',
+            'label=factory.service',
+        ]).catch(() => ({ stdout: '' }));
+        const ids = found.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+        if (ids.length === 0) return null;
+        const inspected = await execDocker([
+            'inspect',
+            '--format',
+            '{{index .Config.Labels "factory.service"}} {{.State.Status}}',
+            ...ids,
+        ]).catch(() => null);
+        if (inspected === null) return null;
+        const services: ServiceVitals[] = [];
+        for (const line of inspected.stdout.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            const space = trimmed.indexOf(' ');
+            if (space === -1) continue;
+            const name = trimmed.slice(0, space);
+            if (!name) continue;
+            const state = trimmed.slice(space + 1);
+            const status: ServiceVitals['status'] = state === 'running' ? 'running' : state.length > 0 ? 'stopped' : 'unknown';
+            services.push({ name, status });
+        }
+        return services.length > 0 ? services : null;
+    };
+
     const serviceTeardown = async (job: BoardJob): Promise<void> => {
         if (!config.servicesEnabled) return;
         const found = await execDocker([
@@ -1602,8 +1664,9 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // attempt created. No knowledge of who claimed what in between is needed,
                     // and none would be reliable anyway: daemon calls are arbitrarily slow, and
                     // any snapshot of "who is current" is stale by the time it is checked.
+                    const services = await readServices(job);
                     await serviceTeardown(job);
-                    return { exitCode: code, output, timedOut, idled, started, cacheLost };
+                    return { exitCode: code, output, timedOut, idled, started, cacheLost, services };
                 };
 
                 const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork, file ?? undefined), {

@@ -1774,6 +1774,50 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls[calls.length - 1]).toEqual(['network', 'rm', networkName(job)]);
     });
 
+    // The fleet's last status rides the verdict — read just before the teardown takes it down,
+    // the only moment the containers still exist to be asked. `running` from the daemon's State,
+    // any other settled state `stopped`, and a container whose inspect answered nothing `unknown`.
+    it('reports the service fleet\'s last status with the verdict', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                return { stdout: '###__bellows:demo\nservices:\n  - name: db\n    image: postgres\n  - name: cache\n    image: redis\n' };
+            }
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'id-1\nid-2\n' };
+            if (args[0] === 'inspect') return { stdout: 'db running\ncache exited\n' };
+            return { stdout: '' };
+        });
+        const { fn } = spawnRecording('ran\n', 0);
+        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ exitCode: 0 });
+        expect(outcome.services).toEqual([
+            { name: 'db', status: 'running' },
+            { name: 'cache', status: 'stopped' },
+        ]);
+        // The status read stays ahead of the teardown that removes the fleet: the fence's early
+        // rm (nothing to remove) is not the one — it is the close-time teardown, the last rm.
+        const calls = exec.mock.calls.map((call) => call[0]);
+        const inspectAt = calls.findIndex((a) => a[0] === 'inspect');
+        const lastRmAt = calls.map((a, i) => (a[0] === 'rm' && a[1] === '-f' ? i : -1)).reduce((a, b) => Math.max(a, b));
+        expect(inspectAt).toBeGreaterThanOrEqual(0);
+        expect(inspectAt).toBeLessThan(lastRmAt);
+    });
+
+    it('reports nothing when the fleet cannot be asked, rather than guessing', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'id-1\n' };
+            if (args[0] === 'inspect') throw new Error('daemon refused');
+            return { stdout: '' };
+        });
+        const { fn } = spawnRecording('ran\n', 0);
+        const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
+
+        expect(outcome.services).toBeNull();
+    });
+
     it('fences leftover services before anything is created', async () => {
         const exec = daemon(READOUT);
         await servicesRunner(exec, spawnRecording('', 0).fn).run(job, { id: SESSION, resume: false });

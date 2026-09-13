@@ -632,6 +632,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     output,
                     contextTokens: outcome.contextTokens ?? null,
                     contextCostUsd: outcome.costUsd ?? null,
+                    services: outcome.services ?? null,
                 });
                 log(
                     verdict === 'lost'

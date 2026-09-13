@@ -177,12 +177,13 @@ export interface Board {
     /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,
-     * stored beside the attempt's vitals on the board. The answer carries `threadTerminal` —
-     * whether EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead'), computed
-     * by the board in the SAME lease-guarded transaction as the verdict — which is the signal a
-     * worker uses right after a verdict to decide the task worktree can be reclaimed (issue #47).
-     * A follow-up still queued, parked, or running keeps it false, so a thread that might
-     * continue keeps its tree.
+     * stored beside the attempt's vitals on the board. So do the auxiliary services the run stood
+     * up, with each one's last status, when the executor could read it at close. The answer
+     * carries `threadTerminal` — whether EVERY job of the task's thread is terminal
+     * ('succeeded'/'failed'/'dead'), computed by the board in the SAME lease-guarded transaction
+     * as the verdict — which is the signal a worker uses right after a verdict to decide the task
+     * worktree can be reclaimed (issue #47). A follow-up still queued, parked, or running keeps it
+     * false, so a thread that might continue keeps its tree.
      */
     complete(
         job: BoardJob,
@@ -192,6 +193,7 @@ export interface Board {
             output: string;
             contextTokens?: number | null;
             contextCostUsd?: number | null;
+            services?: { name: string; status: 'running' | 'stopped' | 'unknown' }[] | null;
         },
     ): Promise<{ state: LeaseState; threadTerminal: boolean }>;
 }
@@ -332,7 +334,7 @@ export function createBoard({
             return response.status === 409 ? 'lost' : 'held';
         },
 
-        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd }) {
+        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd, services }) {
             const response = await post(`/api/jobs/${job.id}/complete`, {
                 leaseToken: job.leaseToken,
                 status,
@@ -340,6 +342,7 @@ export function createBoard({
                 output,
                 ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
                 ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
+                ...(services !== undefined && services !== null ? { services } : {}),
             });
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — the terminality answer is false, not unknown.

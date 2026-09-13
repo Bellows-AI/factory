@@ -355,6 +355,33 @@ describe('the complete verdict', () => {
         await expect(board.complete(job, { status: 'succeeded', exitCode: 0, output: '' })).rejects.toThrow(/404/);
     });
 
+    it('carries the service fleet\'s last status with the verdict, and nothing when there is no fleet', async () => {
+        // The fleet the run stood up is the board's to persist; a run with no fleet sends no key
+        // at all rather than an empty one, so a reader cannot mistake "no services declared" for
+        // "services that all vanished".
+        const stubbed = recorder(() => Response.json({ id: 'job-1', status: 'succeeded' }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: stubbed.fetch });
+
+        await board.complete(job, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: '',
+            services: [
+                { name: 'db', status: 'running' },
+                { name: 'cache', status: 'stopped' },
+            ],
+        });
+        expect(stubbed.calls[0]!.body).toMatchObject({
+            services: [
+                { name: 'db', status: 'running' },
+                { name: 'cache', status: 'stopped' },
+            ],
+        });
+
+        await board.complete(job, { status: 'succeeded', exitCode: 0, output: '' });
+        expect(stubbed.calls[1]!.body).not.toHaveProperty('services');
+    });
+
     it('no longer carries a separate thread read — the answer travels on complete', () => {
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => claimed()).fetch });
         expect('threadTerminal' in board).toBe(false);

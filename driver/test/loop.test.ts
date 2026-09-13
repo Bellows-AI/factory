@@ -287,7 +287,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null, services: null },
         ]);
     });
 
@@ -372,6 +372,21 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', contextTokens: 90433, contextCostUsd: 0.31 });
+    });
+
+    // The auxiliary services the run stood up ride the verdict the same way the context stats do:
+    // the finished row keeps the fleet it used, each service with its last platform-readable status.
+    it('reports the services the run stood up with the verdict', async () => {
+        const board = stubBoard([job(1)]);
+        const services = [
+            { name: 'db', status: 'running' },
+            { name: 'cache', status: 'stopped' },
+        ];
+        const runner = stubRunner(async () => ok({ finishReason: 'stop', services }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', services });
     });
 
     // An opencode run always leaves a session, so an empty scrape is a failed readout — said out
@@ -1221,7 +1236,7 @@ describe('the poll loop', () => {
             { id: job(1).id, output: 'tail two', runtime: null },
         ]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null, services: null },
         ]);
     });
 
@@ -1273,7 +1288,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null, services: null },
         ]);
     });
 
@@ -1318,7 +1333,7 @@ describe('the poll loop', () => {
         expect(board.board.progressed).toHaveLength(1);
         expect(runner.killed).toEqual([]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null, services: null },
         ]);
     });
 
@@ -1402,7 +1417,7 @@ describe('an opencode runner', () => {
         expect(given).toBeNull();
         expect(board.board.sessions).toEqual([]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null },
+            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null, services: null },
         ]);
     });
 
