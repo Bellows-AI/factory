@@ -6,19 +6,11 @@ import { duration, num, pct, tokens } from '../format.js';
 export function AiUsagePanel({
     telemetry,
     meta,
-    mergedPrs,
 }: {
     telemetry: TelemetryStats;
     meta: TelemetryMeta;
-    mergedPrs: number;
 }) {
     const t = telemetry.totals;
-    // input + output, not all four: cache reads would count the same context repeatedly.
-    const billable =
-        t.tokens.input === null && t.tokens.output === null
-            ? null
-            : (t.tokens.input ?? 0) + (t.tokens.output ?? 0);
-
     return (
         <section className="cards">
             <Card
@@ -51,11 +43,6 @@ export function AiUsagePanel({
                         ? 'lines written not recorded'
                         : `${num(t.linesAdded, 0)} lines written`
                 }
-            />
-            <Card
-                value={billable === null ? '—' : tokens(billable / Math.max(mergedPrs, 1))}
-                label="tokens per merged PR"
-                note="across all sessions, attributed or not"
             />
         </section>
     );

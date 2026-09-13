@@ -11,9 +11,7 @@ import type { MemoryAuthStore } from './helpers.js';
 import {
     githubAuth,
     memoryAuthStore,
-    memoryPrStore,
     signedIn,
-    stubClient,
     stubTelemetryClient,
     testConfig,
 } from './helpers.js';
@@ -83,9 +81,7 @@ async function build(auth: AuthConfig, store: MemoryAuthStore) {
     const config = testConfig({ auth });
     const service = createStatsService({
         config,
-        client: stubClient(),
         telemetry: stubTelemetryClient(),
-        store: memoryPrStore(),
     });
     app = await buildApp({
         config,

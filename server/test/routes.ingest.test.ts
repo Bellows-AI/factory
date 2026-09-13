@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { MetricRow } from '../src/telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
-import { stubClient, stubTelemetryClient, testConfig } from './helpers.js';
+import { stubTelemetryClient, testConfig } from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -38,7 +38,6 @@ async function harnessWith(store?: StoreStub) {
     const config = testConfig();
     const service = createStatsService({
         config,
-        client: stubClient(),
         telemetry: stubTelemetryClient(),
         now: () => Date.parse('2026-08-21T12:00:00.000Z'),
     });

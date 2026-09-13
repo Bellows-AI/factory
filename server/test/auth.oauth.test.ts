@@ -4,7 +4,7 @@ import { createGitHubIdentityClient } from '../src/auth/github.js';
 import { OAUTH_COOKIE, SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
 import type { MemoryAuthStore } from './helpers.js';
-import { githubAuth, harness, memoryAuthStore, stubIdentityClient, stubClient } from './helpers.js';
+import { githubAuth, harness, memoryAuthStore, stubIdentityClient } from './helpers.js';
 
 const ORG = 'test-org';
 
@@ -13,7 +13,6 @@ async function setup(seed: (store: MemoryAuthStore) => void = () => {}) {
     seed(auth);
     const identity = stubIdentityClient();
     const { app } = await harness({
-        client: stubClient(),
         config: { auth: githubAuth() },
         auth,
         identity,
@@ -136,7 +135,6 @@ describe('auto-join from a GitHub organization', () => {
         seed(auth);
         const identity = stubIdentityClient();
         const { app } = await harness({
-            client: stubClient(),
             config: { auth: githubAuth({ autoJoinGithubOrg: AUTO_JOIN_ORG }) },
             auth,
             identity,
