@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
-import { groupLabel, taskTitle } from '../tabs.js';
+import { groupLabel, taskSummary, taskTitle } from '../tabs.js';
 import type { TaskTabs } from '../tabs.js';
 
 /**
@@ -36,11 +36,17 @@ export function TaskTabs({ tabs, tasks }: { tabs: TaskTabs; tasks: readonly Job[
 function TaskTab({ id, tasks, onClose }: { id: string; tasks: readonly Job[] | null; onClose: (id: string) => void }) {
     const { pathname } = useLocation();
     const title = taskTitle(id, tasks);
+    const summary = taskSummary(id, tasks);
     const active = pathname === `/tasks/${id}`;
     return (
         <div className={active ? 'task-tab is-active' : 'task-tab'}>
-            <NavLink className="task-tab-link" to={`/tasks/${id}`} title={title}>
-                {title}
+            <NavLink
+                className="task-tab-link"
+                to={`/tasks/${id}`}
+                title={summary !== null ? `${title} — ${summary}` : title}
+            >
+                <span className="task-tab-title">{title}</span>
+                {summary !== null ? <span className="task-tab-summary">{summary}</span> : null}
             </NavLink>
             <button
                 type="button"

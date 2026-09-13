@@ -540,6 +540,30 @@ footer {
     overflow: hidden;
     padding: 4px 10px 4px 24px;
     text-decoration: none;
+}
+
+/* The task's own line — the command or title — next to the status dot; it alone clips, so a long
+   command never pushes the live summary below it off the tree. The 10px is the dot and its margin,
+   which share the title's line. */
+.sidenav-task-title {
+    display: inline-block;
+    max-width: calc(100% - 10px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+/* The task's live summary — the newest run's activity line, while it is going — a second, quieter
+   line under the title. `white-space` is per-line, because `.sidenav-task` no longer forces one. */
+.sidenav-task-summary {
+    color: var(--muted);
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    margin-top: 2px;
+    opacity: 0.85;
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -719,10 +743,27 @@ footer {
 
 .task-tab-link {
     color: var(--muted);
+    display: flex;
+    flex-direction: column;
     font-size: 12px;
     overflow: hidden;
     padding: 5px 4px 5px 10px;
     text-decoration: none;
+}
+
+.task-tab-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The running task's live summary, a second line under its title — as clipped as the title, so a
+   capped activity line never pushes the tab out of its 220px. */
+.task-tab-summary {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10px;
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -948,6 +989,18 @@ button.primary {
 }
 
 .chat-activity {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The task's live summary — "what the agent is doing" — one line at the top of the task view while
+   the newest run is going. The same mono, muted, clipped treatment as the sidebar's activity row;
+   spacing and width come from the panel's paragraph rule. */
+.task-summary {
     color: var(--muted);
     font-family: var(--mono);
     font-size: 12px;
