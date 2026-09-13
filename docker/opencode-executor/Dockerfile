@@ -95,10 +95,11 @@ WORKDIR /workspace
 RUN mkdir -p /tmp/opencode /tmp/node-compile-cache && chown node:node /tmp/opencode /tmp/node-compile-cache
 
 COPY entrypoint.sh /usr/local/bin/opencode-executor
-# The branch reporter, beside the entrypoint in /usr/local/bin: a sibling of the CLI, outside
-# the config directory nothing mounted at run time can shadow.
+# The branch reporter and the rate-limit watch, beside the entrypoint in /usr/local/bin:
+# siblings of the CLI, outside the config directory nothing mounted at run time can shadow.
 COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
-RUN chmod 0755 /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs
+COPY rate-limit-watch.cjs /usr/local/bin/rate-limit-watch.cjs
+RUN chmod 0755 /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs
 
 USER node
 
