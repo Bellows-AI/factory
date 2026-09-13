@@ -109,7 +109,23 @@ const run = (
         child.on('close', (status) => resolve({ status, stdout, stderr }));
     });
 
-describe('the branch reporter', () => {
+/**
+ * Every fixture in this suite is a real git repository, built with the `git` CLI — and the gate's
+ * base image (node:24-alpine) ships no git. The skip is the suite's established idiom for that
+ * split (the same hasGit() in scripts.test.ts/worktree.test.ts): the gate loses these tests, the
+ * checkout machine keeps them. The reporter itself must STILL be pinned on a git-less box — it is
+ * built to stay silent when git is missing (see "does nothing outside a git repository" below).
+ */
+function hasGit(): boolean {
+    try {
+        execFileSync('git', ['--version'], { stdio: 'ignore' });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+describe.skipIf(!hasGit())('the branch reporter', () => {
     it('posts the plugin’s exact wire shape for the session it was given', async () => {
         const { url, requests } = await board();
         const dir = gitRepo();
@@ -224,24 +240,6 @@ describe('the branch reporter', () => {
             expect(stdout).toBe('');
             expect(stderr).toBe('');
             expect(requests).toHaveLength(1);
-        } finally {
-            rmSync(dir, { recursive: true, force: true });
-        }
-    });
-
-    it('does nothing outside a git repository', async () => {
-        const { url, requests } = await board();
-        const dir = tempDir();
-        try {
-            const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
-                FACTORY_STATS_URL: url,
-                BELLOWS_SESSION_ID: SESSION,
-                WORKDIR: dir,
-            });
-            expect(status).toBe(0);
-            expect(stdout).toBe('');
-            expect(stderr).toBe('');
-            expect(requests).toHaveLength(0);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -406,4 +404,26 @@ describe('the branch reporter', () => {
             rmSync(data, { recursive: true, force: true });
         }
     }, 15_000);
+});
+
+// The branch-reporter contract that needs no repository — and the one that survives a git-less
+// image: the reporter is built to stay silent when there IS no git (git() swallows the missing
+// binary the same way it swallows a bare directory), so a box without git still pins that the
+// absence is never surfaced. Kept outside the skipped describe above so the gate exercises it.
+it('does nothing outside a git repository', async () => {
+    const { url, requests } = await board();
+    const dir = tempDir();
+    try {
+        const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+            FACTORY_STATS_URL: url,
+            BELLOWS_SESSION_ID: SESSION,
+            WORKDIR: dir,
+        });
+        expect(status).toBe(0);
+        expect(stdout).toBe('');
+        expect(stderr).toBe('');
+        expect(requests).toHaveLength(0);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

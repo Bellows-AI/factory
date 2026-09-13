@@ -18,7 +18,7 @@
         "dev:web": "npm run dev -w web",
         "driver": "npm run dev -w driver",
         "start": "node --env-file-if-exists=.env server/dist/index.js",
-        "test": "vitest run",
+        "test": "npm run build -w core && vitest run",
         "test:db": "vitest run --config vitest.db.config.ts",
         "test:jobs": "bash scripts/test-jobs.sh",
         "test:k8s": "bash scripts/test-k8s.sh",

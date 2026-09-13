@@ -69,7 +69,7 @@ npm start              # node server/dist/index.js (requires build)
 # database — so JOB_BOARD_URL is all it needs to find.
 npm run driver
 
-npm test               # vitest run — offline, no token, no quota, no database, no docker
+npm test               # builds core (server/web tests import @factory-ai/core via core/dist), then vitest run — offline, no token, no quota, no database, no docker
 npm run typecheck      # tsc -b across all four project references
 
 # Real browser (chromium, headless). Builds, SEEDS factory_e2e, serves the SPA from the API on

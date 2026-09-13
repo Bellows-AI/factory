@@ -77,12 +77,20 @@ describe('the container scripts', () => {
 
     it.each(FILES)('%s parses', (name, runtime) => {
         const path = pathOf(name);
-        expect(readFileSync(path, 'utf8').trim().length).toBeGreaterThan(0);
+        const literal = readFileSync(path, 'utf8');
+        expect(literal.trim().length).toBeGreaterThan(0);
         if (runtime === 'node') {
             // --check parses only; it executes nothing, so a script here is safe to compile-check.
             execFileSync('node', ['--check', path], { stdio: 'ignore' });
         } else {
-            execFileSync('sh', ['-n', path], { stdio: 'ignore' });
+            // Parsed the way the container consumes it: the scripts are passed by CONTENT
+            // (`sh -c`), so the check runs the literal, never a file's path. The one exception is
+            // the credential helper, whose content IS the value of `credential.helper=`: the
+            // leading `!` is git's shell-command marker — git strips it and runs the REST through
+            // `sh` — so a parse that checked the whole byte string would fail against text the
+            // shell never sees. dash rejects its bare `!`; the gate's ash happens to tolerate it.
+            const shellText = literal.startsWith('!') ? literal.slice(1) : literal;
+            execFileSync('sh', ['-n'], { input: shellText, stdio: ['pipe', 'ignore', 'ignore'] });
         }
     });
 
