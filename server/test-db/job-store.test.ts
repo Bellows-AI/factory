@@ -813,6 +813,24 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(await reclaimRows(id)).toHaveLength(0);
         });
 
+        // A stopped member is terminal for exactly the same machinery: done closes the thread and
+        // frees the tree, with no special case for the user's own verdict.
+        it('queues a reclaim for a thread whose member the user stopped', async () => {
+            const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null });
+            const followUp = await store.createFollowUp(root, 'first adjustment', null);
+            const claim = await store.claim('w1', 300);
+            expect(claim?.id).toBe(followUp.id);
+            await store.session(followUp.id, claim!.leaseToken, SESSION, null);
+            await store.stop(followUp.id);
+            expect(await store.suspend(followUp.id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
+
+            await store.markDone(followUp.id);
+
+            const rows = await reclaimRows(root);
+            expect(rows).toHaveLength(1);
+            expect(rows[0]).toMatchObject({ repo: 'acme/web' });
+        });
+
         it('keeps the tree when a follow-up is still queued, and the verdict reclaims it later', async () => {
             const root = await finishWithSession('drive me');
             await store.createFollowUp(root, 'first adjustment', null);
