@@ -82,7 +82,16 @@ describe('the container scripts', () => {
             // --check parses only; it executes nothing, so a script here is safe to compile-check.
             execFileSync('node', ['--check', path], { stdio: 'ignore' });
         } else {
-            execFileSync('sh', ['-n', path], { stdio: 'ignore' });
+            // Git spawns a credential helper whose value begins with `!` as a shell snippet,
+            // stripping the `!` before sh ever sees it — the marker is git's, not the shell's
+            // (and dash, the /bin/sh of the executor images, refuses `!f(){` outright, which is
+            // exactly why the marker must be stripped here). Validate what the shell will
+            // actually parse, not the raw value git is handed.
+            const source = readFileSync(path, 'utf8');
+            execFileSync('sh', ['-n'], {
+                input: source.startsWith('!') ? source.slice(1) : source,
+                stdio: ['pipe', 'ignore', 'ignore'],
+            });
         }
     });
 

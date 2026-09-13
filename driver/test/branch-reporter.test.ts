@@ -97,9 +97,18 @@ const run = (
     args: string[] = ['--once'],
 ): Promise<{ status: number | null; stdout: string; stderr: string }> =>
     new Promise((resolve) => {
+        // The environment this suite runs in can carry a BELLOWS_SESSION_ID of its own — an
+        // operator driving the board from an opencode session has one exported — or an
+        // XDG_DATA_HOME pointing at that session's database, and the reporter prefers a
+        // handed-in id over discovery. A test that does not pass one of these explicitly is
+        // testing discovery (or no-data-dir behavior), so the inherited values are scrubbed,
+        // not leaked in.
+        const childEnv = { ...process.env, ...env };
+        if (env.BELLOWS_SESSION_ID === undefined) delete childEnv.BELLOWS_SESSION_ID;
+        if (env.XDG_DATA_HOME === undefined) delete childEnv.XDG_DATA_HOME;
         const child = spawn(process.execPath, [...NODE_ARGS, script, ...args], {
             cwd: env.WORKDIR ?? process.cwd(),
-            env: { ...process.env, ...env },
+            env: childEnv,
             stdio: ['ignore', 'pipe', 'pipe'],
         });
         let stdout = '';
@@ -381,9 +390,13 @@ describe('the branch reporter', () => {
                 poll();
             });
         try {
+            // This run has no handed-in id on purpose — the first report must come from
+            // DISCOVERY — so the operator environment's BELLOWS_SESSION_ID, if any, is scrubbed
+            // (same reason run() scrubs it below).
+            const { BELLOWS_SESSION_ID: _omit, ...inherited } = process.env;
             const child = spawn(process.execPath, [...NODE_ARGS, OPENCODE_REPORTER], {
                 cwd: dir,
-                env: { ...process.env, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
+                env: { ...inherited, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
             let stderr = '';
