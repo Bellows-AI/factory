@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
-import { useWorkspace } from '../api/useWorkspace.js';
+import { useWorkspace, type WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { RepoPickerDialog } from '../components/RepoPickerDialog.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
 import { WorkspaceReposPanel } from '../panels/WorkspaceReposPanel.js';
 
+/** The executor dialog's state: adding, or editing the row that had this name when it opened. */
+type ExecutorDialogState = { mode: 'add' } | { mode: 'edit'; name: string };
+
 export function WorkspacePage() {
-    const { data, loading, error, saving, save, saveExecutors } = useWorkspace();
+    const { data, loading, error, saving, save, saveExecutors, listExecutorConfigs } = useWorkspace();
     const [picking, setPicking] = useState(false);
-    const [addingExecutor, setAddingExecutor] = useState(false);
+    const [executorDialog, setExecutorDialog] = useState<ExecutorDialogState | null>(null);
+    const [executorList, setExecutorList] = useState<WorkspaceExecutorFull[]>([]);
+    const [executorDialogError, setExecutorDialogError] = useState<string | null>(null);
     /**
      * Dismissal is remembered for this page view only, so "Not now" is not a decision somebody has
      * to undo later. The persistent way back in is the button below and the empty state.
@@ -31,6 +36,29 @@ export function WorkspacePage() {
     const close = () => {
         setPicking(false);
         setDismissed(true);
+    };
+
+    /**
+     * The dialog opens only with the whole list in hand — configs included, one on-demand read —
+     * because its save is a whole-list PUT and an edit cannot pre-fill without the row's config.
+     * The poll never carries configs, so it cannot serve either half.
+     */
+    const openExecutorDialog = async (editing: string | null) => {
+        setExecutorDialogError(null);
+        const result = await listExecutorConfigs();
+        if (!result.ok) {
+            setExecutorDialogError(result.error);
+            return;
+        }
+        if (editing !== null && !result.executors.some((executor) => executor.name === editing)) {
+            // The row vanished between the panel's render and this click — removed in another tab,
+            // most likely. Saving over the fetched list would silently confirm that delete; a
+            // sentence says so instead.
+            setExecutorDialogError(`"${editing}" no longer exists — refresh the page.`);
+            return;
+        }
+        setExecutorList(result.executors);
+        setExecutorDialog(editing === null ? { mode: 'add' } : { mode: 'edit', name: editing });
     };
 
     if (loading && !data) {
@@ -105,7 +133,8 @@ export function WorkspacePage() {
 
             <WorkspaceExecutorsPanel
                 executors={data?.executors ?? []}
-                onAdd={() => setAddingExecutor(true)}
+                onAdd={() => void openExecutorDialog(null)}
+                onEdit={(name) => void openExecutorDialog(name)}
             />
 
             <RepoPickerDialog
@@ -115,9 +144,12 @@ export function WorkspacePage() {
                 onSave={save}
                 saving={saving}
             />
+            {executorDialogError ? <p className="status">{executorDialogError}</p> : null}
             <ExecutorDialog
-                open={addingExecutor}
-                onClose={() => setAddingExecutor(false)}
+                open={executorDialog !== null}
+                existing={executorList}
+                editing={executorDialog?.mode === 'edit' ? executorDialog.name : null}
+                onClose={() => setExecutorDialog(null)}
                 onSave={saveExecutors}
                 saving={saving}
             />
