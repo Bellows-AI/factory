@@ -76,6 +76,7 @@ function servicesVitals(raw: unknown): { name: string; status: 'running' | 'stop
     if (raw === undefined || raw === null) return null;
     if (!Array.isArray(raw)) return 'services must be a list';
     if (raw.length > SERVICES_MAX) return `services must have at most ${SERVICES_MAX} entries`;
+    const seen = new Set<string>();
     for (const entry of raw) {
         if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
             return 'each service must be an object';
@@ -84,6 +85,10 @@ function servicesVitals(raw: unknown): { name: string; status: 'running' | 'stop
         if (typeof name !== 'string' || !SERVICE_NAME.test(name)) {
             return 'service name must be a lowercase dns-label the driver would accept';
         }
+        if (seen.has(name)) {
+            return `service name "${name}" is declared more than once`;
+        }
+        seen.add(name);
         if (typeof status !== 'string' || !SERVICE_STATUSES.has(status)) {
             return `service status must be one of ${[...SERVICE_STATUSES].join(', ')}`;
         }

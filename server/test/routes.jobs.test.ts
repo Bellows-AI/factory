@@ -1125,6 +1125,7 @@ describe('POST /api/jobs/:id/complete', () => {
     it.each([
         ['a non-array services', { ...done, services: 'db' }],
         ['more than ten services', { ...done, services: Array.from({ length: 11 }, () => ({ name: 'svc', status: 'running' })) }],
+        ['a duplicated service name', { ...done, services: [{ name: 'db', status: 'running' }, { name: 'db', status: 'stopped' }] }],
         ['a service without a name', { ...done, services: [{ status: 'running' }] }],
         ['an unsafe service name', { ...done, services: [{ name: 'DB_BOOST', status: 'running' }] }],
         ['a name that is not a string', { ...done, services: [{ name: 7, status: 'running' }] }],
