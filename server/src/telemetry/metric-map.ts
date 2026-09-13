@@ -21,7 +21,6 @@ export type CanonicalField =
     | 'edits_reject'
     | 'active_seconds'
     | 'commits'
-    | 'pull_requests'
     | 'sessions';
 
 interface Rule {
@@ -61,14 +60,12 @@ const RULES: Record<string, Rule> = {
     'claude_code.code_edit_tool.decision': enumerated('decision', EDIT_DECISIONS),
     'claude_code.active_time.total': { field: () => 'active_seconds' },
     'claude_code.commit.count': { field: () => 'commits' },
-    'claude_code.pull_request.count': { field: () => 'pull_requests' },
     'claude_code.session.count': { field: () => 'sessions' },
     'opencode.token.usage': enumerated('type', TOKEN_TYPES),
     'opencode.lines_of_code.count': enumerated('type', LINE_TYPES),
     'opencode.tool.decision': enumerated('decision', EDIT_DECISIONS),
     'opencode.active_time.total': { field: () => 'active_seconds' },
     'opencode.commit.count': { field: () => 'commits' },
-    'opencode.pull_request.count': { field: () => 'pull_requests' },
     'opencode.session.count': { field: () => 'sessions' },
 };
 

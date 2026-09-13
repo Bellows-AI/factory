@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { DEFAULT_BOTS } from '@factory-ai/core';
 import type { TelemetrySource } from './telemetry/client.js';
 
 export interface Repo {
@@ -9,7 +8,8 @@ export interface Repo {
 }
 
 /**
- * "owner/name" — the form stamped onto every stored PR, and the key everything joins on.
+ * "owner/name" — the form every repo identity takes in this system, and the key sessions are
+ * scoped by.
  *
  * Next to the type rather than in `github/`, because `db/` and `routes/` need it too and reaching
  * into the GitHub adapter for a string join would be a layering inversion.
@@ -149,19 +149,6 @@ export interface AppConfig {
      * already exists to avoid one level up.
      */
     readonly github: GitHubConfig;
-    readonly baseBranch: string;
-    readonly bots: readonly string[];
-    /**
-     * The cache slot's TTL.
-     *
-     * There is only one, because history is always persisted now: the ordinary refresh is an
-     * incremental walk of a few pages, so it needs the cheap 60s-per-repo floor rather than the
-     * 300s-per-repo one a full walk demanded. The expensive full walk it may escalate to is not
-     * gated by any TTL — it runs on its own 24h schedule and refuses to start unless the
-     * provider's reported remaining budget actually covers it, which is strictly stronger than
-     * inferring affordability from a clock.
-     */
-    readonly syncTtlMs: number;
     readonly port: number;
     readonly host: string;
     readonly webRoot: string | null;
@@ -189,23 +176,12 @@ export interface AppConfig {
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
-// hot loop — unlike the sync floor below, which is rationing a rate-limit budget.
+// hot loop.
 const MIN_TELEMETRY_TTL_SECONDS = 5;
 
 /**
- * An incremental sync is ~2-5 pages, so ~5-10 points: 60s per repo costs ~600 points/hour/repo,
- * about 12% of the 5000 budget, for a dashboard that is never more than a minute stale. The
- * expensive full walk is not gated by this at all — see FULL_RESYNC_INTERVAL_MS.
- *
- * Exported, and applied by the stats service rather than here, because the repo count is no longer
- * known at boot: the installation reports it. `loadConfig` can still floor SYNC_TTL_SECONDS at one
- * repo's worth, which is all it can honestly check.
- */
-export const MIN_SYNC_TTL_SECONDS_PER_REPO = 60;
-
-/**
  * A database whose name ends here is disposable — the db suite truncates it, and `npm run seed`
- * fills it with synthetic pull requests. Either would destroy or counterfeit real history.
+ * fills it with synthetic agent sessions. Either would destroy or counterfeit real history.
  */
 const DISPOSABLE_DATABASE = /_(test|seed|synthetic|demo|e2e)$/;
 
@@ -485,7 +461,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     }
 
     /*
-     * The three keys the GitHub App replaced.
+     * The keys the GitHub App replaced, and the keys the pull-request statistics pipeline used.
      *
      * Fatal rather than ignored, like GITHUB_REPOS and CACHE_TTL_SECONDS before them and for the
      * same reason: each one used to decide what the page was made of, so an ignored one boots a
@@ -508,6 +484,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
             'GITHUB_OWNER is no longer supported: the installation reports each repository with its own owner, so there is no default owner for a bare name to take. Remove the line. Use ORG_NAME to change what the page calls this organization.',
         );
     }
+    if (env.SYNC_TTL_SECONDS) {
+        throw new Error(
+            'SYNC_TTL_SECONDS is no longer supported: the pull-request sync it throttled is gone, and the only cache floor left is TELEMETRY_TTL_SECONDS. Remove the line; rename to TELEMETRY_TTL_SECONDS if you meant the telemetry slot.',
+        );
+    }
+    if (env.BASE_BRANCH) {
+        throw new Error(
+            'BASE_BRANCH is no longer supported: it parameterised the pull-request statistics, which are removed. Remove the line.',
+        );
+    }
+    if (env.BOTS) {
+        throw new Error(
+            'BOTS is no longer supported: it classified pull-request authors, which are removed. Remove the line.',
+        );
+    }
 
     const orgId = env.ORG_ID?.trim() || DEFAULT_ORG_ID;
     if (!ORG_ID_PATTERN.test(orgId) || orgId.startsWith(RESERVED_ORG_PREFIX)) {
@@ -523,13 +514,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
 
     const workspaceRoot = workspaceRootOf(env);
 
-    // CACHE_TTL_SECONDS floored the slot at 300s per repo because every refresh was a full walk.
-    // With history always persisted, the ordinary refresh is incremental and SYNC_TTL_SECONDS is
-    // the only floor there is. Fatal rather than ignored: a deployment that had raised it to
-    // protect its quota would otherwise silently drop to a 60s floor.
+    // CACHE_TTL_SECONDS used to floor the PR slot at 300s per repo, then SYNC_TTL_SECONDS at
+    // 60s; both slots are gone with the pipeline they throttled. Fatal rather than ignored: a
+    // deployment that had raised one to protect its quota would otherwise silently drop to the
+    // 5s telemetry floor.
     if (env.CACHE_TTL_SECONDS) {
         throw new Error(
-            'CACHE_TTL_SECONDS is no longer supported: refreshes are incremental now, so SYNC_TTL_SECONDS is the only cache floor. Rename it.',
+            'CACHE_TTL_SECONDS is no longer supported: the pull-request sync it throttled is gone. Rename it to TELEMETRY_TTL_SECONDS if you meant the telemetry slot.',
         );
     }
 
@@ -543,16 +534,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const telemetryTtlSeconds = int(env.TELEMETRY_TTL_SECONDS, 30, 'TELEMETRY_TTL_SECONDS');
     if (telemetryTtlSeconds < MIN_TELEMETRY_TTL_SECONDS) {
         throw new Error(`TELEMETRY_TTL_SECONDS must be at least ${MIN_TELEMETRY_TTL_SECONDS}`);
-    }
-
-    // Floored at one repo's worth, which is all this validator can honestly check: the repo count
-    // comes from the installation and is not known until something has asked GitHub. The stats
-    // service raises the effective TTL once it does know — see `effectiveSyncTtlMs`.
-    const syncTtlSeconds = int(env.SYNC_TTL_SECONDS, MIN_SYNC_TTL_SECONDS_PER_REPO, 'SYNC_TTL_SECONDS');
-    if (syncTtlSeconds < MIN_SYNC_TTL_SECONDS_PER_REPO) {
-        throw new Error(
-            `SYNC_TTL_SECONDS must be at least ${MIN_SYNC_TTL_SECONDS_PER_REPO}; an incremental sync still costs a few rate-limit points per repo`,
-        );
     }
 
     const databaseUrl = env.DATABASE_URL;
@@ -570,8 +551,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
      *
      * Every process that reaches the environment fetches — the App is the only configuration
      * there is — so the pairing below is simply refused. A disposable database is one that
-     * `npm run test:db` truncates and `npm run seed` fills with invented pull requests; pointing
-     * a fetching process at one means real history is either destroyed on the next test run or
+     * `npm run test:db` truncates and `npm run seed` fills with invented sessions; pointing a
+     * fetching process at one means real history is either destroyed on the next test run or
      * interleaved with synthetic rows that no later query can tell apart. The offline tooling is
      * exempt by construction, because it never reaches here: its config carries the code-only
      * `none` arm, which is what "this process does not fetch" means now.
@@ -579,15 +560,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const name = databaseName(databaseUrl) ?? '';
     if (github.mode === 'app' && DISPOSABLE_DATABASE.test(name)) {
         throw new Error(
-            `DATABASE_URL points at "${name}", which is disposable: the db suite truncates it and \`npm run seed\` writes synthetic pull requests into it. Refusing to persist real fetched history there. Use a database without a _test/_seed/_synthetic/_demo/_e2e suffix.`,
+            `DATABASE_URL points at "${name}", which is disposable: the db suite truncates it and \`npm run seed\` writes synthetic sessions into it. Refusing to persist real fetched history there. Use a database without a _test/_seed/_synthetic/_demo/_e2e suffix.`,
         );
     }
-
-    const bots = env.BOTS
-        ? env.BOTS.split(',')
-              .map((b) => b.trim())
-              .filter(Boolean)
-        : DEFAULT_BOTS;
 
     // Bound before the return because loadAuth reads both: whether a deployment is reachable from
     // off the machine is what decides if running without auth is allowed at all.
@@ -598,9 +573,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         orgId,
         orgName,
         github,
-        baseBranch: env.BASE_BRANCH ?? 'dev',
-        bots: Object.freeze(bots),
-        syncTtlMs: syncTtlSeconds * 1000,
         port,
         host,
         webRoot: env.WEB_ROOT ?? null,
