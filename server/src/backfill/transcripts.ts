@@ -8,9 +8,8 @@ import type { Sql } from 'postgres';
  * Imports history from Claude Code session transcripts.
  *
  * Transcripts (`~/.claude/projects/<slug>/<uuid>.jsonl`) carry more than the OTEL export:
- * `gitBranch` on every record, and a `pr-link` record naming an actual PR number. So this is
- * both a way to get history before the collector existed, and a better join key than branch
- * matching — no reuse ambiguity, no time-window heuristic.
+ * `gitBranch` on every record, and token usage per assistant message. So this is a way to get
+ * history from before the collector existed.
  *
  * What transcripts do NOT have: edit accept/reject decisions and active time. Those are
  * OTEL-only, which is why `session_source` prefers 'otel' when both cover a session.
@@ -27,8 +26,6 @@ interface Record_ {
     timestamp?: string;
     cwd?: string;
     gitBranch?: string;
-    prNumber?: number;
-    prRepository?: string;
     message?: {
         usage?: {
             input_tokens?: number;
@@ -52,7 +49,6 @@ export interface BackfillSummary {
     sessions: number;
     datapoints: number;
     branchSpans: number;
-    prLinks: number;
     unresolvedCwds: string[];
 }
 
@@ -128,7 +124,6 @@ export async function backfillTranscripts(
     // Keyed by session+repo+branch so a session that checks out three branches yields three
     // spans, exactly as the live hook would report them.
     const spans = new Map<string, BranchSpan>();
-    const links = new Map<string, { repo: string; prNumber: number; at: string; sessionId: string }>();
     const sessions = new Set<string>();
     const slugCache = new Map<string, string | null>();
     const unresolved = new Set<string>();
@@ -153,20 +148,6 @@ export async function backfillTranscripts(
 
             const sessionId = record.sessionId;
             if (!sessionId) continue;
-
-            if (record.type === 'pr-link' && record.prNumber && record.prRepository && record.timestamp) {
-                const key = `${sessionId}\u0000${record.prRepository}\u0000${record.prNumber}`;
-                const existing = links.get(key);
-                if (!existing || record.timestamp < existing.at) {
-                    links.set(key, {
-                        sessionId,
-                        repo: record.prRepository,
-                        prNumber: record.prNumber,
-                        at: record.timestamp,
-                    });
-                }
-                continue;
-            }
 
             const at = record.timestamp;
             if (!at) continue;
@@ -244,20 +225,11 @@ export async function backfillTranscripts(
         `;
     }
 
-    for (const link of links.values()) {
-        await sql`
-            insert into session_pr (org_id, agent, session_id, repo, pr_number, first_seen)
-            values (${orgId}, 'claude-code', ${link.sessionId}, ${link.repo}, ${link.prNumber}, ${new Date(link.at)})
-            on conflict (org_id, agent, session_id, repo, pr_number) do nothing
-        `;
-    }
-
     return {
         files: files.length,
         sessions: sessions.size,
         datapoints: points.length,
         branchSpans: spans.size,
-        prLinks: links.size,
         unresolvedCwds: [...unresolved].sort(),
     };
 }
