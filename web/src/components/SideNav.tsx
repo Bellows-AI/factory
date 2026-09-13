@@ -55,6 +55,8 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
     // The task's own state, not the run's: `taskStatus` resolves the newest member of the chain,
     // and the dot wears the state that state paints — a live run blinks, a parked or queued one
     // holds grey, a failed/dead one is red, and anything finished or declared done is solid green.
+    // A stopped task stays on the plain dot: the user ended that turn themselves, and neither a
+    // failure's red nor a done task's green would say that.
     const dotClass = (id: string): string => {
         const status = taskStatus(id, tasks);
         if (status.doneAt !== null || status.status === 'succeeded') return 'sidenav-dot-done';

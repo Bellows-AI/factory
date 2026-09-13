@@ -20,7 +20,8 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
                                         env} | 204
   every request carries `authorization: Bearer $JOB_BOARD_TOKEN`, when the board requires one
   resumeSessionId ? restore that session : mint one, POST /api/jobs/:id/session
-  followUp ? deliver the command into the restored session : a park resume delivers nothing
+  followUp ? deliver the command into the restored session — every resumed claim is a
+  follow-up now; there is no park resume
   spawn the runner with the command, as that session
   (claude-code mints and reports a session uuid; opencode reports the id it used, scraped at close — see below)
   POST /api/jobs/:id/heartbeat {leaseToken}     every leaseSeconds/3, while it runs
@@ -32,16 +33,19 @@ POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
   -> 200 {id, status, threadDone}   the verdict, plus whether EVERY job of the thread is
                                     terminal AND the user has closed it — the worktree-reclaim
                                     signal (see below)
-  ... or, if the runner went quiet:
-POST /api/jobs/:id/suspend  {leaseToken}        -> standby, session kept
-POST /api/jobs/:id/resume   {}                  -> queued, claimed again with resumeSessionId
+  ... or, if the runner went quiet, or the user asked to stop:
+POST /api/jobs/:id/suspend  {leaseToken}        -> the board lands the park by its stop stamp:
+                                                   'stopped' — the turn ended, session kept for
+                                                   the follow-up — or 'standby', the Remote
+                                                   Control idle park
 ```
 
 **Person-gated routes meet the same loop through the same states.** `POST /api/jobs/:id/stop`
-parks a task — queued or already-parked rows land on `standby` directly, a moving run answers
+ends a task's turn — queued or already-parked rows settle `stopped` directly, a moving run answers
 `202 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the beat above,
-kills its runner and suspends. `POST /api/jobs/:id/remove` deletes the whole thread and hands the
-driver the worktree to remove through a separate queue (see the sections below).
+kills its runner and suspends, which lands `stopped` under the stamp. `POST /api/jobs/:id/remove`
+deletes the whole thread and hands the driver the worktree to remove through a separate queue (see
+the sections below).
 
 **A `409` from heartbeat means the container must be killed.** Its lease expired, the job was
 handed to someone else, and nothing it reports will be accepted. The board cannot stop a worker —
@@ -49,9 +53,10 @@ it can only refuse it — so double execution is prevented by the driver acting 
 the database. This is the single most important line in this file.
 
 The other kill order rode the same beat, and deserved a line of its own: **a `cancelRequested: true`
-beat means the container must be killed AND the run parked.** A user asked for the task, the board
+beat means the container must be killed AND the run settled.** A user asked for the task, the board
 can do nothing but pass the message, and the run dies the same way a 409 does — only afterwards the
-driver `suspend`s the row instead of settling it. There is no separate endpoint and no third state:
+driver `suspend`s the row, and the board reads its own stop stamp to land the park as a terminal
+`stopped`. There is no separate endpoint and no third state:
 `cancel_requested_at` is a timestamp on the moving row that the beat reads.
 
 ## The driver (`driver/`)
@@ -439,7 +444,7 @@ on stdout. Reading it inside the container rather than off the host avoids havin
 volume, and the file is found by a glob over `projects/*/` rather than by rebuilding the CLI's
 directory-slug rule, which would break silently the day that rule changes. `remoteSessionArgs`
 refuses a session id that is not a uuid before interpolating it into that shell command — the id
-arrives from the board on a resume, and a board is not something this process should trust with a
+arrives from the board on a follow-up claim, and a board is not something this process should trust with a
 fragment of shell.
 
 The poll gives up after two minutes. A session with no bridge by then is a Remote Control that did
@@ -447,8 +452,8 @@ not connect, and the run is no less valid for it. That is also why the second re
 remote id and the store `coalesce`s it: the first report of an attempt has none yet and must not
 wipe one a later report stored.
 
-Both ids are cleared on every claim, for the same reason `started_at` resets — except on the claim
-that resumes a parked job, where the session genuinely is the same one. The attempt that died ran a
+Both ids are cleared on every claim, for the same reason `started_at` resets — except on a
+follow-up's claim, where the session genuinely is the same one. The attempt that died ran a
 different session, and showing its link next to this attempt's output points a reader at work that
 was thrown away.
 
@@ -481,25 +486,31 @@ Three things it needs that a headless run does not, all decided in `dockerArgs`:
 Off by default, so that turning a worker slot into a long-lived interactive session is something
 somebody typed.
 
-## Standby: parking a drivable job and picking it up again
+## Standby: the Remote Control idle park
 
 A session waiting for a human should not hold a container for the hours it may take one to arrive.
 So a Remote Control runner that goes quiet is **parked**, not failed:
 
 ```
-running --(RUNNER_IDLE_MS of silence)--> standby --(POST resume)--> queued --(claim)--> running
+running --(RUNNER_IDLE_MS of silence)--> standby --(Stop)--> stopped
 ```
+
+**The board does not re-queue a parked job.** There is no resume: a session parked by idling stays
+parked until somebody ends its turn — Stop settles the row `stopped`, the session is kept, and a
+follow-up continues exactly where things stood — or until it is removed. The session itself is
+still drivable from claude.ai the whole time; the row on the board is the headless record of a
+conversation that moved elsewhere.
 
 **The transcript is what makes this work, and it survives because of a decision made for a different
 reason.** Remote Control mounts the login volume over `CLAUDE_CONFIG_DIR`, and that is also where
 the CLI writes `projects/<path>/<session-id>.jsonl`. So the session outlives its container, and a
-new one resumes it with `--resume <sessionId>` — which keeps the original id, since forking it is a
-separate flag. The link the UI shows does not move when a job is parked.
+later run continues it with `--resume <sessionId>` — which keeps the original id, since forking it
+is a separate flag. The link the UI shows does not move when a job is parked.
 
-The command is delivered **once**. On a resume it is already in the transcript, and sending it again
-would re-run the work somebody has been driving by hand. The follow-up is the one exception, decided
-by the board and not the driver: its command is new, so the claim says `followUp` and it goes into
-the restored transcript — see the section above.
+The command is delivered **once**. It is already in the transcript, and sending it again would
+re-run the work somebody has been driving by hand. The follow-up is the one exception, decided by
+the board and not the driver: its command is new, so the claim says `followUp` and it goes into the
+restored session — see the section above.
 
 **Silence is the idle signal because it is the one the driver already has.** It reads every chunk
 the container writes, so a timer reset on each one costs nothing and keeps this process a client of
@@ -516,21 +527,16 @@ being driven for three hours is the point. Silence is the bound there.
 give-back a job parked three times is `dead`. A run that keeps killing its worker still burns
 attempts normally, because that path never reaches `suspend`.
 
-**`suspend` also expires the lease**, exactly as insert does. Standby is not claimable, so this
-changes nothing while the job is parked — and then it is the difference between the next poll
-picking the job up and it sitting in `queued` until the parked worker's lease finally runs out.
-
-**`resume` takes no lease token.** Nobody holds a parked job, and that is precisely what makes it
-resumable by a request from outside rather than only by the worker that parked it. It answers
-`409 NOT_STANDBY` for a job that exists but is not parked, which has to read differently from a
-`404`: resuming a finished job is a caller mistake, not a missing row.
+**`suspend` also expires the lease**, exactly as insert does it. Standby is not claimable, so this
+changes nothing for as long as the job is parked.
 
 ## Follow-ups and done: a task is over when the user says so
 
 A run finishing is not a task finishing. `POST /api/jobs/:id/follow-up {command}` queues
-an adjustment on a **finished** task as a continuation of what it just did, and `POST
-/api/jobs/:id/done` records the user closing the task by hand. Between "the executor stopped
-talking" and "I am satisfied" sit as many rounds of "again, but tighter" as the human wants.
+an adjustment on a **finished** task — `succeeded`, `failed`, `dead`, or the user's own
+`stopped` — as a continuation of what it just did, and `POST /api/jobs/:id/done` records the user
+closing the task by hand. Between "the executor stopped talking" and "I am satisfied" sit as many
+rounds of "again, but tighter" as the human wants.
 Done is also what frees the task worktree: until the user closes the thread, its tree stays on
 the volume whatever the runs' verdicts were (issue #47, revised — see the reclaim section
 below).
@@ -572,17 +578,18 @@ driver died before it could report. Since 016 the session id is whatever the exe
 claude uuid or an opencode `ses_…` — so every executor with a reported session can be followed up. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
 retried click answers the first verdict's instant rather than rewriting it.
 
-**Delivering the command into a restored session is the follow-up's exception to delivered-once, and
-`command_delivered_at` is what keeps it an exception.** A follow-up's command is the NEW adjustment
-and the restored transcript is the conversation it continues, so it goes out even though the claim
-resumes (`followUp: true` → `--resume <id> -p <command>`). But a follow-up that was PARKED has its
-command in the transcript already, and its resume is an ordinary resume delivering nothing. `suspend`
-stamps `command_delivered_at` — parking is the moment "the command sits in a transcript somebody may
-have been driving" becomes true — and the claim returns `followUp` from the pre-update value, so a
-fresh or crashed follow-up delivers and a parked one does not.
+**A follow-up's command is delivered into the restored session — the one exception to
+delivered-once.** The follow-up's command is the NEW adjustment and the restored transcript is the
+conversation it continues, so it goes out even though the claim
+resumes (`followUp: true` → `--resume <id> -p <command>`). `command_delivered_at` is what has kept
+this an exception rather than a rule: `suspend` stamps it — parking is the moment "the command sits
+in a transcript somebody may have been driving" becomes true — and the claim returns `followUp`
+from the pre-update value. Since stop became a verdict, a suspended follow-up is terminal and never
+claimed again, so in practice every claimed follow-up delivers; the column remains the guard that
+keeps the delivered-once rule from being quietly rewritten.
 
 **A crashed follow-up attempt keeps the session through the re-claim, where an ordinary job's is
-cleared.** The claim's keep predicate ("kept when parked", below) extends to rows carrying
+cleared.** The claim's keep predicate (below) extends to rows carrying
 `parent_job_id`: the session holds the whole conversation, not just the dead attempt's work, and
 clearing it would throw the thread away with the attempt. The command re-delivers on that re-claim,
 which is the ordinary retry semantics for a headless run — and unreachable for Remote Control in
@@ -590,23 +597,25 @@ practice, since a drivable job parks on silence before its lease can expire.
 
 ## Stop and remove: winding a task down, and deleting it
 
-Two person-gated actions (session cookie, like `resume`/`done` — a worker token must never move a
-thread the driver does not hold). Both reuse what exists: stopping lands on the standby machinery,
+Two person-gated actions (session cookie, like `follow-up`/`done` — a worker token must never move a
+thread the driver does not hold). Both reuse what exists: stopping lands on the suspend machinery,
 removing lands on the worktree-reclaim machinery.
 
-**Stop parks the task, never destroys it.** `POST /api/jobs/:id/stop` is a person's verdict that
-no more work is wanted *right now* — the row keeps its session and its place in the thread, and a
-`resume` brings it straight back. A queued or already-parked row is parked directly (the answer is
-`{ status: 'standby' }`); a `running` row answers `{ status: 'running', cancelRequestedAt }` and
-the request is delivered by the worker's next heartbeat — the `cancelRequested` flag — exactly the
-way a lost lease is delivered, and by the same kill. The loading of the `running` answer makes a
-stop idempotent: asking twice before the worker parks answers the same instant. A finished or dead
-row answers `409 NOT_STOPPABLE` — there is nothing running to stop, and the task's own verdicts are
-the ones that outlived the run.
+**Stop ends the turn.** `POST /api/jobs/:id/stop` is a person's verdict that this run should stop
+talking: the row settles `stopped` — terminal, its session kept — so the follow-up composer is
+what the member sees next, and the conversation continues from exactly where it was cut. There is
+no resume and no park. A queued row (never started) or an already-parked one settles `stopped`
+directly (the answer is `{ status: 'stopped' }`); a `running` row answers
+`{ status: 'running', cancelRequestedAt }` and the request is delivered by the worker's next
+heartbeat — the `cancelRequested` flag — exactly the way a lost lease is delivered, and by the same
+kill; the `suspend` that honours it lands `stopped` under the stamp. The loading of the `running`
+answer makes a stop idempotent: asking twice before the worker settles answers the same instant. A
+row that already ended answers `409 NOT_STOPPABLE` — there is no turn left to stop, and the task's
+own verdicts are the ones that outlived the run.
 
 **The stop lands when the parking (or the finishing) lands, never when the request does.**
-`cancel_requested_at` is cleared by `suspend` and by `complete` — parking a run IS finishing the
-stop, and a run that finishes under its own power before the driver reads the flag needs no
+`cancel_requested_at` is cleared by `suspend` and by `complete` — parking a run IS the stop
+landing, and a run that finishes under its own power before the driver reads the flag needed no
 parking. The claim does **not** clear it: a driver that dies mid-stop drops its lease, the next
 claimor picks the row up, and the flag tells it the previous worker never parked the task — so it
 kills the attempt it spawned and parks, preserving the user's stop through a crash. That is the
@@ -737,7 +746,7 @@ the startup sync is what makes each run start from the code it is meant to conti
 principle (issue #58): git operations that touch the remote belong to a task's BEGINNING and
 END — the first sync, and the publish — never its middle. So before the runner spawns, one
 container runs the worktree script in one of two modes, decided by the claim: a claim that
-CONTINUES a session — a follow-up, or a parked job resumed — RESTORES (the paragraph after
+CONTINUES a session — a follow-up, the only resumed claim there is — RESTORES (the paragraph after
 this one); every other claim SYNCES.
 
 **A starting claim SYNCES.** One container fetches the remote and then: the task's worktree is
@@ -795,8 +804,8 @@ session. The clone's own working tree is never touched — under the worktree mo
 finally literally true, where the old sync hard-reset the clone's default branch and destroyed
 whatever stray edits sat there.
 
-**A claim that continues a session RESTORES, and never touches the remote.** A follow-up — or a
-parked job resumed — is a task MID-FLIGHT: rebasing its tree onto a freshly fetched main would
+**A claim that continues a session RESTORES, and never touches the remote.** A follow-up
+is a task MID-FLIGHT: rebasing its tree onto a freshly fetched main would
 move the conversation's base underneath it, the "sync with main on task follow up commands"
 that must not happen (issue #58). So its claim's git work is a restore: the script runs with
 `RESTORE=1` and no credential — the env file (docker) and the claim-env Secret (kubernetes) are
@@ -919,9 +928,9 @@ opposite of parking it. As a status it falls outside `job_claimable`'s partial p
 Adding it did cost the constraint rewrite that 006's header warns about; that was cheaper than a
 second predicate on the hot path.
 
-**A claim resumes a session only when the job was parked or is a follow-up.** The claim keeps
-`session_id` when the row's previous status was `queued` or the row carries `parent_job_id`, and
-clears it otherwise, so a lease that expired mid-run starts fresh for an ordinary job. That attempt's
+**A claim resumes a session only when the job is a follow-up.** The claim keeps `session_id` when
+the row carries `parent_job_id`, and clears it otherwise, so a lease that expired mid-run starts
+fresh for an ordinary job. That attempt's
 session is not this one, and replaying its transcript would resume work whose output was thrown away
 — which is why the follow-up is the carved-out exception rather than the rule: its session holds the
 parent conversation, and clearing it would throw the thread away with the attempt.
@@ -964,14 +973,16 @@ claim. "Nothing runs an executor yet" stays true.
 - **No priority, no scheduling.** A dead job is reaped; a queued one is taken in order. Stop and
   remove exist (a person can wind a task down or delete it — see the section above), but a queued
   job's *place* in the queue is not something anybody moves.
-- **No cap on how long a job may sit on standby, and nothing reaps one.** A parked job waits for a
-  `resume` forever. It costs a row rather than a worker slot, which is the whole point of parking it.
+- **No cap on how long a job may sit on standby, and nothing reaps one.** A Remote Control idle
+  park waits for its human, who is driving the session from claude.ai and may take days; Stop ends
+  the turn when they are done with it. It costs a row rather than a worker slot, which is the whole
+  point of parking it.
 - **One auth volume, shared by every concurrent Remote Control runner.** They all write
   `.claude.json` in the same directory. Fine for one drivable job at a time and unexamined beyond
   that; a volume per job would make the login a template to copy rather than a mount.
 - **No per-job authorization.** There is authentication now — see [auth.md](auth.md) — and the two
-  credentials are disjoint: a session cookie queues, follows up, marks done, resumes, stops, removes
-  and reads, a `Bearer fwt_…` worker token claims, heartbeats, streams output, suspends, completes,
+  credentials are disjoint: a session cookie queues, follows up, marks done, stops, removes and
+  reads, a `Bearer fwt_…` worker token claims, heartbeats, streams output, suspends, completes,
   and drains the reclaim queue. A session on `/claim`
   would let any member take work away from the driver running it; a worker token on `POST /api/jobs`
   would produce a job with no author. But **membership is not a sandbox**: every member can queue a
