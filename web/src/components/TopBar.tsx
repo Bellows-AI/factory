@@ -1,5 +1,7 @@
 import type { StatsPayload } from '../api/useStats.js';
+import type { Session } from '../api/useSession.js';
 import { OrgSelector } from './OrgSelector.js';
+import { UserMenu } from './UserMenu.js';
 
 /**
  * Names every repo rather than reporting a count. "3 repositories combined" hides which three,
@@ -19,10 +21,13 @@ export function TopBar({
     data,
     refreshing,
     onRefresh,
+    session,
 }: {
     data: StatsPayload | null;
     refreshing: boolean;
     onRefresh: () => void;
+    /** Null only before the session check lands; the menu waits rather than flashing empty. */
+    session: Session | null;
 }) {
     const meta = data?.meta;
     return (
@@ -60,6 +65,9 @@ export function TopBar({
                 <button type="button" onClick={onRefresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh'}
                 </button>
+                {/* The corner account affordance. Until the session check answers there is nothing
+                    to show — an empty chip would flash on every load. */}
+                {session ? <UserMenu session={session} /> : null}
             </div>
         </header>
     );

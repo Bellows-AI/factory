@@ -81,7 +81,9 @@ function csp(dev: boolean): string {
         "script-src 'self'",
         "style-src 'self'",
         `connect-src ${connect}`,
-        "img-src 'self' data:",
+        // avatars.githubusercontent.com is where GitHub serves the profile pictures the user menu
+        // and settings page render. One pinned host, never a wildcard.
+        "img-src 'self' data: https://avatars.githubusercontent.com",
         "font-src 'self'",
         "base-uri 'none'",
         "form-action 'none'",
