@@ -113,6 +113,13 @@ Its state rides `XDG_DATA_HOME`, like opencode's own: verified in a real run tha
 writes lands inside the `.opencode` directory the driver already designates per member, so nothing
 plugin-shaped enters the checkout's diff or bloats the workspaces volume elsewhere.
 
+The plugin ships no usage guidance of its own, so the steering is baked
+[`AGENTS.md`](opencode-home/AGENTS.md) ("Context discipline"): the search order (`ctx_search` →
+`grep` → `read`), the bound on shell-search output, and the `ctx_batch_execute` caps (~20KB
+offload threshold, `queries` ≤ 3, no whole-file `cat`s). Without it a run defaults to bash-grepping
+the whole tree and re-reading files into the session, which is what compacts a long run five times
+(measured on job `103fe359`: ~11 minutes of no-cache re-reads in a two-hour task).
+
 ## Session ids
 
 opencode mints its own session ids (`ses_…`) and stores them in a sqlite database under its data

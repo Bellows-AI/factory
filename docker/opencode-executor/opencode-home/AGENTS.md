@@ -62,6 +62,25 @@ state what you changed, what you verified, and anything you could not do.
 - Both start unauthenticated; they read credentials from the environment or config the caller
   provides. If a credential is missing, say so instead of working around it.
 
+## Context discipline
+
+The `context-mode` plugin's `ctx_*` tools are available, and long runs die of context bloat before
+anything else: an overgrown session triggers compaction, and every compaction re-reads the whole
+history with no cache — minutes per cycle, once the session has grown.
+
+- **Search order for codebase questions: `ctx_search` → `grep` → `read`.** An open-ended "where
+  does X live / how does Y work" question goes to `ctx_search` first — it returns the matching
+  sections without pulling whole files in. Keep `grep` for an exact symbol or string — it is
+  cheaper and never stale. `read` is for a file you are about to edit — not for open-ended
+  investigation, and never re-read a file you have not changed.
+- **Bound what a shell search can print.** A bare `grep -rn` over the whole tree puts its full
+  output into the session; when you shell out, narrow it (`--include`, a path prefix, `| head`).
+- **`ctx_batch_execute` is an offload valve, not a default.** Reach for it only when raw output
+  would exceed ~20KB, cap `queries` at 3, and grep narrowly rather than `cat` — it repeats every
+  matched section once per query, so `cat`-ing whole files multiplies them by the query count.
+- **Trim what you print.** Summarize test and gate output (the summary lines, the failing files,
+  `tail`) rather than pasting a full suite run into the session.
+
 ## Verification gates
 
 The repository may declare CI-style checks in `.bellows.yaml` — named commands (`test`, `lint`,
