@@ -266,6 +266,38 @@ export const workspaceRoutes =
             return reply.code(202).send({ repos: selection });
         });
 
+        // The edit dialog's opening read: the member's own rows, config included. The poll on
+        // GET /api/workspace never carries configs — they may hold credentials and that payload is
+        // fetched every few seconds — so this on-demand read is the one place a client gets them
+        // back, once per dialog open rather than on a poll.
+        app.get('/api/workspace/executors', async (request, reply) => {
+            const caller = callerOf(request);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!root) {
+                return bad(reply, 'WORKSPACE_DISABLED', 'This deployment has no workspace root configured', 409);
+            }
+            if (!executors) {
+                return reply.code(503).send({
+                    error: 'No executor store is configured for this deployment',
+                    code: 'UNAVAILABLE',
+                });
+            }
+
+            const loaded = await guard(reply, (e) => request.log.error({ err: e }), () =>
+                executors.listWithConfigs(caller.user.id),
+            );
+            if (!loaded.ok) return reply;
+
+            return reply.code(200).send({
+                executors: loaded.value.map((row) => ({
+                    name: row.name,
+                    type: row.type,
+                    createdAt: row.createdAt,
+                    config: row.config,
+                })),
+            });
+        });
+
         // PUT, whole-list replace — the same idiom as the repos route above. The body is the entire
         // list, so replaying it after a dropped connection changes nothing.
         app.put('/api/workspace/executors', { bodyLimit: BODY_LIMIT }, async (request, reply) => {

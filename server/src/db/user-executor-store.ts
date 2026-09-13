@@ -25,6 +25,13 @@ export interface UserExecutorStore {
     replace(userId: string, executors: readonly { name: string; type: string; config: Record<string, unknown> }[]): Promise<void>;
     list(userId: string): Promise<UserExecutor[]>;
     /**
+     * The whole list WITH its pasted configs — the on-demand read the workspace's edit dialog
+     * opens with. `list()` deliberately never selects `config` because it feeds a two-second poll;
+     * this is the member asking for their own rows back so an executor can be edited, and it is
+     * fetched once per dialog open, never polled.
+     */
+    listWithConfigs(userId: string): Promise<(UserExecutor & { config: Record<string, unknown> })[]>;
+    /**
      * The one executor row a task label names, WITH its pasted config — the claim-time read the
      * job store makes to hand a runner the member's own executor configuration
      * (`OPENCODE_CONFIG_CONTENT`). `list()` deliberately never selects `config`, because it feeds
@@ -101,6 +108,17 @@ export function createUserExecutorStore({
                 order by created_at asc, name asc
             `;
             return rows.map(toUserExecutor);
+        },
+
+        async listWithConfigs(userId) {
+            await gate();
+            const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
+                select name, type, created_at, updated_at, config
+                from user_executor
+                where org_id = ${orgId} and user_id = ${userId}
+                order by created_at asc, name asc
+            `;
+            return rows.map((row) => ({ ...toUserExecutor(row), config: row.config }));
         },
 
         async configFor(userId, name, exec = sql) {

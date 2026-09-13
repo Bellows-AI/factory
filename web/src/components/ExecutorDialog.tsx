@@ -1,40 +1,52 @@
 import { useEffect, useRef, useState } from 'react';
 import { EXECUTOR_TYPES, type ExecutorType } from '@factory-ai/core';
-import { validateExecutorConfig } from '../workspace/executors.js';
+import { mergeExecutors, validateExecutorConfig, type ExecutorRow } from '../workspace/executors.js';
 
 /**
- * Add an executor.
+ * Add an executor, or edit an existing one.
  *
  * The same native-`<dialog>` bargain RepoPickerDialog makes: `showModal()` buys the top layer,
  * focus trapping, `::backdrop` and Escape without a hand-rolled trap; no `<form>` submits because
  * CSP sends `form-action 'none'`. The one difference in body is a textarea for the pasted JSON,
  * re-validated on every keystroke by the pure validator — cheap, and the message under the field is
  * what makes raw JSON pasteable at all.
+ *
+ * The dialog receives the whole list as it opened — configs included, fetched on demand — because
+ * the PUT is a whole-list replace: add appends to it, edit folds the changed row back in
+ * (`mergeExecutors`), and the untouched rows travel through unchanged.
  */
 
 export interface ExecutorDialogProps {
     open: boolean;
+    /** The whole executor list as the dialog opened it, configs included. */
+    existing: readonly ExecutorRow[];
+    /** The name of the row being edited, matched as it was when the dialog opened; null to add. */
+    editing: string | null;
     onClose: () => void;
     onSave: (executors: { name: string; type: string; config: object }[]) => Promise<string | null>;
     saving: boolean;
 }
 
-export function ExecutorDialog({ open, onClose, onSave, saving }: ExecutorDialogProps) {
+export function ExecutorDialog({ open, existing, editing, onClose, onSave, saving }: ExecutorDialogProps) {
     const ref = useRef<HTMLDialogElement | null>(null);
     const [type, setType] = useState<ExecutorType>(EXECUTOR_TYPES[0]);
     const [name, setName] = useState('');
     const [config, setConfig] = useState('');
     const [failure, setFailure] = useState<string | null>(null);
 
-    // Fresh fields every time it opens; a stale paste from the last attempt is worse than blank.
+    // Add opens blank; edit opens pre-filled from the row it is editing. Re-keyed off `editing`
+    // too, so switching rows without closing still lands on the right one.
     useEffect(() => {
         if (open) {
-            setType(EXECUTOR_TYPES[0]);
-            setName('');
-            setConfig('');
+            const row = editing === null ? undefined : existing.find((executor) => executor.name === editing);
+            setType(row ? (row.type as ExecutorType) : EXECUTOR_TYPES[0]);
+            setName(row?.name ?? '');
+            setConfig(row ? JSON.stringify(row.config, null, 2) : '');
             setFailure(null);
         }
-    }, [open]);
+        // `existing` is deliberately not a dependency: it is captured at open time and stays put
+        // while the dialog is up, and re-seeding the fields mid-edit would discard typing.
+    }, [open, editing]);
 
     useEffect(() => {
         const dialog = ref.current;
@@ -60,14 +72,19 @@ export function ExecutorDialog({ open, onClose, onSave, saving }: ExecutorDialog
             setFailure(validation.error);
             return;
         }
-        const message = await onSave([validation.value]);
+        const merged = mergeExecutors(existing, editing, validation.value);
+        if (!merged.ok) {
+            setFailure(merged.error);
+            return;
+        }
+        const message = await onSave(merged.value);
         setFailure(message);
         if (!message) onClose();
     };
 
     return (
         <dialog className="picker" ref={ref} aria-labelledby="executor-title">
-            <h2 id="executor-title">Add executor</h2>
+            <h2 id="executor-title">{editing ? 'Edit executor' : 'Add executor'}</h2>
             <p className="muted">
                 An executor is what runs your agents' work. Paste its configuration as raw JSON.
             </p>
@@ -119,7 +136,7 @@ export function ExecutorDialog({ open, onClose, onSave, saving }: ExecutorDialog
                     onClick={() => void save()}
                     disabled={saving || !validation.ok}
                 >
-                    {saving ? 'Saving…' : 'Add'}
+                    {saving ? 'Saving…' : editing ? 'Save' : 'Add'}
                 </button>
             </div>
         </dialog>

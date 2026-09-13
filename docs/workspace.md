@@ -175,15 +175,25 @@ come and go with a PUT).
   deleted after the task was queued, or free text — runs exactly as an unlabelled job, on the
   image default. Which image and CLI a run uses is still the driver operator's `RUNNER_CLI`, not
   this list: a member's row configures the CLI already chosen for the deployment.
-- **The dialog is add-only, and validation is structural.** The contract is "raw JSON the member
+- **The dialog edits as well as adds, and validation is structural.** Each row carries an Edit
+  action that reopens the dialog pre-filled with the row's type, name and config; a rename saves
+  under the new name and is matched against the old one. The contract is still "raw JSON the member
   pastes"; the server checks it is an object with a known type, unique path-segment-safe names, at
   most 10 per member, and the `user_executor` check constraint restates the type list at the row.
   Field-level rules wait until a consumer exists that can be wrong about them — the opencode
   consumer reads `model`, `small_model` and `provider` only by opencode's own merge semantics, not
   by schema.
-- **`config` is never echoed by the poll.** It may hold credentials the member pasted, and
-  `GET /api/workspace` can run every two seconds. The row's `name`, `type` and `createdAt` travel;
-  the JSON stays in the table (the claim-time `configFor` read is the one read that selects it).
+- **`config` is never echoed by the poll — one on-demand read excepted.** It may hold credentials
+  the member pasted, and `GET /api/workspace` can run every two seconds. The row's `name`, `type`
+  and `createdAt` travel; the JSON stays in the table (the claim-time `configFor` read is the one
+  read that selects it) — except for `GET /api/workspace/executors`, which answers WITH the configs
+  because the edit dialog cannot pre-fill without them. It is fetched once per dialog open, never
+  on a tick, which is what keeps the credentials out of the poll without making an executor
+  uneditable.
+- **A rename leaves the stamped tasks alone, on purpose.** `job.executor` was an audit stamp at
+  queue time; historical tasks keep showing the old name, and a follow-up continues on the
+  executor that ran it (copied at insert, not looked up again). A task queued against a name that
+  no longer matches a row — renamed or deleted — runs as an unlabelled job on the image default.
 - **The whole list is a PUT.** Same argument as the repos selection: the body is the entire list,
   so a retried request after a dropped connection changes nothing.
 

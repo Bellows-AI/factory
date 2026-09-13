@@ -27,6 +27,14 @@ export interface WorkspaceExecutor {
     /** Deliberately absent from the payload: it may hold credentials, and this is polled. */
 }
 
+/**
+ * The same row as the poll returns, with the config back — the shape of the on-demand read the
+ * executor dialog opens with, never of the poll.
+ */
+export interface WorkspaceExecutorFull extends WorkspaceExecutor {
+    config: object;
+}
+
 export interface WorkspacePayload {
     /** Null when this deployment has no workspace root, which is a supported way to run. */
     root: string | null;
@@ -45,6 +53,12 @@ export interface UseWorkspace {
     saveExecutors: (
         executors: { name: string; type: string; config: object }[],
     ) => Promise<string | null>;
+    /**
+     * The whole executor list with configs — the read the dialog opens with. Never part of the
+     * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
+     * open instead.
+     */
+    listExecutorConfigs: () => Promise<{ ok: true; executors: WorkspaceExecutorFull[] } | { ok: false; error: string }>;
     refresh: () => void;
 }
 
@@ -178,7 +192,9 @@ export function useWorkspace(): UseWorkspace {
         [start],
     );
 
-    /** The executor PUT is not asynchronous — nothing clones — so no re-arm timing is needed. */
+    /**
+     * The executor PUT is not asynchronous — nothing clones — so no re-arm timing is needed.
+     */
     const saveExecutors = useCallback(
         async (executors: { name: string; type: string; config: object }[]): Promise<string | null> => {
             setSaving(true);
@@ -207,5 +223,26 @@ export function useWorkspace(): UseWorkspace {
         [start],
     );
 
-    return { data, loading, error, saving, save, saveExecutors, refresh: start };
+    const listExecutorConfigs = useCallback(async () => {
+        try {
+            const response = await fetch('/api/workspace/executors');
+            if (response.status === 401) {
+                reportUnauthenticated();
+                return { ok: false as const, error: 'Your session expired' };
+            }
+            if (!response.ok) {
+                const body = (await response.json().catch(() => ({}))) as { error?: string };
+                return {
+                    ok: false as const,
+                    error: body.error ?? `Could not load the executors (${response.status})`,
+                };
+            }
+            const body = (await response.json()) as { executors: WorkspaceExecutorFull[] };
+            return { ok: true as const, executors: body.executors };
+        } catch (e) {
+            return { ok: false as const, error: (e as Error).message };
+        }
+    }, []);
+
+    return { data, loading, error, saving, save, saveExecutors, listExecutorConfigs, refresh: start };
 }

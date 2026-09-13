@@ -394,4 +394,60 @@ describe('executors', () => {
         });
         expect(response.statusCode).toBe(401);
     });
+
+    it('reads the whole list back with configs, for the edit dialog', async () => {
+        // The on-demand read the dialog opens with: the member's own rows, config included — the
+        // poll never carries it, but an edit cannot pre-fill without it.
+        const { app, cookie } = await boot();
+        await putExecutors(app, cookie, [CLAUDE_CODE]);
+
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().executors).toEqual([
+            expect.objectContaining({ name: 'main', type: 'claude-code', config: { model: 'sonnet' } }),
+        ]);
+    });
+
+    it('keeps members apart on the config read too', async () => {
+        // The one route that hands back pasted credentials: a scoping regression here would leak
+        // one member's config into another member's edit dialog.
+        const auth = memoryAuthStore();
+        const a = auth.seedMember('test-org', 'octocat');
+        const b = auth.seedMember('test-org', 'scallop');
+        const executors = memoryUserExecutorStore();
+        const h = await harness({
+            auth,
+            userRepos: store,
+            userExecutors: executors,
+            repos: REPOS,
+            config: { workspaceRoot: root, auth: githubAuth() },
+        });
+        app = h.app;
+        const cookieA = await signedIn(auth, a);
+        const cookieB = await signedIn(auth, b);
+
+        await putExecutors(h.app, cookieA, [CLAUDE_CODE]);
+        const response = await h.app.inject({
+            method: 'GET',
+            url: '/api/workspace/executors',
+            headers: { cookie: cookieB },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().executors).toEqual([]);
+    });
+
+    it('answers 409 rather than reading rows when workspaces are switched off', async () => {
+        const { app, cookie } = await boot({ withRoot: false });
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('WORKSPACE_DISABLED');
+    });
+
+    it('needs a session for the config read', async () => {
+        const { app } = await boot();
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors' });
+        expect(response.statusCode).toBe(401);
+    });
 });

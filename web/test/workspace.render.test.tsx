@@ -59,7 +59,7 @@ describe('the workspace panel', () => {
 describe('the executors panel', () => {
     it('says "No executors configured" when the list is empty', () => {
         const html = renderToStaticMarkup(
-            <WorkspaceExecutorsPanel executors={[]} onAdd={() => {}} />,
+            <WorkspaceExecutorsPanel executors={[]} onAdd={() => {}} onEdit={() => {}} />,
         );
         expect(html).toContain('No executors configured');
         expect(html).toContain('Add executor');
@@ -70,12 +70,27 @@ describe('the executors panel', () => {
             <WorkspaceExecutorsPanel
                 executors={[{ name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' }]}
                 onAdd={() => {}}
+                onEdit={() => {}}
             />,
         );
         expect(html).toContain('main');
         expect(html).toContain('claude-code');
         expect(html).not.toContain('No executors configured');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('renders an Edit action per executor row', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel
+                executors={[
+                    { name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' },
+                    { name: 'oc', type: 'opencode', createdAt: '2026-09-02T00:00:00.000Z' },
+                ]}
+                onAdd={() => {}}
+                onEdit={() => {}}
+            />,
+        );
+        expect(html.match(/>Edit</g)?.length).toBe(2);
     });
 });
 
