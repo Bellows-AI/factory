@@ -332,7 +332,9 @@ echo '# driver'
 start_driver() { # start_driver <image> [RUNNER_CLI] [RUNNER_SERVICES]
     # No ORG_ID. The board sends `workspacePath` on the claim now — it owns the layout, because it
     # is the thing that created the directory — so the driver builds no path of its own.
-    env JOB_BOARD_URL="$BASE" EXECUTOR_IMAGE="$1" RUNNER_CLI="${2:-claude-code}" RUNNER_SERVICES="${3:-}" \
+    # RUNNER_SERVICES defaults to on now; every phase but the services one passes 0 explicitly, so
+    # what each phase asserts stays independent of the default.
+    env JOB_BOARD_URL="$BASE" EXECUTOR_IMAGE="$1" RUNNER_CLI="${2:-claude-code}" RUNNER_SERVICES="${3:-0}" \
         WORKSPACE_VOLUME="$VOLUME" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &

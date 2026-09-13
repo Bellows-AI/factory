@@ -121,9 +121,10 @@ driver:
     # instead — which also covers an operator that ships its own and disables `collector.enabled`.
     runnerOtelEndpoint: ''
     # RUNNER_SERVICES: start the auxiliary services a checkout's .bellows.yaml declares — a pod
-    # per service with a headless Service as its DNS name, alive for exactly the run. Off until
-    # somebody turns it on. Read docs/jobs.md first.
-    services: '0'
+    # per service with a headless Service as its DNS name, alive for exactly the run. On by
+    # default; '0' opts out for an operator who wants nothing started that no file asked for.
+    # Read docs/jobs.md first.
+    services: '1'
     resources: {}
 
 # The in-chart OTLP collector, receiving from the runner pods and forwarding to the dashboard

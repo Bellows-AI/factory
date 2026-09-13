@@ -631,7 +631,12 @@ describe('an opencode runner', () => {
      * whose scrape never lands carries WHY on the outcome, because a lost session presents later
      * as "this task cannot take a follow-up" and the reason is the only way to tell a broken
      * query from an empty database.
+     *
+     * RUNNER_SERVICES=0 throughout: the stub routes every `--entrypoint` run to one branch, and
+     * these tests are about the SESSION readout, not the bellows one.
      */
+    const ocServicesOff = { RUNNER_CLI: 'opencode', RUNNER_SERVICES: '0' } as const;
+
     it('retries a readout that answers nothing, and takes the session when a later try answers', async () => {
         let calls = 0;
         const exec = vitest.fn((args: string[]) => {
@@ -642,7 +647,7 @@ describe('an opencode runner', () => {
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            loadDriverConfig(ocServicesOff),
             (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
             exec,
         );
@@ -663,7 +668,7 @@ describe('an opencode runner', () => {
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            loadDriverConfig(ocServicesOff),
             (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
             exec,
         );
@@ -680,7 +685,7 @@ describe('an opencode runner', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            loadDriverConfig(ocServicesOff),
             (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
             exec,
         );
@@ -2593,10 +2598,13 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     });
 
     it('leaves the daemon alone when the switch is off', async () => {
+        // RUNNER_SERVICES=0 explicitly: the default is on (services.test.ts pins that), and this
+        // test is about the opt-out posture.
+        const cfg = loadDriverConfig({ RUNNER_SERVICES: '0' });
         const exec = daemon(READOUT);
         const { fn, seen } = spawnRecording('ran\n', 0);
         const outcome = await createDockerRunner(
-            loadDriverConfig({}),
+            cfg,
             fn,
             exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
         ).run(job, { id: SESSION, resume: false });
@@ -2609,7 +2617,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls.every((a) => !(a[0] === 'network' && a[1] === 'create'))).toBe(true);
         expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
         expect(calls.every((a) => !(a[0] === 'run' && a.includes('--entrypoint')))).toBe(true);
-        expect(seen[0]).toEqual(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }));
+        expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }));
     });
 });
 

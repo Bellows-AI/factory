@@ -224,8 +224,9 @@ function int(raw: string | undefined, label: string, fallback: number, min: numb
     return value;
 }
 
-function flag(raw: string | undefined): boolean {
-    return raw !== undefined && raw !== '' && raw !== '0' && raw.toLowerCase() !== 'false';
+function flag(raw: string | undefined, fallback = false): boolean {
+    if (raw === undefined || raw === '') return fallback;
+    return raw !== '0' && raw.toLowerCase() !== 'false';
 }
 
 function text(raw: string | undefined, label: string, fallback: string): string {
@@ -331,9 +332,12 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     // Auxiliary services run under both executors: docker networks and sibling containers
     // there, service pods with headless DNS Services here. The RUNNER_SERVICES flag decides
-    // whether they run at all, on either platform.
+    // whether they run at all, on either platform — ON by default: a checkout that declares no
+    // `.bellows.yaml` services gets exactly the runner it always had (an empty readout names no
+    // service), and `RUNNER_SERVICES=0` is the opt-out for an operator who wants the old
+    // nothing-starts-unless-typed posture.
 
-    const servicesEnabled = flag(env.RUNNER_SERVICES);
+    const servicesEnabled = flag(env.RUNNER_SERVICES, true);
 
     // An explicit enum, like EXECUTOR: the API server would reject a bad policy only at job-create
     // time, which is attempt-burning — the failure this whole loader exists to move to startup.

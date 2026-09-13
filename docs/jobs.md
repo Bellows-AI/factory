@@ -107,7 +107,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `GATE_LISTEN_HOST` | `127.0.0.1` | Where the ad-hoc gate endpoint binds. Loopback by default — it runs shell commands, and the bind address is the access control. |
 | `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver — the compose stack points it at `http://driver`. A URL with no port of its own has the bound (ephemeral) port appended — the listener is `listen(0)`, so no fixed URL could name it; one with a port stays verbatim. |
 | `GATE_TIMEOUT_MS` | `600000` | The wall-clock cap on one gate run. A gate that outlives it is a failed gate, exit 124 — the runner's own timeout covers the agent, this covers a gate that hangs. |
-| `RUNNER_SERVICES` | off | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service on a per-job network (docker) or as a pod with a headless DNS Service (kubernetes), so `postgres://db:5432` resolves for exactly that job. Read the section below before turning it on. |
+| `RUNNER_SERVICES` | on | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service on a per-job network (docker) or as a pod with a headless DNS Service (kubernetes), so `postgres://db:5432` resolves for exactly that job. `0` opts out. Read the section below for the security posture. |
 
 **The workspace is passed as a volume name, not a path.** The driver's runners are *siblings*, not
 children: it talks to the host's daemon over a socket, so a path inside the driver container means
@@ -356,7 +356,8 @@ services:
       POSTGRES_PASSWORD: secret
 ```
 
-With `RUNNER_SERVICES=1` (off by default), the driver reads every checkout's file before the run —
+With services on (`RUNNER_SERVICES`, **on by default** — `RUNNER_SERVICES=0` opts out), the driver
+reads every checkout's file before the run —
 through a throwaway container over the workspaces volume (a readout Job over the PVC under
 kubernetes), because it has no host path into a named
 volume — starts one detached container per service, and puts
@@ -1030,8 +1031,8 @@ Lease expiry is simulated by ageing `lease_expires_at` with SQL, never by sleepi
 decided in that one array. The `.bellows.yaml` parser and the service argv builders are pinned the
 same way in `driver/test/services.test.ts`, and the service lifecycle is driven through the same
 injected daemon seam in `driver/test/docker.test.ts` — readout, network, fleet, teardown, fence,
-the off-switch proving the daemon hears nothing services-specific when `RUNNER_SERVICES` is
-unset, and the attempt-scoping pins: no stale attempt's argv may name a sibling attempt's
+the off-switch proving the daemon hears nothing services-specific when `RUNNER_SERVICES=0`, and the
+attempt-scoping pins: no stale attempt's argv may name a sibling attempt's
 resources, and the fence is the one sweep allowed to be job-scoped.
 
 `npm run test:jobs` (`scripts/test-jobs.sh`) is the end-to-end: a real board, a real database, a

@@ -538,8 +538,9 @@ describe('the service container arguments', () => {
 });
 
 describe('the RUNNER_SERVICES switch', () => {
-    it('is off by default, so argv and lifecycle are unchanged until somebody types it', () => {
-        expect(loadDriverConfig({}).servicesEnabled).toBe(false);
+    it('is on by default, and an explicit 0/false is the opt-out', () => {
+        expect(loadDriverConfig({}).servicesEnabled).toBe(true);
+        expect(loadDriverConfig({ RUNNER_SERVICES: '' }).servicesEnabled).toBe(true);
         expect(loadDriverConfig({ RUNNER_SERVICES: '0' }).servicesEnabled).toBe(false);
         expect(loadDriverConfig({ RUNNER_SERVICES: 'false' }).servicesEnabled).toBe(false);
         expect(loadDriverConfig({ RUNNER_SERVICES: '1' }).servicesEnabled).toBe(true);

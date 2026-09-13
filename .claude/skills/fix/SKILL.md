@@ -29,6 +29,14 @@ fixes cannot touch each other.
 Everything from here on — planning included — runs inside the worktree: the planner must read the
 same tree the executors will edit.
 
+**Factory task exception:** if the current branch already matches `factory/<uuid>`
+(`git branch --show-current`), this run is a Factory board task — the worktree and the branch
+already exist and the board resumes follow-ups on that exact checkout. Skip the creation steps
+below: WORKTREE is the current directory, and wherever this phase says `fix/<issue-number>-<slug>`,
+read the task branch you are on. Never create or switch branches in this tree — leaving it off the
+task branch strands the run: the board's resume gate refuses a follow-up whose checkout is not on
+`factory/<uuid>`, and the work becomes unreachable to the thread that owns it.
+
 1. Resolve the repo root (`git rev-parse --show-toplevel`) and the default branch
    (`gh repo view --json defaultBranchRef -q .defaultBranchRef.name`), then update the base:
    `git fetch origin <default-branch>`.
@@ -108,8 +116,8 @@ Pre-flight (all inside WORKTREE):
 
 Then:
 
-1. You are already on the branch created in Phase 1 (`fix/<issue-number>-<short-slug>`); do not
-   cut another.
+1. You are already on the branch chosen in Phase 1 — `fix/<issue-number>-<short-slug>`, or the
+   Factory task branch (`factory/<uuid>`) when this run is a board task; do not cut another.
 2. Commit with a message referencing the issue.
 3. Push the branch.
 4. Open the PR:

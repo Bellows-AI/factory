@@ -16,8 +16,11 @@ import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 export function EnvPage() {
     const { session } = useSession();
     const { data, loading, error, saving, saveOrg, saveWorkspace, saveRepo } = useEnv();
-    // Enabled only while the member is actually editing a repository, so opening this page does
-    // not become an installation request for somebody who never gets there.
+    // Armed the moment the member reaches for the repository select — focus, which precedes any
+    // pick, mouse or keyboard — not on page mount, so opening this page does not become an
+    // installation request for somebody who never gets there. It must not wait for onChange:
+    // before the list loads the select holds only the placeholder (plus already-configured
+    // scopes), there is nothing to pick, and an armed-on-change fetch could never fire.
     const [pickingRepo, setPickingRepo] = useState(false);
     const repos = useRepos(pickingRepo);
     const [selectedRepo, setSelectedRepo] = useState<{ owner: string; name: string } | null>(null);
@@ -90,13 +93,16 @@ export function EnvPage() {
                     <select
                         aria-label="Repository"
                         value={selectedRepo ? `${selectedRepo.owner}/${selectedRepo.name}` : ''}
+                        onFocus={() => setPickingRepo(true)}
                         onChange={(e) => {
-                            setPickingRepo(true);
                             const [owner, name] = e.target.value.split('/');
                             setSelectedRepo(owner && name ? { owner, name } : null);
                         }}
                     >
                         <option value="">Choose a repository…</option>
+                        {repos.loading ? (
+                            <option disabled>Loading repositories…</option>
+                        ) : null}
                         {(data?.repos ?? []).map((scope) => (
                             <option key={`${scope.owner}/${scope.name}`} value={`${scope.owner}/${scope.name}`}>
                                 {scope.owner}/{scope.name}
@@ -116,6 +122,7 @@ export function EnvPage() {
                         ? 'Applies to every member\u2019s runs in the chosen repository.'
                         : 'An admin configures repository environment; it is shown here read-only.'}
                 </p>
+                {repos.error ? <p className="status">Could not reach GitHub: {repos.error}</p> : null}
                 {selectedRepo ? (
                     <EnvVarsPanel
                         key={`${selectedRepo.owner}/${selectedRepo.name}-${version}`}

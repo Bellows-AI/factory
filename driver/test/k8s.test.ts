@@ -462,7 +462,7 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     return { request, calls };
 };
 
-const runner = (request: K8sRequest) => createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), request, async () => {});
+const runner = (request: K8sRequest) => createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), request, async () => {});
 
 /**
  * Default answers for the objects the runner touches beyond the runner Job itself: the fence
@@ -556,7 +556,7 @@ const claimServer = () => {
  */
 describe('the worktree sync', () => {
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
 
     it('runs the worktree script as an aux Job over a read-write PVC', () => {
         const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
@@ -947,7 +947,7 @@ describe('the worktree sync', () => {
  */
 describe('the worktree reclaim', () => {
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
 
     it('runs the remove script as an aux Job over a read-write PVC, naming only paths', () => {
         const s = reclaimJobSpec(cfg(), repoJob);
@@ -1066,7 +1066,7 @@ describe('publishing the produced work', () => {
     };
     const WT = `/workspaces/bellows/${USER}/.worktrees/${ISSUE_JOB.id}`;
     const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
-    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
     const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
 
     it('runs one step as an aux Job in the worktree, fenced by the attempt labels', () => {
@@ -1409,7 +1409,7 @@ describe('the kubernetes runner', () => {
         const { request, calls } = fakeRequest();
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         const r = createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
             request,
             async () => {},
         );
@@ -1865,7 +1865,7 @@ describe('the kubernetes runner', () => {
         };
 
         const outcome = await createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
             request,
             async () => {},
         ).run(newerJob, { id: SESSION, resume: false });
@@ -1974,7 +1974,7 @@ describe('the kubernetes runner', () => {
         };
 
         const makeRunner = (request: K8sRequest) =>
-            createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), request, async () => {});
+            createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), request, async () => {});
 
         const olderRun = makeRunner(olderRequest).run(olderJob, { id: SESSION, resume: false });
         await olderClaimed;
@@ -2031,7 +2031,7 @@ describe('the kubernetes runner', () => {
 
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         const outcome = await createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
             request,
             async () => {},
         ).run(envJob, { id: SESSION, resume: false });
@@ -2213,7 +2213,7 @@ describe('the kubernetes runner', () => {
         // A 10s lease puts the entry-time cutoff 5s back: the predecessor — younger than that
         // at the deciding list — is a live writer on this checkout, and it must not survive.
         const r = createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, DRIVER_LEASE_SECONDS: '10' }),
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, DRIVER_LEASE_SECONDS: '10', RUNNER_SERVICES: '0' }),
             request,
             async () => {},
         );
@@ -3441,7 +3441,7 @@ describe('the kubernetes runner', () => {
         });
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         await expect(
-            createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), request, async () => {}).run(
+            createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), request, async () => {}).run(
                 envJob,
                 { id: SESSION, resume: false },
             ),
@@ -4151,7 +4151,7 @@ describe('the kubernetes services flow', () => {
  * scrape rides the run's outcome the way docker's verdict does.
  */
 describe('the runner job spec under opencode', () => {
-    const ocConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace });
+    const ocConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
 
     it('runs a fresh job headless, with no session argv at all', () => {
         const spec = runnerJobSpec(ocConfig, job, null);
@@ -4177,7 +4177,7 @@ describe('the runner job spec under opencode', () => {
     });
 
     it('never sets XDG_DATA_HOME for claude-code, whose sessions are not file-persisted', () => {
-        const spec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job, {
+        const spec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), job, {
             id: SESSION,
             resume: false,
         });
@@ -4198,7 +4198,7 @@ describe('the runner job spec under opencode', () => {
 });
 
 describe('the opencode session readout job', () => {
-    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace });
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
 
     it('runs the readout script by content, with the database path as an env value', () => {
         const spec = opencodeReadoutJobSpec(config, job);
@@ -4312,7 +4312,7 @@ describe('the kubernetes runner under opencode', () => {
 
     const ocRunner = (request: K8sRequest) =>
         createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace }),
+            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
             request,
             async () => {},
         );

@@ -85,8 +85,8 @@ spec:
                         value: http://{{ include "factory.fullname" . }}-driver
                       - name: GATE_LISTEN_HOST
                         value: 0.0.0.0
-                      # Auxiliary services (.bellows.yaml): off until somebody types it on, here
-                      # as everywhere.
+                      # Auxiliary services (.bellows.yaml): on by default, '0' in values opts out,
+                      # here as everywhere.
                       - name: RUNNER_SERVICES
                         value: {{ .Values.driver.services | quote }}
                       {{- if .Values.driver.skipPermissions }}
