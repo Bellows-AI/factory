@@ -246,7 +246,7 @@ describe('SideNav task summary', () => {
 
     it('answers for the whole thread, not the row under the cursor', () => {
         const root = job();
-        const child = { ...job(running('→ Bash npm test')), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id };
+        const child = { ...job(running('→ Bash npm test')), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id, rootJobId: root.id };
         const html = render('/tasks', [root, child]);
         const rootEntry = html.slice(html.indexOf('newer task'), html.indexOf('</a>', html.indexOf('newer task')));
         expect(rootEntry).toContain('sidenav-task-summary');

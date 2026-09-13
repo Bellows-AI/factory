@@ -248,7 +248,7 @@ describe.skipIf(!enabled)('job store', () => {
     // run's `activity` — so the list projection carries the vitals too, the one field `gates`
     // stays spared from and `output` stays spared from still.
     it('carries the runtime vitals on list rows, for the tree and tab strip summaries', async () => {
-        const { id } = await queue('echo hi');
+        const { id } = await store.create('echo hi', null, { repo: 'owner/repo', executor: null });
         const claim = await store.claim('w1', 300);
         const vitals = {
             cpuPercent: 93,
@@ -260,7 +260,7 @@ describe.skipIf(!enabled)('job store', () => {
         await store.progress(id, claim!.leaseToken, 'working', vitals);
         expect(await store.list({ limit: 50 })).toMatchObject([{ id, runtime: vitals }]);
         // The repo-filtered read serves the same projection — the summaries read either list.
-        expect(await store.list({ limit: 50, repo: 'owner/repo' })).toEqual([]);
+        expect(await store.list({ limit: 50, repo: 'owner/repo' })).toMatchObject([{ id, runtime: vitals }]);
     });
 
     // A run whose runner never samples the container (kubernetes, a failed readout) still gets

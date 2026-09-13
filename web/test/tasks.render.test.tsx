@@ -451,7 +451,7 @@ describe('TaskDetail', () => {
 
         it('shows it for the whole chain, from the newest run forward', () => {
             const root = job({ command: 'first command' });
-            const child = { ...job({ status: 'running', runtime }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id };
+            const child = { ...job({ status: 'running', runtime }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
             const html = renderDetail({ jobs: [root, child] });
             expect(html).toContain('task-summary');
             expect(html).toContain(activity);

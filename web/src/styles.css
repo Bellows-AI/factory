@@ -543,10 +543,11 @@ footer {
 }
 
 /* The task's own line — the command or title — next to the status dot; it alone clips, so a long
-   command never pushes the live summary below it off the tree. */
+   command never pushes the live summary below it off the tree. The 10px is the dot and its margin,
+   which share the title's line. */
 .sidenav-task-title {
     display: inline-block;
-    max-width: 100%;
+    max-width: calc(100% - 10px);
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: middle;
@@ -997,12 +998,12 @@ button.primary {
 }
 
 /* The task's live summary — "what the agent is doing" — one line at the top of the task view while
-   the newest run is going. The same mono, muted, clipped treatment as the sidebar's activity row. */
+   the newest run is going. The same mono, muted, clipped treatment as the sidebar's activity row;
+   spacing and width come from the panel's paragraph rule. */
 .task-summary {
     color: var(--muted);
     font-family: var(--mono);
     font-size: 12px;
-    margin: 0 0 8px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
