@@ -12,14 +12,16 @@ const COMMAND_LIMIT = 16_384;
 const BODY_LIMIT = 128 * 1024;
 
 /**
- * The repo and executor labels a task may carry. Both are display metadata for the tasks chat —
- * the chat groups by repository and names the executor — and nothing consumes them at claim time:
- * the claim payload is unchanged, and wiring an executor into the driver remains future work. They
- * are validated by shape only, under the same path-segment rules a checkout's directory name obeys,
- * never against the member's configured rows: `job` is an audit record, and the rows it would be
- * validated against come and go with a PUT. A length cap would dead-end an executor name the
- * selection route accepted, so neither field has one here either — the body limit bounds them the
- * way it bounds the command. See docs/jobs.md.
+ * The repo and executor labels a task may carry. The repo label is display metadata for the tasks
+ * chat — the chat groups by repository. The executor label is consumed at claim time: the claim
+ * reads the AUTHOR's executor row of that name, and for an `opencode` row the pasted config rides
+ * the claim env as `OPENCODE_CONFIG_CONTENT` (docs/env.md) — how the member's model and provider
+ * choice reach the run. Both are validated by shape only, under the same path-segment rules a
+ * checkout's directory name obeys, never against the member's configured rows: `job` is an audit
+ * record, and the rows it would be validated against come and go with a PUT. A label that matches
+ * no current row runs exactly as an unlabelled job. A length cap would dead-end an executor name
+ * the selection route accepted, so neither field has one here either — the body limit bounds them
+ * the way it bounds the command. See docs/jobs.md.
  */
 const REPO_SEGMENT_LIMIT = 100;
 

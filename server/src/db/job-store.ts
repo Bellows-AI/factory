@@ -499,6 +499,7 @@ export function createJobStore({
     env,
     githubToken,
     gates: gatesReader,
+    executorConfig,
 }: {
     sql: Sql;
     hasWorkspaces?: boolean;
@@ -545,6 +546,24 @@ export function createJobStore({
             repo: string,
             worktreeId: string | null,
         ): Promise<{ config: BellowsConfig | null; error: string | null }>;
+    };
+    /**
+     * The member executor store's claim-time reader, when the deployment stores executor
+     * configuration. Declared inline like `env`, because `db/` must not import from
+     * `db/user-executor-store.ts`'s surface — the claim needs exactly one question answered: the
+     * row the task's executor LABEL names, with the config the member pasted. Only an `opencode`-type
+     * row is applied — its config travels as `OPENCODE_CONFIG_CONTENT`, the env name opencode
+     * merges over its baked configuration (verified against the pinned runner image), which is how
+     * the member's model and provider choice reach the run. A `claude-code` row has no consumer
+     * yet and is read only to be skipped. A reader failure throws, and the same rollback that
+     * guards the env resolver leaves the job queued with its attempt unburned.
+     */
+    executorConfig?: {
+        configFor(
+            userId: string,
+            name: string,
+            exec: Sql | TransactionSql,
+        ): Promise<{ type: string; config: Record<string, unknown> } | null>;
     };
 }): JobStore {
     const gate = async () => {
@@ -836,6 +855,7 @@ export function createJobStore({
                             session_id: string | null;
                             repo: string | null;
                             parent_job_id: string | null;
+                            executor: string | null;
                             follow_up: boolean;
                         }[]
                     >`
@@ -881,7 +901,7 @@ export function createJobStore({
                         -- never been parked, so its command still has to go out; a resumed parked one has,
                         -- so it must not.
                         returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                                  session_id, repo, parent_job_id,
+                                  session_id, repo, parent_job_id, executor,
                                   (parent_job_id is not null and command_delivered_at is null) as follow_up
                     `;
 
@@ -900,10 +920,33 @@ export function createJobStore({
                     // The mint fills only the gap: when the stacked env already carries a
                     // GITHUB_TOKEN, the mint would be discarded — so it is not made at all, rather
                     // than spend a GitHub call and leave a live token nothing holds.
-                    const claimEnv =
+                    let claimEnv =
                         githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
                             ? withMintedToken(await githubToken.fresh(), resolvedEnv)
                             : resolvedEnv;
+                    // The executor label a task was queued with names a row in the AUTHOR's own
+                    // executor list (docs/workspace.md), and for an opencode row the pasted config
+                    // IS the run's model and provider choice. It rides the claim env under the
+                    // name opencode merges over its baked configuration, applied LAST so the
+                    // synthesized value wins a collision with a member env var — the name is
+                    // reserved at PUT besides. A label matching nothing — an executor deleted
+                    // after the task was queued, or free text typed into the chat — runs exactly
+                    // as an unlabelled job always has; so does a claude-code row, which has no
+                    // consumer yet. A row whose config is not an object is skipped for the same
+                    // availability reason the resolver failure is NOT: refusing the claim would
+                    // retry a broken row forever.
+                    if (executorConfig && row.executor !== null && row.created_by !== null) {
+                        const configured = await executorConfig.configFor(row.created_by, row.executor, tx);
+                        const member = configured?.config;
+                        if (configured?.type === 'opencode' && member !== null && typeof member === 'object' && !Array.isArray(member)) {
+                            // `permission` is the runner's fence, baked into the image and patched
+                            // by its entrypoint — the one key the member does not get to set: a
+                            // pasted `external_directory: allow` would open every member's tree
+                            // to this run. Everything else travels verbatim.
+                            const { permission: _fence, ...rest } = member;
+                            claimEnv = { ...(claimEnv ?? {}), OPENCODE_CONFIG_CONTENT: JSON.stringify(rest) };
+                        }
+                    }
                     // Read off the filesystem, inside the claim but OFF the transaction's tables: a
                     // broken `.bellows.yaml` travels to the driver as `gateError` — the job fails at
                     // the worker with the reason, where the run's author can see it — rather than as

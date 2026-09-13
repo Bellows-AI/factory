@@ -29,9 +29,13 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * starting claims into restore mode, silently skipping the fetch and rebase (issue #58). The
  * three reporter names steer the branch reporter — where it posts, what
  * authenticates it, and which session it claims — and a member value in any of them is a
- * cross-tenant write into the telemetry store. Reserved at the route, restated at the driver
+ * cross-tenant write into the telemetry store. `OPENCODE_CONFIG_CONTENT` is not the driver's
+ * name to reserve but the BOARD's: the claim synthesizes it from the author's own executor row
+ * (docs/workspace.md), and a member env var of the same name would be silently shadowed by the
+ * synthesized value — refusing the PUT says so instead. Reserved at the route; the driver's list
  * (RESERVED_ENV_NAMES in driver/src/docker.ts — copied, not imported, per that package's
- * zero-dependency rule).
+ * zero-dependency rule) deliberately does NOT carry it, because the synthesized value must flow
+ * `claimEnv` to reach the runner.
  */
 export const RESERVED_ENV_NAMES = [
     'WORKDIR',
@@ -43,6 +47,7 @@ export const RESERVED_ENV_NAMES = [
     'FACTORY_STATS_URL',
     'INGEST_TOKEN',
     'BELLOWS_SESSION_ID',
+    'OPENCODE_CONFIG_CONTENT',
 ] as const;
 
 /**

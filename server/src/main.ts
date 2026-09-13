@@ -117,12 +117,17 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     // a runner can orchestrate GitHub (PRs, commits, CI reads) with nothing configured; without a
     // provider — the offline tooling only — the claim mints nothing, exactly as nothing there can fetch.
     const envVarStore = createEnvVarStore({ sql, orgId: config.orgId, ready });
+    // Built before the job store, which reads it at claim time (executorConfig below).
+    const userExecutorStore = createUserExecutorStore({ sql, orgId: config.orgId, ready });
     const jobStore = createJobStore({
         sql,
         orgId: config.orgId,
         hasWorkspaces: config.workspaceRoot !== null,
         ready,
         env: envVarStore,
+        // The claim reads the author's executor row for the executor a task was stamped with, and
+        // hands an opencode run the member's pasted config as OPENCODE_CONFIG_CONTENT (docs/env.md).
+        executorConfig: userExecutorStore,
         // Gates are read off the server's own workspace mount, per claim, for the job's author and
         // repo label — worktree-first (the thread's worktree, once the driver's sync has created
         // it), falling back to the clone. Without a workspace root nothing was ever checked out, so
@@ -142,8 +147,10 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     // Unconditional too, and note that this does NOT depend on a workspace root being configured: with
     // none, the routes still answer and report that the feature is off. Only the QUEUE is conditional,
     // because there is nowhere to clone to.
+    // Unconditional too, and note that this does NOT depend on a workspace root being configured: with
+    // none, the routes still answer and report that the feature is off. Only the QUEUE is conditional,
+    // because there is nowhere to clone to.
     const userRepoStore = createUserRepoStore({ sql, orgId: config.orgId, ready });
-    const userExecutorStore = createUserExecutorStore({ sql, orgId: config.orgId, ready });
     const cloneQueue = config.workspaceRoot
         ? createCloneQueue({
               store: userRepoStore,

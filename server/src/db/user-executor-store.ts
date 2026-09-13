@@ -1,10 +1,16 @@
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 
 export interface UserExecutor {
     readonly name: string;
     readonly type: string;
     readonly createdAt: string;
     readonly updatedAt: string;
+}
+
+/** What `configFor` answers: the row's type and the raw config the member pasted. */
+export interface UserExecutorConfig {
+    readonly type: string;
+    readonly config: Record<string, unknown>;
 }
 
 export interface UserExecutorStore {
@@ -18,6 +24,19 @@ export interface UserExecutorStore {
      */
     replace(userId: string, executors: readonly { name: string; type: string; config: Record<string, unknown> }[]): Promise<void>;
     list(userId: string): Promise<UserExecutor[]>;
+    /**
+     * The one executor row a task label names, WITH its pasted config — the claim-time read the
+     * job store makes to hand a runner the member's own executor configuration
+     * (`OPENCODE_CONFIG_CONTENT`). `list()` deliberately never selects `config`, because it feeds
+     * a two-second poll; this is the one read that must, and it runs on the claim's transaction
+     * for the same reason the env resolver does: a claim holds one connection, so enough
+     * concurrent claims can never wedge the pool against itself.
+     */
+    configFor(
+        userId: string,
+        name: string,
+        exec?: Sql | TransactionSql,
+    ): Promise<UserExecutorConfig | null>;
 }
 
 interface Row {
@@ -82,6 +101,19 @@ export function createUserExecutorStore({
                 order by created_at asc, name asc
             `;
             return rows.map(toUserExecutor);
+        },
+
+        async configFor(userId, name, exec = sql) {
+            await gate();
+            // The primary key is (org_id, user_id, name), so a label names at most one row per
+            // member — the read cannot be ambiguous.
+            const rows = await (exec as Sql)<{ type: string; config: Record<string, unknown> }[]>`
+                select type, config
+                from user_executor
+                where org_id = ${orgId} and user_id = ${userId} and name = ${name}
+            `;
+            const row = rows[0];
+            return row ? { type: row.type, config: row.config } : null;
         },
     };
 }

@@ -49,7 +49,14 @@ real value.
   for the branch reporter (see [jobs.md](jobs.md)): a member value in the first tells the
   runner's attribution reports to post somewhere else, the second forges their credential, and
   the third claims the report is somebody else's session — a cross-tenant write into the
-  telemetry store, refused the same way.
+  telemetry store, refused the same way. `OPENCODE_CONFIG_CONTENT` is the one name the board
+  reserves that the driver does not: the claim SYNTHESIZES it from the author's own executor row
+  when the task was stamped with an `opencode` executor ([workspace.md](workspace.md)), applied
+  after the resolved scopes so the synthesized value wins any collision, and a member var of the
+  same name could only ever be silently shadowed — the PUT says so instead. The driver's
+  `claimEnv` deliberately does not filter it, because the synthesized value must flow to reach
+  the runner (docker's env-file, kubernetes's per-attempt Secret — both carry it with no
+  platform-specific code).
 - **`REPO`, `WORKTREE` and `BRANCH` are driver-owned inside the startup sync's container only**
   (issue #35): the sync's literal env names the clone, the task worktree and its branch, and the
   driver's literals win a collision on both platforms — docker's last `--env-file`/`-e` order and

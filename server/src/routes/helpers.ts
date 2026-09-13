@@ -27,8 +27,9 @@ export const bad = (reply: FastifyReply, code: string, error: string, status = 4
  * says the same thing a third time, at the row.
  *
  * Shared with the jobs route, which applies the same rules to the repo/executor labels a task is
- * queued with — display metadata, but a name that cannot be a directory cannot be a checkout or an
- * executor either.
+ * queued with — the repo labels a view, the executor names the row the claim reads the run's
+ * configuration from, and a name that cannot be a directory cannot be a checkout or an executor
+ * either.
  */
 export function badSegment(label: string, value: string): string | null {
     if (!value) return `${label} is empty`;

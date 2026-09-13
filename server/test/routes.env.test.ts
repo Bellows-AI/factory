@@ -284,6 +284,11 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the name the board synthesizes from the author’s executor row',
+            { vars: [{ name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"x"}', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'a null value on a non-secret',
             { vars: [{ name: 'PLAIN', value: null, isSecret: false }] },
             'BAD_VALUE',

@@ -4,6 +4,7 @@ import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type JobStore } from '../src/db/job-store.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
+import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 
 const url = process.env.DATABASE_URL;
 
@@ -1222,6 +1223,115 @@ describe.runIf(enabled)('attribution', () => {
         await counting.create('echo hi', userId, { repo: null, executor: null });
         const second = await counting.claim('driver-2', 300);
         expect(second?.env).toEqual({ GITHUB_TOKEN: 'ghs_2' });
+    });
+
+    /**
+     * The executor label a task was queued with names a row in the author's own executor list, and
+     * for an opencode row the pasted config is how the member's model and provider reach the run:
+     * the claim hands it over as `OPENCODE_CONFIG_CONTENT`, the env name the pinned opencode
+     * runner merges over its baked configuration. Everything here is the claim side of
+     * docs/workspace.md's executor wiring.
+     */
+    describe('the claim carries the author’s opencode executor config', () => {
+        /** Unique github_user_id per run, like mintedAccountId above. */
+        const executorAccountId = (() => {
+            let next = 90_000 + Math.floor(Math.random() * 100_000);
+            return () => ++next;
+        })();
+        // Built in beforeAll, not at collection: `sql` does not exist until the outer hook ran.
+        let executors: ReturnType<typeof createUserExecutorStore>;
+        const configured = () => createJobStore({ sql, orgId: ORG, executorConfig: executors });
+        beforeAll(() => {
+            if (enabled) executors = createUserExecutorStore({ sql, orgId: ORG });
+        });
+
+        it('hands an opencode row’s config over, with the permission fence stripped', async () => {
+            const userId = await account(executorAccountId(), 'executor-cat');
+            await executors.replace(userId, [
+                {
+                    name: 'main',
+                    type: 'opencode',
+                    config: {
+                        model: 'zai-coding-plan/glm-5.3-flash',
+                        small_model: 'zai-coding-plan/glm-5.3-flash',
+                        provider: { 'zai-coding-plan': { options: { apiKey: 'zk_test' } } },
+                        // A pasted fence would open the other members' trees to this run; the
+                        // runner's baked fence is the only authority.
+                        permission: { external_directory: { '*': 'allow' } },
+                    },
+                },
+            ]);
+            await configured().create('echo hi', userId, { repo: null, executor: 'main' });
+
+            const claim = await configured().claim('driver-1', 300);
+
+            const content = JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? '') as Record<string, unknown>;
+            expect(content).toMatchObject({ model: 'zai-coding-plan/glm-5.3-flash' });
+            expect(content).toHaveProperty('provider');
+            expect(content).not.toHaveProperty('permission');
+            // The value must be one env-file line: JSON.stringify emits no raw newline.
+            expect(claim?.env?.OPENCODE_CONFIG_CONTENT).not.toMatch(/[\r\n]/);
+        });
+
+        it('leaves a claude-code row, an unknown label, and no label alone', async () => {
+            const userId = await account(executorAccountId(), 'executor-dog');
+            await executors.replace(userId, [
+                { name: 'claude', type: 'claude-code', config: { model: 'x' } },
+                { name: 'main', type: 'opencode', config: { model: 'y' } },
+            ]);
+            const store = configured();
+
+            await store.create('claude task', userId, { repo: null, executor: 'claude' });
+            await store.create('ghost task', userId, { repo: null, executor: 'deleted' });
+            await store.create('unlabelled task', userId, { repo: null, executor: null });
+
+            // Each claim takes the oldest claimable row; three claims, three answers.
+            expect((await store.claim('driver-1', 300))?.env).toBeUndefined();
+            expect((await store.claim('driver-2', 300))?.env).toBeUndefined();
+            expect((await store.claim('driver-3', 300))?.env).toBeUndefined();
+        });
+
+        it('lets the synthesized value win a collision with a member env var of the same name', async () => {
+            // The route refuses the name at PUT; this row is the store-level stand-in for one that
+            // predates the reservation. The executor config is the member's deliberate choice for
+            // the run — it must not lose to a scope that exists for other things.
+            const userId = await account(executorAccountId(), 'executor-owl');
+            const envStore = createEnvVarStore({ sql, orgId: ORG });
+            await sql`truncate env_var`;
+            await envStore.replaceWorkspace(userId, [
+                { name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"stale"}', isSecret: false },
+            ]);
+            await executors.replace(userId, [{ name: 'main', type: 'opencode', config: { model: 'fresh' } }]);
+            const store = createJobStore({ sql, orgId: ORG, env: envStore, executorConfig: executors });
+
+            await store.create('echo hi', userId, { repo: null, executor: 'main' });
+            const claim = await store.claim('driver-1', 300);
+
+            expect(claim?.env).toEqual({ OPENCODE_CONFIG_CONTENT: '{"model":"fresh"}' });
+        });
+
+        it('leaves the job claimable when the executor reader fails, without burning an attempt', async () => {
+            const userId = await account(executorAccountId(), 'executor-fox');
+            let fail = true;
+            const flaky = createJobStore({
+                sql,
+                orgId: ORG,
+                executorConfig: {
+                    configFor: async () => {
+                        if (fail) throw new Error('executor store down');
+                        return null;
+                    },
+                },
+            });
+            await flaky.create('echo hi', userId, { repo: null, executor: 'main' });
+
+            await expect(flaky.claim('driver-1', 300)).rejects.toThrow('executor store down');
+
+            fail = false;
+            const claim = await flaky.claim('driver-2', 300);
+            expect(claim?.id).toBeTruthy();
+            expect(claim?.attempts).toBe(1);
+        });
     });
 
     it('keeps the job when the account that queued it is deleted', async () => {

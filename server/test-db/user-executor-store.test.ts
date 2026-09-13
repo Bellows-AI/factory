@@ -66,4 +66,14 @@ describe.skipIf(!enabled)('the user executor store', () => {
             `,
         ).rejects.toThrow(/user_executor_type_ck/);
     });
+
+    it('answers the pasted config for a named row, and null when no row matches', async () => {
+        const config = { model: 'zai-coding-plan/glm-5.3-flash', provider: { 'zai-coding-plan': {} } };
+        await store.replace(ALICE, [{ name: 'main', type: 'opencode', config }]);
+
+        expect(await store.configFor(ALICE, 'main')).toEqual({ type: 'opencode', config });
+        expect(await store.configFor(ALICE, 'deleted')).toBeNull();
+        // Another member's row is not this member's answer.
+        expect(await store.configFor('00000000-0000-4000-8000-00000000b22d', 'main')).toBeNull();
+    });
 });

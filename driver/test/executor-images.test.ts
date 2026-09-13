@@ -68,17 +68,24 @@ describe('the executor branch reporter', () => {
         // The CLI runs as a background child now, so the close-time sample can run after it;
         // a leftover `exec` would turn the script into the PID-1 replacement and skip it.
         expect(entry).not.toMatch(new RegExp(`^exec ${cli} `, 'm'));
-        // TERM/INT reaching PID 1 is forwarded to BOTH children — without that, a `docker stop`
-        // leaves the CLI running until the runtime's forced kill.
+        // TERM/INT reaching PID 1 is forwarded to every child — CLI, reporter and, in the
+        // opencode image (the only one that ships it, #68), the rate-limit watch — without
+        // that, a `docker stop` leaves the CLI running until the runtime's forced kill.
         expect(entry).toMatch(/^trap \w+ TERM INT$/m);
-        expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID"/);
         // `wait` returns 128+signal when the trap interrupts it, indistinguishable from a child
         // that died to that signal — so the CLI is waited on in a loop until it is really gone
         // (the kill -0 probe), and the reporter is terminated and reaped before the close-time
         // sample so nothing outlives the run.
         expect(entry).toMatch(/while :; do\n    wait "\$CLI_PID"\n    STATUS=\$\?\n    kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/);
-        expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
-        expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
+        if (cli === 'opencode') {
+            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID" "\$WATCHER_PID"/);
+            expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
+            expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
+        } else {
+            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID"/);
+            expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
+            expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
+        }
         expect(entry).toMatch(/branch-reporter\.cjs --once/);
         expect(entry).toMatch(/exit "\$STATUS"/);
     });

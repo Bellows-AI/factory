@@ -150,21 +150,39 @@ true: the Workspace page reports each checkout's branch, newest commit and size 
 
 ## Executors
 
-The page also shows the member's configured executors, below the repositories. This is
-**configuration storage only**: a row is the JSON a member pasted into the add dialog, and nothing
-runs an executor yet — wiring one into the driver is future work. The known types are
-`claude-code` and `opencode` (013 added the second; see [persistence.md](persistence.md) for the
-constraint-rewrite move adding the next one costs). The Tasks page lets a member
-stamp one of these names onto a job they queue — metadata the tasks chat displays, never checked
-against this list — and still nothing runs.
+The page also shows the member's configured executors, below the repositories. A row is the JSON a
+member pasted into the add dialog. The known types are `claude-code` and `opencode` (013 added the
+second; see [persistence.md](persistence.md) for the constraint-rewrite move adding the next one
+costs). The Tasks page lets a member stamp one of these names onto a job they queue, and the claim
+resolves that label against the author's rows at run time — the name is the join key, which is why
+it is never validated against the list when the task is queued (`job` is an audit record; the rows
+come and go with a PUT).
 
+- **`opencode` config reaches the run; `claude-code` config does not yet.** At claim, the job
+  store reads the author's row of the stamped name (`configFor`), and for an `opencode` row hands
+  the pasted config to the runner as the claim-env value `OPENCODE_CONFIG_CONTENT` — the name
+  opencode merges over its baked configuration (verified against the pinned runner image: baked
+  plugins, instructions and permission fence survive, member `model`/`provider`/`small_model`
+  land). This is what makes the member's model and provider choice authoritative; without a
+  matching row the run falls back to the image's default model. `claude-code` rows have no
+  consumer yet and are stored only.
+- **`permission` is stripped board-side, never honored from a paste.** The baked fence in the
+  runner image (and the entrypoint's per-member `external_directory` patch) is the only authority
+  on what a run may touch: a pasted `external_directory: "*": allow` would otherwise open every
+  member's tree to one run. Every other key travels verbatim.
+- **The label drives config, nothing else.** An executor label matching no row — an executor
+  deleted after the task was queued, or free text — runs exactly as an unlabelled job, on the
+  image default. Which image and CLI a run uses is still the driver operator's `RUNNER_CLI`, not
+  this list: a member's row configures the CLI already chosen for the deployment.
 - **The dialog is add-only, and validation is structural.** The contract is "raw JSON the member
   pastes"; the server checks it is an object with a known type, unique path-segment-safe names, at
   most 10 per member, and the `user_executor` check constraint restates the type list at the row.
-  Field-level rules wait until a consumer exists that can be wrong about them.
+  Field-level rules wait until a consumer exists that can be wrong about them — the opencode
+  consumer reads `model`, `small_model` and `provider` only by opencode's own merge semantics, not
+  by schema.
 - **`config` is never echoed by the poll.** It may hold credentials the member pasted, and
   `GET /api/workspace` can run every two seconds. The row's `name`, `type` and `createdAt` travel;
-  the JSON stays in the table.
+  the JSON stays in the table (the claim-time `configFor` read is the one read that selects it).
 - **The whole list is a PUT.** Same argument as the repos selection: the body is the entire list,
   so a retried request after a dropped connection changes nothing.
 
