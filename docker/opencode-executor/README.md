@@ -15,6 +15,7 @@ flag.
 | `Dockerfile` | the image — Node 24 (debian), `opencode-ai` (pinned), `@gcornut/opencode-otel` (pinned), `context-mode` (pinned), `gh`, `acli` |
 | `entrypoint.sh` | `/usr/local/bin/opencode-executor` — the `ENTRYPOINT` |
 | `branch-reporter.cjs` | `/usr/local/bin/branch-reporter.cjs` — the branch reporter the entrypoint launches beside the CLI |
+| `rate-limit-watch.cjs` | `/usr/local/bin/rate-limit-watch.cjs` — the rate-limit watch the entrypoint launches beside the CLI |
 | `test.sh` | builds the image and smoke-tests it — not shipped inside it |
 | `opencode-home/opencode.json` | the baked permission policy plus the plugin references (telemetry, context mode), at `OPENCODE_CONFIG` |
 | `opencode-home/otel.json` | the telemetry plugin's config: the compose collector, http/json, delta temporality |
@@ -145,6 +146,27 @@ newest root session, the exact query the driver's close-time readout uses — an
 the driver hands the id over (`BELLOWS_SESSION_ID`) so both runs name the same conversation.
 Nothing is logged, nothing retries, and every failure is a silent no-op: the run is
 unattributed, never failed.
+
+## Rate-limit watch
+
+`rate-limit-watch.cjs` exists because of a measured failure (job `3f7aa94c`, 2026-09-13): a run
+whose provider answered its first model call with `AI_APICallError: Rate limit exceeded` logged
+the stream error and then hung on its spinner for an hour — no exit, no retry, no output — while
+the driver renewed the lease and the board showed "running". The error reaches only opencode's
+own log file (`$XDG_DATA_HOME/opencode/log/opencode.log`); the session database keeps an empty
+stub for the step and stdout carries only the spinner, so nothing else could see it.
+
+The watch tails that log from its start offset, binds to this run by its boot line
+(`run=<id> message="creating instance" directory=<WORKDIR>` — the log is the member's, shared by
+every run the member has live, so the worktree path is the scope), and when a
+`stream error … Rate limit exceeded` line is the run's last word past a quiet window
+(`RATE_LIMIT_QUIET_MS`, default five minutes — opencode's own retries give up in seconds, so
+five minutes of total silence is a zombie with room to spare), it terminates the CLI. The entry
+point's exit status is then nonzero and the one line the watch ever prints names the rate limit,
+which puts the reason into the failed attempt's report on the board; the board's own attempt
+machinery takes it from there (retry, and `dead` once attempts are exhausted). A run that keeps
+logging after the 429 is recovering, not hung — every new line for the run resets the window,
+and a rate limit in another worktree can never bind.
 
 ## Telemetry
 

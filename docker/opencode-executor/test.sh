@@ -215,6 +215,79 @@ fi
 docker run --rm -e WORKDIR=/nope "$IMAGE" run 'hi' >/dev/null 2>&1
 if [ "$?" = "2" ]; then ok 'a missing WORKDIR exits 2'; else bad 'a missing WORKDIR exits 2' 'see above'; fi
 
+# The rate-limit watch, behaviourally against a fabricated member log (job 3f7aa94c's shape,
+# real lines): a run the provider 429'd into silence is a zombie — the watch must kill its CLI
+# once the error has stayed the run's last word past the quiet window, and name the rate limit
+# on stderr so the driver's tail carries the reason into the failed attempt.
+zombie_log() { # zombie_log <file> <run-id> <directory>
+    cat > "$1" <<EOF
+timestamp=2026-09-13T11:03:30.293Z level=INFO run=$2 message="creating instance" directory=$3
+timestamp=2026-09-13T11:03:59.049Z level=ERROR run=$2 message=stream error providerID=opencode modelID=big-pickle session.id=ses_f658fe1ccffeoTvgqxEYrdS3DR small=false agent=build mode=primary error.error="AI_APICallError: Rate limit exceeded. Please try again later."
+EOF
+}
+run_watch() { # run_watch <data-dir> <sh-body> — mounts the dir at /data, echoes combined output
+    docker run --rm --entrypoint sh -v "$1:/data" "$IMAGE" -c "$2" 2>&1
+}
+RLW="$(mktemp -d)"
+mkdir -p "$RLW/opencode/log"
+chmod -R a+rwX "$RLW"
+zombie_log "$RLW/opencode/log/opencode.log" 3f7aa94c /workspace
+got="$(run_watch "$RLW" '
+    sleep 60 & CLI=$!
+    CLI_PID=$CLI RATE_LIMIT_QUIET_MS=2000 WORKDIR=/workspace XDG_DATA_HOME=/data \
+        node /usr/local/bin/rate-limit-watch.cjs 2>&1 &
+    sleep 6
+    if kill -0 "$CLI" 2>/dev/null; then echo CLI-ALIVE; kill "$CLI" 2>/dev/null; else echo CLI-DEAD; fi
+    wait')"
+rm -rf "$RLW"
+if printf '%s' "$got" | grep -q 'CLI-DEAD' && printf '%s' "$got" | grep -q 'Rate limit exceeded'; then
+    ok 'a 429 zombie is killed, with the rate limit as the stated reason'
+else
+    bad 'a 429 zombie is killed, with the rate limit as the stated reason' "$got"
+fi
+
+# The log is the member's, shared by every live run: a rate limit in ANOTHER worktree must
+# never kill this run. No boot line binds the watch here, so it must stay inert.
+RLW="$(mktemp -d)"
+mkdir -p "$RLW/opencode/log"
+chmod -R a+rwX "$RLW"
+zombie_log "$RLW/opencode/log/opencode.log" deadbeef /somewhere/else
+got="$(run_watch "$RLW" '
+    sleep 60 & CLI=$!
+    CLI_PID=$CLI RATE_LIMIT_QUIET_MS=2000 WORKDIR=/workspace XDG_DATA_HOME=/data \
+        node /usr/local/bin/rate-limit-watch.cjs 2>/dev/null &
+    sleep 6
+    if kill -0 "$CLI" 2>/dev/null; then echo CLI-ALIVE; else echo CLI-DEAD; fi
+    kill "$CLI" 2>/dev/null
+    wait')"
+rm -rf "$RLW"
+case "$got" in
+*CLI-ALIVE*) ok "another worktree's 429 does not kill this run" ;;
+*) bad "another worktree's 429 does not kill this run" "$got" ;;
+esac
+
+# Nor is silence the only evidence of life: opencode retries rate limits, and a run that keeps
+# logging after the 429 is recovering, not hung — the quiet window must keep resetting.
+RLW="$(mktemp -d)"
+mkdir -p "$RLW/opencode/log"
+chmod -R a+rwX "$RLW"
+zombie_log "$RLW/opencode/log/opencode.log" 3f7aa94c /workspace
+got="$(run_watch "$RLW" '
+    sleep 60 & CLI=$!
+    (while :; do echo "timestamp=2026-09-13T11:04:00.000Z level=INFO run=3f7aa94c message=loop step=1" >> /data/opencode/log/opencode.log; sleep 0.5; done) &
+    APP=$!
+    CLI_PID=$CLI RATE_LIMIT_QUIET_MS=2000 WORKDIR=/workspace XDG_DATA_HOME=/data \
+        node /usr/local/bin/rate-limit-watch.cjs 2>/dev/null &
+    sleep 6
+    if kill -0 "$CLI" 2>/dev/null; then echo CLI-ALIVE; else echo CLI-DEAD; fi
+    kill "$APP" "$CLI" 2>/dev/null
+    wait')"
+rm -rf "$RLW"
+case "$got" in
+*CLI-ALIVE*) ok 'a run that keeps logging past the 429 is left alone' ;;
+*) bad 'a run that keeps logging past the 429 is left alone' "$got" ;;
+esac
+
 # The driver's exact argv shape, through the wrapper: `run <prompt>`. Relies on opencode's
 # anonymous free tier, since no credential is baked (checked above). Bounded by timeout(1) where
 # the host has one — stock macOS does not — and skipped rather than hung where it does not.

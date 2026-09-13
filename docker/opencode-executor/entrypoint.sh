@@ -76,19 +76,24 @@ fi
 # attribute the session's tokens to a PR. A background SIBLING of the CLI, never its child — a
 # CLI crash must not take the reporter down mid-run — with stdio discarded: the output stream
 # this container prints is the run's, and the reporter never speaks. This shell is PID 1, so
-# it owns the runtime's TERM/INT: both children are tracked, the signal is forwarded to both,
-# and the CLI is waited out past the trap-interrupted `wait` returns — otherwise a
+# it owns the runtime's TERM/INT: all three children are tracked, the signal is forwarded to
+# each, and the CLI is waited out past the trap-interrupted `wait` returns — otherwise a
 # `docker stop` would leave it running until the runtime's forced kill. Its exit status, a
 # signal death's 143 included, is captured and re-raised, which is the one behavior exec had
-# that must survive; the reporter is stopped and reaped before the close-time sample so
-# nothing outlives the run.
+# that must survive; the reporter and the rate-limit watch are stopped and reaped before the
+# close-time sample so nothing outlives the run.
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
 opencode "$@" &
 CLI_PID=$!
+# The rate-limit watch needs the CLI's pid to bind to (it kills a run the provider has
+# rate-limited into a zombie — see rate-limit-watch.cjs), so it starts after the CLI, silent
+# until the one moment it must speak.
+CLI_PID=$CLI_PID node --disable-warning=ExperimentalWarning /usr/local/bin/rate-limit-watch.cjs &
+WATCHER_PID=$!
 
 on_term() {
-    kill -TERM "$CLI_PID" "$REPORTER_PID" 2>/dev/null || true
+    kill -TERM "$CLI_PID" "$REPORTER_PID" "$WATCHER_PID" 2>/dev/null || true
 }
 trap on_term TERM INT
 
@@ -103,9 +108,9 @@ while :; do
 done
 set -e
 
-# The run is over: stop the sampler and reap it before the close-time sample, which is the
-# last thing that runs.
-kill -TERM "$REPORTER_PID" 2>/dev/null || true
-wait "$REPORTER_PID" 2>/dev/null || true
+# The run is over: stop the sampler and the watcher and reap them before the close-time sample,
+# which is the last thing that runs.
+kill -TERM "$REPORTER_PID" "$WATCHER_PID" 2>/dev/null || true
+wait "$REPORTER_PID" "$WATCHER_PID" 2>/dev/null || true
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
 exit "$STATUS"
