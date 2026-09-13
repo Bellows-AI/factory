@@ -21,6 +21,16 @@ const OPENCODE_REPORTER = join(ROOT, 'docker/opencode-executor/branch-reporter.c
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
 
+/** The gate's node:24-alpine image ships no git; worktree.test.ts skips on the same check. */
+function hasGit(): boolean {
+    try {
+        execFileSync('git', ['--version'], { stdio: 'ignore' });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 interface Request {
     path: string;
     headers: IncomingHttpHeaders;
@@ -109,7 +119,7 @@ const run = (
         child.on('close', (status) => resolve({ status, stdout, stderr }));
     });
 
-describe('the branch reporter', () => {
+describe.skipIf(!hasGit())('the branch reporter', () => {
     it('posts the plugin’s exact wire shape for the session it was given', async () => {
         const { url, requests } = await board();
         const dir = gitRepo();
