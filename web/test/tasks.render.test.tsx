@@ -455,51 +455,54 @@ describe('TaskDetail', () => {
         });
 
 /**
- * The bill is the thread's, not the newest run's: each run's scraped cost sums into one
- * running total, and no context stat is in the status surface — context belongs to the turns
- * (each run's message carries its own). Show only once it is money.
- */
-it('sums the cost of every run in the thread, and keeps context out of the status', () => {
-    const root = job({ runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } });
-    const child = {
-        ...job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0.15 } }),
-        id: '44444444-4444-4444-8444-444444444444',
-        followUpTo: root.id,
-    };
-    const html = renderDetail({ jobs: [root, child] });
-    expect(html).toContain('<dt>Cost</dt><dd>$0.4600</dd>');
-    expect(html).not.toContain('<dt>Context</dt>');
-});
+         * The bill is the thread's, not the newest run's: each run's scraped cost sums into one
+         * running total, and no context stat is in the status surface — context belongs to the turns
+         * (each run's message carries its own). Show only once it is money.
+         */
+        it('sums the cost of every run in the thread, and keeps context out of the status', () => {
+            const root = job({ runtime: { ...runtime, contextTokens: 90433, contextCostUsd: 0.31 } });
+            const child = {
+                ...job({ runtime: { ...runtime, contextTokens: 1200, contextCostUsd: 0.15 } }),
+                id: '44444444-4444-4444-8444-444444444444',
+                followUpTo: root.id,
+            };
+            const html = renderDetail({ jobs: [root, child] });
+            expect(html).toContain('<dt>Cost</dt><dd>$0.4600</dd>');
+            expect(html).not.toContain('<dt>Context</dt>');
+        });
 
-it('shows a dash for the cost when nothing in the thread billed', () => {
-    const free = renderDetail({
-        jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
-    });
-    expect(free).toContain('<dt>Cost</dt><dd>—</dd>');
-    expect(free).not.toContain('$0.0000');
-});
+        it('shows a dash for the cost when nothing in the thread billed', () => {
+            const free = renderDetail({
+                jobs: [job({ runtime: { ...runtime, contextTokens: 1200, contextCostUsd: 0 } })],
+            });
+            expect(free).toContain('<dt>Cost</dt><dd>—</dd>');
+            expect(free).not.toContain('$0.0000');
+        });
 
-it('shows the auxiliary services and their last status, and a dash when none were declared', () => {
-    const fleet = renderDetail({
-        jobs: [
-            job({
-                runtime: {
-                    ...runtime,
-                    services: [
-                        { name: 'db', status: 'running' },
-                        { name: 'cache', status: 'stopped' },
-                    ],
-                },
-            }),
-        ],
-    });
-    expect(fleet).toContain('<h2>Services</h2>');
-    expect(fleet).toContain('<dt>db</dt><dd>running</dd>');
-    expect(fleet).toContain('<dt>cache</dt><dd>stopped</dd>');
+        it('shows the auxiliary services and their last status, and a dash when none were declared', () => {
+            const fleet = renderDetail({
+                jobs: [
+                    job({
+                        runtime: {
+                            ...runtime,
+                            services: [
+                                { name: 'db', status: 'running' },
+                                { name: 'cache', status: 'stopped' },
+                            ],
+                        },
+                    }),
+                ],
+            });
+            expect(fleet).toContain('<h2>Services</h2>');
+            expect(fleet).toContain('<dt>db</dt><dd>running</dd>');
+            expect(fleet).toContain('<dt>cache</dt><dd>stopped</dd>');
 
-    expect(renderDetail({ jobs: [job()] })).toContain('<h2>Services</h2>');
-    expect(renderDetail({ jobs: [job()] })).toContain('<dt>Services</dt><dd>—</dd>');
-});
+            // A declared-less run renders the honest dash and skips the section heading — no
+            // titled group for a single row.
+            const bare = renderDetail({ jobs: [job()] });
+            expect(bare).not.toContain('<h2>Services</h2>');
+            expect(bare).toContain('<dt>Services</dt><dd>—</dd>');
+        });
 
         it('shows the running time of a finished run, and nothing before it starts or while parked', () => {
             // 12:00:01 -> 12:04:00, the factory job's span.
@@ -564,9 +567,9 @@ it('shows the auxiliary services and their last status, and a dash when none wer
         // Context and cost belong to the TURNS, the newest run included: the status panel no
         // longer carries them, so hiding the newest run's own stats would lose them entirely.
         it('shows each turn\'s own context and cost inline, the newest run\'s included', () => {
-            const root = job({ command: 'first command', runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } });
+            const root = job({ command: 'first command', runtime: { ...runtime, contextTokens: 90433, contextCostUsd: 0.31 } });
             const child = {
-                ...job({ command: 'second command', runtime: { ...runtime, contextTokens: 1200, costUsd: 0.15 } }),
+                ...job({ command: 'second command', runtime: { ...runtime, contextTokens: 1200, contextCostUsd: 0.15 } }),
                 id: '44444444-4444-4444-8444-444444444444',
                 followUpTo: root.id,
             };
@@ -577,7 +580,7 @@ it('shows the auxiliary services and their last status, and a dash when none wer
 
         it('never emits a placeholder value', () => {
             const html = renderDetail({
-                jobs: [job({ executor: null, workspacePath: null, output: null, exitCode: null, runtime: { ...runtime, activity: null, contextTokens: null, costUsd: null } })],
+                jobs: [job({ executor: null, workspacePath: null, output: null, exitCode: null, runtime: { ...runtime, activity: null, contextTokens: null, contextCostUsd: null } })],
             });
             for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
         });

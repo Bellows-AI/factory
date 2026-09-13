@@ -60,8 +60,8 @@ const isHttpUrl = (url: string): boolean => url.startsWith('https://') || url.st
 const threadCost = (jobs: Job[]): ReactNode => {
     let total = 0;
     for (const job of jobs) {
-        const costUsd = job.runtime?.costUsd;
-        if (costUsd != null && costUsd > 0) total += costUsd;
+        const contextCostUsd = job.runtime?.contextCostUsd;
+        if (contextCostUsd != null && contextCostUsd > 0) total += contextCostUsd;
     }
     return total > 0 ? `$${total.toFixed(4)}` : '—';
 };
@@ -117,9 +117,11 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
                     ['Running time', parked ? '—' : runDuration(latest.startedAt, latest.finishedAt)],
                 ]}
             />
-            <div className="panel-head">
-                <h2>Services</h2>
-            </div>
+            {runtime?.services != null && runtime.services.length > 0 && (
+                <div className="panel-head">
+                    <h2>Services</h2>
+                </div>
+            )}
             <KeyValues pairs={services(runtime)} />
             <div className="panel-head">
                 <h2>Connections</h2>

@@ -218,7 +218,9 @@ export function TaskDetail({
                     // The newest run's statuses live in the sidebar — one status surface for the
                     // whole task, fed by the run the composer and Done act on. History runs keep
                     // theirs inline: the sidebar does not carry their per-run verdicts, and
-                    // deleting these would erase what each attempt was.
+                    // deleting these would erase what each attempt was. Context and bill ride every
+                    // turn inline, the newest included — they measure that turn, and the sidebar
+                    // carries only the thread's running total.
                     const history = task.id !== latestTask.id;
                     return (
                         <article className="chat-exchange" key={task.id}>
@@ -234,8 +236,8 @@ export function TaskDetail({
                                 {task.runtime?.contextTokens != null ? (
                                     <span className="chat-activity">
                                         ctx {tokenCount.format(task.runtime.contextTokens)} tok
-                                        {task.runtime.costUsd != null && task.runtime.costUsd > 0
-                                            ? ` · $${task.runtime.costUsd.toFixed(4)}`
+                                        {task.runtime?.contextCostUsd != null && task.runtime.contextCostUsd > 0
+                                            ? ` · $${task.runtime.contextCostUsd.toFixed(4)}`
                                             : ''}
                                     </span>
                                 ) : null}

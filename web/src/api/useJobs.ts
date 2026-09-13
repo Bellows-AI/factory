@@ -41,7 +41,11 @@ export interface RuntimeVitals {
      * (a context-only object with no CPU sample is legal).
      */
     contextTokens?: number | null;
-    costUsd?: number | null;
+    /**
+     * The cumulative dollar cost of the run's context, stored beside the token count. The wire
+     * key is `contextCostUsd` — the same name the driver's verdict carries and the store writes.
+     */
+    contextCostUsd?: number | null;
     /**
      * The auxiliary services the run stood up, each with its last platform-readable status at
      * close. Null on a run that declared none or whose driver could not ask.
