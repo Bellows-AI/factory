@@ -137,6 +137,7 @@ describe('taskTitle', () => {
         repo: null,
         executor: null,
         followUpTo: null,
+        rootJobId: '11111111-1111-4111-8111-111111111111',
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
@@ -155,6 +156,7 @@ describe('taskTitle', () => {
 });
 
 describe('taskStatus', () => {
+    let seq = 0;
     const job = (id: string, overrides: Partial<Job> = {}): Job => ({
         id,
         command: `command ${id}`,
@@ -165,18 +167,22 @@ describe('taskStatus', () => {
         repo: null,
         executor: null,
         followUpTo: null,
+        // A root by default; a follow-up overrides both spine fields together.
+        rootJobId: id,
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
-        createdAt: '2026-09-01T12:00:00.000Z',
+        createdAt: new Date(Date.UTC(2026, 8, 1, 12, 0, 0) + seq++ * 1000).toISOString(),
         startedAt: null,
         finishedAt: null,
         sessionId: null,
         remoteSessionId: null,
         ...overrides,
     });
+    const followUp = (id: string, rootId: string, overrides: Partial<Job> = {}): Job =>
+        job(id, { followUpTo: rootId, rootJobId: rootId, ...overrides });
 
-    it('answers the named run when it is its own chain root', () => {
+    it('answers the named run when it is its own thread root', () => {
         expect(taskStatus('a', [job('a', { status: 'running' })])).toEqual({
             status: 'running',
             cancelRequestedAt: null,
@@ -184,13 +190,13 @@ describe('taskStatus', () => {
         });
     });
 
-    it('resolves ANY member to the newest run of the chain, like the detail page does', () => {
-        // The chain, oldest first: root a, follow-up b, newest c. `taskStatus` must answer c's
-        // state whether asked for the root or one of the follow-ups.
+    it('resolves ANY member to the newest run of the thread, like the detail page does', () => {
+        // The thread, oldest first: root a, follow-up b, newest c — all sharing the served root.
+        // `taskStatus` must answer c's state whether asked for the root or one of the follow-ups.
         const chain = [
             job('a'),
-            job('b', { followUpTo: 'a' }),
-            job('c', { followUpTo: 'b', status: 'running', cancelRequestedAt: '2026-09-01T13:00:00.000Z' }),
+            followUp('b', 'a'),
+            followUp('c', 'a', { status: 'running', cancelRequestedAt: '2026-09-01T13:00:00.000Z' }),
         ];
         const expected = { status: 'running', cancelRequestedAt: '2026-09-01T13:00:00.000Z', doneAt: null };
         expect(taskStatus('a', chain)).toEqual(expected);
@@ -198,36 +204,40 @@ describe('taskStatus', () => {
         expect(taskStatus('c', chain)).toEqual(expected);
     });
 
-    it('picks the newest member of the chain regardless of the rows\' order', () => {
-        // The head is found by who points at whom, not by array position — the newest member is
-        // the one no other chain job continues, so a shuffled list answers the same task state.
-        const newest = job('z', { followUpTo: 'b', status: 'failed', doneAt: '2026-09-01T14:00:00.000Z' });
+    it('picks the newest member of the thread regardless of the rows\' order', () => {
+        // The head is the member with the highest createdAt, not the first row — a shuffled list
+        // answers the same task state. Timestamps explicit, so the shuffle cannot shade them.
+        const at = (minute: number): string => new Date(Date.UTC(2026, 8, 1, 12, minute)).toISOString();
+        const newest = followUp('z', 'a', {
+            status: 'failed',
+            doneAt: '2026-09-01T14:00:00.000Z',
+            createdAt: at(3),
+        });
         const expected = { status: 'failed', cancelRequestedAt: null, doneAt: '2026-09-01T14:00:00.000Z' };
-        expect(taskStatus('b', [newest, job('b', { followUpTo: 'a' }), job('a')])).toEqual(expected);
-        expect(taskStatus('b', [job('a'), job('b', { followUpTo: 'a' }), newest])).toEqual(expected);
+        expect(taskStatus('b', [newest, followUp('b', 'a', { createdAt: at(2) }), job('a', { createdAt: at(1) })])).toEqual(
+            expected,
+        );
+        expect(taskStatus('b', [job('a', { createdAt: at(1) }), followUp('b', 'a', { createdAt: at(2) }), newest])).toEqual(
+            expected,
+        );
     });
 
-    it('falls back to the named run when its ancestors are outside the poll window', () => {
-        // The poll holds only the newest rows: a follow-up whose parent fell out of the window
-        // still carries its own live status, and the dot must not drop just because the root is
-        // no longer in the poll.
-        expect(taskStatus('b', [job('b', { followUpTo: 'a', status: 'running' })])).toEqual({
+    it('resolves a thread whose root row fell out of the poll window', () => {
+        // The window holds only the newest turns, but each carries the served root, so the
+        // conversation still resolves to its newest member — the case the old client-side climb
+        // could only approximate with a segment.
+        const window = [followUp('b', 'a'), followUp('c', 'a', { status: 'failed', doneAt: '2026-09-01T14:00:00.000Z' })];
+        const expected = { status: 'failed', cancelRequestedAt: null, doneAt: '2026-09-01T14:00:00.000Z' };
+        expect(taskStatus('b', window)).toEqual(expected);
+        expect(taskStatus('c', window)).toEqual(expected);
+    });
+
+    it('answers the named run when it is the only member in the window', () => {
+        expect(taskStatus('b', [followUp('b', 'a', { status: 'running' })])).toEqual({
             status: 'running',
             cancelRequestedAt: null,
             doneAt: null,
         });
-    });
-
-    it('falls back to the newest member the window can still reach', () => {
-        // Root a fell out of the poll window; the segment the poll still holds is b <- c, so the
-        // newest reachable run c answers for the task, not a blank.
-        const window = [
-            job('b', { followUpTo: 'a' }),
-            job('c', { followUpTo: 'b', status: 'failed', doneAt: '2026-09-01T14:00:00.000Z' }),
-        ];
-        const expected = { status: 'failed', cancelRequestedAt: null, doneAt: '2026-09-01T14:00:00.000Z' };
-        expect(taskStatus('b', window)).toEqual(expected);
-        expect(taskStatus('c', window)).toEqual(expected);
     });
 
     it('answers nothing about a task the poll does not know', () => {

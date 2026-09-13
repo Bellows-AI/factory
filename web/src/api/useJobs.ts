@@ -58,6 +58,11 @@ export interface Job {
     executor: string | null;
     /** The finished task this one asks for adjustments on, when it is a follow-up. */
     followUpTo: string | null;
+    /**
+     * The id of the thread's ROOT task — the job itself, or the conversation's first run. Served
+     * on every row, so any turn resolves to its whole task without climbing parents.
+     */
+    rootJobId: string;
     /** When the user declared the task done, or null while they have not. */
     doneAt: string | null;
     /**

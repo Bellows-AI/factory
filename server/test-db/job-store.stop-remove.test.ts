@@ -71,11 +71,12 @@ const craft = async (shape: {
 } = {}): Promise<string> => {
     const id = randomUUID();
     await sql`
-        insert into job (org_id, id, command, status, parent_job_id, created_by, repo, lease_expires_at, created_at)
+        insert into job (org_id, id, command, status, parent_job_id, root_job_id, created_by, repo, lease_expires_at, created_at)
         values (
             ${ORG}, ${id}, 'crafted',
             ${shape.status ?? 'queued'},
             ${shape.parent ?? null},
+            ${shape.parent ?? id},
             ${shape.createdBy === undefined ? AUTHOR : shape.createdBy},
             ${shape.repo === undefined ? 'acme/widgets' : shape.repo},
             ${shape.lease === 'live' ? sql`now() + interval '5 minutes'` : sql`now() - interval '1 second'`},

@@ -88,6 +88,13 @@ export interface Job {
      */
     followUpTo: string | null;
     /**
+     * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
+     * chain's first job. Stored on every row (022): the composite is served, never re-derived by
+     * the reader. The worktree (issue #35) is keyed by it, and every member of one conversation
+     * carries the same value from insert.
+     */
+    rootJobId: string;
+    /**
      * When the user declared the task done — the verdict no run can make. Null until they say so,
      * and only settable on a finished task; it never replaces the run's own outcome.
      */
@@ -146,10 +153,10 @@ export interface Claim {
     workspacePath: string | null;
     /**
      * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
-     * chain's first job, resolved through `parent_job_id`. The task worktree (issue #35) is keyed
-     * by it, so every attempt of a task and every follow-up resuming its session lands in the
-     * same tree, branched off the remote default. The driver cannot walk the chain — the board
-     * owns the rows — so the claim is where the root travels.
+     * chain's first job. Read straight off the row's `root_job_id` column (022). The task worktree
+     * (issue #35) is keyed by it, so every attempt of a task and every follow-up resuming its
+     * session lands in the same tree, branched off the remote default. The driver cannot walk the
+     * chain — the board owns the rows — so the claim is where the root travels.
      */
     rootJobId: string;
     /**
@@ -407,8 +414,8 @@ export interface JobStore {
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
      * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a
-     * member deep in the thread must resolve to the same view), which is why the walk goes UP to
-     * the root first and then collects everything below it. Null when `id` is not a job here.
+     * member deep in the thread must resolve to the same view): every member carries the same
+     * `root_job_id` (022), which is what the read keys on. Null when `id` is not a job here.
      */
     thread(id: string): Promise<Job[] | null>;
     get(id: string): Promise<Job | null>;
@@ -435,6 +442,7 @@ interface JobRow {
     repo: string | null;
     executor: string | null;
     parent_job_id: string | null;
+    root_job_id: string;
     done_at: Date | null;
     cancel_requested_at: Date | null;
     command_delivered_at: Date | null;
@@ -534,27 +542,6 @@ export function createJobStore({
         if (ready) await ready;
     };
 
-    /**
-     * The thread's ROOT id for a job — the job itself, unless it is a follow-up, and then the
-     * chain's first job, walked up through parent_job_id (the `thread` walk, up half). The task
-     * worktree (`docs/jobs.md`, issue #35) is keyed by it, which is what makes every attempt of
-     * a task and every follow-up on it land in the same tree. `exec` is the caller's connection
-     * — the claim's transaction, so a claim holds one connection rather than two.
-     */
-    const rootOf = async (exec: Sql | TransactionSql, id: string): Promise<string> => {
-        const [root] = await exec<{ id: string }[]>`
-            with recursive up as (
-                select id, parent_job_id from job
-                where org_id = ${orgId} and id = ${id}
-                union all
-                select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
-                  where j.org_id = ${orgId}
-            )
-            select id from up where parent_job_id is null
-        `;
-        return root?.id ?? id;
-    };
-
     // Inside the factory, so the reads' `workspacePath` derivation closes over the org and the
     // has-a-workspace-root decision — the claim's own `claimPath` rule, shared rather than copied.
     const toJob = (row: JobRow): Job => ({
@@ -574,6 +561,7 @@ export function createJobStore({
         repo: row.repo,
         executor: row.executor,
         followUpTo: row.parent_job_id,
+        rootJobId: row.root_job_id,
         doneAt: iso(row.done_at),
         cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,
@@ -587,9 +575,12 @@ export function createJobStore({
     return {
         async create(command, createdBy, target) {
             await gate();
+            // id and root_job_id are the SAME uuid, computed once in the select so the column can
+            // be not null from insert — the root's root is itself (022).
             const rows = await sql<{ id: string }[]>`
-                insert into job (org_id, command, created_by, repo, executor)
-                values (${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor})
+                insert into job (org_id, command, created_by, repo, executor, id, root_job_id)
+                select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x
+                from (select gen_random_uuid() as x) s
                 returning id
             `;
             return { id: rows[0]!.id };
@@ -608,10 +599,12 @@ export function createJobStore({
             // state every pre-accounts task is in — and an authored parent refuses a caller with
             // no account, which is the read below's forbidden answer. The session ids AND the
             // executor are copied at insert, which is what makes the claim resume the parent
-            // conversation, on the executor that ran it, without any new claim-side rule.
+            // conversation, on the executor that ran it, without any new claim-side rule. The
+            // parent's root_job_id comes across with them — the child joins the SAME conversation
+            // (022), whether its parent is a root or a mid-chain turn.
             const rows = await sql<{ id: string }[]>`
                 with parent as (
-                    select id, repo, executor, session_id, remote_session_id
+                    select id, repo, executor, session_id, remote_session_id, root_job_id
                     from job
                     where org_id = ${orgId} and id = ${parentId}
                       and status in ('succeeded','failed','dead')
@@ -620,8 +613,8 @@ export function createJobStore({
                       and created_by is not distinct from ${createdBy}
                     for update
                 )
-                insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id)
-                select ${orgId}, ${command}, ${createdBy}, repo, executor, id, session_id, remote_session_id
+                insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id, root_job_id)
+                select ${orgId}, ${command}, ${createdBy}, repo, executor, id, session_id, remote_session_id, root_job_id
                 from parent
                 returning id
             `;
@@ -700,40 +693,26 @@ export function createJobStore({
             await gate();
 
             /*
-             * The thread-exclusion, rendered once and used twice below. `id` is the candidate
-             * row: a correlated expression in the select, a bound parameter in the update.
+             * The thread-exclusion, rendered once and used twice below. `id` and `root` are the
+             * candidate row's id and root_job_id: correlated expressions in the select, bound
+             * parameters in the update.
              *
-             * A row whose thread's ROOT already has another row running waits. The per-task
-             * worktree (issue #35) is keyed by that root, so two claimed rows of one thread
-             * would run two runners and two sync jobs into the same tree. The blocker is
-             * status = 'running' and nothing else: an expired lease is still a run the board
-             * believes in until the claim reclaims it (the same-row reclaim, o.id <> <candidate>,
-             * is the heartbeat-409 path and stays), and a standby row neither blocks nor is
-             * claimable. The walk is the thread() walk, up to the root and down to every
-             * descendant, so the exclusion is symmetric and terminal rows block nothing.
+             * A row whose thread already has another row running waits. The per-task worktree
+             * (issue #35) is keyed by the thread root, so two claimed rows of one thread would run
+             * two runners and two sync jobs into the same tree. The blocker is status = 'running'
+             * and nothing else: an expired lease is still a run the board believes in until the
+             * claim reclaims it (the same-row reclaim, o.id <> <candidate>, is the heartbeat-409
+             * path and stays), and a standby row neither blocks nor is claimable. Every member of
+             * the thread carries the same root_job_id (022), so the exclusion is one indexed
+             * lookup, not a walk — and it is symmetric and terminal rows block nothing.
              */
-            const sameThreadRunning = (id: string | Fragment) => sql`
+            const sameThreadRunning = (id: string | Fragment, root: string | Fragment) => sql`
                 not exists (
-                    with recursive up as (
-                        select j2.id, j2.parent_job_id from job j2
-                        where j2.org_id = ${orgId} and j2.id = ${id}
-                        union all
-                        select j3.id, j3.parent_job_id from job j3 join up on j3.id = up.parent_job_id
-                          where j3.org_id = ${orgId}
-                    ),
-                    root as (
-                        select id from up where parent_job_id is null
-                    ),
-                    thread as (
-                        select id from job where org_id = ${orgId} and id = (select id from root)
-                        union all
-                        select j4.id from job j4 join thread on j4.parent_job_id = thread.id
-                          where j4.org_id = ${orgId}
-                    )
-                    select 1
-                    from thread t
-                    join job o on o.id = t.id and o.org_id = ${orgId}
-                    where o.id <> ${id} and o.status = 'running'
+                    select 1 from job o
+                    where o.org_id = ${orgId}
+                      and o.root_job_id = ${root}
+                      and o.id <> ${id}
+                      and o.status = 'running'
                 )
             `;
 
@@ -766,13 +745,13 @@ export function createJobStore({
                 `;
 
                 for (;;) {
-                    const [candidate] = await tx<{ id: string; parent_job_id: string | null }[]>`
-                        select j.id, j.parent_job_id from job j
+                    const [candidate] = await tx<{ id: string; root_job_id: string }[]>`
+                        select j.id, j.root_job_id from job j
                         where j.org_id = ${orgId}
                           and j.status in ('queued','running')
                           and j.lease_expires_at <= now()
                           and j.attempts < j.max_attempts
-                          and ${sameThreadRunning(sql`j.id`)}
+                          and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
                         order by j.created_at, j.id
                         limit 1
                         -- Below the limit in the plan, so a row another claimer holds is skipped
@@ -783,13 +762,9 @@ export function createJobStore({
                     `;
                     if (!candidate) return null;
 
-                    // The thread's ROOT id: the job itself, unless it is a follow-up — and then
-                    // the chain's first job (the walk above). A root job answers without the
-                    // query. Resolved before the lock, because the lock is keyed by it.
-                    const rootJobId =
-                        candidate.parent_job_id !== null ? await rootOf(tx, candidate.id) : candidate.id;
+                    // The thread's ROOT id, straight off the candidate's own row (022).
                     // The serialization point: one transaction-scoped advisory lock per claim,
-                    // keyed on the resolved root. Deliberately not `for update` on the root ROW:
+                    // keyed on that root. Deliberately not `for update` on the root ROW:
                     // that row is the one a running thread heartbeats and completes against, and
                     // a claim parked on it would stall those writes for as long as its env
                     // resolution and token mint take. An advisory xact lock queues claims
@@ -797,6 +772,7 @@ export function createJobStore({
                     // threads never block each other, and one lock per transaction means no
                     // lock-ordering deadlock. Claims of one thread therefore fully serialize,
                     // and the re-check below sees every earlier claim committed.
+                    const rootJobId = candidate.root_job_id;
                     await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
 
                     const rows = await tx<
@@ -848,7 +824,7 @@ export function createJobStore({
                           -- decision the lock serializes. A same-thread claim that committed while
                           -- this transaction waited is visible here, and the candidate's own row
                           -- has been locked since the select.
-                          and ${sameThreadRunning(candidate.id)}
+                           and ${sameThreadRunning(candidate.id, candidate.root_job_id)}
                         -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
                         -- their pre-update values: delivered-so-far is exactly "this row was suspended at
                         -- least once with its command in the transcript". A fresh or crashed follow-up has
@@ -996,8 +972,8 @@ export function createJobStore({
             await gate();
             // Lease-guarded like every worker route: the freshness answer goes only to the worker
             // that holds the run, and only while it still does.
-            const rows = await sql<{ created_by: string | null; repo: string | null; parent_job_id: string | null }[]>`
-                select created_by, repo, parent_job_id
+            const rows = await sql<{ created_by: string | null; repo: string | null; root_job_id: string }[]>`
+                select created_by, repo, root_job_id
                 from job
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
@@ -1009,10 +985,9 @@ export function createJobStore({
             if (!gatesReader || !row.repo || !workspacePath) {
                 return { result: 'ok', gates: null, gateError: null };
             }
-            // The same root resolution the claim does: the re-read must answer for the worktree
-            // the run edits, which is keyed by the thread's root, not by this row.
-            const rootJobId = row.parent_job_id !== null ? await rootOf(sql, id) : id;
-            const read = await gatesReader.readFor(workspacePath, row.repo, rootJobId);
+            // The worktree the run edits is keyed by the thread's root, not by this row — the
+            // column read (022) answers for it directly.
+            const read = await gatesReader.readFor(workspacePath, row.repo, row.root_job_id);
             return { result: 'ok', gates: read.config, gateError: read.error };
         },
 
@@ -1068,40 +1043,31 @@ export function createJobStore({
             // removed task with a member running again afterwards. The lock queues removals against
             // claims of the same thread and nothing else.
             return sql.begin(async (tx) => {
-                const rootJobId = await rootOf(tx, id);
+                // The thread root, straight off the named row (022). Nothing when the input never
+                // existed — the row read below then answers nothing and the route says missing.
+                const [named] = await tx<{ id: string; root_job_id: string }[]>`
+                    select id, root_job_id from job
+                    where org_id = ${orgId} and id = ${id}
+                `;
+                if (!named) return 'missing';
+                const rootJobId = named.root_job_id;
                 await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
 
                 // The thread's ROOT row carries the labels the reclaim is addressed by — the repo
                 // the worktree was checked out from and the author whose checkout root it lives
-                // under. Nothing when the input never existed (rootOf answers the input id then,
-                // and there is no such row).
+                // under.
                 const [root] = await tx<{ id: string; repo: string | null; created_by: string | null }[]>`
                     select id, repo, created_by from job
                     where org_id = ${orgId} and id = ${rootJobId}
                 `;
                 if (!root) return 'missing';
 
-                // One walk, the claim's own thread shape: everything under the root. A linear chain
-                // today (each follow-up names its immediate parent); the recursive form stays correct
-                // if two adjustments ever land on one parent.
+                // Every member of the thread carries the same root_job_id (022), so the thread is
+                // one indexed read. Branching included, should two adjustments ever land on one
+                // parent.
                 const members = await tx<{ id: string; status: JobStatus }[]>`
-                    with recursive up as (
-                        select id, parent_job_id from job
-                        where org_id = ${orgId} and id = ${rootJobId}
-                        union all
-                        select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
-                          where j.org_id = ${orgId}
-                    ),
-                    root as (
-                        select id from up where parent_job_id is null
-                    ),
-                    thread as (
-                        select id, status from job where org_id = ${orgId} and id = (select id from root)
-                        union all
-                        select j.id, j.status from job j join thread on j.parent_job_id = thread.id
-                          where j.org_id = ${orgId}
-                    )
-                    select id, status from thread
+                    select id, status from job
+                    where org_id = ${orgId} and root_job_id = ${rootJobId}
                 `;
                 // The one refusal: a member is running. The user stops it first — the per-task
                 // worktree is a live runner's checkout, and tearing it out under the container would
@@ -1206,7 +1172,7 @@ export function createJobStore({
             // VERDICT lands: the walk below runs on the same connection, where the just-updated
             // row's new status is visible and no follow-up inserted after the commit can be.
             return sql.begin(async (tx) => {
-                const rows = await tx<{ id: string }[]>`
+                const rows = await tx<{ id: string; root_job_id: string }[]>`
                     update job set
                         status      = ${status},
                         exit_code   = ${exitCode},
@@ -1219,37 +1185,21 @@ export function createJobStore({
                         runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
                     where org_id = ${orgId} and id = ${id}
                       and status = 'running' and lease_token = ${leaseToken}
-                    returning id
+                    returning id, root_job_id
                 `;
                 if (!rows[0]) {
                     // A report from a worker whose lease was reclaimed is refused, not merged: the
                     // job is someone else's now, and the two runs did different work.
                     return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
                 }
-                // The thread walk, the `thread` read's up-to-the-root-then-down shape, kept as a
-                // copy rather than a shared helper so the thread read itself stays untouched. The
-                // just-updated row's verdict status is visible here; the walk collects statuses
-                // only, and the aggregate answers in one row.
+                // The thread's terminality, read off the root column the row already carries
+                // (022) — every member answers to the same root_job_id. The just-updated row's
+                // verdict status is visible here, and the aggregate answers in one row.
                 const [thread] = await tx<{ total: number; terminal: number }[]>`
-                    with recursive up as (
-                        select id, parent_job_id from job
-                        where org_id = ${orgId} and id = ${id}
-                        union all
-                        select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
-                          where j.org_id = ${orgId}
-                    ),
-                    root as (
-                        select id from up where parent_job_id is null
-                    ),
-                    chain as (
-                        select id, status from job where org_id = ${orgId} and id = (select id from root)
-                        union all
-                        select j.id, j.status from job j join chain on j.parent_job_id = chain.id
-                          where j.org_id = ${orgId}
-                    )
                     select count(*)::int as total,
                            count(*) filter (where status in ('succeeded','failed','dead'))::int as terminal
-                    from chain
+                    from job
+                    where org_id = ${orgId} and root_job_id = ${rows[0].root_job_id}
                 `;
                 return {
                     result: 'ok',
@@ -1260,31 +1210,18 @@ export function createJobStore({
 
         async thread(id) {
             await gate();
-            // Up: from any member to the root. Down: the root plus every descendant. A linear
-            // chain today (each follow-up names its immediate parent), and if two adjustments ever
-            // landed on one parent, both come back in creation order — the conversation still
-            // reads top to bottom.
+            // The named row's root_job_id is the whole resolution (022): every member of the
+            // conversation carries the same value, so the chain is one indexed read, oldest
+            // first. If two adjustments ever landed on one parent, both come back in creation
+            // order — the conversation still reads top to bottom. An absent id resolves nothing
+            // and the read answers null.
             const rows = await sql<JobRow[]>`
-                with recursive up as (
-                    select id, parent_job_id from job
-                    where org_id = ${orgId} and id = ${id}
-                    union all
-                    select j.id, j.parent_job_id from job j join up on j.id = up.parent_job_id
-                      where j.org_id = ${orgId}
-                ),
-                root as (
-                    select id from up where parent_job_id is null
-                ),
-                chain as (
-                    select * from job where org_id = ${orgId} and id = (select id from root)
-                    union all
-                    select j.* from job j join chain on j.parent_job_id = chain.id
-                      where j.org_id = ${orgId}
-                )
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
-                from chain
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
+                from job
+                where org_id = ${orgId}
+                  and root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
                 order by created_at, id
             `;
             const [first] = rows;
@@ -1296,7 +1233,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
                 from job where org_id = ${orgId} and id = ${id}
             `;
             const row = rows[0];
@@ -1308,7 +1245,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, repo, executor,
-                       parent_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
                 from job
                 where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}
                   ${repo ? sql`and repo = ${repo}` : sql``}

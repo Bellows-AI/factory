@@ -24,6 +24,7 @@ function job(overrides: Partial<Job> = {}): Job {
         repo: null,
         executor: null,
         followUpTo: null,
+        rootJobId: '11111111-1111-4111-8111-111111111111',
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
@@ -278,7 +279,7 @@ describe('TaskDetail', () => {
 
     it('keeps the thread actions on the newest run only — history runs render no Remove of their own', () => {
         const root = job({ command: 'first command' });
-        const child = { ...job({ command: 'second command', status: 'standby' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id };
+        const child = { ...job({ command: 'second command', status: 'standby' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
         const html = renderDetail({ jobs: [root, child] });
         expect(html.match(/>Resume</g)).toHaveLength(1);
         expect(html.match(/>Remove</g)).toHaveLength(1);
@@ -317,6 +318,7 @@ describe('TaskDetail', () => {
             ...job({ command: 'now tighten the retry logic' }),
             id: '44444444-4444-4444-8444-444444444444',
             followUpTo: root.id,
+            rootJobId: root.id,
         };
         const html = renderDetail({ jobs: [root, child] });
 
@@ -528,7 +530,7 @@ describe('TaskDetail', () => {
 
         it('keeps older runs\' pills inline and moves only the newest run\'s to the sidebar', () => {
             const root = job({ command: 'first command' });
-            const child = { ...job({ command: 'second command' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id };
+            const child = { ...job({ command: 'second command' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
             const html = renderDetail({ jobs: [root, child] });
             const rootMeta = html.slice(html.indexOf('first command'), html.indexOf('chat-detail'));
             expect(rootMeta).toContain('<span class="pill');
@@ -596,6 +598,7 @@ describe('thread derivations', () => {
         command,
         id: '44444444-4444-4444-8444-444444444444',
         followUpTo: base.id,
+        rootJobId: base.id,
         ...over,
     });
 

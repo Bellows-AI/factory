@@ -539,7 +539,13 @@ chain, the task page renders it as one conversation, a follow-up extends the vie
 of navigating away, and the sidenav lists thread roots only — copies of the parent's `repo`,
 `session_id` and `remote_session_id` from insert. The
 repo copy keeps the thread under its repository's name in the task list; the session copies are what make the claim resume the parent
-conversation without any new claim-side rule.
+conversation without any new claim-side rule. Every row also carries `root_job_id` (022): the
+thread's root, stamped from the parent at follow-up insert and from itself at first insert, next to
+the copied labels. It is the same fact `parent_job_id` implies without a walk, written once so the
+composite is SERVED rather than re-derived — the thread read, the claim's worktree root and
+thread-exclusion, the verdict's terminality and remove's whole-thread delete all key off it, and
+the `/api/jobs` list carries it so the UI can resolve any turn to its task even when the poll's
+capped window no longer holds the root row itself.
 
 **A follow-up is the author's, because of where the resumed session would run.** The child inherits
 the parent's `session_id`, and a session resumes only coherently in the checkout tree it ran in —

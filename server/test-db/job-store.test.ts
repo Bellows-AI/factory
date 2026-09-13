@@ -779,6 +779,11 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             sessionId: CHAIN,
             status: 'queued',
         });
+        // The served root: the grandchild wears the ROOT's id, not its immediate parent's, so any
+        // member resolves to the whole conversation without a walk (022).
+        expect((await store.get(second.id))?.rootJobId).toBe(parent);
+        expect((await store.get(first.id))?.rootJobId).toBe(parent);
+        expect((await store.get(parent))?.rootJobId).toBe(parent);
     });
 
     it('marks a finished task done and answers the same moment twice', async () => {

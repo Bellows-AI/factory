@@ -60,11 +60,12 @@ const craft = async (shape: {
 }): Promise<string> => {
     const id = randomUUID();
     await sql`
-        insert into job (org_id, id, command, status, parent_job_id, lease_expires_at, created_at)
+        insert into job (org_id, id, command, status, parent_job_id, root_job_id, lease_expires_at, created_at)
         values (
             ${ORG}, ${id}, 'crafted',
             ${shape.status ?? 'queued'},
             ${shape.parent ?? null},
+            ${shape.parent ?? id},
             ${shape.lease === 'live' ? sql`now() + interval '5 minutes'` : sql`now() - interval '1 second'`},
             now() - make_interval(secs => ${shape.olderBySeconds ?? 0}::int)
         )

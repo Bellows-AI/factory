@@ -41,6 +41,7 @@ function job(overrides: Partial<Job> = {}): Job {
         repo: null,
         executor: null,
         followUpTo: null,
+        rootJobId: '22222222-2222-4222-8222-222222222222',
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
@@ -211,7 +212,7 @@ describe('SideNav status dots', () => {
 
     it('answers for the whole thread, not the row under the cursor: a follow-up\'s state is the task\'s', () => {
         const root = job();
-        const child = { ...job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null }), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id };
+        const child = { ...job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null }), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id, rootJobId: root.id };
         const html = render('/tasks', [root, child]);
         // The root stays in Recent (its tab is not open), and its dot wears the child's live state.
         const rootEntry = html.slice(html.indexOf('newer task'), html.indexOf('</a>', html.indexOf('newer task')));

@@ -1137,6 +1137,7 @@ describe('GET /api/jobs', () => {
         repo: 'acme/web',
         executor: 'main',
         followUpTo: null,
+        rootJobId: ID,
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
@@ -1161,7 +1162,7 @@ describe('GET /api/jobs', () => {
     // The whole follow-up chain, and ANY member's id resolves to it — the UI keeps one task per
     // conversation, so the URL may name the root or any adjustment.
     it('reads the whole thread from any member of it', async () => {
-        const child = { ...job, id: FOLLOW_UP_ID, command: 'now adjust the tone', followUpTo: ID };
+        const child = { ...job, id: FOLLOW_UP_ID, command: 'now adjust the tone', followUpTo: ID, rootJobId: ID };
         const instance = await harnessWith(stubStore({ thread: [job, child] }));
 
         for (const member of [ID, FOLLOW_UP_ID]) {
