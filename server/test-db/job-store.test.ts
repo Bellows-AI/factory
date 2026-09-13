@@ -41,7 +41,7 @@ const REMOTE = 'cse_015tb2nHhHNrBuL7ZDhn9Wx5';
 
 beforeAll(async () => {
     if (!enabled) return;
-    // Higher than pr-store's `max: 2`: the claim exclusivity test needs real parallelism, and a
+    // Higher than the app pool's `max: 4`: the claim exclusivity test needs real parallelism, and a
     // pool of two would serialise it into a test that passes for the wrong reason.
     sql = postgres(url as string, { max: 8 });
     await migrate(sql, { orgId: ORG, attempts: 3 });

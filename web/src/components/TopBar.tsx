@@ -30,7 +30,7 @@ export function TopBar({
             <div>
                 <h1>Factory stats</h1>
                 <p className="muted">
-                    {meta ? `${describeRepos(meta.repos)} — PRs merged into ${meta.baseBranch}` : 'loading…'}
+                    {meta ? `${describeRepos(meta.repos)} — AI usage telemetry` : 'loading…'}
                 </p>
             </div>
             <div className="topbar-actions">

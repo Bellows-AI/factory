@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import type { Stats } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceRepo } from '../src/api/useWorkspace.js';
@@ -7,9 +5,6 @@ import { pollDelay } from '../src/api/useWorkspace.js';
 import { bytes, commitDate } from '../src/format.js';
 import { WorkspaceExecutorsPanel } from '../src/panels/WorkspaceExecutorsPanel.js';
 import { WorkspaceReposPanel } from '../src/panels/WorkspaceReposPanel.js';
-import { repoMetrics } from '../src/workspace/join.js';
-
-const FIXTURE = new URL('../../core/test/fixtures/sample-canonical.json', import.meta.url);
 
 /** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
@@ -29,50 +24,35 @@ function repo(overrides: Partial<WorkspaceRepo> = {}): WorkspaceRepo {
     };
 }
 
-/** A Stats with one scatter row for acme/web, which is the only per-repo signal Stats carries. */
-function statsWith(rows: { repo: string; hours: number; size: number }[]): Stats {
-    const base = JSON.parse(readFileSync(FIXTURE, 'utf8')) as { stats?: Stats };
-    const stats = (base.stats ?? (base as unknown as Stats)) as Stats;
-    return {
-        ...stats,
-        size: {
-            ...stats.size,
-            scatter: rows.map((row, index) => ({
-                repo: row.repo,
-                number: index + 1,
-                size: row.size,
-                hours: row.hours,
-                botThreads: 0,
-            })),
-        },
-    } as Stats;
-}
-
-const render = (repos: WorkspaceRepo[], measured: { owner: string; name: string }[], stats: Stats | null) =>
-    renderToStaticMarkup(<WorkspaceReposPanel repos={repos} measured={measured} stats={stats} />);
+const render = (repos: WorkspaceRepo[]) =>
+    renderToStaticMarkup(<WorkspaceReposPanel repos={repos} />);
 
 describe('the workspace panel', () => {
     it('never emits a placeholder value for an absent metric', () => {
-        const html = render(
-            [repo(), repo({ name: 'api', status: 'cloning', branch: null, lastCommit: null, sizeBytes: null })],
-            [{ owner: 'acme', name: 'web' }],
-            statsWith([{ repo: 'acme/web', hours: 4, size: 100 }]),
-        );
+        const html = render([
+            repo(),
+            repo({ name: 'api', status: 'cloning', branch: null, lastCommit: null, sizeBytes: null }),
+        ]);
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
     it('renders a cloning repo with dashes, never with zeroes', () => {
         // A repository that has not cloned has no size and no branch. `0 B` would be a claim about
         // an empty repository rather than an absence of measurement.
-        const html = render([repo({ status: 'cloning', branch: null, lastCommit: null, sizeBytes: null })], [], null);
+        const html = render([repo({ status: 'cloning', branch: null, lastCommit: null, sizeBytes: null })]);
         expect(html).toContain('—');
         expect(html).not.toContain('0 B');
     });
 
     it('carries a failed clone\'s reason inline rather than only saying "failed"', () => {
-        const html = render([repo({ status: 'failed', error: 'fatal: repository not found' })], [], null);
+        const html = render([repo({ status: 'failed', error: 'fatal: repository not found' })]);
         expect(html).toContain('failed');
         expect(html).toContain('fatal: repository not found');
+    });
+
+    it('renders one row per selected repository', () => {
+        const html = render([repo(), repo({ name: 'api' })]);
+        expect(html.match(/<tr/g)?.length).toBe(3); // header + two rows
     });
 });
 
@@ -96,52 +76,6 @@ describe('the executors panel', () => {
         expect(html).toContain('claude-code');
         expect(html).not.toContain('No executors configured');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
-    });
-});
-
-describe('joining a checkout to the figures', () => {
-    const measured = [{ owner: 'acme', name: 'web' }];
-
-    it('counts merged PRs with a measured cycle, and takes real medians', () => {
-        const metrics = repoMetrics({
-            owner: 'acme',
-            name: 'web',
-            measured,
-            stats: statsWith([
-                { repo: 'acme/web', hours: 2, size: 10 },
-                { repo: 'acme/web', hours: 6, size: 30 },
-                { repo: 'other/thing', hours: 99, size: 999 },
-            ]),
-        });
-        expect(metrics).toEqual({
-            unavailable: null,
-            mergedWithCycle: 2,
-            medianCycleHours: 4,
-            medianSize: 20,
-        });
-    });
-
-    it('reports a real zero when the repo IS measured and had nothing', () => {
-        // The distinction the whole file exists for: "measured, and there were none" is a fact,
-        // and it is not the same answer as "nobody counted".
-        const metrics = repoMetrics({ owner: 'acme', name: 'web', measured, stats: statsWith([]) });
-        expect(metrics.mergedWithCycle).toBe(0);
-        // The median of an empty set is not zero.
-        expect(metrics.medianCycleHours).toBeNull();
-        expect(metrics.medianSize).toBeNull();
-    });
-
-    it('says why a repo outside the measured set has no figures', () => {
-        // Somebody can check out a repository the dashboard does not report on. Rendering 0 for it
-        // would be a measurement nobody made.
-        const metrics = repoMetrics({ owner: 'acme', name: 'other', measured, stats: statsWith([]) });
-        expect(metrics.mergedWithCycle).toBeNull();
-        expect(metrics.unavailable).toMatch(/Not part of the figures/);
-    });
-
-    it('says why there are no figures at all before the first fetch lands', () => {
-        const metrics = repoMetrics({ owner: 'acme', name: 'web', measured, stats: null });
-        expect(metrics.unavailable).toMatch(/No figures/);
     });
 });
 

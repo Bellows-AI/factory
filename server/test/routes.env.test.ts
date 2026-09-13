@@ -9,7 +9,6 @@ import {
     memoryAuthStore,
     memoryEnvVarStore,
     signedIn,
-    stubClient,
     stubTelemetryClient,
     testConfig,
     type MemoryEnvVarStore,
@@ -39,7 +38,6 @@ async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
     const member = auth.seedMember('test-org', 'octocat');
     const envVars = options.envVars ?? memoryEnvVarStore();
     const h = await harness({
-        client: stubClient(),
         auth,
         envVars,
         repos: REPOS,
@@ -217,7 +215,6 @@ describe('PUT /api/env/org and /api/env/repo', () => {
         const config = testConfig({ auth: githubAuth() });
         const service = createStatsService({
             config,
-            client: stubClient(),
             telemetry: stubTelemetryClient(),
         });
         const instance = await buildApp({

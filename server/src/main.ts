@@ -5,7 +5,7 @@ import { createAuthStore } from './auth/store.js';
 import { resolveConfig } from './config.js';
 import { createJobStore } from './db/job-store.js';
 import { migrate } from './db/migrate.js';
-import { createPrStore } from './db/pr-store.js';
+import { storedRepoNames } from './db/stored-repos.js';
 import { createUserRepoStore } from './db/user-repo-store.js';
 import { createUserExecutorStore } from './db/user-executor-store.js';
 import { createEnvVarStore } from './db/env-var-store.js';
@@ -13,7 +13,6 @@ import { createCloneQueue } from './workspace/queue.js';
 import { readGatesFile } from './workspace/bellows.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createPostgresStore } from './telemetry/store.js';
-import { createGitHubClient } from './github/client.js';
 import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource } from './github/repo-source.js';
@@ -63,8 +62,8 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         console.log('[fetch] no GitHub credential: serving stored data only, nothing will be fetched or cloned');
     }
 
-    // One pool, and one `migrate()`, for both the telemetry store and the PR store. They are
-    // independent features sharing a schema, and two runners would race each other.
+    // One pool, and one `migrate()`, for every feature sharing the schema. Two runners would
+    // race each other.
     const sql = postgres(config.databaseUrl, { max: 4 });
     // NOT awaited. Migrations retry with backoff for the better part of a minute while the database
     // container starts, and blocking here would hold the whole dashboard hostage to it. Every consumer
@@ -98,17 +97,14 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     // export — which is now always, unless telemetry is switched off outright.
     const store = config.telemetrySource === 'postgres' ? createPostgresStore({ sql, orgId: config.orgId }) : undefined;
 
-    const prStore = createPrStore({ sql, orgId: config.orgId, ready });
     console.log(`[persist] ${config.databaseUrl.replace(/\/\/[^@]*@/, '//')}`);
 
-    // After the store, because the `none`-mode fallback reads from it. The GitHub client is built off
-    // this rather than off the config, which is the whole shape of the change: the repo list is an
+    // After the store, because the `none`-mode fallback reads from it. The repo list is an
     // answer somebody has to be asked for, not a field.
     const repos = createRepoSource({
         client: appClient,
-        stored: () => prStore.storedRepos('github'),
+        stored: () => storedRepoNames({ sql, orgId: config.orgId, ready }),
     });
-    const client = createGitHubClient({ config, repos, tokens });
 
     // Unconditional, unlike the telemetry store: the database is mandatory and the board is not a
     // product option. It gates its own queries on `ready`, so it is safe to build before migrations.
@@ -205,7 +201,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         );
     }
 
-    const service = createStatsService({ config, client, repos, telemetry, store: prStore });
+    const service = createStatsService({ config, repos, telemetry });
     const app = await buildApp({
         config,
         service,
@@ -221,12 +217,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         logger: true,
     });
 
-    // Fired, not awaited: prime() waits on the migration promise, and awaiting it here would
-    // recreate exactly the hostage-taking that not awaiting migrate() avoids. ensureFresh() returns
-    // early while it is in flight, so the seed cannot lose a race with a full walk.
-    service.prime().catch((e: Error) => console.error(`[persist] prime failed: ${e.message}`));
-
-    // Warm the cache at boot so the first visitor does not eat the cold fetch.
+    // Warm the cache at boot so the first visitor does not eat the cold read.
     service.ensureFresh();
 
     // Also fired, not awaited. It recovers rows a restart stranded mid-clone and sweeps the partial

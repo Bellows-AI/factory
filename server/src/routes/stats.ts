@@ -47,8 +47,8 @@ function parseRange(query: StatsQuery, now: Date): DateRange | { error: string }
 /**
  * One function, not an `OrgProvider`.
  *
- * The two precedents for an early interface here — `TokenProvider` and `ForgeClient` — both ship
- * with two implementations already in tree, and both have a signature that was load-bearing on day
+ * The precedent for an early interface here — `TokenProvider` — ships with two implementations
+ * already in tree, and has a signature that was load-bearing on day
  * one. A directory's org list is per *user*, so its real signature is `resolve(caller, orgId)` in a
  * codebase that has no caller, no session and no auth: the interface would have to change shape the
  * day its second implementation arrived, having bought nothing but a provider threaded through
@@ -95,19 +95,30 @@ export const statsRoutes =
             service.ensureFresh();
             const payload = service.current(range);
 
-            // A stale cache is still served with 200. A rate limit must keep the last
+            // A stale cache is still served with 200. A failed read must keep the last
             // good render on screen and explain itself, not blank the dashboard.
             if (payload) return reply.code(200).send(payload);
+
+            // Telemetry is the whole payload now, so a deployment that turned it off has
+            // nothing to serve; that is a configuration state, not a cold start.
+            if (config.telemetrySource === 'off') {
+                return reply.code(503).send({
+                    error: 'Telemetry is disabled on this deployment (TELEMETRY_SOURCE=off)',
+                    code: 'TELEMETRY_DISABLED',
+                    fetch: service.fetchState(),
+                });
+            }
 
             const fetch = service.fetchState();
             if (fetch.state === 'error') {
                 return reply.code(503).send({
-                    error: fetch.error?.message ?? 'Fetch failed',
+                    error: fetch.error?.message ?? 'Telemetry read failed',
                     code: fetch.error?.code ?? 'UNKNOWN',
                     fetch,
                 });
             }
-            // Cold start: the first fetch takes ~45s, so answer 202 and let the client poll.
+            // Cold start: the first read is one database query, but it may be waiting on
+            // migrations, so answer 202 and let the client poll.
             return reply.code(202).send({ fetch });
         });
 

@@ -1,40 +1,38 @@
-# The combined repo view
+# The repo list
 
-Read before: touching `attribute()` keys, `004_pull_requests.sql` keys, the fetch loop, or any
-per-repo rendering in the SPA.
+Read before: touching `repo-source.ts`, `db/stored-repos.ts`, the scoping in `telemetryStats()`, or
+any per-repo rendering in the SPA.
 
-The landing page reports **every repo the GitHub App installation reports as one set of
-figures**. Per-repo pages are not built yet; when they are, they filter `meta.repos` and the
-`repo` field on each row rather than refetching.
+The dashboard reports **every repo the GitHub App installation reports as one set of figures**.
+Per-repo pages are not built yet; when they are, they filter `meta.repos` and the `repo` field on
+each session rather than refetching.
 
-- **`repo` ("owner/name") is stamped onto every `CanonicalPr` by the adapter, not read from the
-  payload.** A GraphQL response carries no repo identity — the query does. `sample-payload.json`
-  is a verbatim capture and stays that way; `toCanonical(raw, repo)` takes the name as an
-  argument, which is how the capture script stamps it the same way the live
-  client does.
-- **Every primary key in `004_pull_requests.sql` carries both `provider` and `repo`.** A repo path
-  is not unique across forges (`group/proj` exists on gitlab.com and on a self-hosted instance),
-  and a PR number is unique only within a repo. Guarded by `pr-store.test.ts` →
-  "keeps the same number under two repos apart".
-- **Every map in `attribute()` is keyed by `repo#number` or `repo@branch`, never by `number` or
-  `branch` alone.** Neither is unique across repos: two repos routinely both have a `#204` and a
-  `main`. Keyed on either alone, a combined view reports one repo's tokens on the other repo's PR
-  and labels it `exact`. Guarded by `core/test/telemetry.attribution.test.ts` →
-  "a branch is not unique across repos", which fails loudly if the keys are ever simplified back.
-  The same applies to `unmatched.branches` (a `{repo, branch}` list, not a string list). The old
-  `truncated` filter in `stats-service.current()` is gone: `truncated` now rides on the PR record
-  itself, so there is no side channel left to key wrongly.
-- **The revert rate is all-or-nothing across repos.** `fetchBranchHistories()` returns one entry
-  per repo, and if *any* repo's `dev` is unreadable the combined figure is reported `unavailable`
-  naming that repo. Summing the repos that did resolve would produce a plausible number measured
-  over an unknown subset — the exact failure the null-not-zero contract exists to prevent.
-- **Repos are fetched sequentially, and `MIN_SYNC_TTL_SECONDS_PER_REPO` (60) is multiplied by the
-  repo count.** The ~243-point full walk is paid once per repo, so a fixed floor weakens as repos
-  are added — which is when it matters most. Concurrent fetches would burn the budget in a burst
-  the TTL cannot smooth out.
 - **The repo list is whatever the App installation reports (`repos.snapshotNames()`), and there is
   no separate telemetry repo setting.** A second list is a second source of truth that silently
-  drops sessions the moment it drifts.
-- **The SPA qualifies a PR number only when more than one repo is in scope** (`prLabel()` in
-  `web/src/format.ts`). Prefixing every row on a single-repo dashboard trains the reader to skip
-  the prefix, which defeats it on the day a second repo appears.
+  drops sessions the moment it drifts. The list changes under the process — somebody grants the App
+  another repository and it appears without a restart, on the 10-minute TTL in
+  [metrics.md](metrics.md) — which is why it is a function over a snapshot rather than a bound
+  array.
+- **The list is a network read, so it cannot be a config field.** `RepoSource` exposes two
+  accessors because its two callers genuinely differ: `list()` may go to GitHub and is always
+  awaited (the refresh path); `snapshot()` never blocks and is what `StatsService.current()` reads,
+  because aggregating an already-fetched payload must not become a fetch. It returns the last known
+  list, empty until something has loaded one.
+- **Without an App client the list falls back to the distinct repos in `session_branch`.** The
+  offline tooling's code-only `none` arm passes `storedRepoNames()` (`db/stored-repos.ts`) as the
+  source. Without it a credential-less process would report no repos, and since every stored read
+  is scoped by the repo list, a warm database would render as an empty dashboard — which is what
+  `npm run seed` followed by `npm run verify:ui` is. The fallback is derived from the sessions
+  already stored, so it cannot disagree with them.
+- **Scoping is a three-way bucket, and only one of the buckets is "in".** `telemetryStats()` counts
+  a session in its totals only when the hook tagged it with a repo in `repos`. A session tagged with
+  a repo outside the list lands in `otherRepoSessions`; a session with telemetry but no hook report
+  lands in `sessionsWithoutHook`. Dropping either silently would make a repo removed from the
+  installation, or a plugin that stopped reporting, read as an idle week.
+- **The hook stamps `owner/name` — the same form the list carries.** That is the whole reason the
+  comparison is a string inclusion and not a lookup: there are no ids to join on, so the one
+  spelling of a repo name is a contract between the plugin, the branch reporter and the
+  installation listing.
+- **`meta.repos` travels in the payload, not behind a second request.** A page that cannot name the
+  repos the figures were scoped to cannot be read honestly, and the DataQuality panel needs the
+  filter (`meta.telemetry.repoFilter`) to say what `otherRepoSessions` was excluded *by*.

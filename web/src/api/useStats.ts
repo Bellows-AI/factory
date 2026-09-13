@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DateRange, OrganizationMeta, Stats, TelemetryStats } from '@factory-ai/core';
+import type { DateRange, OrganizationMeta, TelemetryStats } from '@factory-ai/core';
 import { reportUnauthenticated } from './useSession.js';
-
-export interface RateLimit {
-    remaining: number;
-    resetAt: string;
-}
 
 export interface TelemetryMeta {
     /**
      * 'empty' arrives with a real TelemetryStats so the panels can render their own
-     * structure — that is how you see a pipeline that is wired but silent. 'unreachable'
-     * and 'disabled' arrive with null.
+     * structure — that is how you see a pipeline that is wired but silent. The union keeps
+     * 'unreachable' and 'disabled' for completeness of the API's vocabulary, but those two
+     * answer 503 before a body is ever sent, so a 200 always carries a non-null `telemetry`.
      */
     status: 'ok' | 'empty' | 'unreachable' | 'disabled';
     reason: string | null;
@@ -25,14 +21,11 @@ export interface TelemetryMeta {
 }
 
 export interface StatsPayload {
-    stats: Stats;
     telemetry: TelemetryStats | null;
     meta: {
         fetchedAt: string;
         ageSeconds: number;
         stale: boolean;
-        rateLimit: RateLimit | null;
-        revert: { status: 'ok' | 'unavailable'; reason: string | null };
         /**
          * Imported from core rather than restated here, unlike TelemetryMeta above:
          * `current.id` round-trips back to the server as `?org=` and on to a database partition,
@@ -41,7 +34,6 @@ export interface StatsPayload {
         organization: OrganizationMeta;
         /** Every repo the figures combine. Length 1 is the common case, not a special case. */
         repos: { owner: string; name: string }[];
-        baseBranch: string;
         /** The range the server actually aggregated over, presets already resolved. */
         range: DateRange;
         telemetry: TelemetryMeta;
@@ -50,11 +42,8 @@ export interface StatsPayload {
 
 export interface FetchState {
     state: 'idle' | 'loading' | 'error';
-    phase: 'prs' | 'backfill' | 'history' | null;
-    repo: string | null;
-    prsFetched: number | null;
-    backfillingPr: number | null;
-    historyScanned: number | null;
+    startedAt: string | null;
+    finishedAt: string | null;
     error: { message: string; code: string } | null;
 }
 
@@ -80,8 +69,6 @@ export function useStats(query = 'range=all'): UseStats {
 
     const poll = useCallback(async (signal: AbortSignal) => {
         try {
-            // No client-side timeout: aborting a cold fetch would waste the ~243
-            // rate-limit points the server already spent.
             const response = await fetch(`/api/stats?${query}`, { signal });
 
             if (response.status === 202) {
@@ -105,7 +92,7 @@ export function useStats(query = 'range=all'): UseStats {
 
             if (!response.ok) {
                 const body = (await response.json().catch(() => ({}))) as { error?: string };
-                // Deliberately does not clear `data`: a rate limit or an outage leaves
+                // Deliberately does not clear `data`: an outage leaves
                 // whatever is on screen the most accurate view available.
                 setError(body.error ?? `Request failed (${response.status})`);
                 setPending(false);
@@ -113,7 +100,7 @@ export function useStats(query = 'range=all'): UseStats {
             }
 
             const body = (await response.json()) as StatsPayload;
-            if (!body?.stats?.meta) throw new Error('Malformed /api/stats response');
+            if (!body?.telemetry?.totals || !body?.meta) throw new Error('Malformed /api/stats response');
             setData(body);
             setProgress(null);
             setError(null);

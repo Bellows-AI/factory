@@ -69,10 +69,6 @@ spec:
                       # there, and `workspacePath` on a claim is relative to this root.
                       - name: ORG_WORKSPACE_ROOT
                         value: {{ .Values.dashboard.workspaceRoot | quote }}
-                      - name: BASE_BRANCH
-                        value: {{ .Values.org.baseBranch | quote }}
-                      - name: SYNC_TTL_SECONDS
-                        value: {{ .Values.telemetry.syncTtlSeconds | quote }}
                       - name: TELEMETRY_SOURCE
                         value: {{ .Values.telemetry.source | quote }}
                       - name: TELEMETRY_TTL_SECONDS

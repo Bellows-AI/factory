@@ -91,6 +91,16 @@ const gitRepo = (): string => {
 // output ever reaches it — spawn the way the entrypoints do, with the warning disabled.
 const NODE_ARGS = ['--disable-warning=ExperimentalWarning'];
 
+/**
+ * The suite can run inside a task whose own environment carries BELLOWS_SESSION_ID. Every child
+ * here starts from this scrubbed copy (a test's explicit env still wins), so the reporter under
+ * test exercises discovery unless a test hands an id on purpose.
+ */
+const OUTER_ENV: Record<string, string> = (() => {
+    const { BELLOWS_SESSION_ID: _handed, ...rest } = process.env;
+    return rest;
+})();
+
 const run = (
     script: string,
     env: Record<string, string>,
@@ -99,7 +109,7 @@ const run = (
     new Promise((resolve) => {
         const child = spawn(process.execPath, [...NODE_ARGS, script, ...args], {
             cwd: env.WORKDIR ?? process.cwd(),
-            env: { ...process.env, ...env },
+            env: { ...OUTER_ENV, ...env },
             stdio: ['ignore', 'pipe', 'pipe'],
         });
         let stdout = '';
@@ -335,7 +345,7 @@ describe('the branch reporter', () => {
         try {
             child = spawn(process.execPath, [...NODE_ARGS, CLAUDE_REPORTER], {
                 cwd: dir,
-                env: { ...process.env, FACTORY_STATS_URL: url, BELLOWS_SESSION_ID: SESSION, WORKDIR: dir },
+                env: { ...OUTER_ENV, FACTORY_STATS_URL: url, BELLOWS_SESSION_ID: SESSION, WORKDIR: dir },
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
             let stdout = '';
@@ -383,7 +393,7 @@ describe('the branch reporter', () => {
         try {
             const child = spawn(process.execPath, [...NODE_ARGS, OPENCODE_REPORTER], {
                 cwd: dir,
-                env: { ...process.env, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
+                env: { ...OUTER_ENV, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
             let stderr = '';

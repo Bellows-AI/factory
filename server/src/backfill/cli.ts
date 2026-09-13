@@ -37,7 +37,6 @@ try {
     console.log(`  sessions      ${summary.sessions}`);
     console.log(`  datapoints    ${summary.datapoints}`);
     console.log(`  branch spans  ${summary.branchSpans}`);
-    console.log(`  pr links      ${summary.prLinks}`);
 
     if (summary.unresolvedCwds.length) {
         // Not a failure. These are checkouts that no longer exist, so the repo cannot be

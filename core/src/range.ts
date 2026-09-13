@@ -1,4 +1,4 @@
-import type { DerivedPr, TelemetryInput } from './types.js';
+import type { TelemetryInput } from './types.js';
 
 export type RangePreset = 'day' | 'week' | '2w' | 'month' | 'all' | 'custom';
 
@@ -29,7 +29,7 @@ export function isRangePreset(value: string): value is RangePreset {
 
 /**
  * Presets are a rolling lookback from `now`, not a calendar period: "this week" on a Tuesday
- * would otherwise report two days and read as a throughput collapse.
+ * would otherwise report two days and read as a collapse in activity.
  */
 export function resolveRange(
     preset: RangePreset,
@@ -51,12 +51,6 @@ export function isAllTime(range: DateRange): boolean {
     return range.from === null && range.to === null;
 }
 
-function within(at: string, range: DateRange): boolean {
-    if (range.from !== null && at < range.from) return false;
-    if (range.to !== null && at >= range.to) return false;
-    return true;
-}
-
 function overlaps(from: string, to: string, range: DateRange): boolean {
     if (range.from !== null && to < range.from) return false;
     if (range.to !== null && from >= range.to) return false;
@@ -64,22 +58,8 @@ function overlaps(from: string, to: string, range: DateRange): boolean {
 }
 
 /**
- * Membership follows the timestamp each metric is already bucketed by: `weeklySeries()`
- * buckets merges by `mergedAt`, so a merged PR is in range when it *merged* in range, not
- * when it was opened. An open PR has no landing date, so it counts while it existed.
- */
-export function filterPrs(prs: DerivedPr[], range: DateRange): DerivedPr[] {
-    if (isAllTime(range)) return prs;
-    return prs.filter((pr) => {
-        if (pr.mergedAt) return within(pr.mergedAt, range);
-        if (pr.state === 'open') return range.to === null || pr.createdAt < range.to;
-        return within(pr.createdAt, range);
-    });
-}
-
-/**
- * Sessions and splits are intervals, so they are kept on overlap rather than containment: a
- * session running across the range boundary did real work inside the range, and dropping it
+ * Sessions are intervals, so they are kept on overlap rather than containment: a session
+ * running across the range boundary did real work inside the range, and dropping it
  * would understate usage exactly at the edge the user is looking at.
  *
  * `coverage` is deliberately untouched — it reports what the store holds, which is how the UI
@@ -87,15 +67,8 @@ export function filterPrs(prs: DerivedPr[], range: DateRange): DerivedPr[] {
  */
 export function filterTelemetryInput(input: TelemetryInput, range: DateRange): TelemetryInput {
     if (isAllTime(range)) return input;
-
-    const sessions = input.sessions.filter((s) => overlaps(s.firstSeen, s.lastSeen, range));
-    const kept = new Set(sessions.map((s) => s.sessionId));
-
     return {
-        sessions,
-        spans: input.spans.filter((s) => kept.has(s.sessionId) && overlaps(s.from, s.to, range)),
-        splits: input.splits.filter((s) => kept.has(s.sessionId) && overlaps(s.from, s.to, range)),
-        links: input.links.filter((l) => kept.has(l.sessionId) && within(l.at, range)),
+        sessions: input.sessions.filter((s) => overlaps(s.firstSeen, s.lastSeen, range)),
         coverage: input.coverage,
     };
 }

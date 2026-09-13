@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js';
 import type { GitHubAppClient, InstallationListing } from '../src/github/app-client.js';
 import { createRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
-import { memoryPrStore, stubClient, stubTelemetryClient, testConfig } from './helpers.js';
+import { stubTelemetryClient, testConfig } from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -33,10 +33,8 @@ async function boot(client?: GitHubAppClient) {
     const repos = createRepoSource({ client });
     const service = createStatsService({
         config,
-        client: stubClient(),
         repos,
         telemetry: stubTelemetryClient(),
-        store: memoryPrStore(),
     });
     app = await buildApp({ config, service, repos });
     return { app, repos };

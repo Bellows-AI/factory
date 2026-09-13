@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '../src/config.js';
-import { TelemetryError } from '../src/telemetry/errors.js';
-import { EMPTY_TELEMETRY, harness, stubClient, stubTelemetryClient } from './helpers.js';
+import { EMPTY_TELEMETRY, harness, stubTelemetryClient } from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -10,7 +9,7 @@ afterEach(async () => {
     app = null;
 });
 
-/** Warms both caches and returns the parsed payload. */
+/** Warms the cache and returns the parsed payload. */
 async function warm(h: Awaited<ReturnType<typeof harness>>) {
     await h.app.inject({ method: 'GET', url: '/api/stats' });
     await h.settle();
@@ -18,8 +17,8 @@ async function warm(h: Awaited<ReturnType<typeof harness>>) {
 }
 
 describe('telemetry on /api/stats', () => {
-    it('serves attributed telemetry beside the PR stats', async () => {
-        const h = await harness({ client: stubClient() });
+    it('serves the telemetry totals', async () => {
+        const h = await harness();
         app = h.app;
         const body = await warm(h);
 
@@ -28,20 +27,10 @@ describe('telemetry on /api/stats', () => {
         expect(body.meta.telemetry.repoFilter).toEqual(['Bellows-AI/bellows.ai']);
         expect(body.telemetry.totals.sessions).toBe(13);
         expect(body.telemetry.totals.tokens.input).toBeGreaterThan(0);
-        expect(body.telemetry.prs.find((r: { number: number }) => r.number === 204).attribution).toBe('exact');
     });
 
-    it('reports the two setup failures separately', async () => {
-        const h = await harness({ client: stubClient() });
-        app = h.app;
-        const body = await warm(h);
-
-        expect(body.meta.telemetry.otherRepoSessions).toBe(1);
-        expect(body.meta.telemetry.sessionsWithoutHook).toBe(1);
-    });
-
-    it('ages the two snapshots independently', async () => {
-        const h = await harness({ client: stubClient() });
+    it('ages the snapshot on the request clock', async () => {
+        const h = await harness();
         app = h.app;
         await warm(h);
 
@@ -52,133 +41,21 @@ describe('telemetry on /api/stats', () => {
         expect(body.meta.stale).toBe(false);
         expect(body.meta.telemetry.stale).toBe(false);
     });
-});
 
-describe('failure isolation', () => {
-    it('keeps the PR stats intact when telemetry is unreachable', async () => {
-        // The telemetry analogue of "the revert rate degrades alone". This is the one that
-        // matters: a dead database must not blank a dashboard that has nothing to do with it.
-        const telemetry = stubTelemetryClient({
-            rollups: async () => {
-                throw new TelemetryError('connection refused', 'UNREACHABLE');
-            },
-        });
-        const h = await harness({ client: stubClient(), telemetry });
+    it('reports the two setup failures separately', async () => {
+        const h = await harness();
         app = h.app;
         const body = await warm(h);
 
-        expect(body.stats.meta.counts.mergedToBase).toBe(178);
-        expect(body.stats.threads.total).toBe(654);
-        expect(body.telemetry).toBeNull();
-        expect(body.meta.telemetry.status).toBe('unreachable');
-        expect(body.meta.telemetry.reason).toBe('connection refused');
-    });
-
-    it('serves the last good telemetry when a later read fails', async () => {
-        let calls = 0;
-        const telemetry = stubTelemetryClient({
-            rollups: async () => {
-                calls += 1;
-                if (calls > 1) throw new TelemetryError('connection lost', 'UNREACHABLE');
-                return structuredClone(EMPTY_TELEMETRY);
-            },
-        });
-        const h = await harness({ client: stubClient(), telemetry });
-        app = h.app;
-        await warm(h);
-
-        h.advance(31_000);
-        await h.app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-
-        const body = (await h.app.inject({ method: 'GET', url: '/api/stats' })).json();
-        expect(body.telemetry).not.toBeNull();
-        expect(body.meta.telemetry.stale).toBe(true);
-        expect(body.meta.telemetry.reason).toBe('connection lost');
-    });
-
-    it('does not let a GitHub cooldown suppress the telemetry read', async () => {
-        const client = stubClient({
-            prs: async () => {
-                throw new Error('rate limited');
-            },
-        });
-        const telemetry = stubTelemetryClient();
-        const h = await harness({ client, telemetry });
-        app = h.app;
-
-        await h.app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-        // Inside ERROR_COOLDOWN_MS the PR fetch is held back; telemetry must not be.
-        expect(telemetry.rollupCalls).toBe(1);
-
-        h.advance(31_000);
-        await h.app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-        expect(telemetry.rollupCalls).toBe(2);
-    });
-
-    it('holds off for its own short cooldown after a failure', async () => {
-        const telemetry = stubTelemetryClient({
-            rollups: async () => {
-                throw new TelemetryError('down', 'UNREACHABLE');
-            },
-        });
-        const h = await harness({ client: stubClient(), telemetry });
-        app = h.app;
-        await warm(h);
-        expect(telemetry.rollupCalls).toBe(1);
-
-        h.advance(1_000);
-        await h.app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-        expect(telemetry.rollupCalls).toBe(1);
-
-        // 5s, not the 30s GitHub cooldown: the failure here is a socket, not a quota.
-        h.advance(5_000);
-        await h.app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-        expect(telemetry.rollupCalls).toBe(2);
-    });
-});
-
-describe('independent TTLs', () => {
-    it('refetches telemetry on its own 30s clock while the PR cache stays warm', async () => {
-        const client = stubClient();
-        const telemetry = stubTelemetryClient();
-        const h = await harness({ client, telemetry });
-        app = h.app;
-        await warm(h);
-        expect(client.prCalls).toBe(1);
-        expect(telemetry.rollupCalls).toBe(1);
-
-        h.advance(31_000);
-        await h.app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-        expect(telemetry.rollupCalls).toBe(2);
-        expect(client.prCalls).toBe(1);
-    });
-
-    it('refetches the PR stats past 900s without spinning telemetry extra times', async () => {
-        const client = stubClient();
-        const telemetry = stubTelemetryClient();
-        const h = await harness({ client, telemetry });
-        app = h.app;
-        await warm(h);
-
-        h.advance(900_001);
-        await h.app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-        expect(client.prCalls).toBe(2);
-        // One telemetry read, because its TTL also expired — not one per request.
-        expect(telemetry.rollupCalls).toBe(2);
+        expect(body.meta.telemetry.otherRepoSessions).toBe(1);
+        expect(body.meta.telemetry.sessionsWithoutHook).toBe(1);
     });
 });
 
 describe('degradation states', () => {
     it('reports an empty store as sessions:0 with null tokens, never zeros', async () => {
         const telemetry = stubTelemetryClient({ rollups: async () => structuredClone(EMPTY_TELEMETRY) });
-        const h = await harness({ client: stubClient(), telemetry });
+        const h = await harness({ telemetry });
         app = h.app;
         const body = await warm(h);
 
@@ -191,26 +68,24 @@ describe('degradation states', () => {
         expect(body.telemetry.totals.acceptRatio).toBeNull();
     });
 
-    it('never calls the client when telemetry is switched off', async () => {
+    it('answers 503 with a named code when telemetry is switched off', async () => {
+        // Telemetry is the whole payload now, so `off` empties the page entirely — a named
+        // refusal rather than a cold-start 202 that would never resolve.
         const telemetry = stubTelemetryClient();
-        const h = await harness({
-            client: stubClient(),
-            telemetry,
-            config: { telemetrySource: 'off' },
-        });
+        const h = await harness({ telemetry, config: { telemetrySource: 'off' } });
         app = h.app;
-        const body = await warm(h);
 
-        expect(body.meta.telemetry.status).toBe('disabled');
-        expect(body.telemetry).toBeNull();
+        const res = await h.app.inject({ method: 'GET', url: '/api/stats' });
+        expect(res.statusCode).toBe(503);
+        expect(res.json().code).toBe('TELEMETRY_DISABLED');
         expect(telemetry.rollupCalls).toBe(0);
     });
 });
 
 describe('GET /api/health', () => {
-    it('never touches telemetry, mirroring the GitHub guarantee', async () => {
+    it('never touches telemetry', async () => {
         const telemetry = stubTelemetryClient();
-        const h = await harness({ client: stubClient(), telemetry });
+        const h = await harness({ telemetry });
         app = h.app;
 
         const res = await app.inject({ method: 'GET', url: '/api/health' });
@@ -221,15 +96,13 @@ describe('GET /api/health', () => {
 });
 
 describe('POST /api/refresh', () => {
-    it('refreshes both caches', async () => {
-        const client = stubClient();
+    it('refreshes the cache', async () => {
         const telemetry = stubTelemetryClient();
-        const h = await harness({ client, telemetry });
+        const h = await harness({ telemetry });
         app = h.app;
 
         await app.inject({ method: 'POST', url: '/api/refresh' });
         await h.settle();
-        expect(client.prCalls).toBe(1);
         expect(telemetry.rollupCalls).toBe(1);
     });
 });

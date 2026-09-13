@@ -35,12 +35,11 @@ it has not been built.
 - **A Factory organization is not a GitHub organization.** `ORG_ID` names this deployment's data
   partition and has nothing to do with the GitHub account the App is installed on; the repo list
   is whatever that one installation reports. Do not "simplify" by tying one to the other.
-- **`org_id` leads every org-owned primary key** across ten tables (`pull_request` + its four
-  children, `branch_commit`, `branch_history`, `sync_state`, `session_branch`, `session_pr`). It
-  leads rather than trails `provider` because a query always knows its organization, so the key is
-  a prefix scan of the partition rather than a filter applied afterwards. Guarded by
-  `pr-store.test.ts` → "keeps the same PR number under two organizations apart" and
-  "a complete child list does not delete another organization's rows".
+- **`org_id` leads every org-owned primary key.** `005` partitioned ten tables; `ORG_OWNED` — the
+  list `adoptOrg()` updates — is down to `session_branch` alone now, because 023 dropped the PR
+  tables that made up the rest (see [persistence.md](persistence.md)). The id leads rather than
+  trails because a query always knows its organization, so the key is a prefix scan of the
+  partition rather than a filter applied afterwards.
 - **`metric_point` has no `org_id`, on purpose.** It has no `repo` either, for the reason stated in
   `001_init.sql`: a datapoint's repo is resolved by joining `session_branch`, so there is one source
   of truth rather than two that disagree. Its organization comes through that same join. Adding the
@@ -51,23 +50,17 @@ it has not been built.
   week. Guarded by "still reports a hook-less session, which belongs to no organization".
 - **Pre-organization rows are backfilled `'__unclaimed__'` and adopted once, at boot.**
   `005_organizations.sql` cannot see the config, and backfilling the configured id directly would
-  point a deployment that sets `ORG_ID=bellows` at an empty partition: **200 OK, zero PRs, no log
-  line**. `adoptOrg()` in `db/migrate.ts` claims them, which is why `migrate()` takes a required
+  point a deployment that sets `ORG_ID=bellows` at an empty partition: **200 OK, zero sessions, no
+  log line**. `adoptOrg()` in `db/migrate.ts` claims them, which is why `migrate()` takes a required
   `orgId` and why `config.ts` refuses any id beginning with `__`.
-- **The four child FKs are `on update cascade`, and `ORG_OWNED` deliberately omits those tables.**
-  `org_id` is part of the reference, so adoption is an update to a referenced key and there is no
-  legal order to do it in by hand: children first orphans them, parents first strands them. The
-  cascade moves them with their parent. Listing a child in `ORG_OWNED` is not redundant but *wrong*
-  — before its parent it violates the constraint, after it the statement matches nothing.
 - **`session_branch_slice` partitions its `lead()` window by `org_id`, not merely projects it.**
   Otherwise the clamp runs across organizations and one org's slice is truncated by another's start,
   silently dropping the datapoints in between. Guarded by "does not attribute one organization's
   session to another's branch".
-- **`SCHEMA_EPOCH` was not bumped.** It forces a full resync when a newly *selected provider field*
-  leaves old rows null. `org_id` is backfilled and adopted, so no row is stale.
-- **There is no `OrgProvider` interface, deliberately.** `TokenProvider` and `ForgeClient` are the
-  tempting precedents, but both ship two implementations already in tree and both have a signature
-  that was load-bearing on day one. A directory's org list is per *user*, so its real signature is
+- **There is no `OrgProvider` interface, deliberately.** `TokenProvider` is the tempting precedent,
+  but it earned its interface the hard way: it was async before its second implementation existed,
+  on a bet that swapping a personal access token for a GitHub App would touch no call site — and
+  the bet paid. A directory's org list is per *user*, so its real signature is
   `resolve(caller, orgId)` — which this bullet originally noted was meaningless "in a codebase with
   no caller, no session and no auth". There is now a caller and a session, and the conclusion is
   unchanged: there is still no *directory*, `resolveOrg` is still one function taking the configured

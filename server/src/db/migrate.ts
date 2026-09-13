@@ -43,7 +43,7 @@ export interface MigrateOptions {
     localUser?: boolean;
     /**
      * The container is usually still starting when the app boots, and the dashboard must not
-     * die waiting for a database it can serve PR metrics without.
+     * die waiting for a database it can serve without.
      */
     attempts?: number;
     backoffMs?: number;
@@ -74,20 +74,11 @@ const UNCLAIMED_ORG = '__unclaimed__';
  * The tables adoptOrg() has to update directly.
  *
  * metric_point is absent because it has no org_id at all — see the header of
- * 005_organizations.sql. The four pull_request child tables (pr_review, pr_review_thread,
- * pr_commit, pr_label) are absent for the opposite reason: org_id is part of their foreign key, so
- * `on update cascade` moves them with their parent. Listing them here as well is not merely
- * redundant, it is *wrong* — updating a child before its parent violates the constraint, and
- * updating one after is a statement that matches nothing.
+ * 005_organizations.sql. The pull-request tables 005 also partitioned were dropped by
+ * 023_drop_pull_requests.sql and are absent for that reason; their children carried org_id
+ * inside their foreign key, so adoptOrg() never listed them either.
  */
-const ORG_OWNED = [
-    'pull_request',
-    'branch_commit',
-    'branch_history',
-    'sync_state',
-    'session_branch',
-    'session_pr',
-] as const;
+const ORG_OWNED = ['session_branch'] as const;
 
 /**
  * Claims every row 005 parked in the reserved namespace for the configured organization.

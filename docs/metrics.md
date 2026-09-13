@@ -1,69 +1,54 @@
 # Aggregation invariants
 
-Read before: touching `core/src/metrics.ts`, `core/src/canonical.ts`, the GraphQL query, or any
+Read before: touching `core/src/telemetry.ts`, `core/src/range.ts`, `core/src/metrics.ts`, or any
 cache/TTL constant.
 
 Aggregation is the one place a wrong number is invisible, so most of these have a test guarding
 them. Do not "simplify" them.
 
 - **`ratio()` returns `null`, never `0`, on a zero denominator.** The entire
-  unavailable-vs-zero contract on the page rests on this. "0 reverts in 0 commits" reads as a
-  real answer.
-- **Totals come from the count fields; distributions come from the arrays beside them.** GraphQL
-  caps nested connections at 100 nodes (`INNER_LIMIT`). PRs over that get a second pass in
-  `backfill()`; anything still cut lands in `CanonicalPr.truncated` and surfaces as
-  `stats.meta.truncated` rather than being silently undercounted. `CanonicalPr` names the two
-  separately (`reviewCount` vs `reviews`) precisely so no call site can confuse them — a
-  `{ totalCount, nodes }` wrapper reads as if they agree, and for #149 they differ by 297.
-- **Force pushes are counted from the filtered node list.** `timelineItems.totalCount` ignores
-  `itemTypes` and reports the whole timeline — it once claimed 404 force pushes across 14 PRs.
-- **`forcePushCount` is `number | null` and `bodyOnlyReviews` degrades to null.** Null means the
-  provider cannot observe the thing; 0 means it can and none happened. `Stats.rework.forcePushes`
-  is all-or-nothing across the set for the same reason the revert rate is, and a plain reduce over
-  nulls would render the literal string "NaN". Guarded by the NaN walker in
-  `metrics.invariants.test.ts` and by `core/test/canonical.derive.test.ts`.
-- **`stats.meta.window` is derived from array position, not min/max.** It used to rely on the
-  query's `CREATED_AT DESC` ordering; with a store in play, `loadPullRequests()`'s
-  `order by created_at desc, repo asc, number desc` is the single authority that keeps it true.
-  Do not sort in `stats-service.ts` — that puts the invariant in two places. Guarded by
-  `server/test/stats.persistence.test.ts` → "reports the window off creation order".
-- **`compute()` and `createStatsService()` take an injectable `now`.** The `partial` week flag
-  and `generatedAt` depend on the current date; tests pin `FIXTURE_NOW` /
-  `2026-08-21T12:00:00.000Z`. Keep using the injection point.
-- **`weeklySeries()` seeds every week in the window, including empty ones.** A median over only
-  the weeks that had a merge overstates throughput.
-- **`SYNC_TTL_SECONDS` (floored at 60 per measured repo) is the only cache floor, and
-  `CACHE_TTL_SECONDS` is gone.** The 300-per-repo floor protected a full walk's ~243 rate-limit points, which every
-  refresh used to be; history is always persisted now, so the ordinary refresh is an incremental
-  walk of a few pages. The full walk is not gated by a TTL at all — it runs on
-  `FULL_RESYNC_INTERVAL_MS` (24h) and refuses to start unless `last_rate_limit.remaining` actually
-  covers `243 × repos × 1.5`, and reading the remaining budget is strictly stronger than inferring
-  it from a clock. Setting `CACHE_TTL_SECONDS` is **fatal, not ignored**: a deployment that had
-  raised it to protect its quota would otherwise silently drop to the 60s floor.
-- **A stale snapshot is served with 200.** A rate limit must keep the last good render on screen
-  and explain itself, not blank the dashboard. `useStats` likewise never clears `data` on error.
-- **`ERROR_COOLDOWN_MS` (30s) after a failed fetch.** Without it every request restarts the
-  fetch and a rejected token becomes a request loop. `POST /api/refresh` bypasses it.
-- **`INSTALLATION_REPOS_TTL_MS` (10 min) on the repo list.** Long next to the sync TTL, because the
-  answer changes when a human installs or uninstalls the GitHub App — minutes, not seconds — and
-  short enough that granting the App a new repository shows up without a restart, which is the
-  workflow that replaced `ORG_REPOS`. A failed refresh serves the last good list with the reason
-  named, exactly as a stale snapshot does.
-- **The per-repo sync floor is applied by the stats service, not by `loadConfig`.** It cannot be
-  applied there any more: the repo count comes from the installation and is not known at boot.
-  `loadConfig` still floors `SYNC_TTL_SECONDS` at one repo's worth, which is all it can honestly
-  check.
-- **The revert rate degrades alone.** It is the only metric needing `Contents: read`; a missing
-  ref returns `null` history and `revert.status = 'unavailable'`, never `{commits: 0, reverts: 0}`.
-- **`core/test/metrics.independent.test.ts` imports no helpers from `core/src/metrics.ts` on
-  purpose** — only its subjects, `compute` and `deriveAll`. It recomputes headline numbers off the
-  canonical payload and pins SPEC §1 landmarks. Importing helpers into it would make a wrong
-  number invisible. **`server/test/github.map.test.ts`
-  holds the other half of that chain**, recomputing the same landmarks off the *raw* GitHub
-  capture — the seam moved there when `core` stopped speaking GitHub. If any of 203 / 178 / 654 /
-  226 / 624 / 30 / 37 / 153.5 / 224 / 0.325 moves, the adapter is wrong; do not adjust the
-  expectation.
-- **Do not switch GraphQL pagination to `gh api graphql --paginate`.** It only advances the
-  cursor if the variable is named `$endCursor`; anything else silently re-requests page 1 forever.
-- **When a PR page times out, shrink the nested selections, not `PAGE_SIZE` (25).** Per-page cost
-  is superlinear in the nested connections.
+  unavailable-vs-zero contract on the page rests on this: "0 accepted edits in 0 decisions" reads
+  as a real answer. `acceptRatio()` nulls for the same reason when nothing was measured at all.
+- **`sum()` returns `null` only when nothing was measured.** A missing contributor must not drag a
+  real total down to a smaller real number, and an all-missing total must not read as zero —
+  `linesAdded`, `linesRemoved`, `activeHours` and every token total degrade to null per figure, not
+  per session.
+- **The four token types are never summed into one figure.** A long cached conversation would count
+  the same context repeatedly in `cacheRead`; where one number is needed it is input + output, and
+  `TokenTotals` keeps the four apart so no call site can add them by accident.
+- **`weeklySeries()` seeds every week in the window, including empty ones.** A series that closes
+  its own gaps overstates activity; a quiet week must render as a quiet week.
+- **`telemetryStats()` takes an injectable `now`.** The `partial` week flag depends on the current
+  date; tests pin a frozen date so the current week is deterministic. Keep using the injection
+  point.
+- **Repo scoping buckets, it never drops.** A session the hook tagged with a repo outside the
+  installation list is counted in `otherRepoSessions`; a session with telemetry but no hook report
+  is counted in `sessionsWithoutHook`; only in-scope sessions reach the totals. Three different
+  setup failures must stay distinguishable — a repo removed from the installation, a broken plugin,
+  and genuinely no AI usage must not render identically.
+- **`TelemetryStats.totals` comes only from in-scope sessions.** `otherRepoSessions` and
+  `sessionsWithoutHook` contribute to no total. Pinning that is what stops a future "count
+  everything" refactor from rendering figures over an unnamed subset of sessions.
+- **`filterTelemetryInput()` keeps a session on overlap, and `coverage` is untouched.** A session
+  straddling the range boundary did real work inside the range; and coverage reports what the store
+  holds, which is how the UI distinguishes "no AI usage in this range" from "telemetry does not
+  reach back this far".
+- **`TELEMETRY_TTL_SECONDS` (default 30, floored at 5) is the only cache floor.** The floor is not
+  a typo next to any quota-protecting TTL — there is no quota to protect, only a hot loop to
+  prevent. Its retired predecessors (`CACHE_TTL_SECONDS`, `SYNC_TTL_SECONDS`, which floored the PR
+  sync slots at 300s per repo and 60s) are **fatal, not ignored**: a deployment that had raised one
+  to protect its quota would otherwise silently drop to the 5s floor.
+- **A stale snapshot is served with 200.** A dead database socket must keep the last good render on
+  screen and explain itself, not blank the dashboard. `useStats` likewise never clears `data` on
+  error.
+- **`ERROR_COOLDOWN_MS` (30s) after a failed read.** Without it every request restarts the read and
+  a rejected query becomes a request loop. `POST /api/refresh` bypasses it.
+- **`INSTALLATION_REPOS_TTL_MS` (10 min) on the repo list.** Long, because the answer changes when
+  a human installs or uninstalls the GitHub App — minutes, not seconds — and every read of it
+  costs a rate-limit point. Short enough that granting the App a new repository shows up without a
+  restart, which is the whole workflow this replaced `ORG_REPOS` to enable. A failed refresh serves
+  the last good list with the reason named, exactly as a stale snapshot does.
+- **There is no monetary field anywhere, on purpose.** Prices and cache discounts change, and a
+  dollar figure implies precision a ~20s branch sample cannot support. A test asserts no field
+  named `cost`/`usd`/`price` exists in `TelemetryStats`, because this is exactly the kind of thing
+  that returns via a "small addition".

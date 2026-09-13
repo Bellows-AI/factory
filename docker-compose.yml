@@ -66,9 +66,6 @@ services:
             # <root>/<orgId>/<userId>/<repo>, and they are created when somebody signs in and picks
             # repositories from the dashboard. Set this empty to switch the feature off entirely.
             ORG_WORKSPACE_ROOT: ${ORG_WORKSPACE_ROOT:-/workspaces}
-            BASE_BRANCH: ${BASE_BRANCH:-dev}
-            # The only cache floor. CACHE_TTL_SECONDS is gone and is now fatal if set.
-            SYNC_TTL_SECONDS: ${SYNC_TTL_SECONDS:-60}
             TELEMETRY_SOURCE: ${TELEMETRY_SOURCE:-postgres}
             TELEMETRY_TTL_SECONDS: ${TELEMETRY_TTL_SECONDS:-30}
             # Required, and pointed at the service this file provisions. Not overridable from the

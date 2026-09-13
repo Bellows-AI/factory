@@ -81,6 +81,15 @@ describe('the container scripts', () => {
         if (runtime === 'node') {
             // --check parses only; it executes nothing, so a script here is safe to compile-check.
             execFileSync('node', ['--check', path], { stdio: 'ignore' });
+        } else if (name === 'credential-helper.sh') {
+            // A gitcredentials(7) snippet, not a standalone script: the driver passes the whole
+            // file as `git -c credential.helper=<content>`, and the leading `!` is what tells git
+            // to run it as a shell snippet rather than look up a command. A pipeline negation is
+            // the only other thing `!` can mean to a shell, so no bare `sh -n` parses the file as
+            // written. Strip the marker and parse-check the shell body — the part its author
+            // writes.
+            const body = readFileSync(path, 'utf8').replace(/^!/, '');
+            execFileSync('sh', ['-n'], { input: body, stdio: ['pipe', 'ignore', 'ignore'] });
         } else {
             execFileSync('sh', ['-n', path], { stdio: 'ignore' });
         }

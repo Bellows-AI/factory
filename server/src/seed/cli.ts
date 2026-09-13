@@ -1,26 +1,23 @@
 /**
  *     npm run seed
  *
- * Fills a disposable database with synthetic PRs, base-branch history and agent sessions, so the
- * dashboard has something to render without a GitHub token, a rate-limit budget or a collector.
+ * Fills a disposable database with synthetic agent sessions, so the dashboard has something to
+ * render without a collector or a real plugin install.
  *
- * Writes through `createPrStore`, not through raw SQL, so seeded data exercises the same write
- * path real data takes — including the truncation rules and the org partitioning. The telemetry
- * half has no store method to go through (the ingest route parses OTLP, which would mean
- * synthesising a wire format to immediately re-parse it), so those three tables are written
+ * The telemetry half has no store method to go through (the ingest route parses OTLP, which would
+ * mean synthesising a wire format to immediately re-parse it), so the two tables are written
  * directly, in exactly the shape `002_views.repeatable.sql` reads.
  *
- * THE GUARD IS THE POINT. Synthetic PRs in a real database is precisely the catastrophe the old
- * `DATA_SOURCE=fixture` derivation existed to make inexpressible, and it is silent: 203 invented
- * PRs render exactly like 203 real ones. So this refuses any database whose name does not mark it
- * disposable, the same shape of guard as the `*_test` refusal in the db suite — and for the same
- * reason, which is that the failure leaves no trace to notice later.
+ * THE GUARD IS THE POINT. Synthetic sessions in a real database is precisely the catastrophe the
+ * old `DATA_SOURCE=fixture` derivation existed to make inexpressible, and it is silent: invented
+ * token counts render exactly like real ones. So this refuses any database whose name does not
+ * mark it disposable, the same shape of guard as the `*_test` refusal in the db suite — and for
+ * the same reason, which is that the failure leaves no trace to notice later.
  */
 import postgres from 'postgres';
 import { createAuthStore } from '../auth/store.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
-import { createPrStore } from '../db/pr-store.js';
 import { generate } from './synthetic.js';
 
 /**
@@ -39,8 +36,8 @@ function databaseName(url: string): string {
  * No fetch credential, said in code.
  *
  * A seeding process must never hold a fetching credential — that is the same instinct as the
- * disposable-database refusal below, one step earlier: a process that could both invent pull
- * requests and fetch real ones is one environment variable away from mixing them. The `none` arm
+ * disposable-database refusal below, one step earlier: a process that could both invent sessions
+ * and fetch real ones is one environment variable away from mixing them. The `none` arm
  * is passed to resolveConfig directly rather than selected through the environment, because the
  * environment can no longer produce it at all. It also keeps `npm run seed` working with no App
  * registered, which is what the whole no-credential path exists for.
@@ -55,7 +52,7 @@ if (!config.databaseUrl) {
 const name = databaseName(config.databaseUrl);
 if (!DISPOSABLE.test(name)) {
     console.error(
-        `Refusing to seed "${name}": synthetic pull requests are indistinguishable from real ones once\n` +
+        `Refusing to seed "${name}": synthetic sessions are indistinguishable from real ones once\n` +
             `they are in a database, and there is no way to tell them apart afterwards.\n\n` +
             `Point DATABASE_URL at a database whose name ends in _seed, _synthetic, _demo, _e2e or _test:\n\n` +
             `  docker compose exec timescale psql -U factory -d postgres -c 'create database factory_seed'\n` +
@@ -75,7 +72,7 @@ if (!DISPOSABLE.test(name)) {
  */
 const repo = process.env.SEED_REPO?.trim() || 'Bellows-AI/bellows.ai';
 const now = new Date();
-const data = generate({ repo, baseBranch: config.baseBranch, now });
+const data = generate({ repo, now });
 
 const sql = postgres(config.databaseUrl, { max: 4 });
 try {
@@ -96,21 +93,7 @@ try {
         console.log(`[seed] invited ${invited} to ${config.orgId} as admin`);
     }
 
-    const store = createPrStore({ sql, orgId: config.orgId });
-    await store.savePullRequests(data.prs);
-
-    await store.saveBranchHistory('github', {
-        repo,
-        branch: config.baseBranch,
-        coveredFrom: data.coveredFrom,
-        // The authoritative totals, straight from the generator — never count(*) of the rows
-        // below, for the same reason a PR's reviewCount is not count(*) of its reviews.
-        commits: data.branchCommits.length,
-        reverts: data.branchCommits.filter((c) => /^revert[\s"']/i.test(c.messageHeadline)).length,
-        newCommits: data.branchCommits,
-    });
-
-    // Telemetry: raw datapoints and the branch side channel, exactly as the two live pipelines
+    // Telemetry: raw datapoints and the branch side channel, exactly as the live pipelines
     // write them. `delta` because each row is an increment; a cumulative series would need a
     // start_time and would be reduced with max() rather than summed.
     for (const s of data.sessions) {
@@ -120,15 +103,6 @@ try {
                     ${new Date(s.firstSeen)}, ${new Date(s.lastSeen)}, ${s.samples})
             on conflict (org_id, agent, session_id, repo, branch) do nothing
         `;
-
-        if (s.prNumber !== null) {
-            await sql`
-                insert into session_pr (org_id, agent, session_id, repo, pr_number, first_seen)
-                values (${config.orgId}, 'claude-code', ${s.sessionId}, ${s.repo}, ${s.prNumber},
-                        ${new Date(s.firstSeen)})
-                on conflict (org_id, agent, session_id, repo, pr_number) do nothing
-            `;
-        }
 
         const mid = new Date((Date.parse(s.firstSeen) + Date.parse(s.lastSeen)) / 2);
         const rows = Object.entries(s.fields).map(([field, value]) => ({
@@ -151,13 +125,9 @@ try {
         await sql`insert into metric_point ${sql(rows)} on conflict do nothing`;
     }
 
-    const merged = data.prs.filter((p) => p.mergedAt !== null).length;
-    const open = data.prs.filter((p) => p.state === 'open').length;
     console.log('\nseeded (SYNTHETIC — not measurements):');
     console.log(`  database        ${name}`);
     console.log(`  repo            ${repo}`);
-    console.log(`  pull requests   ${data.prs.length}  (${merged} merged, ${open} open)`);
-    console.log(`  ${config.baseBranch} commits`.padEnd(18) + `${data.branchCommits.length}`);
     console.log(`  sessions        ${data.sessions.length}`);
 } finally {
     await sql.end();

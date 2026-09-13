@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useWorkspace } from '../api/useWorkspace.js';
-import { useShell } from '../components/AppShell.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { RepoPickerDialog } from '../components/RepoPickerDialog.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
 import { WorkspaceReposPanel } from '../panels/WorkspaceReposPanel.js';
 
 export function WorkspacePage() {
-    const { data: stats } = useShell();
     const { data, loading, error, saving, save, saveExecutors } = useWorkspace();
     const [picking, setPicking] = useState(false);
     const [addingExecutor, setAddingExecutor] = useState(false);
@@ -75,11 +73,7 @@ export function WorkspacePage() {
             </section>
 
             {data && data.repos.length ? (
-                <WorkspaceReposPanel
-                    repos={data.repos}
-                    measured={stats?.meta.repos ?? []}
-                    stats={stats?.stats ?? null}
-                />
+                <WorkspaceReposPanel repos={data.repos} />
             ) : (
                 <section className="panel">
                     <p className="muted">

@@ -1,5 +1,5 @@
 {
-    "description": "Reports the session's git branch so AI usage can be attributed to a PR",
+    "description": "Reports the session's git repo so AI usage can be attributed to it",
     "hooks": {
         "SessionStart": [
             {

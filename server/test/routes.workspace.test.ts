@@ -11,7 +11,6 @@ import {
     memoryUserExecutorStore,
     memoryUserRepoStore,
     signedIn,
-    stubClient,
     type MemoryUserExecutorStore,
     type MemoryUserRepoStore,
 } from './helpers.js';
@@ -47,7 +46,6 @@ async function boot(options: { withRoot?: boolean } = {}) {
     const caller = auth.seedMember('test-org', 'octocat');
     const executors = memoryUserExecutorStore();
     const h = await harness({
-        client: stubClient(),
         auth,
         userRepos: store,
         userExecutors: executors,
@@ -281,7 +279,6 @@ describe('executors', () => {
         const b = auth.seedMember('test-org', 'scallop');
         const executors = memoryUserExecutorStore();
         const h = await harness({
-            client: stubClient(),
             auth,
             userRepos: store,
             userExecutors: executors,

@@ -21,11 +21,11 @@ member of this organization"; it does not make any route safe to hand out. See t
 a separate GitHub App reads repositories. One credential doing both would mean every person who
 signs in grants repository access, which is exactly the conflation `docs/auth.md` warns about.
 
-Required GitHub App installation permissions: `Metadata: read`, `Pull requests: read`, and
-`Contents: read` (revert rate only). An operator who wants runners to orchestrate GitHub — commits,
-PRs, reading CI — grants more in the installation settings (`Contents: write`, `Pull requests:
-write`, `Actions: read`): the token minted onto each claim (see [env.md](env.md)) carries the
-installation's permissions, and code cannot grant what the installation does not have.
+Required GitHub App installation permissions: `Metadata: read` (the repository list) and
+`Contents: read` (cloning private source). An operator who wants runners to orchestrate GitHub —
+commits, PRs, reading CI — grants more in the installation settings (`Contents: write`, `Pull
+requests: write`, `Actions: read`): the token minted onto each claim (see [env.md](env.md)) carries
+the installation's permissions, and code cannot grant what the installation does not have.
 
 **The App private key is the worst secret in this repository to leak, and it replaced the least
 bad.** A PAT carries whatever scopes it was issued with, can be revoked from a list, and expires; a

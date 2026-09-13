@@ -1,7 +1,7 @@
 {
     "sessions": [
         {
-            "sessionId": "s01-exact-single",
+            "sessionId": "s01-token-heavy",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-08-21T06:20:00Z",
@@ -17,12 +17,10 @@
             "editsAccepted": 18,
             "editsRejected": 2,
             "activeSeconds": 1320,
-            "commits": 3,
-            "pullRequests": 1,
-            "granularity": "window"
+            "commits": 3
         },
         {
-            "sessionId": "s02-multi-a",
+            "sessionId": "s02-mid-a",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-08-17T08:20:00Z",
@@ -38,12 +36,10 @@
             "editsAccepted": 11,
             "editsRejected": 1,
             "activeSeconds": 1080,
-            "commits": 2,
-            "pullRequests": 0,
-            "granularity": "window"
+            "commits": 2
         },
         {
-            "sessionId": "s03-multi-b",
+            "sessionId": "s03-mid-b",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-08-17T08:46:00Z",
@@ -59,12 +55,10 @@
             "editsAccepted": 7,
             "editsRejected": 3,
             "activeSeconds": 720,
-            "commits": 1,
-            "pullRequests": 1,
-            "granularity": "window"
+            "commits": 1
         },
         {
-            "sessionId": "s04-split-window",
+            "sessionId": "s04-april",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-04-20T14:30:00Z",
@@ -80,12 +74,10 @@
             "editsAccepted": 10,
             "editsRejected": 5,
             "activeSeconds": 3000,
-            "commits": 4,
-            "pullRequests": 0,
-            "granularity": "window"
+            "commits": 4
         },
         {
-            "sessionId": "s05-shared-cumulative",
+            "sessionId": "s05-april-earliest",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-04-15T12:00:00Z",
@@ -101,12 +93,10 @@
             "editsAccepted": 9,
             "editsRejected": 2,
             "activeSeconds": 2400,
-            "commits": 2,
-            "pullRequests": 0,
-            "granularity": "session"
+            "commits": 2
         },
         {
-            "sessionId": "s06-reuse-second",
+            "sessionId": "s06-may",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-05-12T09:50:00Z",
@@ -122,12 +112,10 @@
             "editsAccepted": 6,
             "editsRejected": 1,
             "activeSeconds": 3600,
-            "commits": 2,
-            "pullRequests": 1,
-            "granularity": "window"
+            "commits": 2
         },
         {
-            "sessionId": "s07-no-pr",
+            "sessionId": "s07-july-a",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-07-10T09:00:00Z",
@@ -143,12 +131,10 @@
             "editsAccepted": 3,
             "editsRejected": 4,
             "activeSeconds": 900,
-            "commits": 0,
-            "pullRequests": 0,
-            "granularity": "window"
+            "commits": 0
         },
         {
-            "sessionId": "s08-detached",
+            "sessionId": "s08-july-b",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-07-11T09:00:00Z",
@@ -164,9 +150,7 @@
             "editsAccepted": 1,
             "editsRejected": 0,
             "activeSeconds": 600,
-            "commits": 0,
-            "pullRequests": 0,
-            "granularity": "window"
+            "commits": 0
         },
         {
             "sessionId": "s09-other-repo",
@@ -185,9 +169,7 @@
             "editsAccepted": 40,
             "editsRejected": 5,
             "activeSeconds": 3600,
-            "commits": 6,
-            "pullRequests": 2,
-            "granularity": "window"
+            "commits": 6
         },
         {
             "sessionId": "s10-no-hook",
@@ -206,12 +188,10 @@
             "editsAccepted": 5,
             "editsRejected": 1,
             "activeSeconds": 1500,
-            "commits": 1,
-            "pullRequests": 0,
-            "granularity": "window"
+            "commits": 1
         },
         {
-            "sessionId": "s11-single-cumulative",
+            "sessionId": "s11-july-c",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-07-21T06:00:00Z",
@@ -227,12 +207,10 @@
             "editsAccepted": 4,
             "editsRejected": 0,
             "activeSeconds": 1500,
-            "commits": 1,
-            "pullRequests": 0,
-            "granularity": "session"
+            "commits": 1
         },
         {
-            "sessionId": "s12-after-merge",
+            "sessionId": "s12-june",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-06-01T09:00:00Z",
@@ -248,12 +226,10 @@
             "editsAccepted": 2,
             "editsRejected": 1,
             "activeSeconds": 780,
-            "commits": 0,
-            "pullRequests": 0,
-            "granularity": "window"
+            "commits": 0
         },
         {
-            "sessionId": "s13-open-pr",
+            "sessionId": "s13-august",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-08-20T10:00:00Z",
@@ -269,12 +245,10 @@
             "editsAccepted": 8,
             "editsRejected": 2,
             "activeSeconds": 2700,
-            "commits": 2,
-            "pullRequests": 0,
-            "granularity": "window"
+            "commits": 2
         },
         {
-            "sessionId": "s14-linked",
+            "sessionId": "s14-july-d",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-07-02T21:05:00Z",
@@ -290,12 +264,10 @@
             "editsAccepted": 9,
             "editsRejected": 1,
             "activeSeconds": 900,
-            "commits": 2,
-            "pullRequests": 1,
-            "granularity": "window"
+            "commits": 2
         },
         {
-            "sessionId": "s15-linked-ambiguous",
+            "sessionId": "s15-june-b",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
             "firstSeen": "2026-06-29T20:58:00Z",
@@ -311,487 +283,7 @@
             "editsAccepted": 5,
             "editsRejected": 2,
             "activeSeconds": 480,
-            "commits": 2,
-            "pullRequests": 2,
-            "granularity": "window"
-        }
-    ],
-    "spans": [
-        {
-            "sessionId": "s01-exact-single",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "ci/pr-review-real-verification",
-            "headSha": "a1b2c3d",
-            "from": "2026-08-21T06:20:00Z",
-            "to": "2026-08-21T06:45:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s02-multi-a",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-11082",
-            "headSha": null,
-            "from": "2026-08-17T08:20:00Z",
-            "to": "2026-08-17T08:45:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s03-multi-b",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-11082",
-            "headSha": null,
-            "from": "2026-08-17T08:46:00Z",
-            "to": "2026-08-17T09:02:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s04-split-window",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.5",
-            "headSha": null,
-            "from": "2026-04-20T14:30:00Z",
-            "to": "2026-04-20T15:02:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s04-split-window",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.6",
-            "headSha": null,
-            "from": "2026-04-20T15:10:00Z",
-            "to": "2026-04-20T16:00:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s05-shared-cumulative",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.3",
-            "headSha": null,
-            "from": "2026-04-15T12:00:00Z",
-            "to": "2026-04-15T12:35:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s05-shared-cumulative",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-10674",
-            "headSha": null,
-            "from": "2026-04-15T12:40:00Z",
-            "to": "2026-04-15T14:00:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s06-reuse-second",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-10674",
-            "headSha": null,
-            "from": "2026-05-12T09:50:00Z",
-            "to": "2026-05-12T11:00:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s07-no-pr",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "chore/scratch-notes",
-            "headSha": null,
-            "from": "2026-07-10T09:00:00Z",
-            "to": "2026-07-10T09:30:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s08-detached",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": null,
-            "headSha": null,
-            "from": "2026-07-11T09:00:00Z",
-            "to": "2026-07-11T09:20:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s09-other-repo",
-            "repo": "Bellows-AI/other-service",
-            "branch": "feat/other-thing",
-            "headSha": null,
-            "from": "2026-07-12T09:00:00Z",
-            "to": "2026-07-12T10:00:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s11-single-cumulative",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.80.2",
-            "headSha": null,
-            "from": "2026-07-21T06:00:00Z",
-            "to": "2026-07-21T06:30:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s12-after-merge",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.3",
-            "headSha": null,
-            "from": "2026-06-01T09:00:00Z",
-            "to": "2026-06-01T09:25:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s13-open-pr",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-11013",
-            "headSha": null,
-            "from": "2026-08-20T10:00:00Z",
-            "to": "2026-08-20T10:50:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s14-linked",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-10995-e2e-stack-improvements",
-            "headSha": null,
-            "from": "2026-07-02T21:05:00Z",
-            "to": "2026-07-02T21:20:00Z",
-            "samples": 3
-        },
-        {
-            "sessionId": "s15-linked-ambiguous",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "update-jira-automation",
-            "headSha": null,
-            "from": "2026-06-29T20:58:00Z",
-            "to": "2026-06-29T21:06:00Z",
-            "samples": 3
-        }
-    ],
-    "splits": [
-        {
-            "sessionId": "s01-exact-single",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "ci/pr-review-real-verification",
-            "from": "2026-08-21T06:20:00Z",
-            "to": "2026-08-21T06:45:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 74000,
-                "output": 12000,
-                "cacheRead": 410000,
-                "cacheCreation": 31000
-            },
-            "linesAdded": 380,
-            "linesRemoved": 116,
-            "editsAccepted": 18,
-            "editsRejected": 2,
-            "activeSeconds": 1320
-        },
-        {
-            "sessionId": "s02-multi-a",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-11082",
-            "from": "2026-08-17T08:20:00Z",
-            "to": "2026-08-17T08:45:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 51000,
-                "output": 9000,
-                "cacheRead": 288000,
-                "cacheCreation": 17000
-            },
-            "linesAdded": 240,
-            "linesRemoved": 90,
-            "editsAccepted": 11,
-            "editsRejected": 1,
-            "activeSeconds": 1080
-        },
-        {
-            "sessionId": "s03-multi-b",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-11082",
-            "from": "2026-08-17T08:46:00Z",
-            "to": "2026-08-17T09:02:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 33000,
-                "output": 6000,
-                "cacheRead": 190000,
-                "cacheCreation": 8000
-            },
-            "linesAdded": 300,
-            "linesRemoved": 44,
-            "editsAccepted": 7,
-            "editsRejected": 3,
-            "activeSeconds": 720
-        },
-        {
-            "sessionId": "s04-split-window",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.5",
-            "from": "2026-04-20T14:30:00Z",
-            "to": "2026-04-20T15:02:00Z",
-            "share": 0.6,
-            "tokens": {
-                "input": 36000,
-                "output": 6000,
-                "cacheRead": 180000,
-                "cacheCreation": 12000
-            },
-            "linesAdded": 120,
-            "linesRemoved": 30,
-            "editsAccepted": 6,
-            "editsRejected": 3,
-            "activeSeconds": 1800
-        },
-        {
-            "sessionId": "s04-split-window",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.6",
-            "from": "2026-04-20T15:10:00Z",
-            "to": "2026-04-20T16:00:00Z",
-            "share": 0.4,
-            "tokens": {
-                "input": 24000,
-                "output": 4000,
-                "cacheRead": 120000,
-                "cacheCreation": 8000
-            },
-            "linesAdded": 80,
-            "linesRemoved": 20,
-            "editsAccepted": 4,
-            "editsRejected": 2,
-            "activeSeconds": 1200
-        },
-        {
-            "sessionId": "s05-shared-cumulative",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.3",
-            "from": "2026-04-15T12:00:00Z",
-            "to": "2026-04-15T12:35:00Z",
-            "share": null,
-            "tokens": {
-                "input": null,
-                "output": null,
-                "cacheRead": null,
-                "cacheCreation": null
-            },
-            "linesAdded": null,
-            "linesRemoved": null,
-            "editsAccepted": null,
-            "editsRejected": null,
-            "activeSeconds": null
-        },
-        {
-            "sessionId": "s05-shared-cumulative",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-10674",
-            "from": "2026-04-15T12:40:00Z",
-            "to": "2026-04-15T14:00:00Z",
-            "share": null,
-            "tokens": {
-                "input": null,
-                "output": null,
-                "cacheRead": null,
-                "cacheCreation": null
-            },
-            "linesAdded": null,
-            "linesRemoved": null,
-            "editsAccepted": null,
-            "editsRejected": null,
-            "activeSeconds": null
-        },
-        {
-            "sessionId": "s06-reuse-second",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-10674",
-            "from": "2026-05-12T09:50:00Z",
-            "to": "2026-05-12T11:00:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 29000,
-                "output": 5000,
-                "cacheRead": 150000,
-                "cacheCreation": 9000
-            },
-            "linesAdded": 120,
-            "linesRemoved": 60,
-            "editsAccepted": 6,
-            "editsRejected": 1,
-            "activeSeconds": 3600
-        },
-        {
-            "sessionId": "s07-no-pr",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "chore/scratch-notes",
-            "from": "2026-07-10T09:00:00Z",
-            "to": "2026-07-10T09:30:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 12000,
-                "output": 2000,
-                "cacheRead": 60000,
-                "cacheCreation": 3000
-            },
-            "linesAdded": 40,
-            "linesRemoved": 10,
-            "editsAccepted": 3,
-            "editsRejected": 4,
-            "activeSeconds": 900
-        },
-        {
-            "sessionId": "s08-detached",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": null,
-            "from": "2026-07-11T09:00:00Z",
-            "to": "2026-07-11T09:20:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 7000,
-                "output": 1200,
-                "cacheRead": 30000,
-                "cacheCreation": 1500
-            },
-            "linesAdded": 12,
-            "linesRemoved": 4,
-            "editsAccepted": 1,
-            "editsRejected": 0,
-            "activeSeconds": 600
-        },
-        {
-            "sessionId": "s09-other-repo",
-            "repo": "Bellows-AI/other-service",
-            "branch": "feat/other-thing",
-            "from": "2026-07-12T09:00:00Z",
-            "to": "2026-07-12T10:00:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 90000,
-                "output": 15000,
-                "cacheRead": 500000,
-                "cacheCreation": 40000
-            },
-            "linesAdded": 900,
-            "linesRemoved": 300,
-            "editsAccepted": 40,
-            "editsRejected": 5,
-            "activeSeconds": 3600
-        },
-        {
-            "sessionId": "s11-single-cumulative",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.80.2",
-            "from": "2026-07-21T06:00:00Z",
-            "to": "2026-07-21T06:30:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 18000,
-                "output": 3000,
-                "cacheRead": 95000,
-                "cacheCreation": 5000
-            },
-            "linesAdded": 100,
-            "linesRemoved": 25,
-            "editsAccepted": 4,
-            "editsRejected": 0,
-            "activeSeconds": 1500
-        },
-        {
-            "sessionId": "s12-after-merge",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "hotfix-0.79.3",
-            "from": "2026-06-01T09:00:00Z",
-            "to": "2026-06-01T09:25:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 9000,
-                "output": 1500,
-                "cacheRead": 40000,
-                "cacheCreation": 2000
-            },
-            "linesAdded": 25,
-            "linesRemoved": 8,
-            "editsAccepted": 2,
-            "editsRejected": 1,
-            "activeSeconds": 780
-        },
-        {
-            "sessionId": "s13-open-pr",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-11013",
-            "from": "2026-08-20T10:00:00Z",
-            "to": "2026-08-20T10:50:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 41000,
-                "output": 7000,
-                "cacheRead": 220000,
-                "cacheCreation": 12000
-            },
-            "linesAdded": 160,
-            "linesRemoved": 55,
-            "editsAccepted": 8,
-            "editsRejected": 2,
-            "activeSeconds": 2700
-        },
-        {
-            "sessionId": "s14-linked",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "LEEL-10995-e2e-stack-improvements",
-            "from": "2026-07-02T21:05:00Z",
-            "to": "2026-07-02T21:20:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 37000,
-                "output": 6500,
-                "cacheRead": 180000,
-                "cacheCreation": 11000
-            },
-            "linesAdded": 140,
-            "linesRemoved": 35,
-            "editsAccepted": 9,
-            "editsRejected": 1,
-            "activeSeconds": 900
-        },
-        {
-            "sessionId": "s15-linked-ambiguous",
-            "repo": "Bellows-AI/bellows.ai",
-            "branch": "update-jira-automation",
-            "from": "2026-06-29T20:58:00Z",
-            "to": "2026-06-29T21:06:00Z",
-            "share": 1,
-            "tokens": {
-                "input": 22000,
-                "output": 4000,
-                "cacheRead": 110000,
-                "cacheCreation": 7000
-            },
-            "linesAdded": 80,
-            "linesRemoved": 20,
-            "editsAccepted": 5,
-            "editsRejected": 2,
-            "activeSeconds": 480
-        }
-    ],
-    "links": [
-        {
-            "sessionId": "s14-linked",
-            "repo": "Bellows-AI/bellows.ai",
-            "prNumber": 128,
-            "at": "2026-07-02T21:19:00Z"
-        },
-        {
-            "sessionId": "s15-linked-ambiguous",
-            "repo": "Bellows-AI/bellows.ai",
-            "prNumber": 117,
-            "at": "2026-06-29T21:05:00Z"
-        },
-        {
-            "sessionId": "s15-linked-ambiguous",
-            "repo": "Bellows-AI/bellows.ai",
-            "prNumber": 102,
-            "at": "2026-06-29T21:06:00Z"
-        },
-        {
-            "sessionId": "s01-exact-single",
-            "repo": "Bellows-AI/bellows.ai",
-            "prNumber": 99999,
-            "at": "2026-08-21T06:44:00Z"
+            "commits": 2
         }
     ],
     "coverage": {

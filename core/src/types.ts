@@ -1,4 +1,9 @@
-import type { CanonicalPrState, PrConnection } from './canonical.js';
+/**
+ * Telemetry from AI coding agents, scoped to the repos this deployment reports on.
+ *
+ * There is deliberately no monetary field anywhere below. Prices and cache discounts
+ * change, and a dollar figure invites precision these totals cannot support.
+ */
 
 /**
  * The entity that owns a set of repos and partitions all stored history.
@@ -32,153 +37,6 @@ export interface OrganizationMeta {
     readonly available: readonly Organization[];
 }
 
-export interface ThreadRecord {
-    author: string;
-    reviewId: string | null;
-    resolved: boolean;
-    outdated: boolean;
-}
-
-export interface ThreadStats {
-    total: number;
-    threads: ThreadRecord[];
-    bot: number;
-    human: number;
-    resolved: number;
-    unresolvedOutdated: number;
-    unresolvedLive: number;
-}
-
-export interface DerivedReview {
-    id: string;
-    author: string;
-    state: string;
-    submittedAt: string | null;
-    /** null when the provider cannot link a thread to the review it was opened under. */
-    bodyOnly: boolean | null;
-}
-
-export interface DerivedPr {
-    /** "owner/name", carried through from CanonicalPr. */
-    repo: string;
-    number: number;
-    title: string;
-    author: string;
-    authorIsBot: boolean;
-    baseRefName: string;
-    headRefName: string;
-    state: CanonicalPrState;
-    createdAt: string;
-    mergedAt: string | null;
-    labels: string[];
-    hasAiLabel: boolean;
-    additions: number;
-    deletions: number;
-    size: number;
-    changedFiles: number;
-    commitCount: number;
-    issueComments: number;
-    reviewCount: number;
-    reviews: DerivedReview[];
-    /** null when the provider cannot link threads to reviews — see DerivedReview.bodyOnly. */
-    bodyOnlyReviewCount: number | null;
-    threads: ThreadStats;
-    /** null when the provider cannot observe force pushes; 0 when it can and none happened. */
-    forcePushes: number | null;
-    readyAt: string | null;
-    firstReviewAt: string | null;
-    firstHumanReviewAt: string | null;
-    commitsAfterAnyReview: number;
-    commitsAfterHumanReview: number;
-    cycleHours: number | null;
-    cycleFromReadyHours: number | null;
-    firstReviewWaitHours: number | null;
-    firstHumanReviewWaitHours: number | null;
-    lastCommitToMergeHours: number | null;
-    /**
-     * Carried through from CanonicalPr so `Stats.meta.truncated` can be derived from the PRs
-     * in scope. Kept on the record rather than passed alongside it: as a side channel it had
-     * to be re-filtered by `repo#number` at every call site, and one call site forgetting
-     * would report another repo's caveat.
-     */
-    truncated: PrConnection[];
-}
-
-export interface BranchHistory {
-    branch: string;
-    since: string;
-    commits: number;
-    reverts: number;
-}
-
-export interface TruncatedPr {
-    repo: string;
-    number: number;
-    connections: string[];
-}
-
-export interface WeekPoint {
-    week: string;
-    start: string;
-    merges: number;
-    loc: number;
-    resolved: number;
-    unresolvedOutdated: number;
-    unresolvedLive: number;
-    cycleP50: number | null;
-    partial: boolean;
-}
-
-export interface ReviewerRow {
-    login: string;
-    isBot: boolean;
-    threads: number;
-    resolved: number;
-    /**
-     * null when any of this reviewer's reviews could not be classified. Zero would read as
-     * "always left line comments", which is a claim about their reviewing, not about the data.
-     */
-    bodyOnlyReviews: number | null;
-    reviews: number;
-    prsTouched: number;
-    resolvedRatio: number | null;
-}
-
-export interface AuthorRow {
-    login: string;
-    isBot: boolean;
-    merged: number;
-    medianSize: number | null;
-    medianCommits: number | null;
-    cycleP50: number | null;
-    reworkRatio: number | null;
-    threadsReceived: number;
-    unresolvedRatio: number | null;
-}
-
-/**
- * Telemetry from AI coding agents, joined to PRs by branch.
- *
- * The join exists because agent telemetry carries no PR number, branch, or commit SHA —
- * only a session id. A hook reports `session -> (repo, branch)` out of band, and the
- * branch is what reaches `DerivedPr.headRefName`.
- *
- * There is deliberately no monetary field anywhere below. Prices and cache discounts
- * change, and a dollar figure invites precision this attribution cannot support.
- */
-
-/** One row per (session, branch) the hook observed. Three checkouts yield three spans. */
-export interface SessionBranchSpan {
-    sessionId: string;
-    repo: string;
-    /** null on detached HEAD. Never the literal 'HEAD', which would join to nothing while looking real. */
-    branch: string | null;
-    headSha: string | null;
-    from: string;
-    to: string;
-    samples: number;
-}
-
 /**
  * The four types are never summed into one figure: a long cached conversation would
  * count the same context repeatedly. Where one number is needed it is input + output.
@@ -204,102 +62,12 @@ export interface SessionRollup {
     editsRejected: number | null;
     activeSeconds: number | null;
     commits: number | null;
-    pullRequests: number | null;
-    /**
-     * 'window' when delta temporality gave time-sliced increments that can be divided
-     * across branches; 'session' when only a cumulative end-of-session total exists.
-     */
-    granularity: 'window' | 'session';
-}
-
-/** Per-(session, branch) allocation, computed by time containment where the timestamps live. */
-export interface SessionSpanSplit {
-    sessionId: string;
-    /** From the span. A branch name is only unique within a repo, so the join needs both. */
-    repo: string;
-    branch: string | null;
-    /** The interval this allocation covers. Needed because a branch is not a unique key —
-     *  the sample payload reuses several head branches across separate PRs. */
-    from: string;
-    to: string;
-    /** 0..1. null when the session's total could not be divided — ratio()'s contract, applied to attribution. */
-    share: number | null;
-    tokens: TokenTotals;
-    linesAdded: number | null;
-    linesRemoved: number | null;
-    editsAccepted: number | null;
-    editsRejected: number | null;
-    activeSeconds: number | null;
-}
-
-/**
- * A session's direct PR association, from a transcript `pr-link` record.
- *
- * Strictly better than the branch join: an exact PR number, so no reuse ambiguity and no
- * time-window heuristic. Only present when Claude Code opened the PR itself, so branch
- * matching remains the fallback rather than being replaced.
- */
-export interface SessionPrLink {
-    sessionId: string;
-    repo: string;
-    prNumber: number;
-    at: string;
 }
 
 export interface TelemetryInput {
-    /** Every session in the store, unfiltered. attribute() applies the repo filter. */
+    /** Every session in the store, unfiltered. telemetryStats() applies the repo filter. */
     sessions: SessionRollup[];
-    spans: SessionBranchSpan[];
-    splits: SessionSpanSplit[];
-    links: SessionPrLink[];
     coverage: { from: string | null; to: string | null };
-}
-
-/**
- * The slim PR projection attribute() is allowed to read. Deliberately not DerivedPr, so a
- * change there cannot silently alter telemetry output.
- */
-export interface PrTelemetryKey {
-    repo: string;
-    number: number;
-    author: string;
-    headRefName: string;
-    createdAt: string;
-    mergedAt: string | null;
-    size: number;
-    cycleHours: number | null;
-    commitsAfterHumanReview: number;
-}
-
-export interface PrTelemetryRow {
-    repo: string;
-    number: number;
-    branch: string;
-    author: string;
-    mergedAt: string | null;
-    size: number;
-    cycleHours: number | null;
-    commitsAfterHumanReview: number;
-    sessions: number;
-    tokens: TokenTotals;
-    linesAdded: number | null;
-    linesRemoved: number | null;
-    editsAccepted: number | null;
-    editsRejected: number | null;
-    acceptRatio: number | null;
-    activeHours: number | null;
-    /** (input + output) per changed line. */
-    tokensPerLoc: number | null;
-    /**
-     * 'linked' — the transcript names this PR outright, so the whole session belongs to it.
-     *            The strongest tier: no branch inference at all.
-     * 'exact'  — matched by branch, narrowed by time, and divisible.
-     * 'shared' — a matched session also held other branches, or named several PRs, and could
-     *            not be divided; every quantity above is null.
-     * 'none'   — nothing matched. Also all null, and still listed: filtering the row out
-     *            would make absence invisible.
-     */
-    attribution: 'linked' | 'exact' | 'shared' | 'none';
 }
 
 export interface TelemetryWeekPoint {
@@ -313,7 +81,6 @@ export interface TelemetryWeekPoint {
 }
 
 export interface TelemetryStats {
-    /** From `sessions`, never from `prs` — see the conservation tests. */
     totals: {
         sessions: number;
         tokens: TokenTotals;
@@ -322,90 +89,10 @@ export interface TelemetryStats {
         linesRemoved: number | null;
         acceptRatio: number | null;
     };
-    prs: PrTelemetryRow[];
-    /** Work on branches matching no PR: dead ends, or a PR outside the fetch window. */
-    /**
-     * `branches` carries the repo because a branch name is not unique across repos: two repos
-     * both having an unmatched `main` must read as two entries, not one.
-     */
-    unmatched: { sessions: number; tokens: TokenTotals; branches: { repo: string; branch: string }[] };
-    /** PRs in the window with no session at all — merged before the plugin, or written without AI. */
-    prsWithoutTelemetry: number;
-    /** Sessions that held several branches, or named several PRs, and could not be divided. */
-    sharedSessions: number;
-    /** Sessions attributed by an exact PR number from a transcript rather than by branch. */
-    linkedSessions: number;
     /** Sessions the hook attributed to a different repo. */
     otherRepoSessions: number;
     /** Sessions with telemetry but no hook data — the plugin is missing, or failing. */
     sessionsWithoutHook: number;
     weekly: TelemetryWeekPoint[];
     coverage: { from: string | null; to: string | null };
-}
-
-export interface Stats {
-    meta: {
-        generatedAt: string;
-        baseBranch: string;
-        truncated: TruncatedPr[];
-        counts: { all: number; mergedToBase: number; open: number; closedUnmerged: number };
-        window: { from: string | null; to: string | null };
-    };
-    headline: {
-        unresolvedThreadRatio: number | null;
-        mergesPerWeek: number | null;
-        cycleP50: number | null;
-        cycleP90: number | null;
-        reworkAfterAnyReview: number | null;
-        reworkAfterHumanReview: number | null;
-        botThreadsPerPr: number | null;
-        humanThreadsPerPr: number | null;
-        medianSize: number | null;
-    };
-    threads: {
-        total: number;
-        resolved: number;
-        unresolvedOutdated: number;
-        unresolvedLive: number;
-        bot: number;
-        human: number;
-    };
-    weekly: WeekPoint[];
-    cycle: {
-        p50: number | null;
-        p90: number | null;
-        p50FromReady: number | null;
-        firstReviewWaitP50: number | null;
-        firstHumanReviewWaitP50: number | null;
-        lastCommitToMergeP50: number | null;
-    };
-    rework: {
-        prsWithAnyReview: number;
-        prsWithHumanReview: number;
-        afterAnyReview: number;
-        afterHumanReview: number;
-        medianCommitsAfterAnyReview: number | null;
-        medianCommitsAfterHumanReview: number | null;
-        /**
-         * null when any PR in scope came from a provider that cannot observe force pushes.
-         * All-or-nothing for the same reason the revert rate is: summing only the PRs that
-         * could be measured gives a plausible number over an unknown subset.
-         */
-        forcePushes: number | null;
-    };
-    size: {
-        histogram: { label: string; count: number }[];
-        scatter: { repo: string; number: number; size: number; hours: number; botThreads: number }[];
-        medianChangedFiles: number | null;
-    };
-    commitsHistogram: { label: string; count: number }[];
-    reviewers: ReviewerRow[];
-    authors: AuthorRow[];
-    quality: {
-        labelledPrs: number;
-        mergedPrs: number;
-        instantMerges: number;
-        history: BranchHistory | null;
-        revertRatio: number | null;
-    };
 }

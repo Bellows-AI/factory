@@ -20,7 +20,7 @@ import type { GitHubAppClient, Installation, InstallationRepo } from './app-clie
 export interface RepoSource {
     /** Never blocks, never fetches. Empty until the first successful `list()`. */
     snapshot(): readonly Repo[];
-    /** "owner/name" for the snapshot — the form stamped onto every stored PR. */
+    /** "owner/name" for the snapshot — the form every repo identity takes here. */
     snapshotNames(): readonly string[];
     list(): Promise<readonly Repo[]>;
     /** The picker's view: everything the installation can see, plus who it belongs to. */
@@ -34,10 +34,10 @@ export interface RepoSource {
 /**
  * How long a repo list is trusted.
  *
- * Long, next to the sync TTL, because the answer changes when a human installs or uninstalls the
- * App — minutes-scale, not seconds — and every read of it costs a rate-limit point. Short enough
- * that granting the App a new repository shows up without a restart, which is the whole workflow
- * this replaced ORG_REPOS to enable.
+ * Long, because the answer changes when a human installs or uninstalls the App — minutes-scale,
+ * not seconds — and every read of it costs a rate-limit point. Short enough that granting the App
+ * a new repository shows up without a restart, which is the whole workflow this replaced
+ * ORG_REPOS to enable.
  */
 export const INSTALLATION_REPOS_TTL_MS = 10 * 60 * 1000;
 

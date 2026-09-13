@@ -10,8 +10,8 @@ const SHOTS = 'artifacts/ui';
  */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
-/** `.cards` is not unique — the AI usage panel reuses it, so the headline is the first one. */
-function headlineCards(page: Page) {
+/** `.cards` is the AI usage panel's card row, and the first section on the page. */
+function usageCards(page: Page) {
     return page.locator('.cards').first().locator('.card');
 }
 
@@ -25,10 +25,10 @@ function watchConsole(page: Page): string[] {
     return problems;
 }
 
-/** The dashboard answers 202 while the cold fetch runs, so wait for the cards, not for load. */
+/** The dashboard answers 202 while the first read runs, so wait for the cards, not for load. */
 async function open(page: Page) {
     await page.goto('/');
-    await expect(headlineCards(page)).toHaveCount(6, { timeout: 60_000 });
+    await expect(usageCards(page)).toHaveCount(5, { timeout: 60_000 });
 }
 
 /**
@@ -50,9 +50,9 @@ async function selectPreset(page: Page, label: string, preset: string) {
 }
 
 async function assertRendersCleanly(page: Page, name: string) {
-    await expect(headlineCards(page)).toHaveCount(6);
+    await expect(usageCards(page)).toHaveCount(5);
     // Every panel that renders must render something: a bare heading is a broken panel.
-    expect(await page.locator('section.panel').count()).toBeGreaterThan(5);
+    expect(await page.locator('section.panel').count()).toBeGreaterThan(2);
 
     const text = await page.locator('main').innerText();
     for (const token of FORBIDDEN) expect(text, `${name} contains ${token}`).not.toContain(token);
@@ -96,20 +96,15 @@ test.describe('date range selector', () => {
         await open(page);
 
         // All time is what the page opens on, so no click is needed to read the baseline.
-        const allTime = await headlineCards(page).locator('strong').allInnerTexts();
+        const allTime = await usageCards(page).locator('strong').allInnerTexts();
         await expect(page.getByText('Every figure above covers')).toHaveCount(0);
 
         await selectPreset(page, 'Today', 'day');
-        const today = await headlineCards(page).locator('strong').allInnerTexts();
+        const today = await usageCards(page).locator('strong').allInnerTexts();
         expect(today).not.toEqual(allTime);
 
         // The scope has to be stated, or a narrowed range reads as a shrinking repository.
         await expect(page.getByText('Every figure above covers')).toBeVisible();
-        // The revert rate IS re-sliceable now, because base-branch commits are persisted and this
-        // range sits inside what the scan covers. It used to degrade here — that was the no-store
-        // path, where there were no commit rows to slice and a full-window figure beside
-        // range-scoped metrics would have been a lie.
-        await expect(page.getByText('Revert rate unavailable')).toHaveCount(0);
     });
 
     test('the custom picker applies both bounds and shows all time until one is set', async ({
@@ -159,11 +154,19 @@ test.describe('date range selector', () => {
         await open(page);
         await selectPreset(page, 'Today', 'day');
 
-        // One merged PR in the fixture's last day: the panels must still stand up, and a
+        // A few sessions in the fixture's last day: the panels must still stand up, and a
         // metric with no basis must read as unavailable rather than as a measured zero.
         await assertRendersCleanly(page, 'today-sparse');
-        await expect(headlineCards(page).locator('strong').first()).not.toHaveText('');
+        await expect(usageCards(page).locator('strong').first()).not.toHaveText('');
         expect(problems.join('\n')).toBe('');
+    });
+
+    test('the page carries no pull-request vocabulary', async ({ page }) => {
+        await open(page);
+        const text = (await page.locator('main').innerText()) + (await page.locator('header').innerText());
+        expect(text).not.toMatch(/pull requests?/i);
+        expect(text).not.toMatch(/revert rate/i);
+        expect(text).not.toMatch(/merged into/i);
     });
 });
 

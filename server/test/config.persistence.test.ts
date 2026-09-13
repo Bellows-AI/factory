@@ -84,25 +84,34 @@ describe('removed settings are fatal, not ignored', () => {
     });
 });
 
-describe('the sync TTL floor', () => {
-    it('defaults to one repo\'s worth, which is all this validator can check', () => {
-        // It used to be MIN_SYNC_TTL_SECONDS_PER_REPO × the configured repo count. There is no
-        // configured repo count any more — the App installation reports it — so the per-repo floor
-        // moved to the stats service, which is the only thing that knows the number. See
-        // stats.sync-ttl.test.ts.
-        expect(loadConfig({ DATABASE_URL: DEV }, NONE).syncTtlMs).toBe(60_000);
+describe('retired variables are fatal, not ignored', () => {
+    // Each one used to decide what the page was made of, so an ignored one would boot a
+    // dashboard whose operator believes it is reading something else. The pull-request pipeline
+    // these three parameterised is gone.
+    it('refuses SYNC_TTL_SECONDS and names the surviving floor', () => {
+        expect(() => loadConfig({ DATABASE_URL: DEV, SYNC_TTL_SECONDS: '900' }, NONE)).toThrow(
+            /SYNC_TTL_SECONDS is no longer supported/,
+        );
+        expect(() => loadConfig({ DATABASE_URL: DEV, SYNC_TTL_SECONDS: '900' }, NONE)).toThrow(
+            /TELEMETRY_TTL_SECONDS/,
+        );
     });
 
-    it('rejects a value under the floor, so the cheap path stays cheap', () => {
-        expect(() => loadConfig({ DATABASE_URL: DEV, SYNC_TTL_SECONDS: '30' }, NONE)).toThrow(/at least 60/);
+    it('refuses BASE_BRANCH', () => {
+        expect(() => loadConfig({ DATABASE_URL: DEV, BASE_BRANCH: 'main' }, NONE)).toThrow(
+            /BASE_BRANCH is no longer supported/,
+        );
     });
 
-    it('is the only cache floor there is', () => {
-        // The 300s-per-repo full-walk floor is gone with the full-walk-every-refresh behaviour it
-        // protected. A full reconciliation is now gated on its own 24h schedule and on the
-        // provider's reported remaining budget, which is strictly stronger than a clock.
-        const config = loadConfig({ DATABASE_URL: DEV, SYNC_TTL_SECONDS: '900' }, NONE);
-        expect(config.syncTtlMs).toBe(900_000);
-        expect('cacheTtlMs' in config).toBe(false);
+    it('refuses BOTS', () => {
+        expect(() => loadConfig({ DATABASE_URL: DEV, BOTS: 'claude' }, NONE)).toThrow(
+            /BOTS is no longer supported/,
+        );
+    });
+
+    it('re-points CACHE_TTL_SECONDS at the telemetry slot', () => {
+        expect(() => loadConfig({ DATABASE_URL: DEV, CACHE_TTL_SECONDS: '300' }, NONE)).toThrow(
+            /TELEMETRY_TTL_SECONDS/,
+        );
     });
 });
