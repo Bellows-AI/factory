@@ -85,7 +85,8 @@ export type LeaseState = 'held' | 'lost';
  * How one heartbeat landed.
  *
  * `held` carries the stop flag the board set on a Stop while this attempt was running: the driver
- * kills its container and parks the job on standby — Stop is park, not finish (docs/jobs.md).
+ * kills its container and hands the row back — the board settles the turn `stopped`
+ * (docs/jobs.md).
  * `lost` is the pre-existing 409 — the lease was reclaimed and the run must die. `removed` is the
  * board answering 404, which only a Remove can have produced (the thread's rows are gone); the
  * container dies and nothing is parked or reported — there is nobody left to park against.

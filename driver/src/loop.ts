@@ -49,7 +49,8 @@ interface JobState {
     lost: boolean;
     /**
      * True once the board answered a Stop while this attempt ran: the container is killed and the
-     * job parked on standby — Stop is park, never finish (docs/jobs.md).
+     * run is settled on the board — the turn ends, and the session it kept is what the follow-up
+     * continues (docs/jobs.md).
      */
     stopped: boolean;
     /**
@@ -116,9 +117,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * would refuse the report anyway — but by then the two runs have both been writing to the same
      * checkout, which is the thing actually worth preventing. A 404 means the thread was REMOVED
      * (issue #41): same kill, and nothing left to park against or report to. A Stop — the board
-     * answers `cancelRequested` on a still-held beat — kills the container too, but parks the job
-     * on standby instead of ending it: Stop is park, never finish, and the session survives for a
-     * human to resume from the Claude UI.
+     * answers `cancelRequested` on a still-held beat — kills the container too, and the board
+     * settles the run `stopped` when the park lands: the turn ends, and the session survives for
+     * the follow-up that continues the conversation.
      */
     function heartbeat(job: BoardJob, state: JobState): Promise<void> {
         const every = Math.max(1_000, Math.floor((config.leaseSeconds * 1000) / 3));
@@ -459,17 +460,17 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 }
 
                 if (state.stopped) {
-                    // The heartbeat already killed the container. A Stop is a PARK: the session is
-                    // kept, the job goes back on the board, and a human resumes it from the Claude
-                    // UI — the same landing an idled run gets, and for the same reason: reporting an
-                    // exit code here would make a paused session indistinguishable from a run that
-                    // ended (docs/jobs.md).
+                    // The heartbeat already killed the container. The park is the user's stop
+                    // landing: the board reads its own stop stamp and settles the row `stopped` —
+                    // the turn ends, the session is kept for the follow-up that continues the
+                    // conversation. Reporting an exit code here would make a killed run
+                    // indistinguishable from one that ended on its own (docs/jobs.md).
                     await settle();
                     const verdict = await board.suspend(job);
                     log(
                         verdict === 'lost'
                             ? `job ${job.id}: stopped, but the board had already reclaimed it`
-                            : `job ${job.id}: stopped, parked on standby`,
+                            : `job ${job.id}: stopped, the board has settled the turn`,
                     );
                     return;
                 }
