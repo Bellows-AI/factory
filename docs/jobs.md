@@ -238,8 +238,9 @@ instant fake clock cannot see it, so `loop.test.ts` models a period that never e
   the stream is the CLI's to format). A flush fires when either the tail or the sample changed, so
   a quiet agent burning CPU still answers "is it stuck". A missed sample stores nothing and the
   last good one stays; the claim clears the column (`started_at`'s precedent — the sample
-  describes the attempt that took it), and the kubernetes runner reports none at all, the same
-  honest refusal its gates make.
+  describes the attempt that took it), and the kubernetes runner samples the metrics API instead
+  (`metrics.k8s.io`, read off the runner's own pod), answering the same null whenever the cluster
+  runs no metrics-server.
 
 **`RUNNER_CACHE_WATCH` kills a run whose provider stopped caching, before the timeout reports
 only a corpse.** Off by default — arming a kill switch over provider quality is something somebody
@@ -390,9 +391,10 @@ connection and retry, which is what agents are for.
   is the same trust the checkout already carried: the agent runs arbitrary code in that tree, and
   the tree now also names containers. What it does not do is widen the blast radius across
   members: services are per-job, on a per-job network, reachable only from that job's runner.
-- **`EXECUTOR=kubernetes` refuses the flag at startup**, the way Remote Control is refused:
-  services are docker networks and sibling containers the kubernetes runner does not create, and
-  silent absence would read as a broken feature rather than the configuration decision it was.
+- **Both executors run them.** Docker starts sibling containers on a per-job network; kubernetes
+  starts service pods with a headless Service as the DNS name ([kubernetes.md](kubernetes.md),
+  "Gates and services on this platform"). `RUNNER_SERVICES` decides whether they run at all, on
+  either platform — nothing about the flag is executor-specific.
 
 ## The session ids, and driving a job from the Claude UI
 

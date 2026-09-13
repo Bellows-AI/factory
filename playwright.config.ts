@@ -70,7 +70,7 @@ export default defineConfig({
             // bug.
             command: 'npm run build && npm run seed && node server/dist/offline.js',
             // /api/health never touches GitHub or the database, so it reports ready immediately —
-            // the cold fixture fetch is awaited in the spec instead.
+            // the cold stats fetch is awaited in the spec instead.
             url: `http://127.0.0.1:${PORT}/api/health`,
             cwd: root,
             env: {

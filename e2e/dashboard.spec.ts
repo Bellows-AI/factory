@@ -25,7 +25,7 @@ function watchConsole(page: Page): string[] {
     return problems;
 }
 
-/** The dashboard answers 202 while the fixture fetch runs, so wait for the cards, not for load. */
+/** The dashboard answers 202 while the cold fetch runs, so wait for the cards, not for load. */
 async function open(page: Page) {
     await page.goto('/');
     await expect(headlineCards(page)).toHaveCount(6, { timeout: 60_000 });

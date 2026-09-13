@@ -1,5 +1,14 @@
 # 00 — Kubernetes agent executor: overview
 
+> **Status: superseded.** This design predates implementation, and the shipped system differs:
+> the executor landed as the `driver/` workspace with `RUNNER_*` env keys, the store as
+> `server/migrations/006_jobs.sql` + `server/src/db/job-store.ts`, the API as
+> `server/src/routes/jobs.ts`, and deployment as the `charts/factory/` helm chart rather than a
+> kustomize tree. The specs stay as the reasoning behind the decisions that did land; where they
+> describe the repo "today", that today is the moment they were written. See
+> [docs/jobs.md](../../docs/jobs.md) and [docs/kubernetes.md](../../docs/kubernetes.md) for what
+> shipped.
+
 Read this before any other spec in `specs/executor/`. It holds the context, the architecture, the
 four decisions every other spec inherits, the cross-workspace wiring, and the list of things that
 will bite. The other eight specs are independently implementable; this one is not implementable at

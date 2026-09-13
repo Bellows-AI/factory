@@ -26,16 +26,15 @@ it has not been built.
   simultaneously a database key and a URL parameter, and a case-insensitive collision in a key is
   invisible: `Bellows` and `bellows` are two partitions that read as one. Silently lowercasing would
   leave the file, the database and the query string disagreeing.
-- **`GITHUB_REPOS` and `github.repos` are fatal, not ignored.** The one deliberate exception to "an
+- **`GITHUB_REPOS` and `ORG_REPOS` are fatal, not ignored.** The one deliberate exception to "an
   unknown environment variable is ignored", and for exactly the reason that rule is stated: a
   variable that *was* meaningful and is now dropped reverts a two-repo dashboard to one repo and
-  still renders, indistinguishable from a repo genuinely removed. The file-layer message names
-  `organization.repos` rather than saying "unknown key", because a key that demonstrably worked
-  yesterday reads as a typo and the reader's next move is to type it again.
-- **A Factory organization is not a GitHub organization.** `organization.repos` still resolves bare
-  entries against `github.owner`, and a qualified `other-owner/name` keeps its own, so one
-  organization can span several GitHub owners. `organization.id` has nothing to do with
-  `github.owner`; do not "simplify" by deleting one.
+  still renders, indistinguishable from a repo genuinely removed. The error names the variable
+  rather than saying "unknown key", because a key that demonstrably worked yesterday reads as a
+  typo and the reader's next move is to type it again.
+- **A Factory organization is not a GitHub organization.** `ORG_ID` names this deployment's data
+  partition and has nothing to do with the GitHub account the App is installed on; the repo list
+  is whatever that one installation reports. Do not "simplify" by tying one to the other.
 - **`org_id` leads every org-owned primary key** across ten tables (`pull_request` + its four
   children, `branch_commit`, `branch_history`, `sync_state`, `session_branch`, `session_pr`). It
   leads rather than trails `provider` because a query always knows its organization, so the key is

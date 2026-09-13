@@ -68,12 +68,12 @@ RUN apk add --no-cache git
 COPY --from=build /app/core/dist core/dist
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/web/dist web/dist
-# The fixtures back DATA_SOURCE=fixture and TELEMETRY_SOURCE=fixture, which is how the
-# container runs with no token, no database and no collector.
-COPY --from=build /app/server/fixtures server/fixtures
+# The telemetry fixture client (opt-in TELEMETRY_SOURCE=fixture) reads this at runtime, by
+# import.meta.url depth from server/dist. Nothing in the runtime image reads the raw GitHub
+# capture (server/fixtures) — it is test and tooling infrastructure, so it is not copied.
 COPY --from=build /app/core/test/fixtures/telemetry-sessions.json core/test/fixtures/telemetry-sessions.json
-# tsc compiles neither .sql nor .json, so the migrations and the raw GitHub capture have to be
-# copied by hand — both sit outside src/ at a depth that resolves the same from src/ and dist/.
+# tsc compiles neither .sql nor .json, so the migrations have to be copied by hand — they sit
+# outside src/ at a depth that resolves the same from src/ and dist/.
 COPY --from=build /app/server/migrations server/migrations
 # No COPY for .env, despite the precedent just above: it carries secrets, so they
 # have to arrive as a read-only mount or as environment, never baked into an image layer.

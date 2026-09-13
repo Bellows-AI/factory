@@ -1,7 +1,7 @@
 # Authentication
 
-Read before: touching `server/src/auth/*`, `server/migrations/010_auth.sql`, the `[auth]` block, the
-session cookie, or anything that decides which routes need a credential.
+Read before: touching `server/src/auth/*`, `server/migrations/010_auth.sql`, the `AUTH_*`
+environment variables, the session cookie, or anything that decides which routes need a credential.
 
 **A caller is a GitHub account that somebody invited to this organization.** Membership is Factory's,
 not GitHub's; a session is a row, not a token; and the driver gets a different credential from the
