@@ -1818,6 +1818,50 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(outcome.services).toBeNull();
     });
 
+    it('reports the fleet a kill took down, read at kill time rather than over the emptied aftermath', async () => {
+        // The child's close is held until the kill's teardown ran, so a close-time read — the
+        // only place a natural close reads — would see nothing left to ask. The verdict must
+        // come from the read the kill stashed before removing the fleet.
+        let resolveSpawn: (() => void) | null = null;
+        const spawned = new Promise<void>((resolve) => {
+            resolveSpawn = resolve;
+        });
+        const fireClose: (() => void)[] = [];
+        const fn = ((command: string, argv: string[]) => {
+            const c = new EventEmitter() as ChildProcess;
+            c.stdout = new EventEmitter() as unknown as Readable;
+            c.stderr = new EventEmitter() as unknown as Readable;
+            fireClose.push(() => process.nextTick(() => c.emit('close', 0)));
+            resolveSpawn!();
+            return c;
+        }) as unknown as typeof spawn;
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: READOUT };
+            if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
+            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            if (args[0] === 'inspect') return { stdout: 'db running\ncache stopped\n' };
+            return { stdout: '' };
+        });
+        const runner = servicesRunner(exec, fn);
+        const run = runner.run(job, { id: SESSION, resume: false });
+        await spawned;
+        await runner.kill(job);
+        fireClose[0]!();
+
+        expect(await run).toMatchObject({
+            exitCode: 0,
+            services: [
+                { name: 'db', status: 'running' },
+                { name: 'cache', status: 'stopped' },
+            ],
+        });
+        // The fleet was read exactly once — the kill-time stash — never again over the emptied
+        // daemon, where the containers the read answers for are already gone.
+        // The fleet was read exactly once — the kill-time stash — never again over the emptied
+        // daemon, where the containers the read answers for are already gone.
+        expect(exec.mock.calls.filter((call) => call[0][0] === 'inspect')).toHaveLength(1);
+    });
+
     it('fences leftover services before anything is created', async () => {
         const exec = daemon(READOUT);
         await servicesRunner(exec, spawnRecording('', 0).fn).run(job, { id: SESSION, resume: false });

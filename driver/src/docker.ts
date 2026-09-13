@@ -1082,6 +1082,15 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      */
     const killed = new Set<BoardJob['leaseToken']>();
     /**
+     * The fleet read stashed for the close handler when `kill` took the fleet down first. A
+     * killed run's teardown runs in `kill`, before the close handler reaches its own read — so
+     * the read happens at kill time, the last moment the containers exist, and the verdict waits
+     * on that read instead of re-asking a daemon that already removed them. Keyed by the same
+     * per-attempt lease token as `killed`, for the same reason. An entry that is never consumed
+     * (a kill while nothing reads the outcome — lost lease, shutdown) drains with the attempt.
+     */
+    const servicesAtKill = new Map<BoardJob['leaseToken'], Promise<ServiceVitals[] | null>>();
+    /**
      * Tears down THIS attempt's services and network — and, by construction, nothing else. The
      * `ps` filters carry this attempt's lease token beside the job id, and the network it removes
      * is named after the token too, so every call here resolves only to resources this attempt
@@ -1096,6 +1105,25 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * idempotent — it runs twice per attempt by design, as the fence's service half before the
      * run and as the teardown after it.
      */
+    const serviceTeardown = async (job: BoardJob): Promise<void> => {
+        if (!config.servicesEnabled) return;
+        const found = await execDocker([
+            'ps',
+            '-aq',
+            '--filter',
+            `label=factory.job=${job.id}`,
+            '--filter',
+            `label=factory.lease=${job.leaseToken}`,
+            '--filter',
+            'label=factory.service',
+        ]).catch(() => ({ stdout: '' }));
+        const ids = found.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
+        for (const id of ids) {
+            await execDocker(['rm', '-f', id]).catch(() => undefined);
+        }
+        await execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
+    };
+
     /**
      * The service fleet's last status, read just before the teardown takes it down — the only
      * point the containers still exist to be asked. Same label filters as `serviceTeardown`:
@@ -1104,6 +1132,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      * declared name from the service label and the status from `State.Status`; a status of
      * `running` is running, any other settled state is stopped, and a container whose inspect
      * answered nothing is `unknown` — never a guess.
+     *
+     * A killed run is read inside `kill()` — the one path whose teardown does not follow the
+     * close handler — and `kill` stashes that read for the verdict, so a timed-out or parked
+     * run still reports the fleet's state at the moment it was taken down rather than the empty
+     * aftermath.
      */
     const readServices = async (job: BoardJob): Promise<ServiceVitals[] | null> => {
         if (!config.servicesEnabled) return null;
@@ -1141,25 +1174,6 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         return services.length > 0 ? services : null;
     };
 
-    const serviceTeardown = async (job: BoardJob): Promise<void> => {
-        if (!config.servicesEnabled) return;
-        const found = await execDocker([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            `label=factory.lease=${job.leaseToken}`,
-            '--filter',
-            'label=factory.service',
-        ]).catch(() => ({ stdout: '' }));
-        const ids = found.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
-        for (const id of ids) {
-            await execDocker(['rm', '-f', id]).catch(() => undefined);
-        }
-        await execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
-    };
-
     const kill = async (job: BoardJob): Promise<void> => {
         // Recorded before anything is torn down: this attempt, sitting in its services setup,
         // reads this between awaited steps and aborts instead of creating more resources or
@@ -1167,6 +1181,16 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         // is recorded — a sibling attempt of the same job carries a different token and must
         // not read this one's cancellation.
         killed.add(job.leaseToken);
+        // The fleet read is stashed BEFORE the teardown below removes it: the verdict for a
+        // killed run lands after this teardown ran, and the read must see the containers still
+        // there. Stashed synchronously — the promise starts scanning this tick — so a close that
+        // races the kill's awaits still waits on the same read rather than re-asking the emptied
+        // daemon. The guard keeps a second kill from re-stashing over the first's promise.
+        if (!servicesAtKill.has(job.leaseToken)) {
+            const atKill = readServices(job);
+            servicesAtKill.set(job.leaseToken, atKill);
+            await atKill;
+        }
         // Killing the `docker run` process would only detach the CLI; the container keeps running
         // and the workspace keeps being written to. The daemon has to be told — by ID, resolved
         // through this attempt's own lease label, never by name: a kill that resolved a
@@ -1664,7 +1688,9 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // attempt created. No knowledge of who claimed what in between is needed,
                     // and none would be reliable anyway: daemon calls are arbitrarily slow, and
                     // any snapshot of "who is current" is stale by the time it is checked.
-                    const services = await readServices(job);
+                    const stashed = servicesAtKill.get(job.leaseToken);
+                    const services = stashed !== undefined ? await stashed : await readServices(job);
+                    servicesAtKill.delete(job.leaseToken);
                     await serviceTeardown(job);
                     return { exitCode: code, output, timedOut, idled, started, cacheLost, services };
                 };
