@@ -97,6 +97,19 @@ docker volume rm "$VOL" >/dev/null 2>&1
 # continuation, and the container would receive a broken script that fails silently.
 check 'git reads the mount' 'true' run --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null; git rev-parse --is-inside-work-tree'
 
+# The git guard: the PreToolUse hook that keeps the task worktree's checkout on its branch
+# (issue #73). Its case table lives in the script and is pinned offline by vitest too — here it
+# must hold in the BAKED copy, speak the real stdin/stdout hook protocol, and be wired in the
+# baked settings.json.
+check 'the guard script is executable' 'ok' run --entrypoint sh "$IMAGE" -c 'test -x /usr/local/bin/git-guard.cjs && echo ok'
+check 'the guard case table holds in the image' 'GUARD-TABLE-OK' \
+    run --entrypoint node "$IMAGE" /usr/local/bin/git-guard.cjs --selftest
+check 'the guard denies over the hook protocol' '"permissionDecision":"deny"' \
+    run --entrypoint sh "$IMAGE" -c \
+    'node -e "process.stdout.write(JSON.stringify({tool_name:\"Bash\",tool_input:{command:\"git switch main\"}}))" | node /usr/local/bin/git-guard.cjs'
+check 'settings.json wires the guard hook' 'git-guard.cjs' \
+    run --entrypoint cat "$IMAGE" /home/node/.claude/settings.json
+
 # The plugin's MCP server has to answer over stdio, not merely be installed.
 MCP_INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}'
 check 'context-mode responds' '"name":"context-mode"' run -i --entrypoint sh "$IMAGE" -c "p=\$(ls -d \"\$CLAUDE_CONFIG_DIR\"/plugins/cache/context-mode/context-mode/*/); echo '$MCP_INIT' | timeout 60 node \"\${p}start.mjs\""

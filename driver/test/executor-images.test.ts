@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -236,3 +237,172 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
         }
     });
 });
+
+/*
+ * The git guard (issue #73): the claude-executor's PreToolUse hook that denies the Bash
+ * commands which would move HEAD or rewrite refs in the task worktree. The tree standing on
+ * `factory/<root>` is the driver's invariant — the restore-mode sync refuses a wrong checkout
+ * only after the damage, and the damage strands the thread (job 43379d3a, 2026-09-13). The
+ * hook is a guardrail, not a security boundary; the sync refusal stays the last line of
+ * defense. The canonical case table lives in the script itself and both suites pin it: this
+ * one runs decide() offline, the image suite (docker/claude-executor/test.sh) runs --selftest
+ * against the baked copy.
+ */
+const GIT_GUARD = 'docker/claude-executor/git-guard.cjs';
+const requireCjs = createRequire(import.meta.url);
+
+interface GuardDecision {
+    deny: boolean;
+    reason?: string;
+}
+interface GuardModule {
+    decide: (command: string) => GuardDecision;
+    CASES: Array<['deny' | 'allow', string]>;
+}
+const loadGuard = (): GuardModule => requireCjs(join(ROOT, GIT_GUARD)) as GuardModule;
+
+describe('the claude-executor git guard', () => {
+    // The behavior table, executed (not just re-read): every deny case must deny, every allow
+    // case must stay silent. A deny carries a reason — it is the only instruction the agent
+    // sees at the moment of the block. The rows are narrowed to the command so the test title
+    // names the case it runs — a regression must be diagnosable from the failure list alone.
+    it.each(loadGuard().CASES.filter(([want]) => want === 'deny').map(([, command]) => [command]))(
+        'denies %s',
+        (command) => {
+            const verdict = loadGuard().decide(command);
+            expect(verdict.deny).toBe(true);
+            expect(typeof verdict.reason).toBe('string');
+        },
+    );
+
+    it.each(loadGuard().CASES.filter(([want]) => want === 'allow').map(([, command]) => [command]))(
+        'allows %s',
+        (command) => {
+            expect(loadGuard().decide(command).deny).toBe(false);
+        },
+    );
+
+    // The wire contract with Claude Code: JSON on stdin, the deny decision as JSON on stdout,
+    // exit 0 either way — exit 2 would block every Bash call, and silence means "no decision".
+    // Malformed input must fail open: a hook that crashes a run is worse than one that misses.
+    it('speaks the PreToolUse hook protocol', async () => {
+        const runHook = (payload: string): Promise<{ code: number | null; stdout: string }> =>
+            new Promise((resolve, reject) => {
+                const child = spawn('node', [join(ROOT, GIT_GUARD)], { stdio: ['pipe', 'pipe', 'pipe'] });
+                let stdout = '';
+                child.stdout.on('data', (chunk) => {
+                    stdout += chunk;
+                });
+                child.once('error', reject);
+                child.once('exit', (code) => resolve({ code, stdout }));
+                child.stdin.end(payload);
+            });
+
+        const deny = await runHook(JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git switch main' } }));
+        expect(deny.code).toBe(0);
+        const parsed = JSON.parse(deny.stdout);
+        expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+        expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
+        expect(typeof parsed.hookSpecificOutput.permissionDecisionReason).toBe('string');
+
+        const allow = await runHook(JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git status' } }));
+        expect(allow.code).toBe(0);
+        expect(allow.stdout).toBe('');
+
+        const junk = await runHook('not json at all');
+        expect(junk.code).toBe(0);
+        expect(junk.stdout).toBe('');
+    });
+
+    // /usr/local/bin, like the branch reporter: the Remote Control auth volume mounts over
+    // CLAUDE_CONFIG_DIR and would shadow a hook script baked into a config home — and the
+    // settings.json hook command names this exact absolute path.
+    it('is baked at /usr/local/bin by the Dockerfile, never into a config home', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toMatch(/COPY[^\n]*git-guard\.cjs \/usr\/local\/bin\/git-guard\.cjs/);
+        expect(dockerfile).toMatch(/chmod 0755[^\n]*git-guard\.cjs/);
+        expect(dockerfile).not.toMatch(/git-guard[^\n]*-home\//);
+    });
+
+    it('is wired as a PreToolUse Bash hook in the baked settings.json', () => {
+        const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json'));
+        const group = (settings.hooks?.PreToolUse ?? []).find((g: { matcher?: string }) => g.matcher === 'Bash');
+        expect(group).toBeDefined();
+        const hook = group.hooks[0];
+        expect(hook.type).toBe('command');
+        expect(hook.command).toBe('node /usr/local/bin/git-guard.cjs');
+        // The `if` filter keeps the node boot off every non-git Bash call; Claude Code checks
+        // it per subcommand and runs the hook anyway when it cannot tell — compounds and
+        // substitutions still reach the guard.
+        expect(hook.if).toBe('Bash(git *)');
+        expect(hook.timeout).toBe(10);
+    });
+});
+
+describe('the opencode-executor git guard policy', () => {
+    // opencode takes no hooks for this: the deny lives in the baked permission.bash table,
+    // evaluated with the LAST MATCHING RULE WINNING — so key order is load-bearing. The
+    // catch-all `*` comes first, the deny globs next, and the exact-match allows last (a
+    // trailing-glob allow could full-string-match a compound like `git checkout -- f && git
+    // switch main` and bless a deny-command; an exact allow cannot). Nothing may resolve to
+    // `ask` — headless, an unanswered ask auto-rejects.
+    const PATH = 'docker/opencode-executor/opencode-home/opencode.json';
+
+    it('pins the exact bash rule table, in order', () => {
+        const policy = JSON.parse(read(PATH));
+        expect(Object.keys(policy.permission.bash)).toEqual([
+            '*',
+            'git switch',
+            'git switch *',
+            'git checkout',
+            'git checkout *',
+            'git worktree',
+            'git worktree *',
+            'git branch -d*',
+            'git branch -D*',
+            'git branch -m*',
+            'git branch -M*',
+            'git branch -c*',
+            'git branch -C*',
+            'git branch -f*',
+            'git branch --delete*',
+            'git branch --force*',
+            'git branch --move*',
+            'git branch --copy*',
+            'git reset --hard',
+            'git reset --hard *',
+            'git rebase',
+            'git rebase *',
+            'git merge',
+            'git merge *',
+            'git worktree list',
+            'git rebase --abort',
+            'git rebase --quit',
+            'git rebase --continue',
+            'git merge --abort',
+            'git merge --quit',
+        ]);
+    });
+
+    it('allows or denies every rule — never ask — and ranks allows after denies', () => {
+        const policy = JSON.parse(read(PATH));
+        const bash: Record<string, string> = policy.permission.bash;
+        const values = Object.values(bash);
+        expect(values.every((v) => v === 'allow' || v === 'deny')).toBe(true);
+        const lastDeny = Object.keys(bash).reduce((acc, key, i) => (bash[key] === 'deny' ? i : acc), -1);
+        const firstAllow = Object.keys(bash).findIndex((key, i) => i > 0 && bash[key] === 'allow');
+        expect(firstAllow).toBeGreaterThan(lastDeny);
+    });
+
+    // The entrypoint patches only permission.external_directory; this pins that the guard
+    // table sits beside the fence keys it must not disturb.
+    it('leaves the rest of the permission block untouched', () => {
+        const policy = JSON.parse(read(PATH));
+        expect(policy.permission['*']).toBe('allow');
+        expect(policy.permission.read).toEqual({ '*': 'allow' });
+        expect(policy.permission.webfetch).toBe('deny');
+        expect(policy.permission.external_directory['*']).toBe('deny');
+        expect(policy.permission.bash['*']).toBe('allow');
+    });
+});
+

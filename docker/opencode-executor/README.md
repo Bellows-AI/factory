@@ -81,7 +81,24 @@ outside it**:
 | `*` | `allow` | Nothing inside the working directory prompts. Per-tool asks (`doom_loop`, `question`, …) resolve to this too. |
 | `read` | `{"*": "allow"}` | Explicit, because opencode seeds a default `*.env.*` read deny (a secrets-file rule) that matches any filename with `.env.` in it — it once auto-rejected a read of `routes.env.test.ts` and broke a run mid-investigation. |
 | `webfetch` | `deny` | A hard refusal, never a prompt: the agent sees "denied" and routes around it. |
+| `bash` | `allow` by default, a deny-glob table over checkout manipulation, then a few exact-match allows | The git guard (issue #73) — see below. |
 | `external_directory` | `deny` everything, then `allow` `/tmp/*` and `/home/node/*` | The fence, enforced by config rather than agent instructions. Everything outside the working directory is refused — the rest of the shared workspaces volume (other members' trees) and system folders included — except the runner's own scratch space, so a run can still use `/tmp` for throwaway clones. |
+
+**The `bash` guard table.** The task worktree standing on its `factory/<root>` branch is the
+driver's invariant. The deny lives in `permission.bash` — the config-native table, chosen over a
+plugin hooking the bash tool because it is the documented mechanism and statically pinnable —
+with a narrower parse than the claude-executor's hook as the honest price:
+`git switch`, `git checkout` of a branch or commit, `git worktree` mutations, `git branch`
+delete/rename/copy/force, `git reset --hard`, and `git rebase` / `git merge`. Because opencode
+resolves rules with the **last matching rule winning**, key order is load-bearing: the catch-all
+first, the deny globs next, the allows last — and the allows are **exact matches** (`git worktree
+list`, `git rebase --abort`, `git merge --quit`, …). A trailing-glob allow (say
+`git checkout -- *`) would full-string-match a compound like `git checkout -- f && git switch
+main` and bless a deny-command; an exact allow cannot. The cost is honest: opencode loses
+path-scoped `git checkout -- <paths>` (use `git restore`, which stays allowed) and
+`worktree list --porcelain`. This layer is deliberately coarser than the claude-executor's
+parsing hook — it is a guardrail, not a security boundary, and the driver-side sync refusal
+stays the last line of defense on both.
 
 **The one runtime amendment:** the entrypoint re-opens the member's own tree. The driver points
 `XDG_DATA_HOME` at `<mount>/<org>/<user>/.opencode`, and a path of that shape makes the
