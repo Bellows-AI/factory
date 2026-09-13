@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { EXECUTOR_TYPES } from '@factory-ai/core';
-import { MAX_CONFIG_BYTES, REQUIRED_FIELDS, validateExecutorConfig } from '../src/workspace/executors.js';
+import {
+    MAX_CONFIG_BYTES,
+    REQUIRED_FIELDS,
+    mergeExecutors,
+    validateExecutorConfig,
+    type ValidExecutor,
+} from '../src/workspace/executors.js';
 
 const valid = () => validateExecutorConfig('{ "model": "sonnet" }', 'main', 'claude-code');
 
@@ -71,5 +77,46 @@ describe('validateExecutorConfig', () => {
         // Same raw-JSON contract as claude-code: field rules wait for a consumer that can be
         // wrong about them.
         expect(REQUIRED_FIELDS['opencode']).toEqual([]);
+    });
+});
+
+describe('mergeExecutors', () => {
+    const first: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'sonnet' } };
+    const second: ValidExecutor = { name: 'oc', type: 'opencode', config: { model: 'x' } };
+
+    it('appends a new executor and preserves order', () => {
+        const result = mergeExecutors([first], null, second);
+        expect(result).toEqual({ ok: true, value: [first, second] });
+    });
+
+    it('replaces the edited row, matched by its original name, keeping its position', () => {
+        // A rename changes the name the row is saved under; the match is still against the name
+        // the row had when the dialog opened.
+        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {} };
+        const result = mergeExecutors([first, second], 'main', renamed);
+        expect(result).toEqual({ ok: true, value: [renamed, second] });
+    });
+
+    it('allows saving an edit with the name unchanged', () => {
+        const changed: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'opus' } };
+        const result = mergeExecutors([first, second], 'main', changed);
+        expect(result).toEqual({ ok: true, value: [changed, second] });
+    });
+
+    it('rejects a rename onto another row’s name', () => {
+        const result = mergeExecutors([first, second], 'main', { ...first, name: 'oc' });
+        expect(result).toEqual({ ok: false, error: 'An executor named "oc" already exists.' });
+    });
+
+    it('rejects an add onto an existing name', () => {
+        const result = mergeExecutors([first], null, { ...first, config: {} });
+        expect(result).toEqual({ ok: false, error: 'An executor named "main" already exists.' });
+    });
+
+    it('rejects an edit whose row is no longer there', () => {
+        // The row vanished between the panel render and the save — deleted in another tab, say.
+        // Merging it back would silently resurrect it; the caller says so instead.
+        const result = mergeExecutors([], 'main', first);
+        expect(result.ok).toBe(false);
     });
 });

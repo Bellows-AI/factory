@@ -61,3 +61,41 @@ export function validateExecutorConfig(raw: string, name: string, type: Executor
 
     return { ok: true, value: { name: trimmedName, type, config: parsed } };
 }
+
+/**
+ * One executor row as the API carries it — the config read returns `type` as the string it stored,
+ * not the narrowed union, so the merge works on rows straight off the wire.
+ */
+export type ExecutorRow = {
+    name: string;
+    type: string;
+    config: object;
+};
+
+/**
+ * Folds one dialog save back into the whole list the PUT takes.
+ *
+ * `existing` is the full list as the dialog opened it, configs included; `editing` is the name of
+ * the row being edited, or null to append. The edited row is matched by its ORIGINAL name — a
+ * rename changes what is saved under, not what is matched. A pure function, exported, so the
+ * offline suite can assert the collision and stale-row rules the server would otherwise say
+ * first.
+ */
+export function mergeExecutors(
+    existing: readonly ExecutorRow[],
+    editing: string | null,
+    next: ValidExecutor,
+): { ok: true; value: ExecutorRow[] } | { ok: false; error: string } {
+    const clash = existing.some((row) => row.name === next.name && row.name !== editing);
+    if (clash) return { ok: false, error: `An executor named "${next.name}" already exists.` };
+
+    if (editing === null) return { ok: true, value: [...existing, next] };
+
+    const index = existing.findIndex((row) => row.name === editing);
+    if (index === -1) {
+        return { ok: false, error: `"${editing}" no longer exists — refresh and try again.` };
+    }
+    const value = existing.slice();
+    value[index] = next;
+    return { ok: true, value };
+}
