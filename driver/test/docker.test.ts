@@ -1857,8 +1857,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         });
         // The fleet was read exactly once — the kill-time stash — never again over the emptied
         // daemon, where the containers the read answers for are already gone.
-        // The fleet was read exactly once — the kill-time stash — never again over the emptied
-        // daemon, where the containers the read answers for are already gone.
         expect(exec.mock.calls.filter((call) => call[0][0] === 'inspect')).toHaveLength(1);
     });
 

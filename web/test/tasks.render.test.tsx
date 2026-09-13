@@ -454,7 +454,7 @@ describe('TaskDetail', () => {
             expect(renderDetail({ jobs: [job()] })).toContain('<dt>Workspace</dt><dd>—</dd>');
         });
 
-/**
+        /**
          * The bill is the thread's, not the newest run's: each run's scraped cost sums into one
          * running total, and no context stat is in the status surface — context belongs to the turns
          * (each run's message carries its own). Show only once it is money.
