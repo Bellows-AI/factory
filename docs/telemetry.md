@@ -18,12 +18,13 @@ collector config.
   part of a minute while the container starts, and blocking would hold the whole dashboard
   hostage. A *required* database is still a slow-starting one, and every store call gates itself
   on `ready`.
-- **Telemetry degrades alone, in four distinct states.** `disabled` renders no panels at all;
-  `unreachable` renders frames with a reason and no numbers; `stale` serves the last good
-  snapshot with 200; `empty` returns a *real* `TelemetryStats` with `sessions: 0` and null
-  everywhere. `empty` being non-null is deliberate — it is how you see a pipeline that is wired
-  but silent, which is the most common state during setup and would otherwise be
-  indistinguishable from `disabled`.
+- **Telemetry degrades in distinguishable states.** On a 200 the read is `ok` or `empty`, and
+  `empty` returns a *real* `TelemetryStats` with `sessions: 0` and null everywhere — non-null on
+  purpose, because it is how you see a pipeline that is wired but silent, the most common state
+  during setup. `stale` serves the last good snapshot with 200 and names the reason in
+  `meta.telemetry.reason`. `disabled` (`TELEMETRY_SOURCE=off`) and a failed first read answer
+  `503` instead: telemetry is the whole payload now, so there are no panels left to render
+  empty frames for.
 - **Attribute keys are allowlisted; metric names are denylisted.** Keep the asymmetry: a future
   Claude Code version can add an identity attribute, and a denylist would silently start storing
   it — whereas an unknown *metric* from a future tool must still be stored so its data

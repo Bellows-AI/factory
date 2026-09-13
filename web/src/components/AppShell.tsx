@@ -14,9 +14,9 @@ import { TopBar } from './TopBar.js';
 /**
  * Everything both pages share: the range, the one `/api/stats` poll, and the chrome around them.
  *
- * The poll lives HERE rather than in the dashboard page because the Workspace page needs the same
- * payload — it joins each checkout to that repo's pull-request figures — and two pages each running
- * `useStats` would be two polls of the same endpoint during every cold fetch.
+ * The poll lives HERE rather than in the dashboard page because the Workspace page renders the
+ * repos the dashboard reports on, and two pages each running `useStats` would be two polls of the
+ * same endpoint during every cold fetch.
  */
 export interface ShellContext {
     data: StatsPayload | null;

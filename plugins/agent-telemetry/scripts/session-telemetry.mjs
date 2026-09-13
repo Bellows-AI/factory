@@ -2,9 +2,9 @@
 /**
  * Reports `session -> (repo, branch)` to the Factory Stats dashboard.
  *
- * This exists because Claude Code's OpenTelemetry metrics carry no PR number, no branch and
+ * This exists because Claude Code's OpenTelemetry metrics carry no repo name, no branch and
  * no commit SHA — only a session id. Without this side channel, AI usage can never be
- * attributed to a pull request.
+ * attributed to the repo the work happened in.
  *
  * Hard rules, because this plugin is enabled at user scope and therefore runs in EVERY repo
  * on the machine:
@@ -51,7 +51,7 @@ function repoSlug(cwd) {
 
 function shouldSample(sessionId, event) {
     // Session boundaries always report: they are what open and close the interval the
-    // attribution join intersects against.
+    // dashboard reads.
     if (event === 'SessionStart' || event === 'SessionEnd') return true;
 
     const marker = join(tmpdir(), `factory-stats-${sessionId.replace(/[^\w-]/g, '')}`);

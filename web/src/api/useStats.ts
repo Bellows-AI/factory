@@ -5,8 +5,9 @@ import { reportUnauthenticated } from './useSession.js';
 export interface TelemetryMeta {
     /**
      * 'empty' arrives with a real TelemetryStats so the panels can render their own
-     * structure — that is how you see a pipeline that is wired but silent. 'unreachable'
-     * and 'disabled' arrive with null.
+     * structure — that is how you see a pipeline that is wired but silent. The union keeps
+     * 'unreachable' and 'disabled' for completeness of the API's vocabulary, but those two
+     * answer 503 before a body is ever sent, so a 200 always carries a non-null `telemetry`.
      */
     status: 'ok' | 'empty' | 'unreachable' | 'disabled';
     reason: string | null;

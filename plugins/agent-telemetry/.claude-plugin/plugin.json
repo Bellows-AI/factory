@@ -1,6 +1,6 @@
 {
     "name": "agent-telemetry",
-    "description": "Reports the git branch of each Claude Code session to a local Factory Stats dashboard, so AI usage can be attributed to individual pull requests. Sends repo and branch only — never paths, prompts, or file contents.",
+    "description": "Reports the git repo of each Claude Code session to a local Factory Stats dashboard, so AI usage can be attributed to it. Sends repo and branch only — never paths, prompts, or file contents.",
     "version": "0.1.0",
     "author": {
         "name": "Factory Stats"

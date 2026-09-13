@@ -69,8 +69,7 @@ COPY --from=build /app/core/dist core/dist
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/web/dist web/dist
 # The telemetry fixture client (opt-in TELEMETRY_SOURCE=fixture) reads this at runtime, by
-# import.meta.url depth from server/dist. Nothing in the runtime image reads the raw GitHub
-# capture (server/fixtures) — it is test and tooling infrastructure, so it is not copied.
+# import.meta.url depth from server/dist.
 COPY --from=build /app/core/test/fixtures/telemetry-sessions.json core/test/fixtures/telemetry-sessions.json
 # tsc compiles neither .sql nor .json, so the migrations have to be copied by hand — they sit
 # outside src/ at a depth that resolves the same from src/ and dist/.

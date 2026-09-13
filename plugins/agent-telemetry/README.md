@@ -1,19 +1,21 @@
 # agent-telemetry
 
-Reports the git branch of each Claude Code session to a local Factory Stats dashboard, so AI
-token usage can be attributed to individual pull requests.
+Reports the repository of each Claude Code session to a local Factory Stats dashboard, so AI
+token usage can be attributed to the repo the work happened in.
 
 ## Why this exists
 
-Claude Code's OpenTelemetry metrics carry no PR number, no branch name and no commit SHA —
-`claude_code.pull_request.count` and `claude_code.commit.count` have only the standard
-attributes. The only identifier shared between a metric and anything else is `session.id`.
+Claude Code's OpenTelemetry metrics carry no repo name, no branch name and no commit SHA —
+`claude_code.commit.count` and every token counter have only the standard attributes. The only
+identifier shared between a metric and anything else is `session.id`.
 
-Hooks, by contrast, receive `session_id` and `cwd`. This plugin samples
-`git rev-parse --abbrev-ref HEAD` and posts `session -> (repo, branch)`; the dashboard then
-joins that branch to `pullRequest.headRefName`.
+Hooks, by contrast, receive `session_id` and `cwd`. This plugin resolves `cwd` to its git
+origin and posts `session -> (repo, branch)`; the dashboard scopes its telemetry figures to the
+repos it reports on, and without this report a session is unattributable — counted in
+`sessionsWithoutHook` rather than in the totals.
 
-Without it, every PR on the dashboard reads `attribution: none` forever.
+The branch is still recorded, because the statistics built on this feed are being revamped;
+today only the repo half is read.
 
 ## Install
 
@@ -38,8 +40,8 @@ or in `~/.claude/settings.json` for all repos at once.
 Two settings there are load-bearing:
 
 - **`OTEL_METRICS_INCLUDE_SESSION_ID` must stay true** (it is the default). It is the only link
-  between a metric and a branch. Disabling it makes every PR read `none` and
-  `sessionsWithoutHook` climb without bound — indistinguishable from this plugin being broken.
+  between a metric and a session. Disabling it makes `sessionsWithoutHook` climb without bound —
+  indistinguishable from this plugin being broken.
 - **`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES` and `OTEL_LOG_TOOL_DETAILS` must
   stay off.** Enabling any of them puts prompt text and source code into the telemetry
   database. The server's attribute allowlist does not save you: that content arrives as the log
@@ -89,10 +91,9 @@ stale-replay bugs.
 | `PostToolUse` on `Bash` | catches a `git checkout` mid-session |
 | `SessionEnd` | closes the interval |
 
-A session that holds several branches produces several intervals. If its metrics are
-time-sliced they are divided between them; if only an end-of-session total exists, the
-dashboard marks the session **shared** and reports no per-PR figure rather than a plausible
-half.
+A session that holds several branches produces several intervals, all reported; what the
+dashboard does with them is its own concern, and today it counts the session once under its
+repo.
 
 ## Verifying
 
@@ -106,9 +107,7 @@ panel.
 
 ## Limits
 
-- Attribution starts when the plugin is installed. A PR merged before that shows no usage,
-  which is not the same as having used none.
+- Coverage starts when the plugin is installed. Sessions from before that are invisible,
+  which is not the same as a week without AI.
 - The branch is **sampled, not tracked**. A branch held for less than one interval can be missed.
-- A head branch is not unique — the same branch is often reused across PRs — so the dashboard
-  narrows by time, assigning work to the first PR on that branch still open when it happened.
-- Token counts are what the agent wrote, not what survived to merge.
+- Token counts are what the agent wrote, not what survived.
