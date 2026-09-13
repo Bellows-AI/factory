@@ -10,6 +10,7 @@ import {
     openTask,
     saveTaskTabs,
     taskStatus,
+    taskSummary,
     taskTitle,
 } from '../src/tabs.js';
 import type { TaskGroup, TaskTabsState } from '../src/tabs.js';
@@ -244,6 +245,79 @@ describe('taskStatus', () => {
         expect(taskStatus('nope', [job('a')])).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });
         expect(taskStatus('a', null)).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });
         expect(taskStatus('a', [])).toEqual({ status: null, cancelRequestedAt: null, doneAt: null });
+    });
+});
+
+describe('taskSummary', () => {
+    let seq = 0;
+    const job = (id: string, overrides: Partial<Job> = {}): Job => ({
+        id,
+        command: `command ${id}`,
+        status: 'succeeded',
+        attempts: 1,
+        exitCode: 0,
+        output: null,
+        repo: null,
+        executor: null,
+        followUpTo: null,
+        // A root by default; a follow-up overrides both spine fields together.
+        rootJobId: id,
+        doneAt: null,
+        cancelRequestedAt: null,
+        workspacePath: null,
+        createdAt: new Date(Date.UTC(2026, 8, 1, 12, 0, 0) + seq++ * 1000).toISOString(),
+        startedAt: null,
+        finishedAt: null,
+        sessionId: null,
+        remoteSessionId: null,
+        ...overrides,
+    });
+    const followUp = (id: string, rootId: string, overrides: Partial<Job> = {}): Job =>
+        job(id, { followUpTo: rootId, rootJobId: rootId, ...overrides });
+    const sampled = (activity: string): Partial<Job> => ({
+        status: 'running',
+        runtime: { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity, sampledAt: '2026-09-01T12:05:00.000Z' },
+    });
+
+    it('answers the newest run\'s activity line while that run is running', () => {
+        expect(taskSummary('a', [job('a', sampled('→ Read src/x.ts'))])).toBe('→ Read src/x.ts');
+    });
+
+    it('resolves ANY member to the head run\'s activity, the same run the status dot answers for', () => {
+        // The thread, oldest first: root a, follow-up b (running, with an activity line).
+        const chain = [job('a'), followUp('b', 'a', sampled('→ Bash npm test'))];
+        expect(taskSummary('a', chain)).toBe('→ Bash npm test');
+        expect(taskSummary('b', chain)).toBe('→ Bash npm test');
+    });
+
+    it('answers the head run, not an older run that happened to carry an activity line', () => {
+        const chain = [
+            job('a', sampled('→ superseded run still talking')),
+            followUp('b', 'a', { status: 'running' }),
+        ];
+        expect(taskSummary('a', chain)).toBeNull();
+    });
+
+    it('stays silent once the head run is not going — a stale line beside a parked or finished verdict lies', () => {
+        const stale = { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity: '→ stale', sampledAt: '2026-09-01T12:05:00.000Z' };
+        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+            expect(taskSummary('a', [job('a', { status, runtime: stale })]), status).toBeNull();
+        }
+    });
+
+    it('stays silent when the newest run never sampled an activity line', () => {
+        expect(taskSummary('a', [job('a', { status: 'running' })])).toBeNull();
+        expect(
+            taskSummary('a', [
+                job('a', { status: 'running', runtime: { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity: null, sampledAt: '2026-09-01T12:05:00.000Z' } }),
+            ]),
+        ).toBeNull();
+    });
+
+    it('answers nothing about a task the poll does not know', () => {
+        expect(taskSummary('nope', [job('a')])).toBeNull();
+        expect(taskSummary('a', null)).toBeNull();
+        expect(taskSummary('a', [])).toBeNull();
     });
 });
 

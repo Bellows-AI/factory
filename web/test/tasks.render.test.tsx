@@ -395,7 +395,8 @@ describe('TaskDetail', () => {
      * The attempt's sampled vitals — the "is it stuck or working" strip: CPU and memory, rendered
      * above the output while the run is going ONLY: the sample is a liveness signal, and a stale
      * "cpu 167%" beside a finished run's verdict lies about a run that is no longer going. The
-     * activity line is the sidebar's "currently running task" and lives there now.
+     * activity line is the sidebar's "currently running task", the view's summary line and the
+     * nav and tab summaries, and lives where the task is met.
      */
     describe('runtime', () => {
         const runtime = { cpuPercent: 93.4, memUsedMb: 544.2, memPercent: 7, activity: '→ Read src/x.ts', sampledAt: '2026-09-09T10:00:00.000Z' };
@@ -430,6 +431,42 @@ describe('TaskDetail', () => {
                 jobs: [job({ status: 'running', runtime: { ...runtime, activity: null, memPercent: null } })],
             });
             for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        });
+    });
+
+    /**
+     * The task's live summary — what the agent is doing right now — at the top of the view while
+     * the newest run is going. Fed by the same `runtime.activity` the sidebar's "Task" row reads,
+     * so the three places a task is met (left nav, tab strip, view top) say the same thing.
+     */
+    describe('summary', () => {
+        const activity = '→ Bash npm test';
+        const runtime = { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity, sampledAt: '2026-09-01T12:02:00.000Z' };
+
+        it('shows the running task\'s summary at the top of the view', () => {
+            const html = renderDetail({ jobs: [job({ status: 'running', runtime })] });
+            expect(html).toContain('task-summary');
+            expect(html).toContain(activity);
+        });
+
+        it('shows it for the whole chain, from the newest run forward', () => {
+            const root = job({ command: 'first command' });
+            const child = { ...job({ status: 'running', runtime }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id };
+            const html = renderDetail({ jobs: [root, child] });
+            expect(html).toContain('task-summary');
+            expect(html).toContain(activity);
+        });
+
+        it('shows no summary once the newest run is not going', () => {
+            for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+                const html = renderDetail({ jobs: [job({ status, runtime })] });
+                expect(html, status).not.toContain('task-summary');
+            }
+        });
+
+        it('shows no summary until the driver samples an activity line', () => {
+            const html = renderDetail({ jobs: [job({ status: 'running', runtime: { ...runtime, activity: null } })] });
+            expect(html).not.toContain('task-summary');
         });
     });
 

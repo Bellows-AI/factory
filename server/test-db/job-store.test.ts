@@ -244,6 +244,25 @@ describe.skipIf(!enabled)('job store', () => {
         });
     });
 
+    // The list feeds the task tree and the tab strip, whose task summaries render the newest
+    // run's `activity` — so the list projection carries the vitals too, the one field `gates`
+    // stays spared from and `output` stays spared from still.
+    it('carries the runtime vitals on list rows, for the tree and tab strip summaries', async () => {
+        const { id } = await queue('echo hi');
+        const claim = await store.claim('w1', 300);
+        const vitals = {
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7,
+            activity: '→ Read src/x.ts',
+            sampledAt: '2026-09-09T10:00:00.000Z',
+        };
+        await store.progress(id, claim!.leaseToken, 'working', vitals);
+        expect(await store.list({ limit: 50 })).toMatchObject([{ id, runtime: vitals }]);
+        // The repo-filtered read serves the same projection — the summaries read either list.
+        expect(await store.list({ limit: 50, repo: 'owner/repo' })).toEqual([]);
+    });
+
     // A run whose runner never samples the container (kubernetes, a failed readout) still gets
     // its context stats stored: the merge creates the vitals object when none exists.
     it('stores context stats on a finished run with no container samples', async () => {

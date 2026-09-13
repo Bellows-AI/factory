@@ -58,15 +58,26 @@ const NO_STATUS: TaskStatus = { status: null, cancelRequestedAt: null, doneAt: n
  * members of one conversation are the rows sharing it, and a tab opened on some adjustment answers
  * for the whole conversation. The sidenav paints one dot per task, not per run.
  *
- * The newest member is the head — the one with the highest `createdAt` (id as tie-break, matching
- * the board's own ordering). Every member carries the root even when the poll's capped window no
- * longer holds the root ROW itself, so a long conversation stays resolvable instead of falling
- * back to a partial segment. Nulls when the id names no job at all.
+ * The resolution lives in `chainHead`, shared with `taskSummary`, so the dot and the summary
+ * always answer for the same run.
  */
 export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus {
-    if (jobs === null) return NO_STATUS;
+    const head = chainHead(id, jobs);
+    return head === null
+        ? NO_STATUS
+        : { status: head.status, cancelRequestedAt: head.cancelRequestedAt, doneAt: head.doneAt };
+}
+
+/**
+ * The head of a task's thread — the newest run, the member with the highest `createdAt` (id as
+ * tie-break, matching the board's own ordering) — resolved from ANY member's id. Every member
+ * carries the root even when the poll's capped window no longer holds the root ROW itself, so a
+ * long conversation stays resolvable. Null when the id names no polled job at all.
+ */
+function chainHead(id: string, jobs: readonly Job[] | null): Job | null {
+    if (jobs === null) return null;
     const named = jobs.find((job) => job.id === id);
-    if (named === undefined) return NO_STATUS;
+    if (named === undefined) return null;
 
     let head: Job | undefined;
     for (const job of jobs) {
@@ -75,8 +86,20 @@ export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus 
             head = job;
         }
     }
-    if (head === undefined) return NO_STATUS;
-    return { status: head.status, cancelRequestedAt: head.cancelRequestedAt, doneAt: head.doneAt };
+    return head ?? null;
+}
+
+/**
+ * A task's live summary — what the agent is doing right now — for the left nav, the tab strip and
+ * the top of the task view: the head run's `runtime.activity` line, and only while that run is
+ * running. A parked or finished run's last activity is a stale line that would lie about a run no
+ * longer going, and the activity also disappears while a task is still queued.
+ */
+export function taskSummary(id: string, jobs: readonly Job[] | null): string | null {
+    const head = chainHead(id, jobs);
+    if (head === null || head.status !== 'running') return null;
+    const activity = head.runtime?.activity ?? null;
+    return activity !== null && activity.trim() !== '' ? activity : null;
 }
 
 export function groupById(state: TaskTabsState, id: string): TaskGroup | null {
