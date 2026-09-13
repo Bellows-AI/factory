@@ -35,3 +35,23 @@ baked-run:
 		$(IMAGE) node server/dist/offline.js
 
 baked: baked-build baked-run
+
+# The runner images the job driver spawns per job — claude-executor by default, opencode-executor
+# under RUNNER_CLI=opencode. `make runners` rebuilds both; docker's layer cache makes a no-change
+# rebuild cheap. Rebuild after editing anything under docker/<executor>/ or the driver picks up a
+# stale image silently.
+
+RUNNER_CLAUDE ?= claude-executor
+RUNNER_OPENCODE ?= opencode-executor
+
+.PHONY: runners runners-build claude-executor opencode-executor
+
+claude-executor:
+	docker build -t $(RUNNER_CLAUDE) docker/claude-executor
+
+opencode-executor:
+	docker build -t $(RUNNER_OPENCODE) docker/opencode-executor
+
+runners-build: claude-executor opencode-executor
+
+runners: runners-build
