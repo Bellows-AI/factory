@@ -394,4 +394,31 @@ describe('executors', () => {
         });
         expect(response.statusCode).toBe(401);
     });
+
+    it('reads the whole list back with configs, for the edit dialog', async () => {
+        // The on-demand read the dialog opens with: the member's own rows, config included — the
+        // poll never carries it, but an edit cannot pre-fill without it.
+        const { app, cookie } = await boot();
+        await putExecutors(app, cookie, [CLAUDE_CODE]);
+
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().executors).toEqual([
+            expect.objectContaining({ name: 'main', type: 'claude-code', config: { model: 'sonnet' } }),
+        ]);
+    });
+
+    it('answers 409 rather than reading rows when workspaces are switched off', async () => {
+        const { app, cookie } = await boot({ withRoot: false });
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('WORKSPACE_DISABLED');
+    });
+
+    it('needs a session for the config read', async () => {
+        const { app } = await boot();
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors' });
+        expect(response.statusCode).toBe(401);
+    });
 });

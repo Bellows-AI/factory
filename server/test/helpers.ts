@@ -271,6 +271,19 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 // The SQL orders the same way; created_at ties break on name.
                 .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name));
         },
+
+        async listWithConfigs(userId) {
+            return rows
+                .filter((r) => r.userId === userId)
+                .map((r) => ({
+                    name: r.name,
+                    type: r.type,
+                    createdAt: r.createdAt,
+                    updatedAt: r.updatedAt,
+                    config: structuredClone(r.config),
+                }))
+                .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name));
+        },
     };
 }
 
