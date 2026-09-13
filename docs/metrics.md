@@ -55,9 +55,10 @@ them. Do not "simplify" them.
   check.
 - **The revert rate degrades alone.** It is the only metric needing `Contents: read`; a missing
   ref returns `null` history and `revert.status = 'unavailable'`, never `{commits: 0, reverts: 0}`.
-- **`core/test/metrics.independent.test.ts` shares no code with `core/src/metrics.ts` on
-  purpose.** It recomputes headline numbers off the canonical payload and pins SPEC §1 landmarks.
-  Importing helpers into it would make a wrong number invisible. **`server/test/github.map.test.ts`
+- **`core/test/metrics.independent.test.ts` imports no helpers from `core/src/metrics.ts` on
+  purpose** — only its subjects, `compute` and `deriveAll`. It recomputes headline numbers off the
+  canonical payload and pins SPEC §1 landmarks. Importing helpers into it would make a wrong
+  number invisible. **`server/test/github.map.test.ts`
   holds the other half of that chain**, recomputing the same landmarks off the *raw* GitHub
   capture — the seam moved there when `core` stopped speaking GitHub. If any of 203 / 178 / 654 /
   226 / 624 / 30 / 37 / 153.5 / 224 / 0.325 moves, the adapter is wrong; do not adjust the

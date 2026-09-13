@@ -488,8 +488,8 @@ export function createJobStore({
     orgId: string;
     ready?: Promise<unknown>;
     /**
-     * The env-var store's resolver, when the deployment stores runner environment. Present in
-     * index.ts, absent in the tests that predate it — a claim then simply carries no `env`. The
+      * The env-var store's resolver, when the deployment stores runner environment. Present in
+      * main.ts, absent in the tests that predate it — a claim then simply carries no `env`. The
      * second parameter is the executor the resolver MUST run on: the claim's own transaction, so
      * a claim holds one connection rather than two (a resolver on the pool would let enough
      * concurrent claims wedge the pool against itself).
@@ -502,13 +502,13 @@ export function createJobStore({
     };
     /**
      * The GitHub App's installation-token provider, laid under the resolved env as the base layer
-     * (`withMintedToken`). Present in index.ts under the App — which is every env-booted process —
-     * and absent in the offline tooling and the tests that predate it: a board that cannot fetch
-     * mints nothing. Declared inline, like
-     * `env`, because `db/` must not import from `github/`. Each claim mints FRESH rather than
-     * reading the provider's cache, because the credential has to outlive the claim: a runner's
-     * env is written once and a run is capped at thirty minutes, so a cached token's remaining
-     * five minutes would die mid-run. A mint failure throws, and the same rollback that guards
+      * (`withMintedToken`). Present in main.ts under the App — which is every env-booted process —
+      * and absent in the offline tooling and the tests that predate it: a board that cannot fetch
+      * mints nothing. Declared inline, like
+      * `env`, because `db/` must not import from `github/`. Each claim mints FRESH rather than
+      * reading the provider's cache, because the credential has to outlive the claim: a runner's
+      * env is written once and a run is capped at two hours, so a cached token's remaining
+      * five minutes would die mid-run. A mint failure throws, and the same rollback that guards
      * the resolver leaves the job queued with its attempt unburned.
      */
     githubToken?: {
@@ -519,8 +519,8 @@ export function createJobStore({
      * inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a claim
      * hands it the workspace path, the repo label and the thread's root id (the worktree the run
      * edits), and gets the parsed `.bellows.yaml` or the reason the file could not be honoured.
-     * Present in index.ts, absent in the tests that predate gates — a claim then simply carries
-     * none.
+      * Present in main.ts, absent in the tests that predate gates — a claim then simply carries
+      * none.
      */
     gates?: {
         readFor(

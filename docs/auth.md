@@ -19,7 +19,7 @@ unauthenticated request was remote code execution.
   `npm run verify:ui`, `scripts/test-jobs.sh` and the route-test harness. There is also no offline
   way to obtain an OAuth client id, so requiring auth would make `git clone && npm run dev`
   impossible. It is the default, because a newly required variable that fails every existing case is
-  the signal not to require it — but `index.ts` logs unconditionally that every route is open, in
+  the signal not to require it — but `main.ts` logs unconditionally that every route is open, in
   the register of the `[fetch] no GitHub credential` line.
   - **The GitHub side has no such default, and the asymmetry is deliberate.** The App id and key
     are required outright — there is no env-reachable no-fetch state to land in by accident,
@@ -141,9 +141,9 @@ A random 32-byte token in a signed, httpOnly cookie, with a row keyed by its **s
   the second stops this server honouring a copy no browser is enforcing.
 - **The expiry is absolute, not sliding.** There is no touch on the read path, so a session ends on
   schedule rather than being extended by use. That costs a signed-in person one sign-in a fortnight
-  and buys a write-free read path — which matters because the SPA polls `/api/stats` every two
-  seconds for as long as a tab is open, so sliding would mean a write every two seconds per tab, or
-  a rate-limiting heuristic to avoid one.
+  and buys a write-free read path — which matters because every authenticated request reads the
+  session row and a cold fetch re-polls `/api/stats` every two seconds, so sliding would mean a
+  write on every one of those reads, or a rate-limiting heuristic to avoid one.
 
 ## The OAuth flow
 
@@ -179,8 +179,9 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
   serialisation is a spec with edge cases and no design decisions in it.
 - **The three endpoint URLs are overridable from the environment only** — deliberately undocumented
   as deployment configuration. A configurable authorize URL that ships with a deployment is a
-  phishing vector; as an environment variable it is a test seam that `index.ts` logs loudly when it
-  is in use. `e2e/stub-idp.mjs` is the only thing that sets them.
+  phishing vector; as an environment variable it is a test seam that `main.ts` logs loudly when it
+  is in use. Only the e2e harness sets them — `playwright.config.ts`, pointing the flow at
+  `e2e/stub-idp.mjs`.
 - **`auth.public_url` is required once `HOST` is not loopback.** The `redirect_uri` must be absolute
   and must never be derived from the request's `Host` header — that lets the caller choose the
   redirect target. `http://0.0.0.0:8080` is not somewhere a browser is ever sent back to, so guessing

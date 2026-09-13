@@ -11,8 +11,9 @@ export interface Session {
 /**
  * How an expired session reaches the gate.
  *
- * `useStats` polls every two seconds for as long as a tab is open, so a session expiring in the
- * middle of a poll is not an edge case — it is what happens to every tab left open overnight. The
+ * `useStats` polls every two seconds while a fetch is running, so a session expiring in the
+ * middle of a poll is not an edge case — any tab left open overnight meets an expired session on
+ * its next request. The
  * 401 arrives at the data layer, but the thing that has to react to it is the gate, and they have no
  * component relationship: the gate renders the tree that contains the poll.
  *

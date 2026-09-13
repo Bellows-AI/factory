@@ -461,9 +461,11 @@ An interactive session does not end when the agent stops talking, so:
 
 Three things it needs that a headless run does not, all decided in `dockerArgs`:
 
-- **A tty with stdin held open** (`-i -t`, and a pipe rather than `'ignore'` for the child's stdin).
-  Without a tty the CLI will not start an interactive session; with a tty whose stdin closes
-  immediately it exits the moment it starts. The driver never writes to that stdin.
+- **A tty, with the child's stdin `'ignore'`** (`-t` alone, deliberately not `-i -t`). Without a
+  tty the CLI will not start an interactive session; with `-t` alone the daemon allocates the pty
+  without attaching the client's stdin, so the container gets a terminal that never delivers input
+  or EOF — exactly what a session waiting to be driven from elsewhere needs. The driver never
+  writes to that stdin.
 - **The login volume, and no forwarded credentials at all.** Remote Control requires a full-scope
   claude.ai login — `docker/claude-executor/run.sh login` writes one into `claude-executor-auth`.
   `RUNNER_ENV` is skipped entirely in this mode, because a forwarded token does not fail: a
@@ -690,7 +692,7 @@ kill stops the docker CLI, and a stubborn in-container process outlives the gate
 container's own teardown.
 
 **Gates run under both executors, by different machinery.** Docker keeps a warm environment
-container per member+repo checkout and `docker exec`s each gate into it. Kubernetes runs each
+container per task worktree and `docker exec`s each gate into it. Kubernetes runs each
 gate as a **Job** — the declared image over the workspaces PVC, `workingDir` at the checkout, the
 env as a per-run Secret the pod reads by reference (`envFrom`, never literals), the kubelet's
 `activeDeadlineSeconds` as the wall-clock cap read back as exit 124. A gate run is attempt-scoped
@@ -972,15 +974,16 @@ unset, and the attempt-scoping pins: no stale attempt's argv may name a sibling 
 resources, and the fence is the one sweep allowed to be job-scoped.
 
 `npm run test:jobs` (`scripts/test-jobs.sh`) is the end-to-end: a real board, a real database, a
-real driver and real containers, with no Claude and no credential. The runners are two stub images
-whose entrypoints echo and exit — the job's `output` comes back as the arguments the container was
+real driver and real containers, with no Claude and no credential. The runners are four stub
+images — two whose entrypoints echo and exit, plus a service stub and a runner-exec stub. The job's
+`output` comes back as the arguments the container was
 given, which is what proves the prompt, the mount and the completion path all line up. It is also
 what proves the session round-trip: the `sessionId` the board hands back is found inside those
 arguments, so the link points at the session the job actually ran as. Standby is covered in the
 board phase rather than the driver phase — park, prove a parked job is not offered to an idle poll,
 resume, and check the claim carries the session back — because none of that needs a container. It
 creates a
-`*_test` database, two images and a volume, and drops all of them on exit.
+`*_test` database, four images and a volume, and drops all of them on exit.
 
 Two things it does that are not decoration:
 

@@ -16,7 +16,7 @@ import { TopBar } from './TopBar.js';
  *
  * The poll lives HERE rather than in the dashboard page because the Workspace page needs the same
  * payload — it joins each checkout to that repo's pull-request figures — and two pages each running
- * `useStats` would be two polls of the same endpoint every two seconds.
+ * `useStats` would be two polls of the same endpoint during every cold fetch.
  */
 export interface ShellContext {
     data: StatsPayload | null;

@@ -98,7 +98,7 @@ const scopeWhere = (exec: Sql | TransactionSql, scope: Scope): Fragment => {
 /**
  * The organization is bound at construction, for the reason createPrStore's header gives.
  *
- * `ready` gates every query, the way every other store built in index.ts does: migrations retry
+ * `ready` gates every query, the way every other store built in main.ts does: migrations retry
  * with backoff while the database container starts, and a boot that raced them would answer 503s
  * for a moment rather than crash.
  */

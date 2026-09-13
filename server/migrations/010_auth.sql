@@ -114,8 +114,8 @@ create index if not exists org_membership_by_user
 -- denylist, and a denylist is this table with worse ergonomics.
 -- The expiry is absolute, not sliding: there is no "touch" on the read path, so an active session
 -- ends on schedule rather than being extended by use. That costs a signed-in person one sign-in a
--- fortnight and buys a write-free read path, which matters because the SPA polls every two seconds
--- for as long as a tab is open — a per-request update would be a write every two seconds per tab.
+-- fortnight and buys a write-free read path, which matters because every authenticated request
+-- reads the session row — a per-request update would turn each of those reads into a write.
 create table if not exists session (
     token_hash   bytea not null,
     user_id      uuid not null,

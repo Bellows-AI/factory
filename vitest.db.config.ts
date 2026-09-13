@@ -6,7 +6,7 @@ import { defineConfig } from 'vitest/config';
  * AGENTS.md rather than left to be discovered.
  *
  *     docker compose up -d timescale
- *     DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory npm run test:db
+ *     DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db
  */
 export default defineConfig({
     test: {

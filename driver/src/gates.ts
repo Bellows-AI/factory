@@ -11,7 +11,7 @@ import { gateEnvArgs, gateEnvContainerName, gateExecArgs, reportTail } from './d
 const run = promisify(execFile);
 
 /**
- * The gate environment: one long-lived container per member+repo checkout, a `docker exec` per
+ * The gate environment: one long-lived container per task worktree, a `docker exec` per
  * gate, and a loopback HTTP server the coding agent reaches the gates through.
  *
  * Why a container that stays up rather than a container per gate: the issue asks for both halves

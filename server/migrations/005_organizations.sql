@@ -1,9 +1,9 @@
 -- The organization dimension.
 --
 -- An organization owns a set of repos and partitions all stored history. There is exactly one per
--- deployment today, defined in factory.toml, with no accounts and no memberships — but org_id is
+-- deployment today, defined in the environment (ORG_ID/ORG_NAME), with no accounts and no memberships — but org_id is
 -- folded into the primary keys NOW, while the tables are small, rather than retrofitted later
--- across five keys, four foreign keys and seven indexes on a populated database.
+-- across ten keys, four foreign keys and six indexes on a populated database.
 --
 -- `org_id` LEADS every key rather than trailing `provider`. A query always knows its org — it is a
 -- constant for the life of the process today and a request-scoped value tomorrow — so leading it
@@ -30,7 +30,7 @@
 --
 -- This file must contain NO `create extension` and NO `create_hypertable`. Those misbehave inside a
 -- transaction, and without them postgres wraps the whole multi-statement body in an implicit one —
--- which is what makes eleven key rewrites atomic, so a crashed run rolls back whole instead of
+-- which is what makes ten key rewrites atomic, so a crashed run rolls back whole instead of
 -- leaving half a schema behind.
 
 -- 1. The column. Reserved placeholder, adopted at boot.

@@ -19,10 +19,11 @@ npx playwright test --headed            # watch it drive
 npx playwright test --ui                # pick and step through interactively
 ```
 
-`playwright.config.ts` builds all three packages and serves the built SPA from the API on
-127.0.0.1:8123 with `DATA_SOURCE=fixture` and `TELEMETRY_SOURCE=fixture`, so the run needs no
-token, no quota, no database and no network. The server is never reused between runs — a leftover
-process would verify stale code, which is the one failure this exists to catch.
+`playwright.config.ts` builds all four packages and serves the built SPA from the API on
+127.0.0.1:8123 with `TELEMETRY_SOURCE=postgres` against a seeded `factory_e2e` database, so the
+run needs a running timescale but no token, no quota and no network. The server is never reused
+between runs — a leftover process would verify stale code, which is the one failure this exists
+to catch.
 
 Full-page screenshots land in `artifacts/ui/*.png` (gitignored). **Read them.** A passing
 assertion means the DOM was right; the screenshot is the only thing that shows the layout was.

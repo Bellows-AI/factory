@@ -1,6 +1,6 @@
 # Persistence and incremental sync
 
-Read before: touching `server/src/store/*`, `stats-service.ts`, the sync watermark, or any
+Read before: touching `server/src/db/*`, `stats-service.ts`, the sync watermark, or any
 migration under `server/migrations/`.
 
 PR data is **always** persisted; there is no other place for it to live. On boot `prime()` seeds
@@ -87,8 +87,8 @@ request rather than a 202.
   anywhere. The decision is **per connection**, because one PR can arrive with a complete commit
   list and a truncated review list in the same fetch. A *complete* list is delete-and-replaced,
   which is the only thing that ever makes a review deleted upstream stop being counted.
-  `pr-store.truncation.test.ts` also asserts `count(*) from pr_review !== review_count` for #149
-  on purpose, so nobody "fixes" the discrepancy by making the total a `count(*)` — that would
+  `server/test-db/pr-store.test.ts` also asserts `count(*) from pr_review !== review_count` for
+  #149 on purpose, so nobody "fixes" the discrepancy by making the total a `count(*)` — that would
   undercount by 297.
 - **`truncated` is recomputed on every write, never unioned.** A union leaves a stale caveat on the
   page after a successful backfill has already filled the list in.
@@ -103,9 +103,9 @@ request rather than a 202.
 - **`branch_history.covered_from` only ever moves backwards.** A later scan starting from a newer
   bound has not lost the older commits, and moving it forward would make a range that *is* covered
   report as unavailable.
-- **`ttlMs` is `syncTtlMs` when a store is present and `cacheTtlMs` otherwise**, and the history
-  loop now has a `MAX_HISTORY_PAGES` cap it was missing — a first scan of a busy monorepo could
-  page until the quota ran out.
+- **The PR slot's `ttlMs` is `syncTtlMs` (a store is always present), and the telemetry slot's is
+  `config.telemetryTtlMs`**, and the history loop now has a `MAX_HISTORY_PAGES` cap it was
+  missing — a first scan of a busy monorepo could page until the quota ran out.
 
 **Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
 `npm test`**. That is the price of keeping the default suite offline and database-free; they are

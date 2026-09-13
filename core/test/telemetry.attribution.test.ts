@@ -185,7 +185,7 @@ describe('a transcript pr-link outranks the branch join', () => {
 });
 
 describe('a head branch is not a unique key', () => {
-    // Six branches in the sample payload are reused across separate merged PRs. Matching on
+    // Nine branches in the sample payload are reused across separate merged PRs. Matching on
     // branch alone would credit the same work to every PR that ever used the branch.
     it('routes work to the PR that was still open when it happened', () => {
         expect(row(7).attribution).toBe('shared');

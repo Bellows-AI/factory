@@ -43,9 +43,10 @@ quietly in. `server/src/github/fixture-payload.ts` and the 203-PR capture beside
 **test and tooling infrastructure only**: `server/test/helpers.ts`, `github.map.test.ts` and
 `capture-canonical.ts` read them, and nothing at runtime does.
 
-The raw capture sits beside the adapter because `core` cannot import from `server` and should not
-know GitHub's response shape. `core/test/fixtures/sample-canonical.json` is **derived** from it by
-`npm run fixture:canonical` and committed; regenerate it after any change to `toCanonical()`.
+The raw capture sits under `server/fixtures/` because `core` cannot import from `server` and
+should not know GitHub's response shape. `core/test/fixtures/sample-canonical.json` is **derived**
+from it by `npm run fixture:canonical` and committed; regenerate it after any change to
+`toCanonical()`.
 
 `TelemetryClient` (`server/src/telemetry/client.ts`) still has three sources, and `postgres` is now
 the default. `fixture` survives where the forge one did not because it feeds a *second, independent*

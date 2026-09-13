@@ -1,7 +1,7 @@
 /**
  * `--key value` and `--flag`, and nothing else.
  *
- * Hand-rolled rather than a dependency: these two tools take four options between them, and the
+ * Hand-rolled rather than a dependency: these two tools take seven options between them, and the
  * whole parser is shorter than the argument for choosing a library would be.
  */
 export function parseArgs(argv: readonly string[]): Record<string, string | true> {

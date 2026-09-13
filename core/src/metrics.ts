@@ -377,7 +377,8 @@ export function compute(all: DerivedPr[], options: ComputeOptions = {}): Stats {
                 open: open.length,
                 closedUnmerged: closedUnmerged.length,
             },
-            // Relies on the query's CREATED_AT DESC ordering. Do not "fix" to min/max.
+            // Relies on loadPullRequests()'s ordering (created_at desc — pr-store.ts). Do not
+            // "fix" to min/max.
             window: {
                 from: merged.length ? (merged[merged.length - 1] as DerivedPr).mergedAt : null,
                 to: merged.length ? (merged[0] as DerivedPr).mergedAt : null,

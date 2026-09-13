@@ -17,6 +17,7 @@ simplifying one silently makes the number wrong.
 | `core/` | Pure aggregation and shared types. No dependencies, no I/O. Byte-equivalent to the verified reference implementation. |
 | `server/` | Fastify API: GitHub GraphQL client, in-memory cache, and static hosting for the SPA. |
 | `web/` | Vite + React SPA. |
+| `driver/` | Job driver: claims jobs from the board and spawns a runner container per job. |
 
 ## Running it
 
@@ -111,7 +112,8 @@ Required GitHub App installation permissions:
 A full history fetch is 9 pages, ~243 rate-limit points and ~45 seconds against a 5000/hour
 budget. Consequences baked into the code:
 
-- The server caches one snapshot in memory; `CACHE_TTL_SECONDS` is rejected below 300.
+- The server caches one snapshot in memory; `SYNC_TTL_SECONDS` is floored at 60s per repo, and the
+  retired `CACHE_TTL_SECONDS` is fatal if set.
 - A cold `GET /api/stats` answers **202** with progress while fetching; the SPA polls every 2s.
 - A stale snapshot is still served with 200. A rate limit keeps the last good render on screen
   and explains itself rather than blanking the dashboard.

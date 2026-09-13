@@ -38,7 +38,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `server/src/routes/jobs.ts`, `db/job-store.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, the driver's env forwarding, the `/env` page | [docs/env.md](docs/env.md) |
 | `filterPrs()`, `parseRange`, `revertForRange()`, the range selector, charts | [docs/date-range.md](docs/date-range.md) |
-| `server/src/store/*`, `stats-service.ts`, the sync watermark, migrations | [docs/persistence.md](docs/persistence.md) |
+| `server/src/db/*`, `stats-service.ts`, the sync watermark, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | Bind addresses, headers, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
 | Reporting a number as measured | [docs/limits.md](docs/limits.md) |
@@ -188,9 +188,10 @@ text. The driver build copies the directory into `dist` (`driver/package.json`);
 copy fails only in the container, never in dev — the same trap as `server/migrations` below.
 
 Tests import `core/src` directly (`../src/metrics.js`), so `core/test` does not need the build.
-`vitest.config.ts` includes `core/test`, `server/test` and `web/test`. The web suite is a
-**render smoke test only** — it renders the telemetry panels with `react-dom/server`, so no DOM
-and no browser is needed, but it will not tell you the SPA looks right.
+`vitest.config.ts` includes `core/test`, `server/test`, `driver/test` and `web/test`. The web
+suite is mostly a **render smoke test** — it renders the telemetry panels with `react-dom/server`,
+so no DOM and no browser is needed, but it will not tell you the SPA looks right — plus
+non-component suites (executor config validation, tab transitions).
 
 A new file in `core/src` must be re-exported from `core/src/index.ts` or the server sees
 "module has no exported member" — the same failure mode as a stale `core/dist`, and it looks

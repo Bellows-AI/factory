@@ -92,10 +92,10 @@ export function useStats(query = 'range=all'): UseStats {
                 return;
             }
 
-            // Its own branch, ahead of the generic one below. This poll runs every two seconds for
-            // as long as the tab is open, so a session expiring mid-poll is guaranteed rather than
-            // exceptional — and in the generic branch it renders a banner that never clears, because
-            // every subsequent poll 401s too. Handing it to the gate is the only thing that can
+            // Its own branch, ahead of the generic one below. The poll re-arms every two seconds
+            // while a fetch is in progress, so a session expiring mid-poll is not exceptional —
+            // and in the generic branch it renders a banner that never clears, because every
+            // request that follows 401s too. Handing it to the gate is the only thing that can
             // actually resolve it.
             if (response.status === 401) {
                 reportUnauthenticated();

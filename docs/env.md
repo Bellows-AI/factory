@@ -146,7 +146,7 @@ each is answered in place:
 - **Each claim mints FRESH rather than reading the provider's cache.** The token the repo-read path
   uses is cached and refreshed five minutes before expiry, so a claim served from it could hand a
   runner a credential with minutes of life left — and a runner's env is written once, its run
-  capped at thirty minutes, with no refresh path. So the claim calls the provider's `fresh()`: at
+  capped at two hours, with no refresh path. So the claim calls the provider's `fresh()`: at
   most one GitHub call per claim — concurrent claims join the same single-flight mint (never per
   poll: an idle board mints nothing) — a full hour of life every
   time, and GitHub does not invalidate the token the mint replaced. The request itself is bounded

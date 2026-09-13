@@ -46,7 +46,7 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   The key may also be base64: a PEM is multi-line and neither `.env` nor compose handles that well.
 - **`GITHUB_API_URL` is environment-only and undocumented on purpose**, for the same reason as the
   three OAuth endpoint overrides below: a configurable API host that ships with a deployment is
-  somewhere to send a private key. `index.ts` logs loudly when it is set.
+  somewhere to send a private key. `main.ts` logs loudly when it is set.
 - **`AUTH_MODE` is an explicit enum, never inferred from whether a client id is set**, and
   `AUTH_MODE=github` with an incomplete set of auth variables is fatal and names the missing key.
   Both are the same instinct as `persistence.status` having no `'off'`: a mode you can fall into by
@@ -55,7 +55,7 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   rather than merely rejected.
 - **`GITHUB_OAUTH_AUTHORIZE_URL` / `_TOKEN_URL` / `_USER_URL` are a test seam**, not documented
   configuration — a configurable authorize URL that reached a real deployment would be a phishing
-  vector, and `index.ts` logs loudly when one is in use. `AUTH_ALLOW_PUBLIC_BIND` is restricted for a
+  vector, and `main.ts` logs loudly when one is in use. `AUTH_ALLOW_PUBLIC_BIND` is restricted for a
   different reason: it asserts something about the network in front of the process, which is a
   property of the host rather than of the deployment.
 - **`ORG_WORKSPACE_ROOT` is unset by default, must be absolute, and expands `~` against `env.HOME`

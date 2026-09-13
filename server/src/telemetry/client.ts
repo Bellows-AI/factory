@@ -12,8 +12,8 @@ export interface TelemetryHealth {
 }
 
 /**
- * Mirrors GitHubClient, including the fixture/live split. The fixture implementation is the
- * default so `npm test` and a bare `npm run dev` need no database and no collector.
+ * Mirrors GitHubClient. The fixture implementation is selected by `TELEMETRY_SOURCE=fixture`;
+ * the default is postgres, which needs a database but no collector.
  */
 export interface TelemetryClient {
     fetchRollups(options?: { repos?: readonly string[]; since?: string }): Promise<TelemetryInput>;

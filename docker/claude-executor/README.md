@@ -10,12 +10,12 @@ checkout; it does not build or run this repo's application.
 | `Dockerfile` | the image — Node 24 (debian), git, `@anthropic-ai/claude-code`, `gh`, `acli`, the `context-mode` plugin |
 | `entrypoint.sh` | `/usr/local/bin/claude-executor` — the `ENTRYPOINT` |
 | `branch-reporter.cjs` | `/usr/local/bin/branch-reporter.cjs` — the branch reporter the entrypoint launches beside the CLI |
-| `run.sh` | starts a Remote Control session, with the token read from `.env` — not shipped inside the image |
+| `run.sh` | starts a Remote Control session, with a full-scope login in a named volume — deliberately not the `.env` token, which is model-requests-only and not shipped inside the image |
 | `test.sh` | builds the image and exercises it against this repo — not shipped inside it |
 | `claude-home/` | `/home/node/.claude` inside the image, via `CLAUDE_CONFIG_DIR` |
 | `claude-home/settings.json` | telemetry configuration |
 | `claude-home/CLAUDE.md` | the global instructions every session loads |
-| `claude-home/skills/` | `github`, `jira`, `backend-fix` — loaded on demand, not every session |
+| `claude-home/skills/` | `github`, `jira`, `backend-fix`, `gates` — loaded on demand, not every session |
 
 `claude-home/` is the predefined configuration folder. Whatever you drop in it ships in the image —
 add `agents/`, `commands/` or `hooks/` and they need no Dockerfile change.
@@ -44,13 +44,14 @@ has — instructions for an absent binary cost tokens every session and end in
   container — it reads credentials from `~/.config/acli`, so either log in once per container:
 
   ```bash
-  docker run --rm -it -e JIRA_API_TOKEN claude-executor \
-      sh -c 'echo "$JIRA_API_TOKEN" | acli jira auth login \
+  docker run --rm -it --entrypoint sh -e JIRA_API_TOKEN claude-executor \
+      -c 'echo "$JIRA_API_TOKEN" | acli jira auth login \
           --site your-site.atlassian.net --email you@example.com --token'
   ```
 
   or mount an existing profile read-only with `-v "$HOME/.config/acli:/home/node/.config/acli:ro"`.
-  Note that `ENTRYPOINT` is `claude`, hence the explicit `sh -c` above.
+  Note that the image's `ENTRYPOINT` is the `claude-executor` wrapper, hence the explicit
+  `--entrypoint sh` above.
 
 ## Build
 
@@ -149,8 +150,9 @@ anyone to answer it:
   explicitly. It stays off by default so a headless run cannot silently inherit a checkout's
   permission grants.
 
-`ENTRYPOINT` is the `claude-executor` wrapper: it changes into `$WORKDIR`, then `exec`s `claude`
-with every argument given after the image name. Arguments reach the CLI unchanged — the wrapper
+`ENTRYPOINT` is the `claude-executor` wrapper: it changes into `$WORKDIR`, then runs `claude`
+with every argument given after the image name as a supervised child, capturing and re-raising its
+exit status. Arguments reach the CLI unchanged — the wrapper
 adds no flags and interprets none.
 
 ```bash
@@ -194,8 +196,9 @@ docker run --rm -it --network factory-ai_default \
 ```
 
 Off that network the exporter fails to connect; the CLI still works, the sessions just go
-unrecorded. Override `OTEL_EXPORTER_OTLP_ENDPOINT` with `-e` to point elsewhere, or set
-`CLAUDE_CODE_ENABLE_TELEMETRY=0` to disable it.
+unrecorded. Override `OTEL_EXPORTER_OTLP_ENDPOINT` with `-e` to point elsewhere (the entrypoint
+rewrites the baked settings value to match); to disable telemetry entirely, edit
+`claude-home/settings.json` — the baked env block overrides `-e CLAUDE_CODE_ENABLE_TELEMETRY=0`.
 
 The three `OTEL_LOG_*` flags are `0` on purpose: they control whether prompts, responses and tool
 arguments are shipped as log bodies. See [docs/security.md](../../docs/security.md).

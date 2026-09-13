@@ -9,7 +9,7 @@
  * before support for it is written.
  */
 
-/** Fields the aggregation understands. Deliberately no cost field: see AGENTS.md. */
+/** Fields the aggregation understands. Deliberately no cost field: see docs/telemetry.md. */
 export type CanonicalField =
     | 'tokens_input'
     | 'tokens_output'

@@ -142,8 +142,9 @@ true: the Workspace page reports each checkout's branch, newest commit and size 
 
 - **Those three are cached, and a cold read is `null` rather than awaited.** The route is polled, and
   read naively that is a `git log` plus a recursive directory walk per repo per member per tick. The
-  branch and last commit refresh every 30 seconds; the size walk every five minutes, bounded at
-  200,000 entries. The route serves what is cached and schedules the refresh.
+  branch and last commit refresh every 30 seconds; the size walk every five minutes, run as `du`
+  in a child process bounded at 20 seconds. The route serves what is cached and schedules the
+  refresh.
 - **`null` means "not measured", never zero.** A repository that is still cloning has no size, and
   `0 B` would be a claim about an empty repository. The same contract the metrics panels follow.
 

@@ -106,8 +106,8 @@ collector config.
   code and `postgres` in compose, because `npm run dev` and the test suite had no database. Both
   have one by construction now, and a fixture default would 404 the ingest route while a collector
   is already exporting into it.
-- **`core/test/telemetry.independent.test.ts` shares no code with `core/src/telemetry.ts`**, for
-  the same reason as its metrics counterpart.
+- **`core/test/telemetry.independent.test.ts` imports no helpers from `core/src/telemetry.ts`**
+  (only its subject, `attribute`), for the same reason as its metrics counterpart.
 - **`factory_dev` and `factory_test` are separate databases, and the db suite refuses anything
   not named `*_test`.** The suite truncates `metric_point` and `session_branch` in
   `beforeEach`, so a shared database means one test run wipes every backfilled session — and
