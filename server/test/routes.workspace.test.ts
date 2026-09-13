@@ -408,6 +408,35 @@ describe('executors', () => {
         ]);
     });
 
+    it('keeps members apart on the config read too', async () => {
+        // The one route that hands back pasted credentials: a scoping regression here would leak
+        // one member's config into another member's edit dialog.
+        const auth = memoryAuthStore();
+        const a = auth.seedMember('test-org', 'octocat');
+        const b = auth.seedMember('test-org', 'scallop');
+        const executors = memoryUserExecutorStore();
+        const h = await harness({
+            auth,
+            userRepos: store,
+            userExecutors: executors,
+            repos: REPOS,
+            config: { workspaceRoot: root, auth: githubAuth() },
+        });
+        app = h.app;
+        const cookieA = await signedIn(auth, a);
+        const cookieB = await signedIn(auth, b);
+
+        await putExecutors(h.app, cookieA, [CLAUDE_CODE]);
+        const response = await h.app.inject({
+            method: 'GET',
+            url: '/api/workspace/executors',
+            headers: { cookie: cookieB },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().executors).toEqual([]);
+    });
+
     it('answers 409 rather than reading rows when workspaces are switched off', async () => {
         const { app, cookie } = await boot({ withRoot: false });
         const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
