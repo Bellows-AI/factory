@@ -81,7 +81,6 @@ export function TaskDetail({
     actionError,
     sending,
     onFollowUp,
-    onResume,
     onStop,
     onRemove,
     onDone,
@@ -94,13 +93,11 @@ export function TaskDetail({
     actionError: string | null;
     sending: boolean;
     onFollowUp: (command: string) => Promise<string | null>;
-    onResume: (id: string) => Promise<void>;
     onStop: (id: string) => Promise<void>;
     onRemove: (id: string) => Promise<void>;
     onDone: (id: string) => Promise<void>;
 }) {
     const [draft, setDraft] = useState('');
-    const [resumingId, setResumingId] = useState<string | null>(null);
     const [stoppingId, setStoppingId] = useState<string | null>(null);
     const [removingId, setRemovingId] = useState<string | null>(null);
     const [doneId, setDoneId] = useState<string | null>(null);
@@ -163,19 +160,10 @@ export function TaskDetail({
         if ((await onFollowUp(draft)) === null) setDraft('');
     };
 
-    const resume = async (id: string) => {
-        if (resumingId !== null) return;
-        setResumingId(id);
-        try {
-            await onResume(id);
-        } finally {
-            setResumingId(null);
-        }
-    };
-
-    // The board parks the run at the worker's next heartbeat, so the button says "Stop" while the
-    // request is in flight and "Stopping…" once the flag has landed but the run has not gone yet —
-    // the polls repaint the row the moment the driver parks it.
+    // The board settles the run at the worker's next heartbeat, so the button says "Stop" while
+    // the request is in flight and "Stopping…" once the flag has landed but the run has not gone
+    // yet — the polls repaint the row the moment the driver has parked it, and the row comes
+    // back `stopped`: the turn ended, the composer below is open again.
     const stop = async (id: string) => {
         if (stoppingId !== null) return;
         setStoppingId(id);
@@ -199,7 +187,7 @@ export function TaskDetail({
         }
     };
 
-    // One in-flight mark at a time, like resume: the button says nothing while the request runs,
+    // One in-flight mark at a time, like stop: the button says nothing while the request runs,
     // and the pill arrives with the next poll.
     const done = async (id: string) => {
         if (doneId !== null) return;
@@ -246,14 +234,7 @@ export function TaskDetail({
                                     </span>
                                 ) : null}
                                 {task.status === 'standby' ? (
-                                    <button
-                                        type="button"
-                                        className="chat-resume"
-                                        disabled={resumingId === task.id}
-                                        onClick={() => void resume(task.id)}
-                                    >
-                                        Resume
-                                    </button>
+                                    <span className="pill">parked</span>
                                 ) : null}
                                 {task.id === latestTask.id && task.status === 'running' ? (
                                     task.cancelRequestedAt !== null ? (

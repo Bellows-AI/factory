@@ -53,7 +53,7 @@ beforeEach(async () => {
  */
 const craft = async (shape: {
     parent?: string | null;
-    status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
+    status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
     lease?: 'live' | 'expired';
     /** Seconds before now the row was created. Bigger = older: orders the queue deterministically. */
     olderBySeconds?: number;
@@ -135,6 +135,15 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
     it('a standby row neither blocks nor is claimable', async () => {
         await craft({ status: 'standby', lease: 'expired' });
         const followUp = await craft({ parent: '00000000-0000-4000-8000-000000000001', status: 'queued' });
+
+        expect((await store.claim('w1', 300))?.id).toBe(followUp);
+    });
+
+    // Stopped is the user's verdict on a turn they ended: terminal, so it blocks nothing and is
+    // never handed out.
+    it('a stopped row neither blocks nor is claimable', async () => {
+        await craft({ status: 'stopped', lease: 'expired' });
+        const followUp = await craft({ parent: '00000000-0000-4000-8000-000000000002', status: 'queued' });
 
         expect((await store.claim('w1', 300))?.id).toBe(followUp);
     });

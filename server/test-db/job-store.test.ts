@@ -375,7 +375,8 @@ describe.skipIf(!enabled)('job store', () => {
         const claim = await store.claim('w1', 300);
         await store.session(id, claim!.leaseToken, SESSION, null);
 
-        expect(await store.suspend(id, claim!.leaseToken)).toBe('ok');
+        // No stop was asked, so this is the Remote Control idle landing: standby, not finished.
+        expect(await store.suspend(id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'standby' });
 
         expect(await store.get(id)).toMatchObject({ status: 'standby', sessionId: SESSION });
         expect((await store.get(id))?.finishedAt).toBeNull();
@@ -391,35 +392,13 @@ describe.skipIf(!enabled)('job store', () => {
         expect(await store.claim('w2', 300)).toBeNull();
     });
 
-    // Parking is not a failed try. Without the give-back, a job parked three times is dead.
+    // Parking is not a failed try: the attempt is handed back, whatever the landing.
     it('hands back the attempt it took, so parking is not a retry', async () => {
         const { id } = await queue('drive me');
+        const claim = await store.claim('w1', 300);
+        await store.suspend(id, claim!.leaseToken);
 
-        for (let i = 0; i < 5; i += 1) {
-            const claim = await store.claim(`w${i}`, 300);
-            expect(claim).not.toBeNull();
-            await store.suspend(id, claim!.leaseToken);
-            await store.resume(id);
-        }
-
-        expect((await store.get(id))?.status).toBe('queued');
-        expect((await store.get(id))?.attempts).toBe(0);
-    });
-
-    // The whole point of standby: the claim carries the parked session back to the worker, which
-    // restores it instead of starting a new one — so the link the UI shows does not move.
-    it('hands the parked session back on the claim that resumes it', async () => {
-        const { id } = await queue('drive me');
-        const first = await store.claim('w1', 300);
-        await store.session(id, first!.leaseToken, SESSION, REMOTE);
-        await store.suspend(id, first!.leaseToken);
-
-        expect(await store.resume(id)).toBe('ok');
-        const second = await store.claim('w2', 300);
-
-        expect(second).toMatchObject({ id, resumeSessionId: SESSION, followUp: false });
-        // Kept across the park too, so the link works while the job is waiting to be picked up.
-        expect((await store.get(id))?.remoteSessionId).toBe(REMOTE);
+        expect(await store.get(id)).toMatchObject({ status: 'standby', attempts: 0 });
     });
 
     // A lease that expired mid-run is not a park: that attempt's session is not this one, and
@@ -441,15 +420,8 @@ describe.skipIf(!enabled)('job store', () => {
         await expireLease(id);
         await store.claim('w2', 300);
 
-        expect(await store.suspend(id, stale!.leaseToken)).toBe('lost');
-        expect(await store.suspend(ABSENT, stale!.leaseToken)).toBe('missing');
-    });
-
-    it('separates a job that is not parked from one that does not exist', async () => {
-        const { id } = await queue('echo hi');
-
-        expect(await store.resume(id)).toBe('conflict');
-        expect(await store.resume(ABSENT)).toBe('missing');
+        expect(await store.suspend(id, stale!.leaseToken)).toEqual({ result: 'lost' });
+        expect(await store.suspend(ABSENT, stale!.leaseToken)).toEqual({ result: 'missing' });
     });
 
     it('leaves output out of the list projection', async () => {
@@ -569,6 +541,21 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             remoteSessionId: REMOTE,
             doneAt: null,
         });
+    });
+
+    // A stopped parent is a finished turn, not a dead end: the stop kept the session, so the
+    // conversation continues from exactly where the user ended it.
+    it('creates a follow-up on a task the user stopped', async () => {
+        const { id } = await store.create('drive me', null, { repo: null, executor: null });
+        const claim = await store.claim('w1', 300);
+        await store.session(id, claim!.leaseToken, SESSION, REMOTE);
+        await store.stop(id);
+        expect(await store.suspend(id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
+        expect((await store.get(id))?.status).toBe('stopped');
+
+        const followUp = await store.createFollowUp(id, 'pick up where I left you', null);
+
+        expect(await store.get(followUp.id)).toMatchObject({ followUpTo: id, sessionId: SESSION });
     });
 
     // The thread keeps its tab AND its runner: the follow-up renders in the parent's repository
@@ -765,22 +752,6 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(second).toMatchObject({ id, attempts: 2, resumeSessionId: SESSION, followUp: true });
     });
 
-    // "Delivered once" survives follow-ups: a parked follow-up has its command in the transcript
-    // already, so its resume restores the session and delivers nothing — the same rule a parked
-    // ordinary job has always had.
-    it('does not re-deliver the command when a parked follow-up is resumed', async () => {
-        const parent = await finishWithSession('drive me');
-        const { id } = await store.createFollowUp(parent, 'drive me too', null);
-        const first = await store.claim('w1', 300);
-        await store.session(id, first!.leaseToken, SESSION, null);
-        await store.suspend(id, first!.leaseToken);
-        await store.resume(id);
-
-        const second = await store.claim('w2', 300);
-
-        expect(second).toMatchObject({ id, resumeSessionId: SESSION, followUp: false });
-    });
-
     // The task is done when the user says so — a verdict no run can make and nobody can take back
     // by saying it twice.
     // The repeat half of "rinse and repeat": a follow-up is itself a finished task with a session
@@ -859,6 +830,24 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: 1, output: 'boom' });
 
             expect(await reclaimRows(id)).toHaveLength(0);
+        });
+
+        // A stopped member is terminal for exactly the same machinery: done closes the thread and
+        // frees the tree, with no special case for the user's own verdict.
+        it('queues a reclaim for a thread whose member the user stopped', async () => {
+            const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null });
+            const followUp = await store.createFollowUp(root, 'first adjustment', null);
+            const claim = await store.claim('w1', 300);
+            expect(claim?.id).toBe(followUp.id);
+            await store.session(followUp.id, claim!.leaseToken, SESSION, null);
+            await store.stop(followUp.id);
+            expect(await store.suspend(followUp.id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
+
+            await store.markDone(followUp.id);
+
+            const rows = await reclaimRows(root);
+            expect(rows).toHaveLength(1);
+            expect(rows[0]).toMatchObject({ repo: 'acme/web' });
         });
 
         it('keeps the tree when a follow-up is still queued, and the verdict reclaims it later', async () => {

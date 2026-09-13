@@ -31,10 +31,9 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/claim$/,
     /^\/api\/reclaims\/claim$/,
     /^\/api\/reclaims\/[^/]+\/ack$/,
-    // `resume` is deliberately absent: nobody holds a parked job, which is exactly what makes it
-    // resumable by a person rather than only by the worker that parked it. `stop` and `remove`
-    // are person actions too — the driver is told to stop through the heartbeat, and a worker
-    // token deleting the audit rows of jobs it never held would be the thread-read hole again.
+    // `stop`, `follow-up`, `done` and `remove` are person actions: the driver is told to stop
+    // through the heartbeat it already holds, and a worker token moving or deleting the audit
+    // rows of jobs it never held would be the thread-read hole again.
     /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread)$/,
 ];
 

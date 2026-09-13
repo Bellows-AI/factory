@@ -7,7 +7,7 @@ import { reportUnauthenticated } from './useSession.js';
  * know the job board exists, and the pattern `useWorkspace.ts` established is to own the shape the
  * page renders.
  */
-export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
+export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
 /** Where one declared verification gate stands. The board stores current/last only — no history. */
 export interface GateCheck {
@@ -88,7 +88,7 @@ export interface Job {
  * finished job is never going to grow an output, and polling it forever is a request nobody needs.
  */
 export function isTerminal(status: JobStatus): boolean {
-    return status === 'succeeded' || status === 'failed' || status === 'dead';
+    return status === 'succeeded' || status === 'failed' || status === 'dead' || status === 'stopped';
 }
 
 const LIST_LIMIT = 50;
@@ -104,10 +104,12 @@ export interface UseJobs {
     jobs: Job[] | null;
     error: string | null;
     queue: (command: string, repo: string | null, executor: string | null) => Promise<QueueResult>;
-    resume: (id: string) => Promise<string | null>;
     followUp: (id: string, command: string) => Promise<QueueResult>;
     markDone: (id: string) => Promise<string | null>;
-    /** Park a running task: the driver parks it at its next heartbeat. Null on success. */
+    /**
+     * Ends the turn: the run is parked at the worker's next heartbeat and settles `stopped` —
+     * terminal, session kept, the follow-up composer open. Null on success.
+     */
     stop: (id: string) => Promise<string | null>;
     /** Delete the whole thread (the live run refused with an error). Null on success. */
     remove: (id: string) => Promise<string | null>;
@@ -231,29 +233,8 @@ export function useJobs(enabled: boolean): UseJobs {
         [start],
     );
 
-    const resume = useCallback(
-        async (id: string): Promise<string | null> => {
-            try {
-                const response = await fetch(`/api/jobs/${id}/resume`, { method: 'POST' });
-                if (response.status === 401) {
-                    reportUnauthenticated();
-                    return 'Your session expired';
-                }
-                if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not resume the task (${response.status})`;
-                }
-                start();
-                return null;
-            } catch (e) {
-                return (e as Error).message;
-            }
-        },
-        [start],
-    );
-
     // Both of these are a person's verdict on a finished task — an adjustment to ask for, or the
-    // declaration that it is done — so both re-arm the poll exactly as queue and resume do: the
+    // declaration that it is done — so both re-arm the poll exactly as queue does: the
     // member sees the follow-up appear, or the done state land, on the next tick. The follow-up
     // creates a NEW row and answers with ITS id: the conversation continues on the child's page.
     // No executor on the body: the board binds the adjustment to the executor that ran the task.
@@ -304,7 +285,7 @@ export function useJobs(enabled: boolean): UseJobs {
         [start],
     );
 
-    // The two thread actions stop and remove, both POSTed like resume and done, both re-arming the
+    // The two thread actions stop and remove, both POSTed like done, both re-arming the
     // poll on success (a parked run that appears, a thread that disappears) — and neither is shown
     // by the panel where the board will refuse it, so these render the board's refusal only when
     // state slid past the buttons: the stop of a task somebody else already parked, or the remove
@@ -351,7 +332,7 @@ export function useJobs(enabled: boolean): UseJobs {
         [start],
     );
 
-    return { jobs, error, queue, resume, followUp, markDone, stop, remove };
+    return { jobs, error, queue, followUp, markDone, stop, remove };
 }
 
 /**

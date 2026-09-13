@@ -87,7 +87,6 @@ const renderDetail = ({
             actionError={actionError}
             sending={sending}
             onFollowUp={async () => null}
-            onResume={async () => {}}
             onStop={async () => {}}
             onRemove={async () => {}}
             onDone={async () => {}}
@@ -219,11 +218,14 @@ describe('TaskDetail', () => {
         expect(html).toContain('exit 1');
     });
 
-    it('offers Resume only on a standby task', () => {
-        const parked = renderDetail({ jobs: [job({ status: 'standby' })] });
-        expect(parked).toContain('Resume');
-        const running = renderDetail({ jobs: [job({ status: 'running' })] });
-        expect(running).not.toContain('Resume');
+    it('a stopped task has ended the turn: composer, Done, Remove — and never Resume', () => {
+        // Stopping is a verdict, not a park: the turn is over, the conversation stays open for an
+        // adjustment, and there is no picking the run back up.
+        const html = renderDetail({ jobs: [job({ status: 'stopped' })] });
+        expect(html).toContain('<textarea');
+        expect(html).toContain('>Done<');
+        expect(html).toContain('>Remove<');
+        expect(html).not.toContain('Resume');
     });
 
     it('offers Done and a follow-up composer on a finished task, and neither on a moving one', () => {
@@ -279,9 +281,8 @@ describe('TaskDetail', () => {
 
     it('keeps the thread actions on the newest run only — history runs render no Remove of their own', () => {
         const root = job({ command: 'first command' });
-        const child = { ...job({ command: 'second command', status: 'standby' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
+        const child = { ...job({ command: 'second command', status: 'failed' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
         const html = renderDetail({ jobs: [root, child] });
-        expect(html.match(/>Resume</g)).toHaveLength(1);
         expect(html.match(/>Remove</g)).toHaveLength(1);
         expect(html).not.toContain('>Stop<');
     });
@@ -587,7 +588,7 @@ describe('TaskDetail', () => {
 describe('isTerminal', () => {
     // This is what stops the detail poll: a finished job is never going to grow an output.
     it('is true for every status a worker or the board has finished with', () => {
-        for (const status of ['succeeded', 'failed', 'dead'] as const) {
+        for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
             expect(isTerminal(status), status).toBe(true);
         }
     });

@@ -1,7 +1,7 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 
-export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
+export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
 export type JobOutcome = 'succeeded' | 'failed';
 
@@ -218,6 +218,18 @@ export interface Claim {
 export type LeaseResult = 'ok' | 'lost' | 'missing';
 
 /**
+ * What a suspend (park) did.
+ *
+ * - `ok`      the run left `running`, and `status` says where it landed: `stopped` when the
+ *             parking was the user's stop landing (the stamp the heartbeat delivered),
+ *             `standby` for the Remote Control idle park.
+ * - `lost`    the job is no longer running under this token — the lease expired and someone else
+ *             has it, or the board gave up on it. The caller must stop working.
+ * - `missing` no such job in this organization.
+ */
+export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'lost' } | { result: 'missing' };
+
+/**
  * Why a follow-up was refused.
  *
  * - `missing`      no such job in this organization.
@@ -235,14 +247,15 @@ export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_ses
 /**
  * What a stop request did.
  *
- * - `parked`    the row now sits on standby — it was queued (never started) or already parked.
- * - `requested` the row is running; the worker has been told and will park it. The timestamp is
+ * - `stopped`   the row was settled `stopped` in place — it was queued (never started) or its run
+ *               was already parked; the turn is over.
+ * - `requested` the row is running; the worker has been told and will settle it. The timestamp is
  *               the FIRST request, kept on later stops so the answer is idempotent.
  * - `missing`   no such job in this organization.
- * - `conflict`  the row is finished — nothing running to stop, nothing to park.
+ * - `conflict`  the row already ended — there is no turn left to stop.
  */
 export type StopResult =
-    | { result: 'parked' }
+    | { result: 'stopped' }
     | { result: 'requested'; cancelRequestedAt: string }
     | 'missing'
     | { result: 'conflict'; status: JobStatus };
@@ -308,11 +321,12 @@ export interface JobStore {
      */
     markDone(id: string): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
     /**
-     * The user's stop. A QUEUED row parks directly — it never started, there is nothing to abort,
-     * and a standby row answers the same way. A RUNNING row is stamped `cancel_requested_at`
-     * (idempotently) and left running: the driver reads the request on the heartbeat it already
-     * sends, kills its runner and parks with the existing suspend route — the flag IS the stop
-     * travelling, and parking clears it. A finished row refutes with its status.
+     * The user's stop. A QUEUED row never started and a STANDBY row's run is long gone — both are
+     * settled `stopped` right here: the turn is over. A RUNNING row is stamped
+     * `cancel_requested_at` (idempotently) and left running: the driver reads the request on the
+     * heartbeat it already sends, kills its runner and settles it with the existing suspend route
+     * — the flag IS the stop travelling, and the settle clears it. A row that already ended
+     * refutes with its status.
      */
     stop(id: string): Promise<StopResult>;
     /**
@@ -381,19 +395,17 @@ export interface JobStore {
         leaseToken: string,
     ): Promise<{ result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | { result: 'lost' | 'missing' }>;
     /**
-     * Parks a running job: the container is gone, but the job is not finished and its session is
-     * kept so it can be restored. Lease-guarded, like every other worker write.
+     * Ends a running job's attempt. Lease-guarded, like every other worker write. Where it lands
+     * is decided by the stop stamp the heartbeat delivered: under one, the parking IS the user's
+     * stop — the row settles `stopped` (terminal, session kept for the follow-up that continues
+     * the conversation). Without one, this is the Remote Control idle park: `standby`, the session
+     * kept so it can be driven on from the Claude UI.
      */
-    suspend(id: string, leaseToken: string): Promise<LeaseResult>;
-    /**
-     * Puts a parked job back in the queue. Not lease-guarded — nobody holds a standby job, which is
-     * precisely what makes it resumable by a request from outside.
-     */
-    resume(id: string): Promise<'ok' | 'missing' | 'conflict'>;
+    suspend(id: string, leaseToken: string): Promise<SuspendResult>;
     /**
      * Records the verdict and answers it with whether the thread is DONE — computed in the same
      * transaction: `threadDone` is true only when every job of the thread — the root and every
-     * follow-up — has reached `succeeded`, `failed` or `dead`, AND one of them carries the
+     * follow-up — has reached `succeeded`, `failed`, `dead` or `stopped`, AND one of them carries the
      * user's `done_at`. The tree is the user's to free, so a thread that merely finished keeps
      * its worktree (a failed task's tree is exactly what a follow-up continues from); the
      * completing attempt reclaims only when the user has closed the thread. This is the driver's
@@ -644,7 +656,7 @@ export function createJobStore({
                     select id, repo, executor, session_id, remote_session_id, root_job_id
                     from job
                     where org_id = ${orgId} and id = ${parentId}
-                      and status in ('succeeded','failed','dead')
+                      and status in ('succeeded','failed','dead','stopped')
                       and done_at is null
                       and session_id is not null
                       and created_by is not distinct from ${createdBy}
@@ -667,7 +679,12 @@ export function createJobStore({
                 select status, done_at, session_id, created_by from job where org_id = ${orgId} and id = ${parentId}
             `;
             if (parent!.done_at !== null) return 'task_done';
-            if (parent!.status !== 'succeeded' && parent!.status !== 'failed' && parent!.status !== 'dead') {
+            if (
+                parent!.status !== 'succeeded' &&
+                parent!.status !== 'failed' &&
+                parent!.status !== 'dead' &&
+                parent!.status !== 'stopped'
+            ) {
                 return 'not_finished';
             }
             if (parent!.session_id === null) return 'no_session';
@@ -689,7 +706,7 @@ export function createJobStore({
                 const rows = await tx<{ status: JobStatus; done_at: Date; root_job_id: string }[]>`
                     update job set done_at = coalesce(done_at, now())
                     where org_id = ${orgId} and id = ${id}
-                      and status in ('succeeded','failed','dead')
+                      and status in ('succeeded','failed','dead','stopped')
                     returning status, done_at, root_job_id
                 `;
                 const row = rows[0];
@@ -703,7 +720,7 @@ export function createJobStore({
                 // the head) is what makes the done a THREAD's done and not one turn's.
                 const [thread] = await tx<{ total: number; terminal: number }[]>`
                     select count(*)::int as total,
-                           count(*) filter (where status in ('succeeded','failed','dead'))::int as terminal
+                           count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal
                     from job
                     where org_id = ${orgId} and root_job_id = ${row.root_job_id}
                 `;
@@ -733,17 +750,22 @@ export function createJobStore({
 
         async stop(id) {
             await gate();
-            // One statement decides the outcome by the status it sees. A queued row parks directly —
-            // it never started, there is nothing to abort; a parked row answers the same way. A
-            // running row is stamped `cancel_requested_at` and left running: the request travels on
-            // the heartbeat the worker already sends, and the parking that honours it clears the
-            // stamp (suspend). coalesce keeps the FIRST request, which is what makes /stop
+            // One statement decides the outcome by the status it sees. A QUEUED row never started
+            // and a STANDBY row's run is long gone — both are settled `stopped` here: the turn is
+            // over, and the session these rows keep is what the follow-up continues. A RUNNING row
+            // is stamped `cancel_requested_at` and left running: the request travels on the
+            // heartbeat the worker already sends, and the settle that honours it (suspend under
+            // the stamp) clears it. coalesce keeps the FIRST request, which is what makes /stop
             // idempotent rather than a rewrite of when it was asked.
             const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null }[]>`
                 update job set
                     status = case
-                        when status = 'queued' then 'standby'
+                        when status in ('queued','standby') then 'stopped'
                         else status
+                    end,
+                    finished_at = case
+                        when status in ('queued','standby') then now()
+                        else finished_at
                     end,
                     cancel_requested_at = case
                         when status = 'running' then coalesce(cancel_requested_at, now())
@@ -755,8 +777,8 @@ export function createJobStore({
             `;
             const row = rows[0];
             if (!row) {
-                // Nothing parked or moving — a finished task has nothing to stop, and the status
-                // rides the refusal so the route can say which.
+                // Nothing settled or moving — a task that already ended has no turn to stop, and
+                // the status rides the refusal so the route can say which.
                 const [other] = await sql<{ status: JobStatus }[]>`
                     select status from job where org_id = ${orgId} and id = ${id}
                 `;
@@ -764,7 +786,7 @@ export function createJobStore({
             }
             return row.cancel_requested_at !== null
                 ? { result: 'requested', cancelRequestedAt: row.cancel_requested_at.toISOString() }
-                : { result: 'parked' };
+                : { result: 'stopped' };
         },
 
         async claim(worker, leaseSeconds) {
@@ -876,19 +898,19 @@ export function createJobStore({
                             -- Unconditional, not coalesce(started_at, now()): this must describe the
                             -- attempt that is about to run, or every duration is measured from attempt 1.
                             started_at       = now(),
-                            -- Kept when the job was parked and put back in the queue, and on a follow-up,
-                            -- whose session IS the parent conversation it continues. The status read here
-                            -- is the row's value BEFORE this update, so 'running' means a lease that
-                            -- expired: for an ordinary job that attempt's session is not this one, and
-                            -- leaving it would show a link to a run whose output was thrown away. A
-                            -- follow-up keeps its copied session through a crash, because the session
-                            -- carries the whole conversation, not just the dead attempt's work.
+                            -- Kept on a follow-up only, whose session IS the parent conversation it
+                            -- continues. The status read here is the row's value BEFORE this update, so
+                            -- 'running' means a lease that expired: for an ordinary job that attempt's
+                            -- session is not this one, and leaving it would show a link to a run whose
+                            -- output was thrown away. A follow-up keeps its copied session through a
+                            -- crash, because the session carries the whole conversation, not just the
+                            -- dead attempt's work.
                             session_id       = case
-                                when status = 'queued' or parent_job_id is not null then session_id
+                                when parent_job_id is not null then session_id
                                 else null
                             end,
                             remote_session_id = case
-                                when status = 'queued' or parent_job_id is not null then remote_session_id
+                                when parent_job_id is not null then remote_session_id
                                 else null
                             end,
                             -- The previous attempt's vitals are not this attempt's, and a new container
@@ -907,8 +929,8 @@ export function createJobStore({
                         -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
                         -- their pre-update values: delivered-so-far is exactly "this row was suspended at
                         -- least once with its command in the transcript". A fresh or crashed follow-up has
-                        -- never been parked, so its command still has to go out; a resumed parked one has,
-                        -- so it must not.
+                        -- never been parked, so its command still has to go out; a suspended one settles
+                        -- stopped or standby, and is never claimed again.
                         returning id, command, attempts, lease_token, lease_expires_at, created_by,
                                   session_id, repo, parent_job_id, executor,
                                   (parent_job_id is not null and command_delivered_at is null) as follow_up
@@ -1095,46 +1117,47 @@ export function createJobStore({
 
         async suspend(id, leaseToken) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
+            // One update, two landings decided by the stop stamp the heartbeat delivered. Under a
+            // stamp the parking IS the user's stop landing: the row settles `stopped` — terminal,
+            // `finished_at` stamped, the session kept for the follow-up that continues the turn.
+            // Without one this is the Remote Control idle park: `standby`, not finished, the
+            // session kept so the conversation can be driven on from the Claude UI. Both expire
+            // the lease, exactly as insert does it: neither landing is claimable, so this changes
+            // nothing while the row sits — and then it is the difference between the next poll
+            // acting on the row and it waiting out the lease the dying worker held. The command
+            // is in the transcript now either way (command_delivered_at), the stamp clears — the
+            // stop has happened, whatever landing it produced — and the attempt is handed back:
+            // a park is not a failed try, so parking a hundred times must never exhaust
+            // max_attempts.
+            const rows = await sql<{ id: string; status: JobStatus }[]>`
                 update job set
-                    status           = 'standby',
+                    status           = case
+                                           when cancel_requested_at is not null then 'stopped'
+                                           else 'standby'
+                                       end,
+                    finished_at      = case
+                                           when cancel_requested_at is not null then now()
+                                           else finished_at
+                                       end,
                     lease_token      = null,
-                    -- Expired on the way in, exactly as insert does it. Standby is not claimable,
-                    -- so this changes nothing until the job is resumed — and then it is the
-                    -- difference between the next poll picking it up and it sitting in 'queued'
-                    -- until the lease the parked worker was holding finally runs out.
+                    -- Expired on the way in, exactly as insert does it.
                     lease_expires_at = now(),
                     -- The command is in the transcript now, and this is the moment that becomes
                     -- true: the claim reads this column to keep a resumed follow-up from
                     -- re-delivering it (see claim). coalesce, so parking twice stamps once.
                     command_delivered_at = coalesce(command_delivered_at, now()),
-                    -- Parking IS the deferred stop landing (the flag was set by the user's /stop and
-                    -- delivered by the heartbeat): cleared now, or a resumed run would drown in the
-                    -- request that already happened.
+                    -- Parking IS the deferred stop landing (the flag was set by the user's /stop
+                    -- and delivered by the heartbeat): cleared now, or the settled row would keep
+                    -- answering a request that already happened.
                     cancel_requested_at = null,
-                    -- Hands back the attempt the claim took. A suspend is not a failed try, so
-                    -- parking a job a hundred times must never exhaust max_attempts — while a run
-                    -- that keeps killing its worker still does.
+                    -- Hands back the attempt the claim took.
                     attempts         = greatest(attempts - 1, 0)
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
-                returning id
+                returning id, status
             `;
-            if (rows[0]) return 'ok';
-            return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
-        },
-
-        async resume(id) {
-            await gate();
-            const rows = await sql<{ id: string }[]>`
-                update job set status = 'queued'
-                where org_id = ${orgId} and id = ${id} and status = 'standby'
-                returning id
-            `;
-            if (rows[0]) return 'ok';
-            // A job that exists but is not parked is a different answer from one that does not:
-            // resuming a finished job is a caller mistake, not a missing row.
-            return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
+            if (rows[0]) return { result: 'ok', status: rows[0]!.status };
+            return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
         },
 
         async removeThread(id) {
@@ -1297,12 +1320,12 @@ export function createJobStore({
                 // The thread's state, read off the root column the row already carries (022) —
                 // every member answers to the same root_job_id. The just-updated row's verdict
                 // status is visible here, and the aggregate answers in one row: terminal means
-                // every member reached `succeeded`/`failed`/`dead`; done means ONE member carries
+                // every member reached `succeeded`/`failed`/`dead`/`stopped`; done means ONE member carries
                 // the user's `done_at` (the UI marks the thread's head, so the column can sit on
                 // any member). Both must hold before the tree may go.
                 const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
                     select count(*)::int as total,
-                           count(*) filter (where status in ('succeeded','failed','dead'))::int as terminal,
+                           count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal,
                            count(*) filter (where done_at is not null)::int as done
                     from job
                     where org_id = ${orgId} and root_job_id = ${rows[0].root_job_id}

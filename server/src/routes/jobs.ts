@@ -115,7 +115,7 @@ const REMOTE_SESSION_LIMIT = 256;
  */
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 
-const STATUSES: readonly JobStatus[] = ['queued', 'running', 'standby', 'succeeded', 'failed', 'dead'];
+const STATUSES: readonly JobStatus[] = ['queued', 'running', 'standby', 'succeeded', 'failed', 'dead', 'stopped'];
 
 function leaseSeconds(raw: unknown): number | null {
     if (raw === undefined || raw === null) return LEASE_SECONDS_DEFAULT;
@@ -380,9 +380,12 @@ export const jobRoutes =
             return reply.code(200).send({ gates: reread.value.gates, gateError: reread.value.gateError });
         });
 
-        // Parking a job, not finishing it. Separate from complete because there is no outcome yet:
-        // an exit code here would have to be invented, and inventing one makes a parked job
-        // indistinguishable from a run that ended.
+        // Ending a running job's attempt. Separate from complete because there is no worker
+        // outcome here: an exit code would have to be invented, and inventing one makes a user's
+        // stop indistinguishable from a run that ended on its own. Where the row lands is the
+        // board's decision, read off the stop stamp the heartbeat delivered — `stopped` when the
+        // park was the user's stop landing, `standby` for the Remote Control idle park — and the
+        // answer carries it.
         app.post('/api/jobs/:id/suspend', { bodyLimit: 4096 }, async (request, reply) => {
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
@@ -396,32 +399,13 @@ export const jobRoutes =
                 store.suspend(id, leaseToken),
             );
             if (!result.ok) return reply;
-            if (result.value === 'missing') {
+            if (result.value.result === 'missing') {
                 return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
             }
-            if (result.value === 'lost') {
+            if (result.value.result === 'lost') {
                 return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
             }
-            return reply.code(200).send({ id, status: 'standby' });
-        });
-
-        // No lease token, because nobody holds a parked job. That is what makes this callable by a
-        // person rather than only by the worker that parked it.
-        app.post('/api/jobs/:id/resume', { bodyLimit: 4096 }, async (request, reply) => {
-            const id = (request.params as { id: string }).id;
-            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
-
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job resume failed'), () =>
-                store.resume(id),
-            );
-            if (!result.ok) return reply;
-            if (result.value === 'missing') {
-                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
-            }
-            if (result.value === 'conflict') {
-                return reply.code(409).send({ error: 'Job is not on standby', code: 'NOT_STANDBY' });
-            }
-            return reply.code(200).send({ id, status: 'queued' });
+            return reply.code(200).send({ id, status: result.value.status });
         });
 
         // A person's action on a finished task: queue an adjustment as a continuation of the run
@@ -489,12 +473,12 @@ export const jobRoutes =
             return reply.code(200).send({ id, status: result.value.status, doneAt: result.value.doneAt });
         });
 
-        // The user's stop. Two fates in one answer: a queued (or already parked) row is parked
-        // directly — there is no run to abort — while a running row is left running and stamped,
-        // and the WORKER parks it when its next heartbeat reports the stamp. Nothing is lost either
-        // way: standby keeps the session, so the task can be resumed, which is the whole point of
-        // stopping rather than killing. 202 for the moving case, because the request RIDES to the
-        // worker and the parking lands moments later.
+        // The user's stop. Two fates in one answer: a queued (never started) or already parked row
+        // is settled `stopped` directly — the turn is over — while a running row is left running
+        // and stamped, and the WORKER settles it when its next heartbeat reports the stamp
+        // (suspend lands `stopped` under the flag). Either way the turn ends and the session
+        // stays, so the follow-up composer is what the member sees next. 202 for the moving case,
+        // because the request RIDES to the worker and the settle lands moments later.
         app.post('/api/jobs/:id/stop', { bodyLimit: 4096 }, async (request, reply) => {
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
@@ -518,7 +502,7 @@ export const jobRoutes =
                     .code(202)
                     .send({ id, status: 'running', cancelRequestedAt: result.value.cancelRequestedAt });
             }
-            return reply.code(200).send({ id, status: 'standby' });
+            return reply.code(200).send({ id, status: 'stopped' });
         });
 
         // The user's remove: the thread is gone and a worktree reclaim is queued. Person-gated like

@@ -54,12 +54,6 @@ export function TaskDetailPage() {
             setSending(false);
         }
     };
-    const resumeTask = async (taskId: string) => {
-        setActionError(null);
-        const message = await tasks.resume(taskId);
-        if (message !== null) setActionError(message);
-    };
-
     const doneTask = async (taskId: string) => {
         setActionError(null);
         const message = await tasks.markDone(taskId);
@@ -108,7 +102,6 @@ export function TaskDetailPage() {
                 actionError={actionError}
                 sending={sending}
                 onFollowUp={followUp}
-                onResume={resumeTask}
                 onStop={stopTask}
                 onRemove={removeTask}
                 onDone={doneTask}
