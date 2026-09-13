@@ -52,16 +52,28 @@ export function threadPublish(jobs: Job[]): ThreadPublish | null {
 /** A publish line's url becomes a link only when it is one the reader can safely open. */
 const isHttpUrl = (url: string): boolean => url.startsWith('https://') || url.startsWith('http://');
 
-/** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
-const tokenCount = new Intl.NumberFormat('en-US');
+/**
+ * The thread's cumulative bill: every run's reported cost summed, across the whole follow-up
+ * chain. Cost renders only once it is money — a zero-dollar thread is not billed, and $0.0000
+ * is noise.
+ */
+const threadCost = (jobs: Job[]): ReactNode => {
+    let total = 0;
+    for (const job of jobs) {
+        const costUsd = job.runtime?.costUsd;
+        if (costUsd != null && costUsd > 0) total += costUsd;
+    }
+    return total > 0 ? `$${total.toFixed(4)}` : '—';
+};
 
-/** How a context stat renders, or the honest dash when the runner scraped none. */
-const context = (runtime: RuntimeVitals | null): ReactNode =>
-    runtime?.contextTokens != null ? `${tokenCount.format(runtime.contextTokens)} tok` : '—';
-
-/** Cost renders only once it is money — a zero-dollar run is not billed, and $0.0000 is noise. */
-const cost = (runtime: RuntimeVitals | null): ReactNode =>
-    runtime?.costUsd != null && runtime.costUsd > 0 ? `$${runtime.costUsd.toFixed(4)}` : '—';
+/**
+ * The auxiliary-services fleet the newest run stood up, as the verdict carried it: its name and
+ * its last platform-readable status, or the honest dash when it declared none.
+ */
+const services = (runtime: RuntimeVitals | null): [string, ReactNode][] => {
+    if (runtime?.services == null || runtime.services.length === 0) return [['Services', '—']];
+    return runtime.services.map((service) => [service.name, service.status]);
+};
 
 /**
  * The task page's right column: one status surface for the whole view, fed by the NEWEST run —
@@ -96,14 +108,19 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
             <KeyValues
                 pairs={[
                     ['Workspace', latest.workspacePath ?? '—'],
-                    ['Context', context(runtime)],
-                    ['Cost', cost(runtime)],
+                    // The thread's cumulative bill: context stats are per-turn (they ride each
+                    // run's own message); the status surface carries only the running total.
+                    ['Cost', threadCost(jobs)],
                     // The agent's current activity line, while there is one: a stale line beside a
                     // finished verdict lies about a run that is no longer going.
                     ['Task', latest.status === 'running' && runtime?.activity != null ? runtime.activity : '—'],
                     ['Running time', parked ? '—' : runDuration(latest.startedAt, latest.finishedAt)],
                 ]}
             />
+            <div className="panel-head">
+                <h2>Services</h2>
+            </div>
+            <KeyValues pairs={services(runtime)} />
             <div className="panel-head">
                 <h2>Connections</h2>
             </div>

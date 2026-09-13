@@ -231,7 +231,7 @@ export function TaskDetail({
                                     <span className="chat-exit">exit {task.exitCode}</span>
                                 ) : null}
                                 <span className="muted">{taskTime(task.createdAt)}</span>
-                                {history && task.runtime?.contextTokens != null ? (
+                                {task.runtime?.contextTokens != null ? (
                                     <span className="chat-activity">
                                         ctx {tokenCount.format(task.runtime.contextTokens)} tok
                                         {task.runtime.costUsd != null && task.runtime.costUsd > 0

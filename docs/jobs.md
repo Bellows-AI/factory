@@ -386,6 +386,13 @@ connection and retry, which is what agents are for.
 - **A refused read or a refused service start is infrastructure, not a verdict.** Thrown, so the
   job goes back to its lease instead of being reported failed — the distinction "a run that never
   started is not a failed job" draws, one layer out.
+- **The fleet's last status rides the verdict.** Just before the teardown removes it, the driver
+  reads each service's current state — the container's `State.Status` under docker, the service
+  pod's `phase` under kubernetes — and reports it with the finished job, merged into the `runtime`
+  vitals beside the context stats so the task view can show each service with its last honest
+  reading: `running` for anything that still runs, `stopped` for any settled other state, and
+  nothing at all when the platform could not be asked. There is deliberately no health wait here;
+  this is a status read of whatever the platform reports at close, not a health check.
 - **The security posture is stated, not solved.** This lets a repo author run arbitrary images
   through the driver's socket — one capability the runner container deliberately does not have. It
   is the same trust the checkout already carried: the agent runs arbitrary code in that tree, and

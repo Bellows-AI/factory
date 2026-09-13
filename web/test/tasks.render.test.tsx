@@ -454,27 +454,52 @@ describe('TaskDetail', () => {
             expect(renderDetail({ jobs: [job()] })).toContain('<dt>Workspace</dt><dd>—</dd>');
         });
 
-        /**
-         * The context the run reached rides the close-time scrape — where "died at 90k tokens" is
-         * legible — and cost shows only once it is money.
-         */
-        it('shows the context the run reached, and its cost once it costs something', () => {
-            const html = renderDetail({
-                jobs: [job({ runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } })],
-            });
-            expect(html).toContain('<dt>Context</dt><dd>90,433 tok</dd>');
-            expect(html).toContain('<dt>Cost</dt><dd>$0.3100</dd>');
+/**
+ * The bill is the thread's, not the newest run's: each run's scraped cost sums into one
+ * running total, and no context stat is in the status surface — context belongs to the turns
+ * (each run's message carries its own). Show only once it is money.
+ */
+it('sums the cost of every run in the thread, and keeps context out of the status', () => {
+    const root = job({ runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } });
+    const child = {
+        ...job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0.15 } }),
+        id: '44444444-4444-4444-8444-444444444444',
+        followUpTo: root.id,
+    };
+    const html = renderDetail({ jobs: [root, child] });
+    expect(html).toContain('<dt>Cost</dt><dd>$0.4600</dd>');
+    expect(html).not.toContain('<dt>Context</dt>');
+});
 
-            const free = renderDetail({
-                jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
-            });
-            expect(free).toContain('<dt>Context</dt><dd>1,200 tok</dd>');
-            expect(free).not.toContain('$0.0000');
-        });
+it('shows a dash for the cost when nothing in the thread billed', () => {
+    const free = renderDetail({
+        jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
+    });
+    expect(free).toContain('<dt>Cost</dt><dd>—</dd>');
+    expect(free).not.toContain('$0.0000');
+});
 
-        it('shows nothing where the runner scraped no context', () => {
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd>—</dd>');
-        });
+it('shows the auxiliary services and their last status, and a dash when none were declared', () => {
+    const fleet = renderDetail({
+        jobs: [
+            job({
+                runtime: {
+                    ...runtime,
+                    services: [
+                        { name: 'db', status: 'running' },
+                        { name: 'cache', status: 'stopped' },
+                    ],
+                },
+            }),
+        ],
+    });
+    expect(fleet).toContain('<h2>Services</h2>');
+    expect(fleet).toContain('<dt>db</dt><dd>running</dd>');
+    expect(fleet).toContain('<dt>cache</dt><dd>stopped</dd>');
+
+    expect(renderDetail({ jobs: [job()] })).toContain('<h2>Services</h2>');
+    expect(renderDetail({ jobs: [job()] })).toContain('<dt>Services</dt><dd>—</dd>');
+});
 
         it('shows the running time of a finished run, and nothing before it starts or while parked', () => {
             // 12:00:01 -> 12:04:00, the factory job's span.
@@ -534,6 +559,20 @@ describe('TaskDetail', () => {
             expect(rootMeta).toContain('<span class="pill');
             const childMeta = html.slice(html.indexOf('second command'), html.indexOf('chat-detail', html.indexOf('second command')));
             expect(childMeta).not.toContain('<span class="pill');
+        });
+
+        // Context and cost belong to the TURNS, the newest run included: the status panel no
+        // longer carries them, so hiding the newest run's own stats would lose them entirely.
+        it('shows each turn\'s own context and cost inline, the newest run\'s included', () => {
+            const root = job({ command: 'first command', runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } });
+            const child = {
+                ...job({ command: 'second command', runtime: { ...runtime, contextTokens: 1200, costUsd: 0.15 } }),
+                id: '44444444-4444-4444-8444-444444444444',
+                followUpTo: root.id,
+            };
+            const html = renderDetail({ jobs: [root, child] });
+            expect(html).toContain('ctx 90,433 tok · $0.3100');
+            expect(html).toContain('ctx 1,200 tok · $0.1500');
         });
 
         it('never emits a placeholder value', () => {

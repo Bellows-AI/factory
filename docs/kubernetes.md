@@ -247,7 +247,10 @@ attempt's pod — no port list needed, which the strict parser's refusal of `por
 The name is namespace-global, so a collision with a concurrent job's service answers 409 and
 fails the job terminally, naming the conflict — the "wrong database came up" rule, one platform
 later. The fleet is attempt-scoped by lease label, swept by the fence, and torn down when the
-run ends, the same three moments docker's is.
+run ends, the same three moments docker's is — and its last status is read just before that
+teardown, each pod's `phase` (Running or Succeeded as `running`, Failed as `stopped`, a still-
+quiet phase as `unknown`) reported beside the verdict with the run's context stats, the same
+close read docker's container `State.Status` gives.
 
 **Publishing runs here too — one aux Job per step.** The decisions live in `publishCheckout`
 (`driver/src/publish.ts`), shared with the docker runner so the two executors cannot drift on

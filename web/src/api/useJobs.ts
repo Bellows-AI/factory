@@ -22,6 +22,13 @@ export interface GateCheck {
  * and what the agent says it is doing. The board keeps current/last only — `sampledAt` is how a
  * reader tells a live sample from a stopped run's.
  */
+export interface ServiceVitals {
+    /** The service's declared name — the name the job's network resolves it by. */
+    name: string;
+    /** The platform's last read of it at close: running, stopped, or unreadable. */
+    status: 'running' | 'stopped' | 'unknown';
+}
+
 export interface RuntimeVitals {
     cpuPercent: number;
     memUsedMb: number;
@@ -35,6 +42,11 @@ export interface RuntimeVitals {
      */
     contextTokens?: number | null;
     costUsd?: number | null;
+    /**
+     * The auxiliary services the run stood up, each with its last platform-readable status at
+     * close. Null on a run that declared none or whose driver could not ask.
+     */
+    services?: ServiceVitals[] | null;
 }
 
 export interface Job {
