@@ -49,12 +49,10 @@ github:
 org:
     id: ''
     name: ''
-    baseBranch: dev
 
 telemetry:
     source: postgres
     ttlSeconds: '30'
-    syncTtlSeconds: '60'
     ingestToken: ''
 
 database:

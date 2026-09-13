@@ -20,7 +20,6 @@ const E2E_LOGIN = 'e2e-user';
 const shared = {
     WEB_ROOT: `${root}web/dist`,
     TELEMETRY_SOURCE: 'postgres',
-    BASE_BRANCH: 'dev',
 };
 
 /**
