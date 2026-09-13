@@ -613,7 +613,15 @@ export function memoryAuthStore(): MemoryAuthStore {
             // Mirrors the SQL store's `on conflict do nothing`: an existing row for this login keeps
             // whatever role it has rather than being reset to `member`.
             if (!members.some((m) => m.orgId === orgId && m.login === login)) {
-                members.push({ orgId, login, userId: user.id, role: 'member', claimed: true, invitedAt: now, claimedAt: now });
+                members.push({
+                    orgId,
+                    login,
+                    userId: user.id,
+                    role: 'member',
+                    claimed: true,
+                    invitedAt: now,
+                    claimedAt: now,
+                });
             }
             return memberOf(user.id, orgId);
         },

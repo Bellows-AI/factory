@@ -39,6 +39,14 @@ export function reportUnauthenticated(): void {
     for (const listener of listeners) listener();
 }
 
+/** Registers a 401 listener; returns the unsubscribe. The effect below is one caller of it. */
+export function subscribeUnauthenticated(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+}
+
 export interface UseSession {
     session: Session | null;
     /** True only before the first answer; a re-check does not blank the screen. */
@@ -75,11 +83,7 @@ export function useSession(): UseSession {
 
     useEffect(() => {
         void check();
-        const notify = () => void check();
-        listeners.add(notify);
-        return () => {
-            listeners.delete(notify);
-        };
+        return subscribeUnauthenticated(() => void check());
     }, [check]);
 
     return { session, loading, error };
