@@ -7,7 +7,7 @@ import { reportUnauthenticated } from './useSession.js';
  * know the job board exists, and the pattern `useWorkspace.ts` established is to own the shape the
  * page renders.
  */
-export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
+export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
 /** Where one declared verification gate stands. The board stores current/last only — no history. */
 export interface GateCheck {

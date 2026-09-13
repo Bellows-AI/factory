@@ -226,6 +226,16 @@ describe('TaskDetail', () => {
         expect(running).not.toContain('Resume');
     });
 
+    it('a stopped task has ended the turn: composer, Done, Remove — and never Resume', () => {
+        // Stopping is a verdict, not a park: the turn is over, the conversation stays open for an
+        // adjustment, and there is no picking the run back up.
+        const html = renderDetail({ jobs: [job({ status: 'stopped' })] });
+        expect(html).toContain('<textarea');
+        expect(html).toContain('>Done<');
+        expect(html).toContain('>Remove<');
+        expect(html).not.toContain('Resume');
+    });
+
     it('offers Done and a follow-up composer on a finished task, and neither on a moving one', () => {
         // The run ending is not the task ending: these two exist exactly for the gap between "the
         // executor stopped" and "I am satisfied".
@@ -550,7 +560,7 @@ describe('TaskDetail', () => {
 describe('isTerminal', () => {
     // This is what stops the detail poll: a finished job is never going to grow an output.
     it('is true for every status a worker or the board has finished with', () => {
-        for (const status of ['succeeded', 'failed', 'dead'] as const) {
+        for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
             expect(isTerminal(status), status).toBe(true);
         }
     });
