@@ -25,20 +25,20 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 
 | Touching | Read |
 | --- | --- |
-| Data flow, forge adapters, `server/src/main.ts` wiring, fixtures | [docs/architecture.md](docs/architecture.md) |
-| `core/src/metrics.ts`, `canonical.ts`, the GraphQL query, cache/TTL constants | [docs/metrics.md](docs/metrics.md) |
+| Data flow, `server/src/main.ts` wiring, fixtures | [docs/architecture.md](docs/architecture.md) |
+| `core/src/telemetry.ts`, `range.ts`, `metrics.ts`, cache/TTL constants | [docs/metrics.md](docs/metrics.md) |
 | Anything named `org_id`, `005_organizations.sql`, the org selector | [docs/organizations.md](docs/organizations.md) |
 | `server/src/auth/*`, `010_auth.sql`, the session cookie, the worker token, which routes need a credential | [docs/auth.md](docs/auth.md) |
 | `server/src/github/app-*`, `repo-source.ts`, the App credential, `offline.ts` | [docs/configuration.md](docs/configuration.md) |
-| `attribute()` keys, `004_pull_requests.sql` keys, per-repo rendering | [docs/repos.md](docs/repos.md) |
+| The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping, per-repo rendering | [docs/repos.md](docs/repos.md) |
 | `config.ts`, compose env blocks, `.env.example` | [docs/configuration.md](docs/configuration.md) |
 | `server/src/workspace/*`, `011_user_workspace.sql`, `ORG_WORKSPACE_ROOT`, the `git` install in the runtime image | [docs/workspace.md](docs/workspace.md) |
 | `driver/src/k8s.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
 | `server/src/routes/jobs.ts`, `db/job-store.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, the driver's env forwarding, the `/env` page | [docs/env.md](docs/env.md) |
-| `filterPrs()`, `parseRange`, `revertForRange()`, the range selector, charts | [docs/date-range.md](docs/date-range.md) |
-| `server/src/db/*`, `stats-service.ts`, the sync watermark, migrations | [docs/persistence.md](docs/persistence.md) |
+| `filterTelemetryInput()`, `parseRange`, the range selector, charts | [docs/date-range.md](docs/date-range.md) |
+| `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | Bind addresses, headers, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
 | Reporting a number as measured | [docs/limits.md](docs/limits.md) |
@@ -82,14 +82,14 @@ npm run typecheck      # tsc -b across all four project references
 # sign-in round trip offline. Needs factory_e2e AND factory_auth_e2e to exist.
 npm run verify:ui      # needs: a running timescale, and `npx playwright install chromium` once
 
-# Fill a disposable database with synthetic PRs, base-branch history and agent sessions. Refuses
+# Fill a disposable database with synthetic agent sessions. Refuses
 # any database whose name does not mark it disposable: synthetic rows are indistinguishable from
 # real ones once written, and there is no way to separate them afterwards.
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run seed
 
 # The repo list is whatever the GitHub App installation reports; ORG_REPOS is gone and is fatal if
 # set. Without an App client — the offline entry's code-only no-fetch arm — the list falls back to
-# the repos the database already holds rows for, which is what keeps a seeded database browsable
+# the distinct repos already in session_branch, which is what keeps a seeded database browsable
 # with no credential.
 
 # Compose is an infrastructure wrapper, not a shipping vehicle. It runs the same `npm run dev` as
@@ -139,17 +139,13 @@ npm run worker-token -- --name driver-1 [--revoke]
 
 # Import history from ~/.claude/projects/*/*.jsonl. Idempotent; safe to re-run.
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_dev npm run backfill
-
-# Regenerate core/test/fixtures/sample-canonical.json from the raw GitHub capture. Run after any
-# change to toCanonical(); the core suite measures its output.
-npm run fixture:canonical
 ```
 
 Single test file / single case:
 
 ```bash
 npx vitest run core/test/metrics.invariants.test.ts
-npx vitest run -t 'matches the measured headline figures'
+npx vitest run -t 'matches on each token type'
 ```
 
 Watch mode is tuned for low idle CPU: `isolate: false`, forks capped at `minWorkers: 1` /
@@ -199,5 +195,4 @@ just as much like a source bug.
 
 **`server/migrations/*.sql` are not compiled by `tsc`**, so `docker/Dockerfile` copies them
 explicitly — by directory, so a new migration needs no Dockerfile edit. Forgetting that fails only
-in the container, never in dev. The GitHub capture no longer needs copying: nothing reads it at
-runtime any more.
+in the container, never in dev.

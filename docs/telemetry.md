@@ -9,34 +9,28 @@ collector config.
   `start_time`, so the per-group totals are added. Guarded in `server/test-db`, where the fixture
   series sums to 2.5× its real total.
 - **Nanosecond timestamps divide by `1e6`, not `1e9`.** The `1e9` mistake puts every datapoint in
-  1970, the branch join then returns nothing, and the symptom looks like a broken hook rather
+  1970, the session join then returns nothing, and the symptom looks like a broken hook rather
   than a broken parser.
-- **Two cache slots with independent TTLs, cooldowns and `lastFailureAt`.** A GitHub rate limit
-  must not freeze the local database read, and a dead database must not stall the PR fetch.
-  `TELEMETRY_TTL_SECONDS` has a floor of 5 — not a typo next to the 300s in `docs/metrics.md`, the
-  reasons are opposite: there is no quota to protect, only a hot loop to prevent.
+- **One cache slot, `TELEMETRY_TTL_SECONDS` (default 30, floored at 5).** The floor is not a typo —
+  there is no quota to protect, only a hot loop to prevent. A failed read serves the last good
+  snapshot with 200 and cools down for 30s; see [metrics.md](metrics.md).
 - **Migrations are not awaited before `app.listen()`.** They retry with backoff for the better
-  part of a minute while the container starts, and blocking would hold the PR metrics — which
-  need no database at all — hostage. That reasoning survives the database becoming mandatory: a
-  *required* database is still a slow-starting one, and `prime()` plus every store call gates
-  itself on `ready`.
+  part of a minute while the container starts, and blocking would hold the whole dashboard
+  hostage. A *required* database is still a slow-starting one, and every store call gates itself
+  on `ready`.
 - **Telemetry degrades alone, in four distinct states.** `disabled` renders no panels at all;
   `unreachable` renders frames with a reason and no numbers; `stale` serves the last good
   snapshot with 200; `empty` returns a *real* `TelemetryStats` with `sessions: 0` and null
   everywhere. `empty` being non-null is deliberate — it is how you see a pipeline that is wired
   but silent, which is the most common state during setup and would otherwise be
   indistinguishable from `disabled`.
-- **`attribution: 'none'` and `'shared'` rows carry null on every quantity, and are still
-  listed.** `0 tokens` would assert the PR was written without AI, which is not what was
-  measured. One indivisible session nulls the whole row rather than reporting the divisible part.
-- **`TelemetryStats.totals` comes from sessions, never from the PR rows.** They legitimately
-  disagree, because a shared session contributes to totals and to no row. Pinning which is
-  authoritative is what stops a future "make these agree" refactor from double-counting.
 - **Attribute keys are allowlisted; metric names are denylisted.** Keep the asymmetry: a future
   Claude Code version can add an identity attribute, and a denylist would silently start storing
   it — whereas an unknown *metric* from a future tool must still be stored so its data
   accumulates before support is written. `user.email`, `user.id`, `user.account_uuid`,
-  `organization.id` and `workspace.host_paths` all arrive by default and are all dropped.
+  `organization.id` and `workspace.host_paths` all arrive by default and are all dropped. A vendor
+  metric with no row in `metric-map.ts` (a `pull_request.*` counter, say) is stored unmapped in
+  `metric_point` — raw datapoints survive even where no canonical field exists to roll them into.
 - **There is no monetary field anywhere, on purpose.** Prices and cache discounts change, and a
   dollar figure implies precision a ~20s branch sample cannot support.
   `claude_code.cost.usage` and `opencode.cost.usage` are refused, at the collector and again at the
@@ -57,17 +51,17 @@ collector config.
   plugin reads neither the var nor a settings.json envelope. Without the rewrite an overridden
   collector (the k8s form, or any docker deployment off the compose network) would silently keep the
   baked `http://collector:4318`.
-- **Both executors also bake the branch reporter, because metrics alone attribute to nothing.**
-  OTLP carries a session id and no branch, so the join below would have no span to intersect and
-  every executor run would sit in the unmatched bucket however much it cost. `branch-reporter.cjs`
-  (one copy per image, byte-identical but for the agent constant) samples
-  `session → (repo, branch)` from the task worktree and POSTs the plugin's wire shape to the
+- **Both executors also bake the branch reporter, because metrics alone scope to nothing.**
+  OTLP carries a session id and no branch, so without the reporter's side channel a session would
+  resolve to no repo at all and every executor run would sit in `sessionsWithoutHook` however much
+  it cost. `branch-reporter.cjs` (one copy per image, byte-identical but for the agent constant)
+  samples `session → (repo, branch)` from the task worktree and POSTs the plugin's wire shape to the
   board's `/api/sessions/branch` — `FACTORY_STATS_URL` (`RUNNER_STATS_URL`, defaulted to the board
   URL), authenticated by `INGEST_TOKEN` (`RUNNER_INGEST_TOKEN`) when the board requires one. The
   reporter's rules are the plugin's, and the entrypoint discards its stdio on top: never fail a
   run, never lag it, never speak. A refused report (no token on a token board, a board that is
-  down) is a silent no-op — unattributed, not failed. Remote Control runners get the reporter's
-  URL and session id but, receiving no forwarded credentials of any kind, stay unattributed on a
+  down) is a silent no-op — hook-less, not failed. Remote Control runners get the reporter's
+  URL and session id but, receiving no forwarded credentials of any kind, stay hook-less on a
   board that requires the token.
 - **`ON CONFLICT DO NOTHING` on `metric_point`, never `DO UPDATE`.** OTLP delivery is
   at-least-once, so an identical retry must be a no-op; an update would move `received_at` and
@@ -81,12 +75,8 @@ collector config.
   recorded in `schema_migrations` would mean a view fix never lands until someone deletes the
   volume; and `create or replace view` cannot change a column's type, so a fix that widens one
   would fail on every existing database while passing on a fresh one.
-- **Week bucketing stays in `core` (`weekStart`/`isoWeekKey`), never `time_bucket()`.** The
-  telemetry series shares a chart axis with the PR series; two implementations is how they drift
-  by a day.
-- **A transcript `pr-link` outranks the branch join, but does not replace it.** Both sources
-  fold into the same PR row. Letting the stronger tier win outright would drop a session that
-  branch-matched the same PR — counted in no row and in no unmatched bucket.
+- **Week bucketing stays in `core` (`weekStart`/`isoWeekKey`), never `time_bucket()`.** Every
+  weekly series on the page shares one chart axis; two implementations is how they drift by a day.
 - **`session_source` picks one source per session, OTEL over transcript.** A session that ran
   with OTEL enabled *and* has a transcript on disk would otherwise be counted twice. Every
   view reads `metric_point_used`, never `metric_point`; reading the table reintroduces the
@@ -107,11 +97,9 @@ collector config.
   have one by construction now, and a fixture default would 404 the ingest route while a collector
   is already exporting into it.
 - **`core/test/telemetry.independent.test.ts` imports no helpers from `core/src/telemetry.ts`**
-  (only its subject, `attribute`), for the same reason as its metrics counterpart.
+  (only its subject, `telemetryStats`), for the same reason as every independent recomputation
+  suite: importing the code under test into the checker would make a wrong number invisible.
 - **`factory_dev` and `factory_test` are separate databases, and the db suite refuses anything
   not named `*_test`.** The suite truncates `metric_point` and `session_branch` in
   `beforeEach`, so a shared database means one test run wipes every backfilled session — and
   the tests still pass, which is what makes it worth a guard rather than a comment.
-- **The scatter plots `linked` and `exact`, not `exact` alone.** Filtering to `exact` blanked
-  the panel entirely on real data, where nearly every PR is attributed by transcript pr-link.
-  Types passed, the fixture passed, and only a browser showed it.

@@ -263,9 +263,9 @@ each tick is one throwaway container on a warm daemon, while the kubernetes form
 per tick — pod admission every poll period, refused at startup under `EXECUTOR=kubernetes`.
 
 **The branch reporter is how an executor run becomes attributable at all.** The CLIs' OTLP
-metrics carry a session id and nothing else — no branch, no repo, no PR — so the attribution
-join (see [telemetry.md](telemetry.md)) would have no span to intersect, and every executor run
-would land in the unmatched bucket no matter how much it cost. Both executor images bake
+metrics carry a session id and nothing else — no branch, no repo — so without the reporter's
+reports the session would resolve to no repo and land in `sessionsWithoutHook`, however much it
+cost. Both executor images bake
 `branch-reporter.cjs`, launched by the entrypoint beside the CLI (never as its child), which
 samples `session → (repo, branch)` from the task worktree and POSTs the plugin's exact wire
 shape to `FACTORY_STATS_URL` (`RUNNER_STATS_URL`, defaulted to the board) every twenty seconds,

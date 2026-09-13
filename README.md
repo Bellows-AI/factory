@@ -2,9 +2,9 @@
 
 Software Engineering factory control plane.
 
-First surface: **Factory Stats** — a dashboard measuring the efficiency of an AI-heavy delivery
-process for `Bellows-AI/factory`: throughput, cycle time, rework, and whether automated
-code review produces actionable signal.
+First surface: **Factory Stats** — a dashboard measuring AI-assisted delivery from agent
+telemetry: sessions, token usage (input, output, cache reads and cache creation), lines written,
+active time, and how much of it the telemetry can actually see.
 
 Metric definitions, the API traps behind them, and the reasoning are specified in
 `../factory-stats/SPEC.md`. Every definition exists to correct a specific distortion —
@@ -14,8 +14,8 @@ simplifying one silently makes the number wrong.
 
 | Package | Purpose |
 | --- | --- |
-| `core/` | Pure aggregation and shared types. No dependencies, no I/O. Byte-equivalent to the verified reference implementation. |
-| `server/` | Fastify API: GitHub GraphQL client, in-memory cache, and static hosting for the SPA. |
+| `core/` | Pure telemetry aggregation and shared types. No dependencies, no I/O. |
+| `server/` | Fastify API: telemetry ingest and store, the GitHub App credential and repo list, and static hosting for the SPA. |
 | `web/` | Vite + React SPA. |
 | `driver/` | Job driver: claims jobs from the board and spawns a runner container per job. |
 
@@ -30,7 +30,7 @@ credential.
 npm install
 docker compose up -d timescale        # required; there is no in-memory mode
 
-# No credential: fill a disposable database with synthetic data and browse that offline.
+# No credential: fill a disposable database with synthetic sessions and browse that offline.
 docker compose exec timescale psql -U factory -d postgres -c 'create database factory_seed'
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run seed
 npm run verify:ui                     # boots server/dist/offline.js against the seeded database
@@ -44,15 +44,15 @@ ORG_ID=bellows-ai
 ORG_NAME="Bellows AI"
 ```
 
-**There is no repo list to configure.** Install the GitHub App on the repositories you want measured,
-and that installation is both the credential and the list — so they cannot drift apart, which is
-what `ORG_REPOS` could not promise: a repo listed but never granted failed every sync with a 404
-that read as a deleted repository. Cost is still ~243 rate-limit points per repo for a full walk, so
-the sync TTL floor rises to 60s × the number of repositories the installation reports.
+**There is no repo list to configure.** Install the GitHub App on the repositories you want
+measured, and that installation is both the credential and the list — so they cannot drift apart.
+The list is read at runtime and cached for 10 minutes, so granting the App a new repository shows
+up without a restart. With no credential at all (the offline tooling), the list falls back to the
+distinct repos the database already holds sessions for.
 
 A database whose name ends in `_test`, `_seed`, `_synthetic`, `_demo` or `_e2e` is treated as
-disposable, and is refused outright in `app` mode — `npm run seed` writes invented pull
-requests into one and `npm run test:db` truncates one, so real fetched history put there is either
+disposable, and is refused outright in `app` mode — `npm run seed` writes synthetic agent
+sessions into one and `npm run test:db` truncates one, so real history put there is either
 counterfeited or destroyed.
 
 `npm run dev` starts the API on `127.0.0.1:8080` and Vite on `5173` with `/api` proxied.
@@ -102,30 +102,27 @@ in an hour. One credential doing both would mean every person who signs in grant
 
 Required GitHub App installation permissions:
 
-- `Metadata: read`
-- `Pull requests: read`
-- `Contents: read` — **only** for the revert rate. Without it that single metric reports
-  "unavailable" and everything else still works.
+- `Metadata: read` — the repository list that scopes every figure.
+- `Contents: read` — cloning private source onto the workspace root.
 
-## Cost and freshness
+## Freshness
 
-A full history fetch is 9 pages, ~243 rate-limit points and ~45 seconds against a 5000/hour
-budget. Consequences baked into the code:
-
-- The server caches one snapshot in memory; `SYNC_TTL_SECONDS` is floored at 60s per repo, and the
-  retired `CACHE_TTL_SECONDS` is fatal if set.
-- A cold `GET /api/stats` answers **202** with progress while fetching; the SPA polls every 2s.
-- A stale snapshot is still served with 200. A rate limit keeps the last good render on screen
+- The telemetry read is cached for `TELEMETRY_TTL_SECONDS` (default 30s, floor 5s — there is no
+  quota to protect, only a hot loop to prevent). The retired `CACHE_TTL_SECONDS` and
+  `SYNC_TTL_SECONDS` are fatal if set.
+- A cold `GET /api/stats` answers **202** with progress while the first read runs; the SPA polls
+  every 2s.
+- A stale snapshot is still served with 200. A failed read keeps the last good render on screen
   and explains itself rather than blanking the dashboard.
-- After a failed fetch the server waits 30s before retrying, so a rejected token cannot turn
-  into a request loop. `POST /api/refresh` bypasses that.
+- After a failed read the server waits 30s before retrying, so a dead database cannot turn into
+  a request loop. `POST /api/refresh` bypasses that.
 
 ## API
 
 | Route | Behaviour |
 | --- | --- |
 | `GET /api/health` | Never calls GitHub, so a token-less or rate-limited container still reports healthy. |
-| `GET /api/stats` | `200` with `{ stats, meta }`, `202` while a cold fetch runs, `503` if the first fetch failed. |
+| `GET /api/stats` | `200` with `{ telemetry, meta }`, `202` while the first read runs, `503` if telemetry is disabled or the first read failed. |
 | `POST /api/refresh` | `202`. Single-flight. |
 
 ## Tests
@@ -135,20 +132,19 @@ npm test        # offline, no token, no quota
 npm run typecheck
 ```
 
-- `core/test/metrics.independent.test.ts` recomputes every headline number straight off the raw
-  payload, deliberately sharing no code with `core/src/metrics.ts`, and pins the SPEC §1 measured
-  landmarks. Aggregation is the one place a wrong number is invisible.
-- `core/test/metrics.invariants.test.ts` asserts what a plausible-but-wrong aggregation would
-  violate: distributions sum to the PR count, `resolved <= total`, `p50 <= p90`, human rework ≤ any
-  rework, no `NaN`, every ratio null or in [0,1].
-- `server/test/` drives the API in-process via `app.inject()` with a stubbed GitHub client:
-  caching, single-flight, the 202 cold path, error-code mapping, and the degraded revert rate.
+- `core/test/telemetry.independent.test.ts` recomputes the headline telemetry figures straight off
+  the raw fixture, deliberately sharing no code with `core/src/telemetry.ts`. Aggregation is the
+  one place a wrong number is invisible.
+- `core/test/telemetry.stats.test.ts` asserts what a plausible-but-wrong aggregation would
+  violate: ratios null on a zero denominator, weekly series seeded through empty weeks, no `NaN`,
+  the four token types never summed into one figure, no monetary field. `core/test/range.test.ts`
+  pins presets-as-lookback, sessions kept on overlap, and coverage untouched.
+- `server/test/` drives the API in-process via `app.inject()` with a stubbed telemetry client and
+  repo source: caching, single-flight, the 202 cold path, error-code mapping, and the degraded
+  telemetry states.
 
 ## Things that will bite
 
-- Metrics depend on the current date (the partial-week flag). `compute()` takes an injectable
-  `now` for exactly this reason — keep using it in tests.
-- `stats.meta.window` relies on the query's `CREATED_AT DESC` ordering.
+- Figures depend on the current date (the partial-week flag). `telemetryStats()` takes an
+  injectable `now` for exactly this reason — keep using it in tests.
 - Charts are fixed-width; below roughly 700px the weekly axis labels become illegible.
-- The fixture is already post-backfill, so the oversized-PR path (#149, 397 reviews) is not
-  exercised by it.

@@ -9,9 +9,13 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   whatever the developer happens to keep around and fail on exactly one machine. That block's
   survival is the regression test.
 - **An unknown environment variable is ignored — with named exceptions.** `GITHUB_TOKEN`,
-  `GITHUB_OWNER`, `ORG_REPOS`, `GITHUB_REPOS`, `DATA_SOURCE` and `CACHE_TTL_SECONDS` are fatal
-  rather than ignored: every one of them *was* meaningful, so ignoring one now would change
-  behaviour silently. Each message names what replaced it rather than reporting a typo.
+  `GITHUB_OWNER`, `ORG_REPOS`, `GITHUB_REPOS`, `DATA_SOURCE`, `BASE_BRANCH`, `BOTS`,
+  `SYNC_TTL_SECONDS` and `CACHE_TTL_SECONDS` are fatal rather than ignored: every one of them *was*
+  meaningful, so ignoring one now would change behaviour silently. The last four parameterised the
+  pull-request statistics and are gone with them (issue #62) — a deployment that had raised a sync
+  TTL to protect its quota would otherwise silently drop to the 5s telemetry floor, so the refusal
+  is load-bearing, not archival. Each message names what replaced it rather than reporting a typo;
+  the TTL ones point at `TELEMETRY_TTL_SECONDS`, the only cache floor left (default 30s, floor 5s).
 - **`DATABASE_URL` is required, and so are the App id and key.** The database is the only source
   the dashboard reads, and the GitHub App is the only credential there is: the environment can
   produce nothing else. `app` with `GITHUB_APP_ID` or `GITHUB_APP_PRIVATE_KEY` missing is fatal
@@ -23,17 +27,16 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   dashboard that silently fetches nothing presents as data loss rather than as a missing
   credential.
 - **A process that fetches refuses a disposable database** (`_test`, `_seed`, `_synthetic`,
-  `_demo`, `_e2e`). `npm run test:db` truncates one and `npm run seed` fills one with invented
-  pull requests, so real fetched history put there is destroyed or made indistinguishable from
-  synthetic. The code-only `none` arm is exempt by construction, because nothing is fetched to
-  lose — which is exactly how the seeding CLI and the browser check run. The guard used to key on
-  `GITHUB_TOKEN`, then on a mode; now every env-booted process fetches, so the guard is simply
-  refused.
-- **There is no repo list to configure.** It is whatever the GitHub App installation reports. A
-  configured copy beside it would be a second roster to keep in step with the credential — and a
-  repo in one but not the other used to fail every sync with a 404 that read as a deleted
-  repository. `AppConfig` therefore has no `repos`, and the sync TTL's per-repo floor moved to the
-  stats service, which is now the only thing that knows the count.
+  `_demo`, `_e2e`). `npm run test:db` truncates one and `npm run seed` fills one with synthetic
+  agent sessions, so real history put there is destroyed or made indistinguishable from synthetic.
+  The code-only `none` arm is exempt by construction, because nothing is fetched to lose — which is
+  exactly how the seeding CLI and the browser check run. The guard used to key on `GITHUB_TOKEN`,
+  then on a mode; now every env-booted process fetches, so the guard is simply refused.
+- **There is no repo list to configure.** It is whatever the GitHub App installation reports, read
+  at runtime and cached by `RepoSource` (`INSTALLATION_REPOS_TTL_MS`, 10 min) — a network answer
+  cannot be a boot-time field. A configured copy beside it would be a second roster to keep in step
+  with the credential. `AppConfig` therefore has no `repos`; the offline `none` arm derives the list
+  from the `session_branch` rows the database already holds.
 - **`ORG_ID` and `ORG_NAME` are empty-defaulted in `docker-compose.yml`**, unlike most of that
   block. Every other variable there is a real value, but the org id leads every stored primary key —
   a literal default would repartition the database under the operator on every start.
@@ -49,7 +52,8 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   somewhere to send a private key. `main.ts` logs loudly when it is set.
 - **`AUTH_MODE` is an explicit enum, never inferred from whether a client id is set**, and
   `AUTH_MODE=github` with an incomplete set of auth variables is fatal and names the missing key.
-  Both are the same instinct as `persistence.status` having no `'off'`: a mode you can fall into by
+  Both are the same instinct as `TELEMETRY_SOURCE` being an explicit enum with no
+  fall-back-to-something value: a mode you can fall into by
   typo is worse than one that refuses. Full reasoning in [auth.md](auth.md). `AuthConfig` is a
   discriminated union rather than a record of optionals, so "half-configured" is unrepresentable
   rather than merely rejected.
