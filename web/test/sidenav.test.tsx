@@ -219,6 +219,40 @@ describe('SideNav status dots', () => {
     });
 });
 
+describe('SideNav task summary', () => {
+    const running = (activity: string): Partial<Job> => ({
+        status: 'running',
+        exitCode: null,
+        finishedAt: null,
+        startedAt: null,
+        output: null,
+        runtime: { cpuPercent: 42, memUsedMb: 200, memPercent: null, activity, sampledAt: '2026-09-02T12:00:01.000Z' },
+    });
+
+    it('shows the running task\'s summary under its name in the group tree', () => {
+        const task = job(running('→ Read src/x.ts'));
+        const html = render(`/tasks/${task.id}`, [task], tabsFixture([{ id: '1', tabs: [task.id] }]));
+        expect(html).toContain('sidenav-task-summary');
+        expect(html).toContain('→ Read src/x.ts');
+    });
+
+    it('keeps it out of the Recent entry of a parked or finished task', () => {
+        const finished = render('/tasks', [job()]);
+        expect(finished).not.toContain('sidenav-task-summary');
+        const parked = render('/tasks', [job({ ...running('→ stale'), status: 'standby' })]);
+        expect(parked).not.toContain('sidenav-task-summary');
+    });
+
+    it('answers for the whole thread, not the row under the cursor', () => {
+        const root = job();
+        const child = { ...job(running('→ Bash npm test')), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id };
+        const html = render('/tasks', [root, child]);
+        const rootEntry = html.slice(html.indexOf('newer task'), html.indexOf('</a>', html.indexOf('newer task')));
+        expect(rootEntry).toContain('sidenav-task-summary');
+        expect(rootEntry).toContain('→ Bash npm test');
+    });
+});
+
 describe('RepoPickerDialog', () => {
     /*
      * `useEffect` does not run under renderToStaticMarkup, so `showModal()` is never called here.

@@ -67,12 +67,27 @@ const NO_STATUS: TaskStatus = { status: null, cancelRequestedAt: null, doneAt: n
  * When that happens the fallback answers the chain SEGMENT anchored at the named id — itself plus
  * every polled job whose spine reaches it — whose head is the newest run the window can still vouch
  * for, or the named run alone when nothing reaches it. Nulls when the id names no job at all.
+ *
+ * The resolution lives in `newestMember`, shared with `taskSummary`, so the dot and the summary
+ * always answer for the same run.
  */
 export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus {
     if (jobs === null) return NO_STATUS;
+    const member = newestMember(id, jobs);
+    return member === null
+        ? NO_STATUS
+        : { status: member.status, cancelRequestedAt: member.cancelRequestedAt, doneAt: member.doneAt };
+}
+
+/**
+ * Resolves a task's chain to its newest run, from ANY member's id — the same resolution
+ * `taskStatus` performs, shared so the two readings of a task never disagree about which run is
+ * the present tense. Null when the id names no polled job at all.
+ */
+function newestMember(id: string, jobs: readonly Job[]): Job | null {
     const byId = new Map(jobs.map((job) => [job.id, job]));
     const named = byId.get(id);
-    if (named === undefined) return NO_STATUS;
+    if (named === undefined) return null;
 
     // Climb to the chain root — the run with no parent — so a member's id resolves to the same
     // conversation every member resolves to. The guard is defensive: follow-ups point strictly
@@ -99,9 +114,7 @@ export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus 
         if (job.followUpTo !== null) continued.add(job.followUpTo);
     }
     for (const member of members.values()) {
-        if (!continued.has(member.id)) {
-            return { status: member.status, cancelRequestedAt: member.cancelRequestedAt, doneAt: member.doneAt };
-        }
+        if (!continued.has(member.id)) return member;
     }
 
     // The climb above can land on a root the poll window no longer holds, so no job's spine
@@ -117,11 +130,23 @@ export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus 
         if (job.followUpTo !== null && segment.has(job.followUpTo)) continuedSegment.add(job.followUpTo);
     }
     for (const member of segment.values()) {
-        if (!continuedSegment.has(member.id)) {
-            return { status: member.status, cancelRequestedAt: member.cancelRequestedAt, doneAt: member.doneAt };
-        }
+        if (!continuedSegment.has(member.id)) return member;
     }
-    return NO_STATUS;
+    return null;
+}
+
+/**
+ * A task's live summary — what the agent is doing right now — for the left nav, the tab strip and
+ * the top of the task view: the NEWEST run's `runtime.activity` line, and only while that run is
+ * running. A parked or finished run's last activity is a stale line that would lie about a run no
+ * longer going, and the activity also disappears while a task is still queued.
+ */
+export function taskSummary(id: string, jobs: readonly Job[] | null): string | null {
+    if (jobs === null) return null;
+    const member = newestMember(id, jobs);
+    if (member === null || member.status !== 'running') return null;
+    const activity = member.runtime?.activity ?? null;
+    return activity !== null && activity.trim() !== '' ? activity : null;
 }
 
 /** Whether a job's follow-up spine reaches the given chain root. Sets bound the climb. */

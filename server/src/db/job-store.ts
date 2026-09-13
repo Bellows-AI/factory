@@ -430,7 +430,12 @@ interface JobRow {
     output?: string | null;
     /** Absent from the list() select — a list view shows no checks, and bounded is not free. */
     gates?: GateReport[] | null;
-    /** Absent from the list() select, like `gates` — a list view shows no vitals either. */
+    /**
+     * On list() rows: the vitals object is a few hundred bytes, and the task tree and the tab
+     * strip render `runtime.activity` as the task's live summary — the tabs' "what is it doing"
+     * answer. Unlike `output`, whose unbounded tail would tank every poll for a line no list view
+     * draws.
+     */
     runtime?: RuntimeVitals | null;
     repo: string | null;
     executor: string | null;
@@ -1307,7 +1312,7 @@ export function createJobStore({
             await gate();
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
-                       session_id, remote_session_id, exit_code, repo, executor,
+                       session_id, remote_session_id, exit_code, runtime, repo, executor,
                        parent_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
                 from job
                 where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}

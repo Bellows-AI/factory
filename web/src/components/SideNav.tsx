@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
-import { groupLabel, taskStatus, taskTitle } from '../tabs.js';
+import { groupLabel, taskStatus, taskSummary, taskTitle } from '../tabs.js';
 import type { TaskTabs } from '../tabs.js';
 
 /**
@@ -99,6 +99,7 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                                     {group.tabs.map((id) => {
                                                         const task = taskById(id);
                                                         const dot = dotClass(id);
+                                                        const summary = taskSummary(id, tasks);
                                                         return (
                                                             <li key={id}>
                                                                 <NavLink
@@ -109,7 +110,8 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                                                     }
                                                                 >
                                                                     {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
-                                                                    {taskTitle(id, tasks)}
+                                                                    <span className="sidenav-task-title">{taskTitle(id, tasks)}</span>
+                                                                    {summary !== null ? <span className="sidenav-task-summary">{summary}</span> : null}
                                                                 </NavLink>
                                                             </li>
                                                         );
@@ -136,6 +138,7 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                         <ul className="sidenav-subitems">
                                             {recent.map((task) => {
                                                 const dot = dotClass(task.id);
+                                                const summary = taskSummary(task.id, tasks);
                                                 return (
                                                     <li key={task.id}>
                                                         <NavLink
@@ -146,7 +149,8 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                                             }
                                                         >
                                                             {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
-                                                            {task.command}
+                                                            <span className="sidenav-task-title">{task.command}</span>
+                                                            {summary !== null ? <span className="sidenav-task-summary">{summary}</span> : null}
                                                         </NavLink>
                                                     </li>
                                                 );
