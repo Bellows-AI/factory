@@ -63,6 +63,34 @@ const RUNTIME_ACTIVITY_LIMIT = 512;
 const CONTEXT_TOKENS_MAX = 100_000_000;
 const CONTEXT_COST_MAX = 1_000_000;
 
+/**
+ * The auxiliary services the run stood up, reported at close beside the context. The name rule is
+ * copied from the driver's `.bellows.yaml` parser — the same rule that constrains what a run can
+ * declare — and the statuses are the last state the platform could honestly read at close.
+ */
+const SERVICES_MAX = 10;
+const SERVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/;
+const SERVICE_STATUSES = new Set(['running', 'stopped', 'unknown']);
+
+function servicesVitals(raw: unknown): { name: string; status: 'running' | 'stopped' | 'unknown' }[] | null | string {
+    if (raw === undefined || raw === null) return null;
+    if (!Array.isArray(raw)) return 'services must be a list';
+    if (raw.length > SERVICES_MAX) return `services must have at most ${SERVICES_MAX} entries`;
+    for (const entry of raw) {
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+            return 'each service must be an object';
+        }
+        const { name, status } = entry as Record<string, unknown>;
+        if (typeof name !== 'string' || !SERVICE_NAME.test(name)) {
+            return 'service name must be a lowercase dns-label the driver would accept';
+        }
+        if (typeof status !== 'string' || !SERVICE_STATUSES.has(status)) {
+            return `service status must be one of ${[...SERVICE_STATUSES].join(', ')}`;
+        }
+    }
+    return raw as { name: string; status: 'running' | 'stopped' | 'unknown' }[];
+}
+
 function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
     if (raw === undefined || raw === null) return null;
     if (typeof raw !== 'object' || Array.isArray(raw)) return 'runtime must be an object';
@@ -600,7 +628,7 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd } = body(request.body);
+            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd, services } = body(request.body);
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
                 return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
             }
@@ -630,6 +658,10 @@ export const jobRoutes =
             ) {
                 return bad(reply, 'BAD_CONTEXT', `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}`);
             }
+            const servicesValue = servicesVitals(services);
+            if (typeof servicesValue === 'string') {
+                return bad(reply, 'BAD_SERVICES', servicesValue);
+            }
 
             const result = await guard(reply, (e) => request.log.error({ err: e }, 'job complete failed'), () =>
                 store.complete(id, leaseToken, {
@@ -638,6 +670,7 @@ export const jobRoutes =
                     output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
                     contextTokens: (contextTokens as number | undefined) ?? null,
                     contextCostUsd: (contextCostUsd as number | undefined) ?? null,
+                    services: servicesValue ?? null,
                 }),
             );
             if (!result.ok) return reply;

@@ -19,7 +19,13 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
     listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
-    completed: { id: string; output: string | null; contextTokens: number | null; contextCostUsd: number | null }[];
+    completed: {
+        id: string;
+        output: string | null;
+        contextTokens: number | null;
+        contextCostUsd: number | null;
+        services: { name: string; status: string }[] | null;
+    }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
@@ -151,9 +157,15 @@ function stubStore(
             stub.progressed.push({ id, output, runtime });
             return options.verdict ?? 'ok';
         },
-        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd }) {
+        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd, services }) {
             boom();
-            stub.completed.push({ id, output, contextTokens: contextTokens ?? null, contextCostUsd: contextCostUsd ?? null });
+            stub.completed.push({
+                id,
+                output,
+                contextTokens: contextTokens ?? null,
+                contextCostUsd: contextCostUsd ?? null,
+                services: services ?? null,
+            });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok'
                 ? { result: 'ok', threadTerminal: options.threadTerminal ?? false }
@@ -1054,7 +1066,9 @@ describe('POST /api/jobs/:id/complete', () => {
         const instance = await harnessWith(store);
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
-        expect(store.completed).toEqual([{ id: ID, output: 'hello', contextTokens: null, contextCostUsd: null }]);
+        expect(store.completed).toEqual([
+            { id: ID, output: 'hello', contextTokens: null, contextCostUsd: null, services: null },
+        ]);
     });
 
     // The verdict-moment terminality of the job's whole thread, computed in the store's complete
@@ -1082,6 +1096,20 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(store.completed[0]).toMatchObject({ contextTokens: 90433, contextCostUsd: 0.31 });
     });
 
+    // The auxiliary services the run stood up, reported at close with each one's last status —
+    // stored beside the vitals like the context stats, so a finished task keeps the fleet it used.
+    it('records the services beside the verdict', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const services = [
+            { name: 'db', status: 'running' },
+            { name: 'cache', status: 'stopped' },
+        ];
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, services });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ services });
+    });
+
     it.each([
         ['a negative token count', { ...done, contextTokens: -1 }],
         ['an absurd token count', { ...done, contextTokens: 100_000_001 }],
@@ -1092,6 +1120,20 @@ describe('POST /api/jobs/:id/complete', () => {
         const response = await post(instance, `/api/jobs/${ID}/complete`, payload);
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_CONTEXT');
+    });
+
+    it.each([
+        ['a non-array services', { ...done, services: 'db' }],
+        ['more than ten services', { ...done, services: Array.from({ length: 11 }, () => ({ name: 'svc', status: 'running' })) }],
+        ['a service without a name', { ...done, services: [{ status: 'running' }] }],
+        ['an unsafe service name', { ...done, services: [{ name: 'DB_BOOST', status: 'running' }] }],
+        ['a name that is not a string', { ...done, services: [{ name: 7, status: 'running' }] }],
+        ['an unknown status', { ...done, services: [{ name: 'db', status: 'starting' }] }],
+    ])('refuses %s with BAD_SERVICES', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/complete`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_SERVICES');
     });
 
     it('rejects a report from a worker whose lease was reclaimed', async () => {

@@ -234,11 +234,29 @@ describe.skipIf(!enabled)('job store', () => {
         // The last sample stays on a FINISHED row: "was it doing anything when it died" reads off
         // sampledAt.
         await store.progress(id, second!.leaseToken, 'again', vitals);
-        await store.complete(id, second!.leaseToken, { status: 'failed', exitCode: 1, output: 'done', contextTokens: 90433, contextCostUsd: 0.31 });
+        await store.complete(id, second!.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'done',
+            contextTokens: 90433,
+            contextCostUsd: 0.31,
+            services: [
+                { name: 'db', status: 'running' },
+                { name: 'cache', status: 'stopped' },
+            ],
+        });
         // The context stats MERGE into the sampled vitals — the row keeps its last sample and
-        // gains the context the run reached beside it.
+        // gains the context the run reached beside it, along with the fleet it used.
         expect(await store.get(id)).toMatchObject({
-            runtime: { ...vitals, contextTokens: 90433, contextCostUsd: 0.31 },
+            runtime: {
+                ...vitals,
+                contextTokens: 90433,
+                contextCostUsd: 0.31,
+                services: [
+                    { name: 'db', status: 'running' },
+                    { name: 'cache', status: 'stopped' },
+                ],
+            },
         });
     });
 
@@ -254,10 +272,11 @@ describe.skipIf(!enabled)('job store', () => {
             output: 'done',
             contextTokens: 1200,
             contextCostUsd: 0,
+            services: [{ name: 'db', status: 'running' }],
         });
 
         expect(await store.get(id)).toMatchObject({
-            runtime: { contextTokens: 1200, contextCostUsd: 0 },
+            runtime: { contextTokens: 1200, contextCostUsd: 0, services: [{ name: 'db', status: 'running' }] },
         });
         expect(await store.get(id)).toMatchObject({ output: 'done' });
     });

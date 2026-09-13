@@ -402,6 +402,13 @@ export interface JobStore {
              */
             contextTokens?: number | null;
             contextCostUsd?: number | null;
+            /**
+             * The auxiliary services the run stood up, with each one's last status the platform
+             * could read at close. Merged into the `runtime` vitals beside the context stats, so
+             * a finished task keeps the fleet it used. Null when the run declared no services or
+             * the platform had nothing to report.
+             */
+            services?: { name: string; status: 'running' | 'stopped' | 'unknown' }[] | null;
         },
     ): Promise<{ result: 'ok'; threadTerminal: boolean } | { result: 'lost' | 'missing' }>;
     /**
@@ -1188,18 +1195,21 @@ export function createJobStore({
             return present[0] ? 'lost' : 'missing';
         },
 
-        async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd }) {
+        async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd, services }) {
             await gate();
-            // The context stats ride the verdict and merge into the runtime vitals — the row keeps
-            // its last CPU sample AND gains the context the run reached. A run with no sample at
-            // all gets a vitals object holding the stats alone, so "died at a full window" is
-            // visible even where no container sample ever landed. Neither stat present → the
-            // column is left exactly as the samples left it.
-            const context =
-                typeof contextTokens === 'number' || typeof contextCostUsd === 'number'
+            // The context stats and the services ride the verdict and merge into the runtime
+            // vitals — the row keeps its last CPU sample AND gains the context the run reached
+            // and the fleet it used. A run with no sample at all gets a vitals object holding the
+            // stats alone, so "died at a full window" is visible even where no container sample
+            // ever landed. Nothing present → the column is left exactly as the samples left it.
+            const extra =
+                typeof contextTokens === 'number' ||
+                typeof contextCostUsd === 'number' ||
+                (services !== undefined && services !== null)
                     ? sql.json({
                           ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
                           ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
+                          ...(services !== undefined && services !== null ? { services } : {}),
                       } as never)
                     : null;
             // One transaction, because the terminality answer must describe the thread AS THE
@@ -1216,7 +1226,7 @@ export function createJobStore({
                         -- A stop request that never landed is settled by the run ending: the task
                         -- finished, there is nothing left to park.
                         cancel_requested_at = null,
-                        runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
+                        runtime     = ${extra === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${extra}`}
                     where org_id = ${orgId} and id = ${id}
                       and status = 'running' and lease_token = ${leaseToken}
                     returning id
