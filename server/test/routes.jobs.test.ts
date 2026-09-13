@@ -52,6 +52,8 @@ function stubStore(
         followUp?: FollowUpRefusal;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
         reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
+        /** Where the board says the suspend landed, on the 'ok' path. */
+        suspendStatus?: JobStatus;
         stop?: StopResult;
         remove?: RemoveResult;
         reclaimClaim?: ReclaimClaim | null;
@@ -81,7 +83,8 @@ function stubStore(
         async suspend(id) {
             boom();
             stub.suspended.push(id);
-            return options.verdict ?? 'ok';
+            const result = options.verdict ?? 'ok';
+            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'standby' } : { result };
         },
         async resume() {
             boom();
@@ -124,7 +127,7 @@ function stubStore(
         async stop(id) {
             boom();
             stub.stopped.push(id);
-            return options.stop ?? { result: 'parked' };
+            return options.stop ?? { result: 'stopped' };
         },
         async removeThread(id) {
             boom();
@@ -680,15 +683,22 @@ describe('POST /api/jobs/:id/gates', () => {
 });
 
 describe('parking and resuming', () => {
-    it('parks a running job', async () => {
-        const store = stubStore({ verdict: 'ok' });
+    it('ends a running job\'s attempt, echoing where the board landed it', async () => {
+        const store = stubStore({ verdict: 'ok', suspendStatus: 'stopped' });
         const instance = await harnessWith(store);
 
         const response = await post(instance, `/api/jobs/${ID}/suspend`, { leaseToken: TOKEN });
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, status: 'standby' });
+        expect(response.json()).toEqual({ id: ID, status: 'stopped' });
         expect(store.suspended).toEqual([ID]);
+    });
+
+    it('lands the Remote Control idle park on standby', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'ok' }));
+        const response = await post(instance, `/api/jobs/${ID}/suspend`, { leaseToken: TOKEN });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, status: 'standby' });
     });
 
     it('refuses a park from a worker whose lease was reclaimed', async () => {
@@ -732,26 +742,30 @@ describe('parking and resuming', () => {
 });
 
 describe('POST /api/jobs/:id/stop', () => {
-    // A queued job never started, so parking it IS stopping it — nothing needs to be aborted and
-    // the session (there is none yet) is untouched. The task stays resumable.
-    it('parks a queued task directly', async () => {
-        const store = stubStore({ stop: { result: 'parked' } });
+    // A queued job never started, so stopping it IS settling it — the turn ends before it began,
+    // and the session (there is none yet) is untouched.
+    it('settles a queued task directly', async () => {
+        const store = stubStore({ stop: { result: 'stopped' } });
         const instance = await harnessWith(store);
 
         const response = await post(instance, `/api/jobs/${ID}/stop`, {});
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, status: 'standby' });
+        expect(response.json()).toEqual({ id: ID, status: 'stopped' });
         expect(store.stopped).toEqual([ID]);
     });
 
-    it('parks an already-parked task idempotently', async () => {
-        const store = stubStore({ stop: { result: 'parked' } });
+    // A parked task settles the same way: stopping it is the verdict that ends its stay. The
+    // second stop of the same task is the store's conflict to answer — it already ended.
+    it('settles an already-parked task directly too', async () => {
+        const store = stubStore({ stop: { result: 'stopped' } });
         const instance = await harnessWith(store);
 
-        expect((await post(instance, `/api/jobs/${ID}/stop`, {})).statusCode).toBe(200);
-        expect((await post(instance, `/api/jobs/${ID}/stop`, {})).statusCode).toBe(200);
-        expect(store.stopped).toEqual([ID, ID]);
+        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, status: 'stopped' });
+        expect(store.stopped).toEqual([ID]);
     });
 
     // A running task keeps running until the worker parks it — the request RIDES the heartbeat —
