@@ -403,11 +403,6 @@ export interface JobStore {
      */
     suspend(id: string, leaseToken: string): Promise<SuspendResult>;
     /**
-     * Puts a parked job back in the queue. Not lease-guarded — nobody holds a standby job, which is
-     * precisely what makes it resumable by a request from outside.
-     */
-    resume(id: string): Promise<'ok' | 'missing' | 'conflict'>;
-    /**
      * Records the verdict and answers it with whether the thread is DONE — computed in the same
      * transaction: `threadDone` is true only when every job of the thread — the root and every
      * follow-up — has reached `succeeded`, `failed`, `dead` or `stopped`, AND one of them carries the
@@ -894,19 +889,19 @@ export function createJobStore({
                             -- Unconditional, not coalesce(started_at, now()): this must describe the
                             -- attempt that is about to run, or every duration is measured from attempt 1.
                             started_at       = now(),
-                            -- Kept when the job was parked and put back in the queue, and on a follow-up,
-                            -- whose session IS the parent conversation it continues. The status read here
-                            -- is the row's value BEFORE this update, so 'running' means a lease that
-                            -- expired: for an ordinary job that attempt's session is not this one, and
-                            -- leaving it would show a link to a run whose output was thrown away. A
-                            -- follow-up keeps its copied session through a crash, because the session
-                            -- carries the whole conversation, not just the dead attempt's work.
+                            -- Kept on a follow-up only, whose session IS the parent conversation it
+                            -- continues. The status read here is the row's value BEFORE this update, so
+                            -- 'running' means a lease that expired: for an ordinary job that attempt's
+                            -- session is not this one, and leaving it would show a link to a run whose
+                            -- output was thrown away. A follow-up keeps its copied session through a
+                            -- crash, because the session carries the whole conversation, not just the
+                            -- dead attempt's work.
                             session_id       = case
-                                when status = 'queued' or parent_job_id is not null then session_id
+                                when parent_job_id is not null then session_id
                                 else null
                             end,
                             remote_session_id = case
-                                when status = 'queued' or parent_job_id is not null then remote_session_id
+                                when parent_job_id is not null then remote_session_id
                                 else null
                             end,
                             -- The previous attempt's vitals are not this attempt's, and a new container
@@ -925,8 +920,8 @@ export function createJobStore({
                         -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
                         -- their pre-update values: delivered-so-far is exactly "this row was suspended at
                         -- least once with its command in the transcript". A fresh or crashed follow-up has
-                        -- never been parked, so its command still has to go out; a resumed parked one has,
-                        -- so it must not.
+                        -- never been parked, so its command still has to go out; a suspended one settles
+                        -- stopped or standby, and is never claimed again.
                         returning id, command, attempts, lease_token, lease_expires_at, created_by,
                                   session_id, repo, parent_job_id, executor,
                                   (parent_job_id is not null and command_delivered_at is null) as follow_up
@@ -1154,19 +1149,6 @@ export function createJobStore({
             `;
             if (rows[0]) return { result: 'ok', status: rows[0]!.status };
             return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
-        },
-
-        async resume(id) {
-            await gate();
-            const rows = await sql<{ id: string }[]>`
-                update job set status = 'queued'
-                where org_id = ${orgId} and id = ${id} and status = 'standby'
-                returning id
-            `;
-            if (rows[0]) return 'ok';
-            // A job that exists but is not parked is a different answer from one that does not:
-            // resuming a finished job is a caller mistake, not a missing row.
-            return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
         },
 
         async removeThread(id) {

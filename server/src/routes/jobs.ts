@@ -408,25 +408,6 @@ export const jobRoutes =
             return reply.code(200).send({ id, status: result.value.status });
         });
 
-        // No lease token, because nobody holds a parked job. That is what makes this callable by a
-        // person rather than only by the worker that parked it.
-        app.post('/api/jobs/:id/resume', { bodyLimit: 4096 }, async (request, reply) => {
-            const id = (request.params as { id: string }).id;
-            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
-
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job resume failed'), () =>
-                store.resume(id),
-            );
-            if (!result.ok) return reply;
-            if (result.value === 'missing') {
-                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
-            }
-            if (result.value === 'conflict') {
-                return reply.code(409).send({ error: 'Job is not on standby', code: 'NOT_STANDBY' });
-            }
-            return reply.code(200).send({ id, status: 'queued' });
-        });
-
         // A person's action on a finished task: queue an adjustment as a continuation of the run
         // it just did. The store decides every refusal atomically with the insert, so a follow-up
         // can never land on a parent that turns out to be running or done. No lease token — the

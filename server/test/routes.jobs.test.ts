@@ -48,7 +48,6 @@ function stubStore(
         threadDone?: boolean;
         job?: Job | null;
         thread?: Job[] | null;
-        resume?: 'ok' | 'missing' | 'conflict';
         followUp?: FollowUpRefusal;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
         reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
@@ -85,10 +84,6 @@ function stubStore(
             stub.suspended.push(id);
             const result = options.verdict ?? 'ok';
             return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'standby' } : { result };
-        },
-        async resume() {
-            boom();
-            return options.resume ?? 'ok';
         },
         async create(command, createdBy, target) {
             boom();
@@ -682,7 +677,7 @@ describe('POST /api/jobs/:id/gates', () => {
     });
 });
 
-describe('parking and resuming', () => {
+describe('POST /api/jobs/:id/suspend', () => {
     it('ends a running job\'s attempt, echoing where the board landed it', async () => {
         const store = stubStore({ verdict: 'ok', suspendStatus: 'stopped' });
         const instance = await harnessWith(store);
@@ -707,37 +702,9 @@ describe('parking and resuming', () => {
         expect(response.statusCode).toBe(409);
     });
 
-    it('puts a parked job back in the queue', async () => {
-        const instance = await harnessWith(stubStore({ resume: 'ok' }));
-        const response = await post(instance, `/api/jobs/${ID}/resume`, {});
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, status: 'queued' });
-    });
-
-    // Resuming something that is running or finished is a caller mistake, and it has to read
-    // differently from a job that is not there at all.
-    it('separates a job that is not parked from one that does not exist', async () => {
-        const conflict = await harnessWith(stubStore({ resume: 'conflict' }));
-        const first = await post(conflict, `/api/jobs/${ID}/resume`, {});
-        expect(first.statusCode).toBe(409);
-        expect(first.json().code).toBe('NOT_STANDBY');
-
-        await conflict.close();
-        const absent = await harnessWith(stubStore({ resume: 'missing' }));
-        expect((await post(absent, `/api/jobs/${ID}/resume`, {})).statusCode).toBe(404);
-    });
-
-    // No lease token on resume: nobody holds a parked job, which is what makes it resumable by a
-    // person rather than only by the worker that parked it.
-    it('takes no lease token to resume', async () => {
-        const instance = await harnessWith(stubStore({ resume: 'ok' }));
-        expect((await post(instance, `/api/jobs/${ID}/resume`, {})).statusCode).toBe(200);
-    });
-
-    it('refuses a malformed id on either', async () => {
+    it('refuses a malformed id', async () => {
         const instance = await harnessWith(stubStore());
         expect((await post(instance, '/api/jobs/nope/suspend', { leaseToken: TOKEN })).statusCode).toBe(400);
-        expect((await post(instance, '/api/jobs/nope/resume', {})).statusCode).toBe(400);
     });
 });
 

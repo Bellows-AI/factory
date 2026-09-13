@@ -55,9 +55,6 @@ const jobStub = (): JobStore =>
         async suspend() {
             return { result: 'ok', status: 'standby' };
         },
-        async resume() {
-            return 'ok';
-        },
         async complete() {
             return 'ok';
         },
@@ -123,10 +120,8 @@ describe('the route table', () => {
         ['/api/refresh', 'user'],
         ['/api/jobs', 'user'],
         [`/api/jobs/${JOB_ID}`, 'user'],
-        // Nobody holds a parked job, which is exactly what makes resuming one a person's action.
-        [`/api/jobs/${JOB_ID}/resume`, 'user'],
         // Both are person's actions on a finished task — a follow-up asks for adjustments, done
-        // declares the task finished by hand — and both fall through to `user` like resume does.
+        // declares the task finished by hand — and both fall through to `user`.
         [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
         [`/api/jobs/${JOB_ID}/done`, 'user'],
         // Stop and remove are person's actions too. The driver is told to stop through the
