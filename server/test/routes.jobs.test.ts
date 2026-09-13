@@ -27,6 +27,7 @@ interface StoreStub extends JobStore {
     markedDone: string[];
     gatesReported: { id: string; results: GateReport[] }[];
     gatesReread: { id: string }[];
+    publishTokens: { id: string }[];
     stopped: string[];
     removed: string[];
     reclaimClaims: { worker: string; leaseSeconds: number }[];
@@ -51,6 +52,7 @@ function stubStore(
         followUp?: FollowUpRefusal;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
         reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
+        publish?: { result: 'ok'; token: string | null } | 'lost' | 'missing';
         /** Where the board says the suspend landed, on the 'ok' path. */
         suspendStatus?: JobStatus;
         stop?: StopResult;
@@ -72,6 +74,7 @@ function stubStore(
         progressed: [],
         suspended: [],
         gatesReread: [],
+        publishTokens: [],
         followUps: [],
         markedDone: [],
         gatesReported: [],
@@ -166,6 +169,12 @@ function stubStore(
             boom();
             stub.gatesReread.push({ id });
             const answer = options.reread ?? { result: 'ok' as const, gates: null, gateError: null };
+            return typeof answer === 'string' ? { result: answer } : answer;
+        },
+        async publishToken(id, _token) {
+            boom();
+            stub.publishTokens.push({ id });
+            const answer = options.publish ?? { result: 'ok' as const, token: 'ghs_publish' };
             return typeof answer === 'string' ? { result: answer } : answer;
         },
         async get() {
@@ -1251,6 +1260,52 @@ describe('POST /api/jobs/:id/gates-reread', () => {
         const instance = await harnessWith(store);
 
         const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: 'not-a-uuid' });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_TOKEN');
+    });
+});
+
+describe('POST /api/jobs/:id/publish-token', () => {
+    it('answers the publish credential to the lease holder', async () => {
+        const store = stubStore({ publish: { result: 'ok', token: 'ghs_fresh' } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: TOKEN });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ GITHUB_TOKEN: 'ghs_fresh' });
+        expect(store.publishTokens).toEqual([{ id: ID }]);
+    });
+
+    it('answers null as a credential — nothing fresher than the claim env — not as an error', async () => {
+        const store = stubStore({ publish: { result: 'ok', token: null } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: TOKEN });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ GITHUB_TOKEN: null });
+    });
+
+    it.each([
+        ['a lost lease', 'lost', 409, 'LEASE_LOST'],
+        ['a missing job', 'missing', 404, 'NOT_FOUND'],
+    ])('maps %s', async (_label, result, status, code) => {
+        const store = stubStore({ publish: result as 'lost' | 'missing' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: TOKEN });
+
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('refuses a bad lease token', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/publish-token`, { leaseToken: 'not-a-uuid' });
 
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_TOKEN');

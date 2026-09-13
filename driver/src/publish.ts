@@ -215,11 +215,30 @@ export const isBranchName = (name: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._
  * obeys, so the token is in no argv anywhere. Pinned because it is the one place this feature
  * touches a secret.
  *
- * The helper is a FILE (scripts/credential-helper.sh) read verbatim, because its content IS the
- * value of `-c credential.helper=`: a comment line would ship inside the helper, so that one
- * file deliberately carries no comments — its documentation lives here.
+ * The helper is a FILE (scripts/credential-helper.sh) whose content becomes the value of
+ * `-c credential.helper=`, so that one file carries no comments — its documentation lives here.
+ * The leading `!` is git's own marker (gitcredentials(7)): a bang-prefixed helper value is a
+ * shell SNIPPET — git strips the bang and spawns `sh -c '<snippet> <op>'`; without it git
+ * prefixes `git credential-` to the whole string and the code never runs. Git appends the
+ * operation to the value VERBATIM, so the constant is the file TRIMMED: the file keeps its
+ * POSIX trailing newline, but in the value that newline strands ` get` on a second line and
+ * the helper exits 127 after answering — git only happens to keep a dead helper's stdout
+ * (observed 2026-09-13, job 43379d3a: `get: 2: get: not found` in the publish container).
+ * The scripts suite pins the exact spawn shape and its exit status.
  */
-export const CREDENTIAL_HELPER = script('credential-helper.sh');
+export const CREDENTIAL_HELPER = script('credential-helper.sh').trim();
+
+/**
+ * Lays a publish-fresh credential over the claim env, in one place: the claim's
+ * `GITHUB_TOKEN` was minted at claim time and a long run can outlive it (observed 2026-09-13,
+ * job 43379d3a — a 1h33m run's push died on its expired claim credential with the work done
+ * and the gates green), so the loop asks the board for a fresh answer right before the push.
+ * The docker env-file body and the kubernetes Secret are both built from `envFileBody(job)`,
+ * so the override must live on the job, not in either transport. Undefined — the board held
+ * nothing fresher, or the ask failed — leaves the job untouched.
+ */
+export const withPublishToken = (job: BoardJob, publishToken?: string): BoardJob =>
+    publishToken ? { ...job, env: { ...job.env, GITHUB_TOKEN: publishToken } } : job;
 
 /**
  * One publish step, as the platform-agnostic workflow hands it to a platform transport. The

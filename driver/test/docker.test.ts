@@ -3089,6 +3089,22 @@ describe('publishing the produced work', () => {
         }
     });
 
+    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour —
+    // job 43379d3a pushed with a token 34 minutes past expiry and the publish failed on 401 with
+    // the work done. The loop asks the board for a fresh one; the env file the steps ride must
+    // carry THAT credential, and the claim's must be gone from it.
+    it('publishes with the board\'s fresh credential, not the claim\'s hour-old token', async () => {
+        const { envBodies, runner } = publishRunner(DIRTY_ON_MAIN);
+        const result = await runner.publishGit(ISSUE_JOB, 'ghs_fresh');
+
+        expect(result.ok).toBe(true);
+        expect(envBodies.length).toBeGreaterThan(0);
+        for (const body of envBodies) {
+            expect(body).toContain('GITHUB_TOKEN=ghs_fresh');
+            expect(body).not.toContain('GITHUB_TOKEN=t0k-3n');
+        }
+    });
+
     it('refuses branch names that could read as something else', () => {
         expect(isBranchName('fix/10')).toBe(true);
         expect(isBranchName('task/20260909')).toBe(true);
@@ -3140,8 +3156,13 @@ describe('publishing the produced work', () => {
      */
     const publishRunner = (state: Record<string, unknown>, opts: { prExists?: boolean; fail?: (args: string[]) => boolean } = {}) => {
         const calls: string[][] = [];
+        const envBodies: string[] = [];
         const exec = vitest.fn(async (args: string[]) => {
             calls.push(args);
+            // The env file is deleted when the publish settles; snapshot it while a credentialed
+            // step runs, so a test can assert exactly what the container was handed.
+            const envAt = args.indexOf('--env-file');
+            if (envAt !== -1) envBodies.push(readFileSync(args[envAt + 1] as string, 'utf8'));
             // The probe's marker rides INSIDE the -e script string; the git steps carry their
             // subcommand as a standalone argv element.
             if (args.some((a) => typeof a === 'string' && a.includes('execFileSync'))) {
@@ -3156,7 +3177,7 @@ describe('publishing the produced work', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(loadDriverConfig({ RUNNER_CLI: 'opencode' }), (() => fakeChild('')) as unknown as typeof spawn, exec);
-        return { calls, runner };
+        return { calls, envBodies, runner };
     };
 
     const DIRTY_ON_MAIN = {

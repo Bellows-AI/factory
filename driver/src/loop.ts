@@ -575,7 +575,13 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     !failure &&
                     runner.publishGit
                 ) {
-                    published = await runner.publishGit(job);
+                    // The claim's GITHUB_TOKEN was minted at claim time, and a run can outlive
+                    // its hour — job 43379d3a pushed with a token 34 minutes past expiry and the
+                    // publish failed on 401 with the work done and the gates green. Ask the
+                    // board for a publish-fresh one; null — nothing fresher, or the ask failed —
+                    // keeps the claim env, the shape every short run still publishes with.
+                    const publishToken = await board.publishToken(job);
+                    published = await runner.publishGit(job, publishToken ?? undefined);
                 }
 
                 // The last thing this attempt does, and the first moment the heartbeat may stop.

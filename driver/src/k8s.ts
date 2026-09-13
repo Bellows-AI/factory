@@ -7,7 +7,7 @@ import { claimCarriesGithubToken, claimContinuesSession, claimEnv, containerName
 import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
-import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, publishCheckout, publishFailed, repoPath, worktreeBranch, worktreeDir } from './publish.js';
+import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, publishCheckout, publishFailed, repoPath, withPublishToken, worktreeBranch, worktreeDir } from './publish.js';
 import type { PublishResult, PublishStep, ReclaimResult, SyncResult } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
@@ -2358,10 +2358,10 @@ export function createKubernetesRunner(
         // tree; the claim is NOT re-taken here, exactly as docker takes nothing for its
         // publish: the publish runs in the loop's post-run position where the heartbeat is
         // still live, so the lease — not the ConfigMap — is what excludes a replacement.
-        async publishGit(job: BoardJob): Promise<PublishResult> {
+        async publishGit(job: BoardJob, publishToken?: string): Promise<PublishResult> {
             const repo = worktreeDir(config, job);
             if (!repo) return publishFailed('the job names no checkout this driver can publish');
-            const env = envBodyToData(envFileBody(job));
+            const env = envBodyToData(envFileBody(withPublishToken(job, publishToken)));
             const secret = Object.keys(env).length ? publishEnvSecretName(job) : null;
             if (secret) {
                 const response = await request('POST', secretsPath, {

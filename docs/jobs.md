@@ -181,6 +181,19 @@ at permission prompts nobody can answer and the job burns its timeout. On, it ed
 whatever it likes inside the container — which is also mounted onto that member's checkouts. It stays
 off by default so that turning it on is something somebody typed.
 
+**The publish asks for its own credential.** The claim's `GITHUB_TOKEN` is minted at claim time with
+GitHub's full hour on it, and a run can outlive that — observed 2026-09-13 (job 43379d3a): a 1h33m
+run finished with green gates, pushed with its claim-time token 34 minutes past expiry, and the
+publish failed on `Invalid username or token` with the work done. So before the push the loop calls
+`POST /api/jobs/:id/publish-token`, which re-answers the claim's environment assembly NOW: an
+operator-configured `GITHUB_TOKEN` still wins over the mint (a deliberate credential is never
+silently replaced, the claim-time rule unchanged), the mint — when there is one — is fresh, and a
+null is an answer rather than an error (nothing fresher than the claim env; the driver publishes
+with what it holds). The route is lease-guarded like every worker route, and the ask is best-effort
+like `gates-reread`: a failed request degrades to the claim env, never to a failed publish. Both
+transports lay the answer over the claim env through `withPublishToken` — the docker env file and
+the kubernetes Secret are both built from it, so neither can drift.
+
 **A run that never started is not a failed job.** If `docker` is missing or the daemon refuses, the
 driver logs and says nothing to the board: reporting `failed` would blame the command for the
 driver's problem and burn an attempt. The lease expires and the job is offered again, which is

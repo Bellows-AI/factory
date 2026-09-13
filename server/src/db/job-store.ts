@@ -395,6 +395,22 @@ export interface JobStore {
         leaseToken: string,
     ): Promise<{ result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | { result: 'lost' | 'missing' }>;
     /**
+     * A publish credential for the run's final push. The claim mints a full-hour installation
+     * token and a run can outlive it — observed 2026-09-13 (job 43379d3a): a 1h33m run published
+     * with its claim-time token, dead for 34 minutes, and the push died on 401 with the work done
+     * and the gates green. The driver asks here, right before the push, and gets the claim's
+     * environment resolved NOW: an operator-configured `GITHUB_TOKEN` wins exactly as it does at
+     * claim time (a deliberate credential is never silently replaced), and the mint — when there
+     * is one — is fresh, not the claim's. Lease-guarded like every worker route: the credential
+     * goes only to the worker that holds the run, and only while it still does. A null token —
+     * no provider and no configured value — is an answer, not an error: there is nothing fresher
+     * than the claim env, so the driver publishes with what it holds.
+     */
+    publishToken(
+        id: string,
+        leaseToken: string,
+    ): Promise<{ result: 'ok'; token: string | null } | { result: 'lost' | 'missing' }>;
+    /**
      * Ends a running job's attempt. Lease-guarded, like every other worker write. Where it lands
      * is decided by the stop stamp the heartbeat delivered: under one, the parking IS the user's
      * stop — the row settles `stopped` (terminal, session kept for the follow-up that continues
@@ -1113,6 +1129,27 @@ export function createJobStore({
             // column read (022) answers for it directly.
             const read = await gatesReader.readFor(workspacePath, row.repo, row.root_job_id);
             return { result: 'ok', gates: read.config, gateError: read.error };
+        },
+
+        async publishToken(id, leaseToken) {
+            await gate();
+            // Lease-guarded like every worker route: a fresh credential goes only to the worker
+            // that holds the run, and only while it still does (the gates-reread precedent).
+            const rows = await sql<{ created_by: string | null; repo: string | null }[]>`
+                select created_by, repo
+                from job
+                where org_id = ${orgId} and id = ${id}
+                  and status = 'running' and lease_token = ${leaseToken}
+            `;
+            const row = rows[0];
+            if (!row) return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
+            // The claim's own assembly, answered NOW: a configured value wins over the mint —
+            // the claim-time rule, unchanged — and the mint is FRESH, because the point of this
+            // route is that the claim's token does not have to survive the whole run.
+            const resolved = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, sql) : undefined;
+            if (resolved?.GITHUB_TOKEN !== undefined) return { result: 'ok', token: resolved.GITHUB_TOKEN };
+            if (!githubToken) return { result: 'ok', token: null };
+            return { result: 'ok', token: await githubToken.fresh() };
         },
 
         async suspend(id, leaseToken) {

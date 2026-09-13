@@ -1248,6 +1248,23 @@ describe('publishing the produced work', () => {
         ).toBe(true);
     });
 
+    // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour —
+    // job 43379d3a pushed with a token 34 minutes past expiry and the publish failed on 401 with
+    // the work done. The loop asks the board for a fresh one; the Secret the steps ride must
+    // carry THAT credential, and the claim's must be gone from it. Same shape as docker's pin —
+    // the override lives in withPublishToken, and this is the check it did not drift.
+    it('publishes with the board\'s fresh credential in the Secret, not the claim\'s hour-old token', async () => {
+        const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) }]);
+        await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        expect(secretPost?.body).toMatchObject({
+            metadata: { name: publishEnvSecretName(ISSUE_JOB) },
+            stringData: { GITHUB_TOKEN: 'ghs_fresh' },
+        });
+        expect(JSON.stringify(secretPost?.body)).not.toContain('t0k-3n');
+    });
+
     it('creates no Secret for an env-less claim', async () => {
         const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
         const result = await runner(request).publishGit({ ...ISSUE_JOB, env: undefined });

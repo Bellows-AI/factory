@@ -189,6 +189,46 @@ describe('rereading the gates after the startup sync', () => {
     });
 });
 
+describe('asking for a publish-fresh credential', () => {
+    const job = {
+        id: 'job-1',
+        command: 'echo hi',
+        attempts: 1,
+        leaseToken: 'token-1',
+        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+        resumeSessionId: null,
+        userId: null,
+    };
+
+    it('asks the board with the lease token and carries the credential', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ GITHUB_TOKEN: 'ghs_fresh' }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+
+        const token = await board.publishToken(job);
+
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/publish-token');
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1' });
+        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+        expect(token).toBe('ghs_fresh');
+    });
+
+    it('answers null — keep the claim env — when the board holds nothing fresher, refuses, or fails', async () => {
+        const nothing = recorder(() => Response.json({ GITHUB_TOKEN: null }, { status: 200 }));
+        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: nothing.fetch }).publishToken(job)).toBeNull();
+
+        const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
+        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).publishToken(job)).toBeNull();
+
+        const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).publishToken(job)).toBeNull();
+
+        const broken = recorder(() => {
+            throw new Error('board unreachable');
+        });
+        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).publishToken(job)).toBeNull();
+    });
+});
+
 describe('the heartbeat verdict', () => {
     const job = {
         id: 'job-1',

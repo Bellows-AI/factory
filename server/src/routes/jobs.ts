@@ -380,6 +380,38 @@ export const jobRoutes =
             return reply.code(200).send({ gates: reread.value.gates, gateError: reread.value.gateError });
         });
 
+        // A publish credential for the run's final push. The claim mints a full-hour installation
+        // token, and a run can outlive it — the driver asks HERE, right before the push, and gets
+        // the claim's environment resolved now: an operator-configured GITHUB_TOKEN wins exactly
+        // as at claim time, and the mint (when there is one) is fresh, not the claim's
+        // hour-old token (observed 2026-09-13, job 43379d3a: a 1h33m run's push died on its
+        // expired claim credential with the work done and the gates green). Lease-guarded like
+        // every worker route: the credential goes only to the worker that holds the run.
+        // `GITHUB_TOKEN: null` — nothing fresher than the claim env — is an answer, not an error.
+        app.post('/api/jobs/:id/publish-token', { bodyLimit: 4096 }, async (request, reply) => {
+            const id = (request.params as { id: string }).id;
+            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+
+            const { leaseToken } = body(request.body);
+            if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+                return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+            }
+
+            const minted = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'publish token mint failed'),
+                () => store.publishToken(id, leaseToken),
+            );
+            if (!minted.ok) return reply;
+            if (minted.value.result !== 'ok') {
+                if (minted.value.result === 'missing') {
+                    return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+                }
+                return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
+            }
+            return reply.code(200).send({ GITHUB_TOKEN: minted.value.token });
+        });
+
         // Ending a running job's attempt. Separate from complete because there is no worker
         // outcome here: an exit code would have to be invented, and inventing one makes a user's
         // stop indistinguishable from a run that ended on its own. Where the row lands is the

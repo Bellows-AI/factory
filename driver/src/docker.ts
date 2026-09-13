@@ -15,6 +15,7 @@ import {
     publishCheckout,
     publishFailed,
     repoPath,
+    withPublishToken,
     worktreeBranch,
     worktreeDir,
     type PublishResult,
@@ -153,9 +154,11 @@ export interface Runner {
      * describe work that exists only in a local checkout. The loop decides WHEN this is called (a
      * succeeded run, gates passed, and nothing else); a runner that cannot publish answers the
      * refusal in the result — or does not implement the method at all, which the loop reads as
-     * "this platform does not publish".
+     * "this platform does not publish". `publishToken` is the board's publish-fresh credential
+     * (the claim's can be an hour past expiry by push time); both transports lay it over the
+     * claim env through withPublishToken, so neither can drift.
      */
-    publishGit?(job: BoardJob): Promise<PublishResult>;
+    publishGit?(job: BoardJob, publishToken?: string): Promise<PublishResult>;
     /**
      * Prepares the job's task worktree before the run. A STARTING claim syncs it with the
      * remote default: fetch, create the worktree branched off `origin/<default>` (first attempt
@@ -1396,11 +1399,11 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
          *
          * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
          */
-        async publishGit(job: BoardJob): Promise<PublishResult> {
+        async publishGit(job: BoardJob, publishToken?: string): Promise<PublishResult> {
             let file: string | null = null;
             try {
                 file = envFilePath(job);
-                await writeFile(file, envFileBody(job), { mode: 0o600 });
+                await writeFile(file, envFileBody(withPublishToken(job, publishToken)), { mode: 0o600 });
             } catch (e) {
                 return publishFailed(`could not write the publish env file: ${(e as Error).message}`);
             }

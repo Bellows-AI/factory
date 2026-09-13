@@ -183,6 +183,15 @@ names). Script parameters travel as env values or plain argv, never interpolated
 text. The driver build copies the directory into `dist` (`driver/package.json`); forgetting that
 copy fails only in the container, never in dev — the same trap as `server/migrations` below.
 
+**Container shell scripts are POSIX-portable, and their VALUES are code too.** The runner images
+ship `dash` as `sh`; a script that only the macOS dev host's `sh` parses is a container-only
+failure (the credential helper carried a `!f(){ …` line for weeks: bash accepted it, dash
+rejected it, and the `sh -n` gate only ran under the host shell). Write `.sh` files to POSIX sh,
+not bash. And when a file's content is loaded as a VALUE — the credential helper becomes git's
+`-c credential.helper=`, which git executes as `sh -c '<value> <op>'` with the operation appended
+verbatim — trailing whitespace is code: the constant is trimmed at load, and the scripts suite
+pins the exact spawn shape and exit status, not a lookalike. Test the bytes that ship.
+
 Tests import `core/src` directly (`../src/metrics.js`), so `core/test` does not need the build.
 `vitest.config.ts` includes `core/test`, `server/test`, `driver/test` and `web/test`. The web
 suite is mostly a **render smoke test** — it renders the telemetry panels with `react-dom/server`,

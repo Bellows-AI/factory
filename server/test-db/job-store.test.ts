@@ -1234,6 +1234,79 @@ describe.runIf(enabled)('attribution', () => {
     });
 
     /**
+     * The publish-time credential (job 43379d3a, 2026-09-13): a claim's installation token is an
+     * hour old at best, and a run that outlives it publishes with a dead credential — the work
+     * done, the gates green, the push rejected 401. The store re-answers the claim's environment
+     * assembly NOW, to the lease holder only.
+     */
+    describe('publishToken', () => {
+        const publishAccountId = (() => {
+            let next = 150_000 + Math.floor(Math.random() * 100_000);
+            return () => ++next;
+        })();
+
+        it('answers a fresh mint to the lease holder, not the claim-time token', async () => {
+            const userId = await account(publishAccountId(), 'publish-mint');
+            let mints = 0;
+            const store = createJobStore({
+                sql,
+                orgId: ORG,
+                githubToken: { fresh: async () => `ghs_publish_${++mints}` },
+            });
+            await store.create('echo hi', userId, { repo: null, executor: null });
+            const claim = await store.claim('driver-1', 300);
+            expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_publish_1' });
+
+            const answer = await store.publishToken(claim!.id, claim!.leaseToken);
+            expect(answer).toEqual({ result: 'ok', token: 'ghs_publish_2' });
+        });
+
+        it('lets a configured GITHUB_TOKEN win, and does not mint for it', async () => {
+            const userId = await account(publishAccountId(), 'publish-operator');
+            const envStore = createEnvVarStore({ sql, orgId: ORG });
+            await sql`truncate env_var`;
+            await envStore.replaceOrg([{ name: 'GITHUB_TOKEN', value: 'operator-pat', isSecret: true }]);
+            let mints = 0;
+            const store = createJobStore({
+                sql,
+                orgId: ORG,
+                env: envStore,
+                githubToken: { fresh: async () => `ghs_${++mints}` },
+            });
+            await store.create('echo hi', userId, { repo: null, executor: null });
+            const claim = await store.claim('driver-1', 300);
+
+            const answer = await store.publishToken(claim!.id, claim!.leaseToken);
+            // The deliberate credential, and no mint spent beside it — the claim-time rule.
+            expect(answer).toEqual({ result: 'ok', token: 'operator-pat' });
+            expect(mints).toBe(0);
+        });
+
+        it('answers null — nothing fresher than the claim env — with no provider and no configured value', async () => {
+            const userId = await account(publishAccountId(), 'publish-bare');
+            const store = createJobStore({ sql, orgId: ORG });
+            await store.create('echo hi', userId, { repo: null, executor: null });
+            const claim = await store.claim('driver-1', 300);
+
+            expect(await store.publishToken(claim!.id, claim!.leaseToken)).toEqual({ result: 'ok', token: null });
+        });
+
+        it('is lease-guarded: a lost lease and a missing job are different answers', async () => {
+            const userId = await account(publishAccountId(), 'publish-lease');
+            const store = createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_x' } });
+            await store.create('echo hi', userId, { repo: null, executor: null });
+            const claim = await store.claim('driver-1', 300);
+
+            expect(await store.publishToken(claim!.id, '33333333-3333-4333-8333-333333333333')).toEqual({
+                result: 'lost',
+            });
+            expect(await store.publishToken('44444444-4444-4444-8444-444444444444', claim!.leaseToken)).toEqual({
+                result: 'missing',
+            });
+        });
+    });
+
+    /**
      * The executor label a task was queued with names a row in the author's own executor list, and
      * for an opencode row the pasted config is how the member's model and provider reach the run:
      * the claim hands it over as `OPENCODE_CONFIG_CONTENT`, the env name the pinned opencode

@@ -173,6 +173,15 @@ export interface Board {
      * error path.
      */
     rereadGates(job: BoardJob): Promise<{ gates: BoardJob['gates']; gateError: string | null } | null>;
+    /**
+     * A credential to publish this job's work with, fresh enough for the push. The claim env's
+     * GITHUB_TOKEN was minted at claim time and a long run can outlive it — observed 2026-09-13:
+     * a 1h33m run's publish died on its expired claim token with the work done and the gates
+     * green. Null — a refused, lost, or failed answer, or the board holding nothing fresher —
+     * keeps the claim env; freshness is worth a request, not an error path (the rereadGates
+     * contract).
+     */
+    publishToken(job: BoardJob): Promise<string | null>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
@@ -325,6 +334,17 @@ export function createBoard({
                 if (!response.ok) return null;
                 const body = (await response.json()) as { gates?: BoardJob['gates']; gateError?: string | null };
                 return { gates: body.gates ?? null, gateError: body.gateError ?? null };
+            } catch {
+                return null;
+            }
+        },
+
+        async publishToken(job) {
+            try {
+                const response = await post(`/api/jobs/${job.id}/publish-token`, { leaseToken: job.leaseToken });
+                if (!response.ok) return null;
+                const body = (await response.json()) as { GITHUB_TOKEN?: string | null };
+                return typeof body.GITHUB_TOKEN === 'string' && body.GITHUB_TOKEN ? body.GITHUB_TOKEN : null;
             } catch {
                 return null;
             }

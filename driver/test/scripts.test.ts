@@ -1,4 +1,4 @@
-import { execFile as execFileCb, execFileSync } from 'node:child_process';
+import { execFile as execFileCb, execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -96,7 +96,9 @@ describe('the container scripts', () => {
     });
 
     // Loader parity: the constant a docker/k8s argv builder passes must be byte-identical to the
-    // file on disk — otherwise the pins above guard a string nobody runs.
+    // file on disk — otherwise the pins above guard a string nobody runs. The credential helper is
+    // the exception by construction: git executes its VALUE as `sh -c '<value> <op>'`, so trailing
+    // whitespace is code there, and the constant is the file TRIMMED (see publish.ts).
     it('loads every script from its file, byte for byte', () => {
         expect(gitProbeScript).toBe(readFileSync(pathOf('git-probe.cjs'), 'utf8'));
         expect(gitWorktreeScript).toBe(readFileSync(pathOf('git-worktree.cjs'), 'utf8'));
@@ -104,8 +106,27 @@ describe('the container scripts', () => {
         expect(bellowsReadScript).toBe(readFileSync(pathOf('bellows-read.sh'), 'utf8'));
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
-        expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8'));
+        expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(remoteSessionScript).toBe(readFileSync(pathOf('remote-session.sh'), 'utf8'));
+    });
+
+    // The credential helper runs exactly as git spawns it (gitcredentials(7)): a `!`-prefixed
+    // helper value is a shell SNIPPET — git strips the bang and runs `sh -c '<snippet> <op>'` —
+    // and the op is appended VERBATIM, so trailing whitespace is code. The loaded constant is
+    // trimmed (see publish.ts) because the file's POSIX trailing newline would strand `get` on
+    // its own line and the helper would exit 127 after answering; git only happens to keep a
+    // dead helper's stdout (observed 2026-09-13, job 43379d3a: `get: 2: get: not found` in the
+    // publish container). Pins the marker semantics AND the spawn shape and its exit status.
+    it('the credential helper runs clean exactly as git spawns it', () => {
+        expect(CREDENTIAL_HELPER.startsWith('!')).toBe(true);
+        const snippet = CREDENTIAL_HELPER.slice(1);
+        const run = spawnSync('sh', ['-c', `${snippet} get`], {
+            env: { ...process.env, GITHUB_TOKEN: 'test-token' },
+            encoding: 'utf8',
+        });
+        expect(run.status).toBe(0);
+        expect(run.stdout).toContain('username=x-access-token');
+        expect(run.stdout).toContain('password=test-token');
     });
 });
 

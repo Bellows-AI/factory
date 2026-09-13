@@ -28,6 +28,7 @@ interface BoardStub extends Board {
     beats: number;
     gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
     gatesReread: number;
+    publishTokenAsks: string[];
     reclaimGrants: Reclaim[];
     reclaimAcks: string[];
 }
@@ -55,6 +56,7 @@ function stubBoard(
         reclaims?: Reclaim[];
         ackReclaimLease?: 'ok' | 'lost' | 'missing';
         failAckReclaim?: boolean;
+        publishToken?: string | null;
     } = {},
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -71,6 +73,7 @@ function stubBoard(
         beats: 0,
         gatesReported: [],
         gatesReread: 0,
+        publishTokenAsks: [],
         reclaimGrants: [],
         reclaimAcks: [],
         async suspend(claimed) {
@@ -119,6 +122,10 @@ function stubBoard(
             board.gatesReread += 1;
             return options.rereadGates ?? null;
         },
+        async publishToken(claimed) {
+            board.publishTokenAsks.push(claimed.id);
+            return options.publishToken ?? null;
+        },
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
             if (options.completeFor) return options.completeFor(claimed);
@@ -145,6 +152,7 @@ function stubRunner(
     lookups: number;
     samples: number;
     published: BoardJob[];
+    publishTokens: (string | undefined)[];
     synced: BoardJob[];
     reclaimed: BoardJob[];
 } {
@@ -153,6 +161,7 @@ function stubRunner(
         lookups: 0,
         samples: 0,
         published: [] as BoardJob[],
+        publishTokens: [] as (string | undefined)[],
         synced: [] as BoardJob[],
         reclaimed: [] as BoardJob[],
         run: outcome,
@@ -167,8 +176,9 @@ function stubRunner(
         async kill(killedJob: BoardJob) {
             runner.killed.push(killedJob.id);
         },
-        async publishGit(publishedJob: BoardJob) {
+        async publishGit(publishedJob: BoardJob, publishToken?: string) {
             runner.published.push(publishedJob);
+            runner.publishTokens.push(publishToken);
             return publish ?? { ok: true, published: false, branch: null, prUrl: null, reason: null };
         },
         async syncCheckout(syncedJob: BoardJob) {
@@ -451,6 +461,36 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
+        // The publish credential is the publisher's ask — no publisher, no ask.
+        expect(board.board.publishTokenAsks).toHaveLength(0);
+    });
+
+    // The claim's installation token is an hour old at best; a run that outlives it must not
+    // publish with a dead credential (job 43379d3a pushed with a token 34 minutes past expiry
+    // and the publish failed on 401 with the work done). The loop asks right before the push
+    // and lays the answer over the claim env; null keeps the claim env.
+    it('publishes with the board\'s fresh credential laid over the claim env', async () => {
+        const claimed = { ...job(1), env: { GITHUB_TOKEN: 'claim-token', CORE: 'claim-value' } };
+        const board = stubBoard([claimed], { publishToken: 'ghs_fresh' });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.publishTokenAsks).toEqual([job(1).id]);
+        // The credential rides the runner call; laying it over the claim env is the transport's
+        // job (withPublishToken), pinned by the docker and kubernetes suites.
+        expect(runner.publishTokens).toEqual(['ghs_fresh']);
+    });
+
+    it('publishes with the claim env untouched when the board holds nothing fresher', async () => {
+        const claimed = { ...job(1), env: { GITHUB_TOKEN: 'claim-token', CORE: 'claim-value' } };
+        const board = stubBoard([claimed]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.publishTokenAsks).toEqual([job(1).id]);
+        expect(runner.publishTokens).toEqual([undefined]);
     });
 
     // Only a succeeded run publishes: a failed or truncated run's tree may be mid-thought, and
