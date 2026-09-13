@@ -64,7 +64,7 @@ beforeEach(async () => {
  * workspace-path derivation has something to read. */
 const craft = async (shape: {
     parent?: string | null;
-    status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead';
+    status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
     lease?: 'live' | 'expired';
     createdBy?: string | null;
     repo?: string | null;
@@ -87,24 +87,25 @@ const craft = async (shape: {
 };
 
 describe.skipIf(!enabled)('stopping a task', () => {
-    it('parks a queued job directly, and the flag stays off', async () => {
+    it('settles a queued job directly — the turn ends before it began', async () => {
         const id = await craft();
 
-        expect(await store.stop(id)).toEqual({ result: 'parked' });
+        expect(await store.stop(id)).toEqual({ result: 'stopped' });
 
         const job = await store.get(id);
-        expect(job?.status).toBe('standby');
+        expect(job?.status).toBe('stopped');
+        expect(job?.finishedAt).toBeTruthy();
         expect(job?.cancelRequestedAt).toBeNull();
     });
 
-    it('parks an already-parked job again, idempotently', async () => {
+    it('settles an already-parked job directly too', async () => {
         const id = await craft({ status: 'standby' });
 
-        expect(await store.stop(id)).toEqual({ result: 'parked' });
-        expect((await store.get(id))?.status).toBe('standby');
+        expect(await store.stop(id)).toEqual({ result: 'stopped' });
+        expect((await store.get(id))?.status).toBe('stopped');
     });
 
-    it('stamps a running job as stop-requested and leaves it running until the worker parks it', async () => {
+    it('stamps a running job as stop-requested and leaves it running until the worker settles it', async () => {
         const id = await craft({ status: 'running', lease: 'live' });
 
         const result = await store.stop(id);
@@ -125,8 +126,8 @@ describe.skipIf(!enabled)('stopping a task', () => {
         expect(second).toEqual(first);
     });
 
-    it('refuses a finished task', async () => {
-        for (const status of ['succeeded', 'failed', 'dead'] as const) {
+    it('refuses a task that already ended', async () => {
+        for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
             const id = await craft({ status });
             expect(await store.stop(id)).toEqual({ result: 'conflict', status });
         }
@@ -136,14 +137,14 @@ describe.skipIf(!enabled)('stopping a task', () => {
         expect(await store.stop(randomUUID())).toBe('missing');
     });
 
-    it('leaves a queued task out of the claim queue once parked', async () => {
+    it('leaves a queued task out of the claim queue once stopped', async () => {
         const id = await craft();
         await store.stop(id);
 
         expect(await store.claim('w1', 300)).toBeNull();
     });
 
-    it('is reported by the worker\'s heartbeat, and parking clears it', async () => {
+    it('is reported by the worker\'s heartbeat, and suspending settles the run stopped', async () => {
         const id = await craft();
         const token = (await store.claim('w1', 300))!.leaseToken;
 
@@ -158,12 +159,28 @@ describe.skipIf(!enabled)('stopping a task', () => {
             cancelRequested: true,
         });
 
-        // The worker honours the request by parking (suspend), which is the stopping happening:
-        // the row is standby and the flag is gone, so a resumed run is a plain parked run.
-        expect(await store.suspend(id, token, 300)).toBe('ok');
+        // The worker honours the request by parking (suspend), which IS the stop landing: the row
+        // settles `stopped` — terminal, the turn over — and the flag is gone with it.
+        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
         const job = await store.get(id);
-        expect(job?.status).toBe('standby');
+        expect(job?.status).toBe('stopped');
+        expect(job?.finishedAt).toBeTruthy();
         expect(job?.cancelRequestedAt).toBeNull();
+    });
+
+    // The whole point of ending the turn instead of parking: the session survives the stop, so
+    // the follow-up composer is what the member sees next.
+    it('keeps the session when the stop lands', async () => {
+        const id = await craft();
+        await sql`update job set session_id = ${randomUUID()} where id = ${id}`;
+        const token = (await store.claim('w1', 300))!.leaseToken;
+
+        await store.stop(id);
+        await store.suspend(id, token);
+
+        const job = await store.get(id);
+        expect(job?.status).toBe('stopped');
+        expect(job?.sessionId).not.toBeNull();
     });
 });
 
