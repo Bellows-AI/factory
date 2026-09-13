@@ -299,6 +299,12 @@ export interface JobStore {
      * The user's verdict that the task is done. Terminal tasks only — a moving run is not the
      * user's to finish. Idempotent: marking a done task done again answers the same instant, and
      * the status rides along so the route can echo the task's state without a second read.
+     *
+     * Done is what frees the task worktree: when the whole thread is already terminal, the same
+     * transaction queues a `task_reclaim` row for it — a failed or finished thread that nobody
+     * closed keeps its tree, and the done on any one member (the UI marks the head) is what
+     * makes it the thread's done. A thread still moving is not queued here; its last completing
+     * attempt finds the done in place and reclaims at the verdict.
      */
     markDone(id: string): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
     /**
@@ -385,9 +391,12 @@ export interface JobStore {
      */
     resume(id: string): Promise<'ok' | 'missing' | 'conflict'>;
     /**
-     * Records the verdict and answers it with the terminality of the job's WHOLE thread, computed
-     * in the same transaction: `threadTerminal` is true only when every job of the thread — the
-     * root and every follow-up — has reached `succeeded`, `failed` or `dead`. This is the driver's
+     * Records the verdict and answers it with whether the thread is DONE — computed in the same
+     * transaction: `threadDone` is true only when every job of the thread — the root and every
+     * follow-up — has reached `succeeded`, `failed` or `dead`, AND one of them carries the
+     * user's `done_at`. The tree is the user's to free, so a thread that merely finished keeps
+     * its worktree (a failed task's tree is exactly what a follow-up continues from); the
+     * completing attempt reclaims only when the user has closed the thread. This is the driver's
      * worktree-reclaim signal (issue #47), and it rides the lease-guarded complete rather than a
      * thread read so a worker credential never pulls audit data of jobs it does not hold. The
      * verdict-moment answer also closes the read-after-verdict race: a follow-up inserted after
@@ -410,7 +419,7 @@ export interface JobStore {
             contextTokens?: number | null;
             contextCostUsd?: number | null;
         },
-    ): Promise<{ result: 'ok'; threadTerminal: boolean } | { result: 'lost' | 'missing' }>;
+    ): Promise<{ result: 'ok'; threadDone: boolean } | { result: 'lost' | 'missing' }>;
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
      * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a
@@ -640,17 +649,58 @@ export function createJobStore({
 
         async markDone(id) {
             await gate();
-            // coalesce, not assignment: the second "done" answers the first one's instant, which
-            // is what makes the route idempotent rather than silently rewriting history.
-            const rows = await sql<{ status: JobStatus; done_at: Date }[]>`
-                update job set done_at = coalesce(done_at, now())
-                where org_id = ${orgId} and id = ${id}
-                  and status in ('succeeded','failed','dead')
-                returning status, done_at
-            `;
-            const row = rows[0];
-            if (row) return { status: row.status, doneAt: row.done_at.toISOString() };
-            return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
+            // One transaction, because done is what frees the tree now (issue #47's second half):
+            // stamping done_at and queueing the worktree reclaim must be decided together, on the
+            // thread AS THE DONE LANDS — the terminality read below runs on the same connection,
+            // where the just-stamped row is visible and a follow-up inserted after the commit is
+            // not. A thread that is still moving keeps its tree: its last completing attempt will
+            // find every member terminal AND this done_at in place, and reclaim at the verdict.
+            return sql.begin(async (tx) => {
+                // coalesce, not assignment: the second "done" answers the first one's instant,
+                // which is what makes the route idempotent rather than silently rewriting history.
+                const rows = await tx<{ status: JobStatus; done_at: Date; root_job_id: string }[]>`
+                    update job set done_at = coalesce(done_at, now())
+                    where org_id = ${orgId} and id = ${id}
+                      and status in ('succeeded','failed','dead')
+                    returning status, done_at, root_job_id
+                `;
+                const row = rows[0];
+                if (!row) {
+                    return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
+                }
+                // The thread is one indexed read off the root column (022), and the ROOT row
+                // carries the labels the reclaim is addressed by — the same fields removeThread
+                // queues. Terminal only: a member still queued, parked or running keeps the tree
+                // (its verdict will reclaim); one member done (this one, usually — the UI marks
+                // the head) is what makes the done a THREAD's done and not one turn's.
+                const [thread] = await tx<{ total: number; terminal: number }[]>`
+                    select count(*)::int as total,
+                           count(*) filter (where status in ('succeeded','failed','dead'))::int as terminal
+                    from job
+                    where org_id = ${orgId} and root_job_id = ${row.root_job_id}
+                `;
+                if (thread && thread.total > 0 && thread.total === thread.terminal) {
+                    const [root] = await tx<{ repo: string | null; created_by: string | null }[]>`
+                        select repo, created_by from job
+                        where org_id = ${orgId} and id = ${row.root_job_id}
+                    `;
+                    const workspacePath =
+                        hasWorkspaces && root?.created_by ? `${orgId}/${root.created_by}` : null;
+                    // Idempotent against a row already queued (an earlier done, or a concurrent
+                    // one): one tree, one reclaim. The claim-ack cycle removes the row; until
+                    // then a duplicate insert would only re-offer an already-removed tree, so
+                    // the guard is tidiness, not correctness.
+                    await tx`
+                        insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
+                        select ${orgId}, ${row.root_job_id}, ${root?.repo ?? null}, ${workspacePath}
+                        where not exists (
+                            select 1 from task_reclaim
+                            where org_id = ${orgId} and root_job_id = ${row.root_job_id}
+                        )
+                    `;
+                }
+                return { status: row.status, doneAt: row.done_at.toISOString() };
+            });
         },
 
         async stop(id) {
@@ -1192,18 +1242,23 @@ export function createJobStore({
                     // job is someone else's now, and the two runs did different work.
                     return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
                 }
-                // The thread's terminality, read off the root column the row already carries
-                // (022) — every member answers to the same root_job_id. The just-updated row's
-                // verdict status is visible here, and the aggregate answers in one row.
-                const [thread] = await tx<{ total: number; terminal: number }[]>`
+                // The thread's state, read off the root column the row already carries (022) —
+                // every member answers to the same root_job_id. The just-updated row's verdict
+                // status is visible here, and the aggregate answers in one row: terminal means
+                // every member reached `succeeded`/`failed`/`dead`; done means ONE member carries
+                // the user's `done_at` (the UI marks the thread's head, so the column can sit on
+                // any member). Both must hold before the tree may go.
+                const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
                     select count(*)::int as total,
-                           count(*) filter (where status in ('succeeded','failed','dead'))::int as terminal
+                           count(*) filter (where status in ('succeeded','failed','dead'))::int as terminal,
+                           count(*) filter (where done_at is not null)::int as done
                     from job
                     where org_id = ${orgId} and root_job_id = ${rows[0].root_job_id}
                 `;
                 return {
                     result: 'ok',
-                    threadTerminal: (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal,
+                    threadDone:
+                        (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0,
                 };
             });
         },

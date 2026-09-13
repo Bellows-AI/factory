@@ -3727,13 +3727,26 @@ describe('the gate job spec', () => {
     });
 
     // The env travels by reference and never as literals — the same rule that keeps claim
-    // values out of the runner pod spec keeps them out of a gate pod spec.
+    // values out of the runner pod spec keeps them out of a gate pod spec. The one literal is
+    // the driver's own HOME for the non-root uid (below), the sync's three paths' class.
     it('reads the env from a Secret by reference, and skips envFrom entirely when there is none', () => {
-        expect(gateSpec().spec.template.spec.containers[0].envFrom).toEqual([
-            { secretRef: { name: 'the-secret' } },
-        ]);
+        const container = gateSpec().spec.template.spec.containers[0];
+        expect(container.envFrom).toEqual([{ secretRef: { name: 'the-secret' } }]);
+        expect(container.env).toEqual([{ name: 'HOME', value: '/tmp' }]);
         expect(gateSpec(1, null).spec.template.spec.containers[0].envFrom).toBeUndefined();
-        expect(JSON.stringify(gateSpec())).not.toContain('"value":');
+        expect(JSON.stringify(gateSpec()).replace('"value":"/tmp"', '')).not.toContain('"value":');
+    });
+
+    // The gate writes the shared task worktree, so it writes as the uid:gid every other writer
+    // on that tree uses — the executor images' USER node (1000:1000), which the sync, reclaim
+    // and runner Jobs run as. The declared image's own default (root, usually) would leave
+    // gate-written files the uid-1000 reclaim can never remove (observed 2026-09-13 on the
+    // docker twin: a gate-built core/dist left a worktree unremovable and its thread stuck).
+    it('writes the worktree as the runner uid:gid, with a HOME that uid can write', () => {
+        const s = gateSpec();
+        expect(s.spec.template.spec.securityContext).toEqual({ runAsUser: 1000, runAsGroup: 1000 });
+        const container = s.spec.template.spec.containers[0];
+        expect(container.env).toEqual([{ name: 'HOME', value: '/tmp' }]);
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {

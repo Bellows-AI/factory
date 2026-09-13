@@ -1060,9 +1060,20 @@ describe('the gate environment container', () => {
         );
     });
 
-    it('never puts a value on the command line — the env file is the only carrier', () => {
+    // The gate env writes the shared task worktree, so it writes as the uid:gid every other
+    // writer on that tree uses — the executor images' USER node (1000:1000). Its own default is
+    // usually root, and root-written files are ones the uid-1000 sync/reclaim can never remove
+    // (observed 2026-09-13: a gate-built core/dist left a worktree unremovable).
+    it('runs as the runner uid:gid, with a HOME the non-root uid can write', () => {
+        const line = gateEnvArgs(config, KEY, 'node:24');
+        expect(line).toEqual(expect.arrayContaining(['--user', '1000:1000', '-e', 'HOME=/tmp']));
+    });
+
+    it('never puts a member value on the command line — the env file is the only carrier', () => {
         const line = gateEnvArgs(config, KEY, 'node:24', '/tmp/gate.env');
-        expect(line.filter((arg) => arg === '-e')).toHaveLength(0);
+        // The one -e is the driver's own HOME literal for the non-root uid (above); every claim
+        // value travels the env file.
+        expect(line.filter((arg) => arg === '-e')).toHaveLength(1);
     });
 
     it('refuses an image that smuggles a flag, whitespace or expansion', () => {

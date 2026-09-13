@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimContinuesSession, claimEnv, containerName, envFileBody, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, runWorkingDir, SESSION_ID, workspacePathOf } from './docker.js';
+import { claimCarriesGithubToken, claimContinuesSession, claimEnv, containerName, envFileBody, GATE_GID, GATE_HOME, GATE_UID, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, runWorkingDir, SESSION_ID, workspacePathOf } from './docker.js';
 import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
@@ -325,6 +325,8 @@ export interface AuxJobSpec {
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
+                /** The uid:gid the gate writes the shared worktree as — GATE_UID/GATE_GID. */
+                securityContext?: { runAsUser: number; runAsGroup: number };
                 containers: {
                     name: string;
                     image: string;
@@ -443,6 +445,16 @@ export function gateJobSpec(
                 spec: {
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,
+                    // The gate writes the shared task worktree, so it writes as the same
+                    // uid:gid every other writer on that tree uses — the executor images'
+                    // `USER node` (uid 1000), which the sync, reclaim and runner Jobs run as.
+                    // The declared image's own default (root, usually) would leave gate-written
+                    // files the uid-1000 reclaim can never remove, and the tree would stick for
+                    // every later turn of the thread (observed 2026-09-13 on the docker twin).
+                    // HOME moves to /tmp with the uid: the image's own HOME (/root) is
+                    // unwritable for a non-root uid, and a gate that npm-installs needs a
+                    // writable cache directory.
+                    securityContext: { runAsUser: GATE_UID, runAsGroup: GATE_GID },
                     containers: [
                         {
                             // A container name is a 63-char DNS label — the Job name's roomy
@@ -452,6 +464,7 @@ export function gateJobSpec(
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['sh', '-c', command],
                             workingDir: `${config.workspaceMount}/${key}`,
+                            env: [{ name: 'HOME', value: GATE_HOME }],
                             ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
@@ -858,10 +871,10 @@ export function servicePodSpec(config: DriverConfig, job: BoardJob, spec: Servic
     apiVersion: 'v1';
     kind: 'Pod';
     metadata: { name: string; labels: Record<string, string> };
-    spec: {
-        restartPolicy: 'Never';
-        automountServiceAccountToken: false;
-        containers: {
+                spec: {
+                    restartPolicy: 'Never';
+                    automountServiceAccountToken: false;
+                    containers: {
             name: string;
             image: string;
             imagePullPolicy: string;

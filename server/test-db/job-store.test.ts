@@ -54,7 +54,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
     if (!enabled) return;
-    await sql`truncate job`;
+    await sql`truncate job, task_reclaim`;
 });
 
 /**
@@ -170,7 +170,8 @@ describe.skipIf(!enabled)('job store', () => {
         });
 
         expect(refused).toEqual({ result: 'lost' });
-        expect(accepted).toEqual({ result: 'ok', threadTerminal: true });
+        // Terminal, but nobody closed it — the tree stays until a done says otherwise.
+        expect(accepted).toEqual({ result: 'ok', threadDone: false });
         expect(await store.get(id)).toMatchObject({
             status: 'failed',
             exitCode: 3,
@@ -804,13 +805,73 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     });
 
     /**
-     * The verdict's answer to the driver's worktree reclaim (issue #47): whether the job's WHOLE
-     * thread is terminal, computed in the same transaction as the verdict itself. This is the
-     * credential fix too — the driver used to read the answer off `GET /api/jobs/:id/thread`, a
-     * route a worker token has no business on (docs/auth.md).
+     * Done is what frees the tree (issue #47, revised): a thread that failed or finished keeps
+     * its worktree until the user closes it. The done queues the reclaim itself when the thread
+     * is already terminal; a thread still moving waits for its last completing verdict, which
+     * finds the done in place (the case pinned in the done-ness describe below).
      */
-    describe('the verdict carries the thread terminality', () => {
-        it('answers true for a single-job thread', async () => {
+    describe('done queues the worktree reclaim', () => {
+        const reclaimRows = (rootJobId: string) =>
+            sql<{ root_job_id: string; repo: string | null; workspace_path: string | null }[]>`
+                select root_job_id, repo, workspace_path from task_reclaim
+                where org_id = ${ORG} and root_job_id = ${rootJobId}
+            `;
+
+        it('queues a reclaim for an already-terminal thread, addressed by the root', async () => {
+            const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null });
+            const followUp = await store.createFollowUp(root, 'first adjustment', null);
+            const claim = await store.claim('w1', 300);
+            expect(claim?.id).toBe(followUp.id);
+            await store.complete(followUp.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+
+            await store.markDone(followUp.id);
+
+            const rows = await reclaimRows(root);
+            expect(rows).toHaveLength(1);
+            // The root row carries the labels the driver removes the tree by — the same fields
+            // removeThread queues. No author here, so no workspace path.
+            expect(rows[0]).toMatchObject({ repo: 'acme/web', workspace_path: null });
+        });
+
+        it('keeps the tree for a failed thread nobody closed', async () => {
+            const { id } = await queue('drive me');
+            const claim = await store.claim('w1', 300);
+            await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: 1, output: 'boom' });
+
+            expect(await reclaimRows(id)).toHaveLength(0);
+        });
+
+        it('keeps the tree when a follow-up is still queued, and the verdict reclaims it later', async () => {
+            const root = await finishWithSession('drive me');
+            await store.createFollowUp(root, 'first adjustment', null);
+
+            await store.markDone(root);
+
+            // Not all terminal — the done queues nothing. The follow-up's completing attempt
+            // finds the done and the terminality together (the done-ness describe pins that
+            // answer), and the driver's verdict-time reclaim takes the tree there.
+            expect(await reclaimRows(root)).toHaveLength(0);
+        });
+
+        it('does not queue a second reclaim when the thread is marked done again', async () => {
+            const root = await finishWithSession('echo hi');
+
+            await store.markDone(root);
+            await store.markDone(root);
+
+            expect(await reclaimRows(root)).toHaveLength(1);
+        });
+    });
+
+    /**
+     * The verdict's answer to the driver's worktree reclaim (issue #47, revised): whether the
+     * thread is DONE — every member terminal AND the user's done on one of them — computed in
+     * the same transaction as the verdict itself. A thread that merely finished keeps its tree;
+     * this is the credential fix too — the driver used to read the answer off
+     * `GET /api/jobs/:id/thread`, a route a worker token has no business on (docs/auth.md).
+     */
+    describe('the verdict carries the thread done-ness', () => {
+        it('answers false for a terminal thread nobody closed', async () => {
             const { id } = await queue('echo hi');
             const claim = await store.claim('w1', 300);
 
@@ -820,10 +881,10 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 output: null,
             });
 
-            expect(result).toEqual({ result: 'ok', threadTerminal: true });
+            expect(result).toEqual({ result: 'ok', threadDone: false });
         });
 
-        it('answers false while a follow-up is still queued, and true once it completes', async () => {
+        it('answers false while a follow-up is still queued, even with no done', async () => {
             const root = await finishWithSession('drive me');
             // Two adjustments on one parent: the shape the thread walk already contemplates.
             // A linear chain cannot hold a queued member at a verdict moment — the follow-up
@@ -838,7 +899,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 exitCode: 0,
                 output: null,
             });
-            expect(whileQueued).toEqual({ result: 'ok', threadTerminal: false });
+            expect(whileQueued).toEqual({ result: 'ok', threadDone: false });
 
             const secondClaim = await store.claim('w2', 300);
             expect(secondClaim?.id).toBe(second.id);
@@ -847,7 +908,27 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 exitCode: 0,
                 output: null,
             });
-            expect(afterBoth).toEqual({ result: 'ok', threadTerminal: true });
+            // All terminal now, but nobody has closed the thread — the tree stays.
+            expect(afterBoth).toEqual({ result: 'ok', threadDone: false });
+        });
+
+        it('answers true for a verdict that completes a thread the user already closed', async () => {
+            // The done landed while a follow-up still moved — done on the root, thread not
+            // terminal yet, so the queue insert at done skipped it and the completing attempt
+            // is the one that finds done AND terminal together.
+            const root = await finishWithSession('drive me');
+            const followUp = await store.createFollowUp(root, 'first adjustment', null);
+            expect(await store.markDone(root)).toMatchObject({ status: 'succeeded' });
+
+            const followUpClaim = await store.claim('w1', 300);
+            expect(followUpClaim?.id).toBe(followUp.id);
+            const result = await store.complete(followUp.id, followUpClaim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: null,
+            });
+
+            expect(result).toEqual({ result: 'ok', threadDone: true });
         });
 
         it('answers false while a parked member holds the thread open', async () => {
@@ -868,7 +949,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 output: null,
             });
 
-            expect(result).toEqual({ result: 'ok', threadTerminal: false });
+            expect(result).toEqual({ result: 'ok', threadDone: false });
         });
 
         it('counts a dead member as terminal', async () => {
@@ -890,8 +971,9 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
                 output: null,
             });
 
-            // `dead` is the board giving up, not work continuing — the tree is free to reclaim.
-            expect(result).toEqual({ result: 'ok', threadTerminal: true });
+            // `dead` is the board giving up, not work continuing — but nobody closed the thread,
+            // so the tree still waits for a done.
+            expect(result).toEqual({ result: 'ok', threadDone: false });
         });
 
         it('refuses a completion carrying a lease token that is not the holder', async () => {

@@ -591,11 +591,12 @@ export const jobRoutes =
             return reply.code(200).send({ id });
         });
 
-        // The worker's verdict that the run is over. The 200 body carries `threadTerminal` — the
+        // The worker's verdict that the run is over. The 200 body carries `threadDone` — the
         // store's answer, computed in the same transaction as the verdict, to whether the job's
-        // whole thread is finished: it is the driver's only worktree-reclaim signal, and it rides
-        // the lease-guarded complete rather than a thread read, so a worker credential can never
-        // pull the audit data of jobs it does not hold (see docs/auth.md).
+        // whole thread is finished AND the user has closed it (a `done_at` on some member): it is
+        // the driver's only worktree-reclaim signal, and it rides the lease-guarded complete
+        // rather than a thread read, so a worker credential can never pull the audit data of jobs
+        // it does not hold (see docs/auth.md). A thread that merely finished keeps its tree.
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
@@ -647,7 +648,7 @@ export const jobRoutes =
                 }
                 return reply.code(409).send({ error: 'Lease lost', code: 'LEASE_LOST' });
             }
-            return reply.code(200).send({ id, status, threadTerminal: result.value.threadTerminal });
+            return reply.code(200).send({ id, status, threadDone: result.value.threadDone });
         });
 
         app.get('/api/jobs/:id', async (request, reply) => {

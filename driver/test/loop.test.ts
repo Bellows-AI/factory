@@ -47,9 +47,9 @@ function stubBoard(
         failClaims?: number;
         failSession?: boolean;
         rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
-        threadTerminal?: boolean;
+        threadDone?: boolean;
         completeLease?: LeaseState;
-        completeFor?: (claimed: BoardJob) => { state: LeaseState; threadTerminal: boolean };
+        completeFor?: (claimed: BoardJob) => { state: LeaseState; threadDone: boolean };
         cancelRequested?: boolean;
         removedOnBeat?: boolean;
         reclaims?: Reclaim[];
@@ -122,7 +122,7 @@ function stubBoard(
         async complete(claimed, result) {
             board.completed.push({ id: claimed.id, ...result });
             if (options.completeFor) return options.completeFor(claimed);
-            return { state: options.completeLease ?? 'held', threadTerminal: options.threadTerminal ?? false };
+            return { state: options.completeLease ?? 'held', threadDone: options.threadDone ?? false };
         },
         async gates(claimed, results) {
             board.gatesReported.push({ id: claimed.id, results });
@@ -554,11 +554,12 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
-    // The terminal reclaim (issue #47): after the whole thread is done — the board says so in the
-    // same breath as the verdict — the per-thread task worktree is removed so a finished task does
-    // not leave its tree squatting on the volume.
-    it('reclaims the task worktree when the complete answer says the thread is terminal', async () => {
-        const board = stubBoard([job(1)], { threadTerminal: true });
+    // The terminal reclaim (issue #47, revised): after the thread is DONE — every member terminal
+    // AND the user's done on one of them, the board says so in the same breath as the verdict —
+    // the per-thread task worktree is removed. A thread that merely finished keeps its tree: the
+    // tree is the user's to free, and a failed task's tree is what its next turn continues from.
+    it('reclaims the task worktree when the complete answer says the thread is done', async () => {
+        const board = stubBoard([job(1)], { threadDone: true });
         const runner = stubRunner(async () => ok());
 
         await drive({ ...board, runner });
@@ -567,9 +568,10 @@ describe('the poll loop', () => {
         expect(runner.reclaimed).toEqual([job(1)]);
     });
 
-    it('keeps the task worktree when the complete answer says the thread is not terminal', async () => {
-        // The default answer is "the thread is not terminal" — a follow-up still queued. No
-        // reclaim attempt is made at all: the tree belongs to a thread that might continue.
+    it('keeps the task worktree when the complete answer says the thread is not done', async () => {
+        // The default answer is "the thread is not done" — a follow-up still queued, or a
+        // finished thread the user has not closed. No reclaim attempt is made at all: the tree
+        // belongs to a thread that might continue, or to a user who has not said done.
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok());
 
@@ -579,11 +581,11 @@ describe('the poll loop', () => {
         expect(runner.reclaimed).toHaveLength(0);
     });
 
-    it('reclaims after a pre-run failure, once the whole thread is terminal', async () => {
+    it('reclaims after a pre-run failure, once the whole thread is done', async () => {
         // A job whose checkout cannot be synced is completed failed without ever running; the
         // reclaim is the same downstream-of-the-verdict step it is for a run.
         const repoJob = { ...job(1), repo: 'Bellows-AI/factory', workspacePath: `bellows/${USER}` };
-        const board = stubBoard([repoJob], { threadTerminal: true });
+        const board = stubBoard([repoJob], { threadDone: true });
         const runner = stubRunner(async () => ok(), null, null, null, { ok: false, reason: 'no disk' });
 
         await drive({ ...board, runner });
@@ -595,7 +597,7 @@ describe('the poll loop', () => {
 
     it('reports the verdict untouched when the reclaim refuses, and logs the reason', async () => {
         const logs: string[] = [];
-        const board = stubBoard([job(1)], { threadTerminal: true });
+        const board = stubBoard([job(1)], { threadDone: true });
         const runner = stubRunner(async () => ok(), null, null, null, null, {
             ok: false,
             removed: false,
@@ -617,7 +619,7 @@ describe('the poll loop', () => {
 
     it('reports the verdict untouched when the reclaim throws, and logs the error', async () => {
         const logs: string[] = [];
-        const board = stubBoard([job(1)], { threadTerminal: true });
+        const board = stubBoard([job(1)], { threadDone: true });
         const runner = stubRunner(async () => ok());
         runner.reclaimWorktree = async () => {
             throw new Error('daemon refused');
@@ -663,7 +665,7 @@ describe('the poll loop', () => {
         });
         const board = stubBoard([job(1), followUp], {
             completeFor: (claimed) =>
-                claimed.id === job(1).id ? { state: 'held', threadTerminal: true } : { state: 'held', threadTerminal: false },
+                claimed.id === job(1).id ? { state: 'held', threadDone: true } : { state: 'held', threadDone: false },
         });
         const runner = stubRunner(async () => ok());
         runner.reclaimWorktree = async (claimed) => {
@@ -724,7 +726,7 @@ describe('the poll loop', () => {
         makeGate(job(1).id);
         makeGate(firstFollowUp.id);
         const board = stubBoard([job(1), firstFollowUp, secondFollowUp], {
-            completeFor: (claimed) => ({ state: 'held', threadTerminal: claimed.id !== secondFollowUp.id }),
+            completeFor: (claimed) => ({ state: 'held', threadDone: claimed.id !== secondFollowUp.id }),
         });
         const runner = stubRunner(async () => ok());
         runner.reclaimWorktree = async (claimed) => {

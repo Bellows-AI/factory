@@ -656,12 +656,18 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
     }
 
     /**
-     * The verdict is reported, then the task worktree is reclaimed once the whole thread is done
-     * (issue #47) — the driver's side of "finishing a task cleans up its worktree". The board
-     * answers the verdict AND the thread's terminality in one lease-guarded round trip — computed
-     * in the same transaction as the verdict — so there is no separate thread read left to race a
+     * The verdict is reported, then the task worktree is reclaimed — but only when the thread is
+     * DONE, not merely terminal (issue #47, revised): the board answers the verdict AND whether
+     * every member of the thread is terminal AND the user has declared it done, in one
+     * lease-guarded round trip computed in the same transaction as the verdict. A thread that
+     * finished without the user's done keeps its tree — a failed task's tree is exactly what its
+     * next turn continues from, and the tree is the user's to free; `POST /api/jobs/:id/done`
+     * queues the reclaim itself when the thread is already terminal, so the queue drain below is
+     * the ordinary path and this verdict-time reclaim is the one that covers a done declared
+     * while a follow-up was still moving. There is no separate thread read left to race a
      * follow-up's insertion: reclaim sits downstream of the verdict and runs only when the answer
-     * says every job of the thread is terminal, so a follow-up still queued keeps its tree.
+     * says done-and-terminal, so a follow-up still queued keeps its tree.
+     *
      * Best-effort by contract — the verdict is already safe the moment it is on the board, so a
      * runner that refuses the tree or a transport hiccup can cost the reclaim but never the
      * verdict. A refused tree stays on the disk (the script it runs deletes only what the sync
@@ -677,7 +683,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         result: Parameters<Board['complete']>[1],
     ): Promise<LeaseState> {
         const verdict = await board.complete(job, result);
-        if (verdict.state !== 'held' || !verdict.threadTerminal) return verdict.state;
+        if (verdict.state !== 'held' || !verdict.threadDone) return verdict.state;
         const root = job.rootJobId ?? job.id;
         // Registered before the removal starts — the set and the start are one synchronous block,
         // so no claimant can observe the in-between. The entry is dropped only while it is still
@@ -706,9 +712,10 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
     }
 
     /**
-     * Drains the board's removed-thread queue (issue #41), one row at a time: a Remove deleted a
-     * thread and this loop is the worker half of taking its tree down. Claim a row, remove the
-     * tree the thread left behind, then ack so the row stops being offered.
+     * Drains the board's worktree-reclaim queue (issue #41), one row at a time: a Remove deleted
+     * a thread, or a done landed on an already-terminal one, and this loop is the worker half of
+     * taking the tree down. Claim a row, remove the tree the thread left behind, then ack so the
+     * row stops being offered.
      *
      * The tree is reclaimed with the same runner call a terminal thread's report() uses, fed a
      * job synthesised from the row: the thread's identity — its root id, repo label and workspace

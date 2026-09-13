@@ -260,7 +260,11 @@ export type RunPublishStep = (step: PublishStep) => Promise<{ stdout: string }>;
  */
 export async function publishCheckout(config: DriverConfig, job: BoardJob, runStep: RunPublishStep): Promise<PublishResult> {
     const repo = worktreeDir(config, job);
-    if (!repo) return publishFailed('the job names no checkout this driver can publish');
+    // Null here means a COMMAND-ONLY job — the loop refuses a repo job whose worktree cannot
+    // resolve before anything runs — and a command-only job has nothing to publish by
+    // construction. That is the ordinary no-op, not a failure: reporting it as publishFailed
+    // failed every exit-0 command-only run, the main phase of the e2e suite included.
+    if (!repo) return publishNothing('the job names no checkout — nothing to publish');
 
     /** Wraps the transport's rejection with the step's name — docker's own runStep shape. */
     const step = async (publish: PublishStep): Promise<{ stdout: string }> => {

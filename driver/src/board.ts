@@ -177,12 +177,14 @@ export interface Board {
     /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,
-     * stored beside the attempt's vitals on the board. The answer carries `threadTerminal` —
-     * whether EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead'), computed
-     * by the board in the SAME lease-guarded transaction as the verdict — which is the signal a
-     * worker uses right after a verdict to decide the task worktree can be reclaimed (issue #47).
-     * A follow-up still queued, parked, or running keeps it false, so a thread that might
-     * continue keeps its tree.
+     * stored beside the attempt's vitals on the board. The answer carries `threadDone` — whether
+     * EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead') AND the user has
+     * closed the thread (a `done_at` on some member), computed by the board in the SAME
+     * lease-guarded transaction as the verdict — which is the signal a worker uses right after a
+     * verdict to decide the task worktree can be reclaimed (issue #47). A follow-up still
+     * queued, parked, or running keeps it false; so does a thread that finished but was never
+     * declared done — a failed task's tree is exactly what its next turn continues from, and the
+     * tree is the user's to free.
      */
     complete(
         job: BoardJob,
@@ -193,7 +195,7 @@ export interface Board {
             contextTokens?: number | null;
             contextCostUsd?: number | null;
         },
-    ): Promise<{ state: LeaseState; threadTerminal: boolean }>;
+    ): Promise<{ state: LeaseState; threadDone: boolean }>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -342,13 +344,13 @@ export function createBoard({
                 ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
             });
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
-            // thread — the terminality answer is false, not unknown.
-            if (response.status === 409) return { state: 'lost', threadTerminal: false };
+            // thread — the done answer is false, not unknown.
+            if (response.status === 409) return { state: 'lost', threadDone: false };
             // Read defensively, like every other board field: anything but a literal true —
-            // absent, false, a body that is not the shape we asked for — means "a follow-up
-            // might still come", which is the only safe reading of an unclear answer.
-            const body = (await response.json()) as { threadTerminal?: boolean };
-            return { state: 'held', threadTerminal: body.threadTerminal === true };
+            // absent, false, a body that is not the shape we asked for — means "the user may
+            // still want this thread's tree", which is the only safe reading of an unclear answer.
+            const body = (await response.json()) as { threadDone?: boolean };
+            return { state: 'held', threadDone: body.threadDone === true };
         },
     };
 }

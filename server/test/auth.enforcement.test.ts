@@ -153,7 +153,7 @@ describe('the route table', () => {
         // The thread read is a person's again: it carries commands, output and session ids of the
         // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
         // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
-        // lease-guarded complete response as `threadTerminal` instead.
+        // lease-guarded complete response as `threadDone` instead.
         [`/api/jobs/${JOB_ID}/thread`, 'user'],
         ['/api/otlp/v1/logs', 'ingest'],
         ['/api/sessions/branch', 'ingest'],

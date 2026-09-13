@@ -417,6 +417,19 @@ const GATE_KEY =
 const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /**
+ * The uid:gid the gate environment runs as, and the HOME it gets: the executor images' `USER
+ * node` (uid 1000 in both Dockerfiles), which the runner, the sync and the reclaim containers all
+ * run as. Gates write the shared task worktree, and every other writer on that tree is uid 1000 —
+ * a gate writing as the declared image's own default (root, usually) would leave files the
+ * uid-1000 reclaim can never remove. Exported because the kubernetes gate Job states the same
+ * numbers as a securityContext (executor parity).
+ */
+export const GATE_UID = 1000;
+export const GATE_GID = 1000;
+/** HOME for the gate env's non-root uid — /tmp is world-writable where the image's own is not. */
+export const GATE_HOME = '/tmp';
+
+/**
  * A container name this process will `docker exec` into: one token, no shell metacharacters. The
  * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 123
  * characters GATE_KEY allows ≈ 135) — a cap BELOW that would create containers every gate then
@@ -461,6 +474,19 @@ export function gateEnvArgs(config: DriverConfig, key: string, image: string, en
         gateEnvContainerName(key),
         '--label',
         `${GATE_LABEL}=${key}`,
+        // The gate env is a WRITER on the shared task worktree, so it writes as the same
+        // uid:gid every other writer on that tree uses — the executor images' `USER node`
+        // (uid 1000), which the runner, the sync and the reclaim containers all run as.
+        // The declared image's own default (usually root) would leave gate-written files
+        // root-owned, and the uid-1000 reclaim would then die with EACCES trying to remove
+        // them — the tree stuck for every later turn of the thread (observed 2026-09-13: a
+        // gate-built core/dist left the worktree unremovable and its thread unresumable).
+        // HOME moves to /tmp with the user: the image's own HOME (/root) is unwritable for
+        // a non-root uid, and a gate that npm-installs needs a writable cache directory.
+        '--user',
+        `${GATE_UID}:${GATE_GID}`,
+        '-e',
+        `HOME=${GATE_HOME}`,
         '-v',
         `${config.workspaceVolume}:${config.workspaceMount}`,
         // The checkout the coding agent works in is the checkout the gates run in.

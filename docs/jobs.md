@@ -29,8 +29,9 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
   POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
 POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
-  -> 200 {id, status, threadTerminal}   the verdict, plus whether EVERY job of the thread is
-                                         terminal — the worktree-reclaim signal (see below)
+  -> 200 {id, status, threadDone}   the verdict, plus whether EVERY job of the thread is
+                                    terminal AND the user has closed it — the worktree-reclaim
+                                    signal (see below)
   ... or, if the runner went quiet:
 POST /api/jobs/:id/suspend  {leaseToken}        -> standby, session kept
 POST /api/jobs/:id/resume   {}                  -> queued, claimed again with resumeSessionId
@@ -530,6 +531,9 @@ A run finishing is not a task finishing. `POST /api/jobs/:id/follow-up {command}
 an adjustment on a **finished** task as a continuation of what it just did, and `POST
 /api/jobs/:id/done` records the user closing the task by hand. Between "the executor stopped
 talking" and "I am satisfied" sit as many rounds of "again, but tighter" as the human wants.
+Done is also what frees the task worktree: until the user closes the thread, its tree stays on
+the volume whatever the runs' verdicts were (issue #47, revised — see the reclaim section
+below).
 
 **A follow-up is a NEW job row, never an edit of the parent.** `job` is an audit record of what ran
 (the `created_by` precedent), and overwriting the parent's command or output would erase the very
@@ -617,15 +621,17 @@ thread member is running, because a live run's worktree is exactly what must not
 — stop first, then remove. Nothing on the row survives: the thread's nav entry, its tabs, its
 Reclaim-eligible tree.
 
-**The reclaim is its own queue, not a verdict signal.** `threadTerminal` is the driver's completing
-attempt claiming its own tree; a removed thread has no attempt to complete, so the board hands the
+**The reclaim is its own queue, not a verdict signal.** A removed thread has no attempt to
+complete, so the board hands the
 tree itself out: `POST /api/reclaims/claim {worker}` returns the oldest queued row
 (`{ id, rootJobId, repo, workspacePath, leaseExpiresAt }`) or 204, and `POST /api/reclaims/:id/ack`
 proves it gone. The row id is the lease token, ack matches on `claimed_by`, and the driver drains
 the queue in a loop parallel to its job claims — claim, remove the worktree, ack, repeat — so a
 worker that dies mid-reclaim simply loses the lease and the next poll picks the tree up again. A
 removed task cannot be undeleted; the worktree removal is the last thing to land, and it lands
-because the rows are already gone.
+because the rows are already gone. A done on an already-terminal thread feeds the same queue (see
+the reclaim section below), so remove and done are the queue's two writers and the verdict-time
+reclaim is the third path, covering a done declared while a follow-up still moved.
 
 ## Gates: verification checks declared by `.bellows.yaml`
 
@@ -654,12 +660,18 @@ top-level `services:` block is the one tolerated foreign key — the services ha
 read by the driver's own parser, which skips the `environment:` block in return; a file may carry
 both halves. Anything else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — is a
 named error with the line number.
-
 **One environment container per task worktree, a `docker exec` per gate.** The container
 (`factory-env-…`, labelled `factory.gates=<key>`) runs the declared image as a `sleep infinity`
 sleeper over the workspaces volume, working directory at the task worktree —
 `<org>/<uuid>/.worktrees/<root id>`, the same tree the coding agent edits, so gates see exactly
-what the agent wrote. The key is the worktree path now, and with it the environment is per TASK:
+what the agent wrote. It runs as the RUNNER's uid:gid (`1000:1000`, the executor images' `USER
+node`, `HOME=/tmp` for the non-root uid; the kubernetes gate Job states the same numbers as a
+`securityContext`), not as the declared image's own default: the gate is a WRITER on the shared
+task worktree, and a gate that wrote as root would leave files the uid-1000 sync and reclaim can
+never remove — the tree stuck for every later turn of the thread (observed 2026-09-13: a
+gate-built `core/dist` left a worktree whose reclaim died with EACCES and whose next turn's
+restore failed the same way). The key is the worktree path now, and with it the environment is
+per TASK:
 a follow-up within the cooldown reuses the warm container (same key), but two concurrent tasks
 on one member+repo no longer share one, which is the disk-for-isolation trade the worktree
 model already made. It comes up **before** the agent runs,
@@ -798,12 +810,17 @@ sweep, kubernetes's checkout claim) — it fences containers, not git — and th
 that follows the sync stays, because a restored tree can still differ from the clone fallback
 the claim was read from.
 
-**The task worktree is reclaimed when the thread ends — finishing or deleting a task cleans up
-its tree (issue #47).** The sync created the tree, and every commit on it belongs to one thread;
-once the whole thread is terminal the tree holds nothing worth keeping. The signal is the
-verdict itself: `complete` answers `{ id, status, threadTerminal }`, where `threadTerminal` is
-the store's answer — computed in the same transaction as the verdict — to whether EVERY job of
-the thread is terminal (`succeeded`/`failed`/`dead`), and when it is true the driver removes the
+**The task worktree is reclaimed when the user closes the thread — done or delete cleans up the
+tree (issue #47, revised).** The sync created the tree, and every commit on it belongs to one
+thread; but "the thread is over" is the USER's verdict, not the executor's — a task is over when
+the user says so, and until then the tree is exactly what its next turn continues from. A failed
+run, a burned attempt budget, a cache kill — none of them frees the tree; the rebase autostash of
+a later starting claim would, but mid-flight is not the board's business to tidy. The signal is
+done-and-terminal: `complete` answers `{ id, status, threadDone }`, where `threadDone` is the
+store's answer — computed in the same transaction as the verdict — to whether EVERY job of the
+thread is terminal (`succeeded`/`failed`/`dead`) AND one member carries the user's `done_at` (the
+tasks UI marks the thread's head, so the column can sit on any member — one done is the THREAD's
+done). When it is true the completing attempt removes the
 tree via the worktree script run as the sync's twin — a throwaway `docker run` naming the clone
 and the tree, or a reclaim Job over the PVC whose name carries the lease token. The driver does
 not ask the board for the thread any more: an earlier shape read `GET /api/jobs/:id/thread`
@@ -811,16 +828,28 @@ after the verdict, which put the whole thread's commands, output and session ids
 worker token could reach — audit data of jobs the driver never held — and computing the answer
 at the verdict moment also closes a race the read had: a follow-up inserted between the verdict
 and the read made the thread non-terminal at the last possible moment, where the verdict-moment
-answer is final. A follow-up still queued, parked, or running keeps `threadTerminal` false and
-the tree in place; a follow-up created after the reclaim simply recreates the tree on the
-surviving `factory/<root>` branch the next time a claim restores it. The reclaim deletes only
+answer is final. A follow-up still queued, parked, or running keeps `threadDone` false and
+the tree in place — and so does a thread that finished with nobody closing it, which is now the
+common case rather than the reclaim.
+
+The done itself is the ordinary path, because the user usually closes a thread that has already
+stopped moving: `POST /api/jobs/:id/done` stamps `done_at` and, in the same transaction, queues
+a `task_reclaim` row when every member is already terminal — the queue below takes the tree
+down, exactly as a remove does. The verdict-time reclaim above is what covers the other order:
+a done declared while a follow-up still moved queues nothing (the thread is not terminal yet),
+and the follow-up's completing attempt finds done and terminality together and reclaims at the
+verdict. Either way there is exactly one reclaim per closed thread: the queue insert is
+guarded against a row the thread already has.
+
+The reclaim deletes only
 what the sync would have — a registered worktree of the clone, or the bare leftover directory
 the sync itself would have removed — and REFUSES, like the sync, a path that holds a git tree
 that is not this clone's worktree, logging the reason rather than touching it. It is
 best-effort by contract: the verdict is already on the board when it runs, so a board that
 refuses the complete call, a runner that refuses the tree, or a daemon that says no costs the
 reclaim, never the verdict — the tree stays and the branch survives for a later follow-up. Who
-reclaims: the driver's last completing attempt. Deleting a task by hand is the other end of the same
+reclaims: the driver's last completing attempt, or the queue's drain loop. Deleting a task by
+hand is the other end of the same
 queue: `remove` inserts a `task_reclaim` row in the delete transaction, and the driver's separate
 reclaim loop (claim → worktree removal → ack) pulls it down — see the Remove section above.
 

@@ -174,10 +174,12 @@ against this list — and still nothing runs.
   repository frees nothing; `docker compose down -v` is the only reclaim. The reason has not changed
   and is the reason nothing can be built here safely: this process cannot tell a stale clone from
   one holding an agent's uncommitted work. The driver's task worktrees only LOOK like that — a
-  finished or deleted task does clean its tree up: when the whole thread is terminal the driver
-  removes the per-thread worktree and prunes its admin entry (issue #47, `docs/jobs.md`), keeping
+  task the user closed or deleted does clean its tree up: when the whole thread is terminal AND
+  the user has marked it done (or removed it) the driver removes the per-thread worktree and
+  prunes its admin entry (issue #47, `docs/jobs.md`), keeping
   the surviving `factory/<root>` branch so a follow-up can recreate the tree when its claim
-  restores. What
+  restores. A thread that failed or finished without the done keeps its tree — the tree is what
+  its next turn continues from. What
   still grows unbounded is the member CLONES, which hold the per-thread worktrees' branches; those
   are invisible to the workspace page, which walks checkout directories only.
 - **What exists instead:** a per-member cap of 20 repositories, so one click cannot clone an entire

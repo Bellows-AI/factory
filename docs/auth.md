@@ -221,7 +221,7 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
   session data of jobs it never held a lease on; a claim exposes only the currently claimed job,
   and the token's one legitimate use of the thread (deciding the task worktree reclaim, issue
   #47) now rides the lease-guarded `complete` response instead: the store computes
-  `threadTerminal` in the same transaction as the verdict, and the driver reclaims on that. The
+  `threadDone` in the same transaction as the verdict, and the driver reclaims on that. The
   task detail page keeps its session-cookie read, which was the read's original and remaining
   purpose.
 - **The worker token is minted by CLI only.** `npm run worker-token -- --name driver-1`, printed

@@ -228,7 +228,13 @@ unported for opencode here is the cache watch above, refused with claude-code's.
 `docker exec`s gates into it; this executor has no exec grant and wants none, so each gate run is
 a batch Job in the declared image — `sh -c` with the command as one argv element, `workingDir` at
 the checkout over the same workspaces PVC, the env as a per-run Secret read by `envFrom` (never
-literals: anyone who can `get pods` reads a pod spec). `activeDeadlineSeconds` carries
+literals: anyone who can `get pods` reads a pod spec). The Job runs under a `securityContext` of
+`runAsUser`/`runAsGroup` 1000, with `HOME=/tmp` — the same uid:gid the docker gate env is given
+(`--user 1000:1000`) and the executor images' `USER node`: the gate is a writer on the shared
+task worktree, and a gate writing as the declared image's default (root, usually) would leave
+files the uid-1000 sync and reclaim Jobs can never remove (observed 2026-09-13 on the docker
+twin: a gate-built `core/dist` left a worktree whose reclaim died with EACCES).
+`activeDeadlineSeconds` carries
 `GATE_TIMEOUT_MS`, and a `DeadlineExceeded` Job is reported exit 124, the convention the docker
 manager's own timeout kill uses. Gate Jobs carry the attempt's `factory.job`/`factory.lease`
 labels, which is what puts them inside the re-claim fence's sweep. What is deliberately not
