@@ -733,7 +733,11 @@ already run is not an error: the next acquire re-fences and recreates, the same 
 spawn here does.
 
 **The gates run between the agent finishing and the verdict**, with the heartbeat still beating —
-a test suite can take minutes, and it must not outrun the lease it runs under. Each state change
+a test suite can take minutes, and it must not outrun the lease it runs under. Each gate
+re-acquires the environment before it runs, exactly as the ad-hoc endpoint does: a run can
+outlive `GATE_COOLDOWN_MS` past the agent's last ad-hoc gate call, and acquire is the idempotent
+revive (it cancels a pending teardown and recreates a torn-down environment), so a cooldown
+firing mid-run costs a re-acquire, never a failed gate. Each state change
 is reported to `POST /api/jobs/:id/gates`, which **replaces** the stored list: the job row's
 `gates` jsonb holds the current/last state only, which is what makes the task view's "no history"
 honest (the report is bounded so the whole list always fits the board's body limit, whatever the

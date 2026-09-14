@@ -2853,7 +2853,13 @@ export function createKubernetesGateManager({
                     );
                 }
             }
-            entries.set(key, { job, image, envBody, secretName, run: 0 });
+            // A re-acquire of the SAME attempt — the loop's per-gate re-acquire (issue #78) —
+            // keeps the run counter, so a run never lands on a name a previous run of that gate
+            // already used (the reaped Job can still exist when the create lands). A different
+            // attempt starts at 0: names already differ across attempts through the lease token.
+            const prev = entries.get(key);
+            const run = prev && prev.job.id === job.id && prev.job.leaseToken === job.leaseToken ? prev.run : 0;
+            entries.set(key, { job, image, envBody, secretName, run });
         },
 
         runGate(key, name, command) {

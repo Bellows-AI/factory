@@ -68,10 +68,15 @@ interface JobState {
  * One gated job's live registration: the checkout key its environment is filed under, the token
  * the runner's agent presents to the ad-hoc endpoint, and the gates the job's `.bellows.yaml`
  * declared. Lives from before the agent starts until the run's exit paths have all been walked.
+ * The image and env body the environment was created with ride along so the gates pass can
+ * re-acquire — carried, not recomputed, because a body recomputed at gates time would fold in
+ * the minted `BELLOWS_GATE_*` lines that only exist after `beginGates` has registered them.
  */
 interface GateSession {
     key: string;
     token: string;
+    image: string;
+    envBody: string;
     declared: readonly { name: string; command: string }[];
 }
 
@@ -301,7 +306,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 BELLOWS_GATE_URL: gates.advertiseUrl(port),
                 BELLOWS_GATE_TOKEN: token,
             };
-            return { key, token, declared: job.gates.gates };
+            return { key, token, image: job.gates.image, envBody, declared: job.gates.gates };
         } catch (e) {
             // The container came up but registration did not. Released — not stopped — so the
             // cooldown owns it and the next turn reuses it, instead of leaking one live
@@ -320,6 +325,12 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * against the VERDICT: a board hiccup costs the live view, not the gating. A gate that cannot
      * run at all is a failed gate — an exit code of 125 is docker's "container not there", and
      * treating it as a pass would be the one lie this loop must never tell.
+     *
+     * Each gate re-acquires the environment first, exactly as the ad-hoc endpoint does: the
+     * cooldown the agent's last ad-hoc gate call armed can fire while the agent keeps working,
+     * and a run that outlives GATE_COOLDOWN_MS must not fail at the finish line over an
+     * environment that acquire can revive (acquire cancels a pending teardown and recreates a
+     * torn-down one).
      */
     async function runDeclaredGates(job: BoardJob, gateSession: GateSession, state: JobState): Promise<GateFailure | null> {
         if (!gates) return null;
@@ -345,9 +356,21 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             if (state.lost) return null;
             results.push({ name: gate.name, status: 'running', exitCode: null, output: null });
             await report();
+            // Re-acquire, then run, under one catch: an environment that cannot be revived is a
+            // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
             const outcome = await gates.manager
-                .runGate(gateSession.key, gate.name, gate.command)
+                .acquire(gateSession.key, gateSession.image, gateSession.envBody, job)
+                .then(() => {
+                    // The heartbeat can mark the lease lost while acquire is pending — a slow
+                    // revival or cluster request outlives the beat that said so. Starting the gate
+                    // then would run it on a checkout another attempt owns: the same dead work the
+                    // check before the acquire refuses.
+                    if (state.lost) return null;
+                    return gates.manager.runGate(gateSession.key, gate.name, gate.command);
+                })
                 .catch((e: Error) => ({ exitCode: 125, output: e.message }));
+            // `runGate` never answers null, so a null here is the lost-lease abandonment above.
+            if (!outcome) return null;
             const failed = outcome.exitCode !== 0;
             // Replace the gate's own entry — one entry per declared gate, always, so the list the
             // board stores IS the declared list at its current state.
