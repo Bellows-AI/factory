@@ -35,6 +35,7 @@ import {
     gitWorktreeScript,
     isBranchName,
     parseGitState,
+    parsePrSummary,
     publishPlan,
     repoPath,
     worktreeBranch,
@@ -3112,7 +3113,9 @@ describe('publishing the produced work', () => {
         const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
         expect(calls.length).toBeGreaterThan(0);
         for (const call of calls) {
-            if (call.some((x) => typeof x === 'string' && x.includes('execFileSync'))) {
+            if (call.some((x) => typeof x === 'string' && x.includes('execFileSync') && !x.includes('shortstat'))) {
+                // The probe runs at the mount root and reads the repo by REPO; every other step
+                // — git, gh, and the worktree-rooted summarizer (issue #82) — takes `-w`.
                 expect(call).toEqual(expect.arrayContaining(['-e', `REPO=${wt}`]));
             } else if (call.includes('-w')) {
                 expect(call[call.indexOf('-w') + 1]).toBe(wt);
@@ -3183,6 +3186,15 @@ describe('publishing the produced work', () => {
         });
     });
 
+    it('parses the PR summary’s answer, defaulting anything missing', () => {
+        expect(parsePrSummary('{"title":"Fix the fence","body":"## Commits"}')).toEqual({
+            title: 'Fix the fence',
+            body: '## Commits',
+        });
+        expect(parsePrSummary('{"title":"","body":null}')).toEqual({ title: null, body: null });
+        expect(parsePrSummary('')).toEqual({ title: null, body: null });
+    });
+
     /**
      * A stateful daemon: the probe answers from `state`, git steps mutate nothing, and every
      * call is recorded so the flow — what ran, in which order, and what was skipped — is the
@@ -3201,12 +3213,16 @@ describe('publishing the produced work', () => {
             // step runs, so a test can assert exactly what the container was handed.
             const envAt = args.indexOf('--env-file');
             if (envAt !== -1) envBodies.push(readFileSync(args[envAt + 1] as string, 'utf8'));
+            if (opts.fail?.(args)) throw new Error('step refused');
             // The probe's marker rides INSIDE the -e script string; the git steps carry their
-            // subcommand as a standalone argv element.
+            // subcommand as a standalone argv element. The PR summarizer (issue #82) is the
+            // second node step — told apart by the git argv its script embeds.
             if (args.some((a) => typeof a === 'string' && a.includes('execFileSync'))) {
+                if (args.some((a) => typeof a === 'string' && a.includes('shortstat'))) {
+                    return { stdout: JSON.stringify(SUMMARY) };
+                }
                 return { stdout: JSON.stringify(state) };
             }
-            if (opts.fail?.(args)) throw new Error('step refused');
             if (args.includes('pr') && args.includes('view')) {
                 if (opts.prExists) return { stdout: `${PR_URL}\n` };
                 throw new Error('no pull requests');
@@ -3231,6 +3247,23 @@ describe('publishing the produced work', () => {
         hasIdentity: false,
     };
 
+    /** What the PR summarizer answers (issue #82): what the branch did, not what was asked. */
+    const SUMMARY = { title: 'Fix the sync re-claim fence', body: '## Commits\n\n- Fix the sync re-claim fence' };
+
+    const shapesOf = (calls: string[][]): string[] =>
+        calls.map((a) => {
+            if (a.some((x) => typeof x === 'string' && x.includes('execFileSync'))) {
+                return a.some((x) => typeof x === 'string' && x.includes('shortstat')) ? 'summary' : 'probe';
+            }
+            if (a.includes('switch')) return 'switch';
+            if (a.includes('add')) return 'add';
+            if (a.includes('commit')) return 'commit';
+            if (a.includes('push')) return 'push';
+            if (a.includes('view')) return 'pr-view';
+            if (a.includes('create')) return 'pr-create';
+            return 'other';
+        });
+
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
         // branch), and `-c` creates it — both calls are part of the expected shape.
@@ -3240,17 +3273,17 @@ describe('publishing the produced work', () => {
         const result = await runner.publishGit(ISSUE_JOB);
 
         expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
-        const shapes = calls.map((a) => {
-            if (a.some((x) => typeof x === 'string' && x.includes('execFileSync'))) return 'probe';
-            if (a.includes('switch')) return 'switch';
-            if (a.includes('add')) return 'add';
-            if (a.includes('commit')) return 'commit';
-            if (a.includes('push')) return 'push';
-            if (a.includes('view')) return 'pr-view';
-            if (a.includes('create')) return 'pr-create';
-            return 'other';
-        });
-        expect(shapes).toEqual(['probe', 'switch', 'switch', 'add', 'commit', 'push', 'pr-view', 'pr-create']);
+        expect(shapesOf(calls)).toEqual([
+            'probe',
+            'switch',
+            'switch',
+            'add',
+            'commit',
+            'push',
+            'pr-view',
+            'summary',
+            'pr-create',
+        ]);
         // The first switch finds no branch; the second creates it. Commits carry the plan title,
         // and the fallback identity rides only the commit.
         const switchCreate = calls.find((a) => a.includes('switch') && a.includes('-c'));
@@ -3267,9 +3300,19 @@ describe('publishing the produced work', () => {
         expect(push).toContain('--force-with-lease');
         expect(push.join(' ')).toContain('credential.helper=');
         expect(push.join(' ')).not.toContain('t0k-3n');
+        // The PR speaks for the work, not for the command (issue #82): the summarizer reads the
+        // branch with a literal BASE and no credential, and its answer — issue ref appended —
+        // is the title, over the summary body plus the driver's closing lines.
+        const summary = calls.find((a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')));
+        expect(summary).toEqual(expect.arrayContaining(['-e', 'BASE=origin/main']));
+        expect(summary).not.toContain('--env-file');
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
         expect(create).toContain('--head');
         expect(create).toContain('fix/10');
+        expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
+        expect(create?.[create.indexOf('--body') + 1]).toBe(
+            '## Commits\n\n- Fix the sync re-claim fence\n\nCloses #10.\n\nPublished by the factory board after the declared gates passed.'
+        );
     });
 
     it('reuses an existing task branch and an existing PR', async () => {
@@ -3280,19 +3323,9 @@ describe('publishing the produced work', () => {
         const result = await runner.publishGit(ISSUE_JOB);
 
         expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
-        const shapes = calls.map((a) => {
-            if (a.some((x) => typeof x === 'string' && x.includes('execFileSync'))) return 'probe';
-            if (a.includes('switch')) return 'switch';
-            if (a.includes('add')) return 'add';
-            if (a.includes('commit')) return 'commit';
-            if (a.includes('push')) return 'push';
-            if (a.includes('view')) return 'pr-view';
-            if (a.includes('create')) return 'pr-create';
-            return 'other';
-        });
         // On a task branch already: no switch, no commit (clean tree), push of the unpushed
-        // commit, PR found and reused.
-        expect(shapes).toEqual(['probe', 'push', 'pr-view']);
+        // commit, PR found and reused — and no summarizer step, which only a NEW PR gets.
+        expect(shapesOf(calls)).toEqual(['probe', 'push', 'pr-view']);
     });
 
     it('answers the ordinary no-ops without touching the daemon further', async () => {
@@ -3349,5 +3382,24 @@ describe('publishing the produced work', () => {
 
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('step refused');
+    });
+
+    // The summary is decoration, never worth the publish (issue #82): a script that cannot read
+    // the branch must not fail a run that already pushed — the command-derived title and the
+    // plain body are the fallback the old PRs carried.
+    it('falls back to the command-derived title and body when the summarizer fails', async () => {
+        const { calls, runner } = publishRunner(DIRTY_ON_MAIN, {
+            fail: (a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')),
+        });
+        const result = await runner.publishGit(ISSUE_JOB);
+
+        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
+        expect(create?.[create.indexOf('--title') + 1]).toBe(
+            '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)'
+        );
+        expect(create?.[create.indexOf('--body') + 1]).toBe(
+            'Closes #10.\n\nPublished by the factory board after the declared gates passed.'
+        );
     });
 });
