@@ -30,6 +30,9 @@ jobs:
       # @playwright/test would fetch are not used by this job.
       - run: npm ci --ignore-scripts
 
+      # Lint + format verification over the four packages and the root config files; offline and fast.
+      - run: npm run lint
+
       # The suite is offline: no token, no quota, no database, no docker. But server/test and
       # web/test resolve @factory-ai/core to core/dist, so the build is not optional here.
       - run: npm run build -w core

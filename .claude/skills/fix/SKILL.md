@@ -70,8 +70,8 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
 ## Phase 3 — Implement, TDD
 
 The suite commands here are `npm test` (vitest, offline) and `npm run typecheck`. Single file:
-`npx vitest run <path>`. There is no linter or formatter — match existing style: 4-space indent,
-single quotes, semicolons.
+`npx vitest run <path>`. Style is enforced by biome — run `npm run lint` before committing, and
+`npm run lint:fix` (or `npm run format` for pure format drift) to settle what it flags.
 
 In order:
 

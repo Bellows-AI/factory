@@ -71,6 +71,9 @@ npm run driver
 
 npm test               # vitest run — offline, no token, no quota, no database, no docker
 npm run typecheck      # tsc -b across all four project references
+npm run lint           # biome check — lint + format verification over the four packages, offline
+npm run format         # biome format --write — fixes format drift
+npm run lint:fix       # biome check --write — fixes what lint flags
 
 # Real browser (chromium, headless). Builds, SEEDS factory_e2e, serves the SPA from the API on
 # 8123 and walks every date range. Still offline — no token, no quota, no network — but by way of
@@ -155,8 +158,19 @@ Prefer watching one package (`npx vitest watch core/test`) over the whole suite.
 again, look for orphaned `node (vitest N)` workers (parent = 1) left by a killed session —
 `pkill -f 'node (vitest'` clears them.
 
-There is no linter or formatter configured. Match existing style: 4-space indent, single quotes,
-semicolons.
+Biome is the linter and formatter: `biome.json` at the root, covering the four packages and the
+root config files. `npm run lint` is `biome check .` — lint and format verification in one offline
+pass — and `npm run format` is the fixer. The enforced style is the one the tree was already
+written in: 4-space indent, single quotes (double in JSX attributes), semicolons, 120-column
+lines, `es5` trailing commas; `core/test/biome.test.ts` pins all of it. Recommended rules run with
+deliberate carve-outs in `biome.json`, added because they fire on existing code that the
+enablement PR chose not to churn: non-null assertions are the house style under
+`noUncheckedIndexedAccess`, index keys drive chart ticks, bracket access preserves raw-JSON
+contracts (`otlp.ts` reads OTEL payloads field by field), `stripAnsi` in `driver/src/docker.ts`
+matches control characters on purpose, and the `.cjs` container scripts carry their own quirks.
+Every carve-out is a re-enable candidate: turn a rule back on only with the
+source change that retires its hits. Import sorting (assist) and CSS formatting are off; neither
+is a convention here.
 
 ## Build coupling to know about
 
