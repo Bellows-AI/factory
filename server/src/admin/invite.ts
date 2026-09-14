@@ -19,8 +19,7 @@ import { parseArgs, value } from './args.js';
 
 // No fetch credential, said in code. This CLI writes one membership row and never reads GitHub, so
 // requiring App credentials to run it would mean a deployment could not invite its first admin
-// until the App was registered — and would make `npm run invite` refuse a disposable database,
-// which is what scripts/test-jobs.sh points it at.
+// until the App was registered — and would make `npm run invite` refuse a disposable database.
 const { config } = resolveConfig({ env: process.env, github: { mode: 'none' } });
 const args = parseArgs(process.argv.slice(2));
 

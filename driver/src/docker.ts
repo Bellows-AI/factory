@@ -496,8 +496,8 @@ export const GATE_HOME = '/tmp';
 
 /**
  * A container name this process will `docker exec` into: one token, no shell metacharacters. The
- * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 123
- * characters GATE_KEY allows ≈ 135) — a cap BELOW that would create containers every gate then
+ * ceiling is above the longest name `gateEnvContainerName` can emit (12-char prefix + the 124
+ * characters GATE_KEY allows ≈ 136) — a cap BELOW that would create containers every gate then
  * refuses to exec into, a checkout that can never pass.
  */
 const GATE_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/;

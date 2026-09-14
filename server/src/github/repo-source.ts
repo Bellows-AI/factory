@@ -41,7 +41,7 @@ export interface RepoSource {
  */
 export const INSTALLATION_REPOS_TTL_MS = 10 * 60 * 1000;
 
-// Re-exported so `github/client.ts` and the test helpers keep one import site.
+// Re-exported so the test helpers keep one import site.
 export { fullName };
 
 export interface RepoSourceDeps {
@@ -132,7 +132,7 @@ export function createRepoSource({
     };
 }
 
-/** A fixed list. The route tests and `npm run seed` use this instead of reaching GitHub. */
+/** A fixed list. The route tests use this instead of reaching GitHub. */
 export function staticRepoSource(repos: readonly Repo[]): RepoSource {
     const detailed = Object.freeze(
         repos.map((repo) => Object.freeze({ ...repo, private: false, defaultBranch: null, pushedAt: null }))

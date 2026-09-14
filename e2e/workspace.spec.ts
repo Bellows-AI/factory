@@ -10,8 +10,8 @@ import type { Page } from '@playwright/test';
  *
  * The auth server runs with a real ORG_WORKSPACE_ROOT under artifacts/, so this drives real
  * provisioning: a directory is created on disk by the sign-in callback. It does NOT drive a clone —
- * the server here is the offline entry, with no GitHub App credential, so the picker reports an
- * empty installation, which is itself a state worth pinning.
+ * the server here is the offline entry, with no GitHub App credential, so the picker reports the
+ * seeded repositories rather than an installation, which is itself a state worth pinning.
  */
 
 const SHOTS = 'artifacts/ui';

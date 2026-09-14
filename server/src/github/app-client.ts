@@ -40,7 +40,7 @@ export interface GitHubAppClient {
 }
 
 /**
- * A hard ceiling on paging, mirroring the client's MAX_INNER_PAGES. 100 pages of 100 is 10,000
+ * A hard ceiling on paging. 100 pages of 100 is 10,000
  * repositories; past that something is looping rather than large.
  */
 const MAX_PAGES = 100;

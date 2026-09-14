@@ -60,7 +60,7 @@ npm run dev:server     # tsx watch, server only
 npm run dev:web        # vite only (needs the API running for /api)
 
 npm run build          # core -> server -> web -> driver, in that order
-npm start              # node server/dist/index.js (requires build)
+npm start              # node --env-file-if-exists=.env server/dist/index.js (requires build)
 
 # The job driver: claims jobs from the board and spawns a runner container per job (claude-executor,
 # or opencode-executor under RUNNER_CLI=opencode). Needs a docker daemon and the runner image or
@@ -117,8 +117,8 @@ docker compose up -d timescale
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db
 
 # The job board and its driver, end to end: a real board on 8129 against a real factory_jobs_test,
-# a real driver, and real containers — but no Claude and no credential. The runners are two stub
-# images that echo and exit, which is what makes the whole path assertable offline. Everything it
+# a real driver, and real containers — but no Claude and no credential. The runners are four stub
+# images, two of which echo and exit — those prove the whole path offline. Everything it
 # creates it drops. Needs docker and a free 8129.
 npm run test:jobs
 

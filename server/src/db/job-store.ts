@@ -203,18 +203,15 @@ export interface Claim {
      */
     rootJobId: string;
     /**
-     * Set only when this claim is picking a parked job back up, and it is the whole resume protocol:
-     * the worker restores that session instead of starting a new one, and the command is not
-     * re-delivered — it was delivered on the first run and is in the transcript.
+     * Set only when this claim is a follow-up resuming the parent's session: the worker restores
+     * that session instead of starting a new one.
      */
     resumeSessionId: string | null;
     /**
      * True only when `resumeSessionId` is set AND this claim should still deliver the command into
      * it — a follow-up's first (or crashed) attempt, where the restored transcript is the parent
-     * conversation and the command is the new adjustment. False on every parked resume, where the
-     * command is already in the transcript and re-delivering it would re-run work somebody may
-     * have been driving by hand. Absent on a board that predates follow-ups, so it is read as
-     * `?? false` on the driver side.
+     * conversation and the command is the new adjustment. Absent on a board that predates
+     * follow-ups, so it is read as `?? false` on the driver side.
      */
     followUp: boolean;
     /**
@@ -569,7 +566,8 @@ export function withMintedToken(
 }
 
 /**
- * The organization is bound at construction, for the reasons given on createPrStore.
+ * The organization is bound at construction: it is a constant for the life of the process, and a
+ * per-call parameter is one more thing a write path can forget.
  *
  * `hasWorkspaces` is bound the same way, and it decides whether a claim reports a `workspacePath`
  * at all. Without a configured workspace root no directory was ever created, so naming one would

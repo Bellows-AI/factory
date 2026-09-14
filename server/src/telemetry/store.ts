@@ -20,7 +20,7 @@ export interface TelemetryStore {
 }
 
 /**
- * `orgId` is bound at construction for the same reason the PR store binds it: it is a constant for
+ * `orgId` is bound at construction, the way every store binds it: it is a constant for
  * the life of the process, and a per-call parameter is one more thing an ingest route can forget.
  *
  * Note that `insertMetrics` does not stamp it. metric_point has no org column on purpose — a

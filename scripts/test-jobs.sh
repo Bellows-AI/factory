@@ -6,7 +6,7 @@
 # Real HTTP, a real database and real containers — but no Claude and no credential. The runners are
 # four throwaway stub images — two whose entrypoints echo and exit (proving the whole path: the
 # prompt reaches the container, the exit code and output come back, and the board records them),
-# plus a service stub and a runner-exec stub for the services and session phases.
+# plus a service stub and a runner-exec stub for the services phase.
 #
 # Everything it creates it removes: a *_test database, four stub images, one volume, two processes.
 #

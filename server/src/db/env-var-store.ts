@@ -93,7 +93,8 @@ const scopeWhere = (exec: Sql | TransactionSql, scope: Scope): Fragment => {
 };
 
 /**
- * The organization is bound at construction, for the reason createPrStore's header gives.
+ * The organization is bound at construction: it is a constant for the life of the process, and a
+ * per-call parameter is one more thing a write path can forget.
  *
  * `ready` gates every query, the way every other store built in main.ts does: migrations retry
  * with backoff while the database container starts, and a boot that raced them would answer 503s

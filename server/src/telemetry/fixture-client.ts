@@ -7,8 +7,8 @@ const FIXTURE = new URL('../../../core/test/fixtures/telemetry-sessions.json', i
 
 /**
  * Replays the committed synthetic sessions so the whole read path runs with no database and
- * no collector. Unlike the PR fixture this data is invented, so the UI is required to badge it
- * loudly — synthetic figures beside real PR numbers is exactly the invented-number problem.
+ * no collector. This data is invented, so the UI is required to badge it
+ * loudly — synthetic figures beside real figures is exactly the invented-number problem.
  */
 export function createFixtureTelemetryClient(path: URL = FIXTURE): TelemetryClient {
     let cached: TelemetryInput | null = null;

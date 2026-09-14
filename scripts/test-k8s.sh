@@ -10,7 +10,7 @@
 # the local cluster with the stub executor image, queues a job, and watches it come back succeeded
 # — real pods, no Claude, no credential.
 #
-# Everything it creates it removes: one helm release, its claims, and the images it loaded.
+# Everything it creates it removes: one helm release, its claims.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -124,7 +124,7 @@ done
 
 # The Role is namespace-scoped and no wider than the calls the runner makes: create a Job, read its
 # status, delete it, list its pods, read one pod's log. Nothing watches; the jobs rule carries no
-# list, which the exact-verbs assertion pins.
+# watch, which the exact-verbs assertion pins.
 rbac="$(awk '/^# Source: factory\/templates\/driver-rbac.yaml/,/^---/' "$work/rendered.yaml")"
 # `list` on jobs and services is the re-claim fence: its sweep is a collection GET, and a
 # collection GET needs the list verb — a rule without it makes every fence round a 403.
@@ -208,7 +208,7 @@ else
 fi
 
 # The dashboard pod must not start its server until the in-chart database accepts connections: the
-# server's migration retry gives up after ~55s and then serves every DB-backed route as a 500
+# server's migration retry gives up after ~45s and then serves every DB-backed route as a 500
 # forever — a state no amount of client-side polling recovers. On a cold cluster the database
 # image pulls for minutes, so the wait has to live in the pod spec, as an init container running
 # the same pg_isready the database pod's readiness probe runs.
@@ -346,7 +346,7 @@ installed=1
 
 # The timescale deployment is waited for deliberately: the dashboard listens the moment its
 # process is up — health answers, availability reports — but its migrations only start landing
-# once the database accepts connections, and the server gives up retrying after ~55s. On a cold
+# once the database accepts connections, and the server gives up retrying after ~45s. On a cold
 # kind node the database image is still being pulled through containerd in that window, so
 # queueing before it is available fails every POST no matter how long the queue step polls.
 kubectl wait --for=condition=available \

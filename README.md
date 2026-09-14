@@ -79,8 +79,9 @@ fetched or overwritten, and nothing is ever pruned; see [docs/workspace.md](docs
 **`docker compose up` requires a GitHub sign-in.** `docker-compose.yml` pins `AUTH_MODE=github`,
 and unlike almost everything else in that file `.env` cannot override it. Fill in
 `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET` (32+ chars), `PUBLIC_URL`
-and `AUTH_BOOTSTRAP_ADMIN` in `.env` — a missing one is fatal at boot and names itself, rather than
-falling back to an open port. Register an **OAuth App**, not a GitHub App, with the callback at
+and `AUTH_BOOTSTRAP_ADMIN` in `.env` — a missing one of the first four is fatal at boot and names
+itself, rather than falling back to an open port; `AUTH_BOOTSTRAP_ADMIN` is optional, seeding that
+login as the first admin only while the organization has no other members. Register an **OAuth App**, not a GitHub App, with the callback at
 `<PUBLIC_URL>/api/auth/github/callback`; on the default compose ports that is
 `http://127.0.0.1:5173/api/auth/github/callback`.
 

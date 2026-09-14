@@ -177,8 +177,8 @@ export interface DriverConfig {
      * Honors `.bellows.yaml` in the author's checkouts: before a run, the driver reads the file
      * (through a throwaway container over the workspaces volume — it has no host path), starts
      * each declared service as a sibling container on a per-job network, and joins the runner to
-     * it, so `redis://cache:6379` resolves for the duration of one job. Off by default, so that
-     * turning repo-defined containers on is something somebody typed — see docs/jobs.md.
+     * it, so `redis://cache:6379` resolves for the duration of one job. On by default;
+     * `RUNNER_SERVICES=0` is the opt-out — see docs/jobs.md.
      */
     servicesEnabled: boolean;
     /**

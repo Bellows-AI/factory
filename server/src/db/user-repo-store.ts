@@ -78,7 +78,7 @@ const toUserRepo = (row: Row): UserRepo => ({
     readyAt: row.ready_at?.toISOString() ?? null,
 });
 
-/** The organization is bound at construction, for the reason createPrStore's header gives. */
+/** The organization is bound at construction: a constant for the life of the process, never a per-call parameter. */
 export function createUserRepoStore({
     sql,
     orgId,

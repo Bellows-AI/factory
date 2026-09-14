@@ -12,7 +12,7 @@ export interface TelemetryHealth {
 }
 
 /**
- * Mirrors GitHubClient. The fixture implementation is selected by `TELEMETRY_SOURCE=fixture`;
+ * The fixture implementation is selected by `TELEMETRY_SOURCE=fixture`;
  * the default is postgres, which needs a database but no collector.
  */
 export interface TelemetryClient {

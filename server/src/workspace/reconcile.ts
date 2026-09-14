@@ -88,7 +88,8 @@ function gitArgs(url: string, dest: string, authenticated: boolean): string[] {
             `credential.helper=!f(){ test "$1" = get && echo username=x-access-token && echo "password=\${${TOKEN_VAR}}"; }; f`
         );
     }
-    // Not --depth 1: base-branch history and revert detection both read history.
+    // Not --depth 1: a reused branch has to be built on in place, which needs the history
+    // (docs/workspace.md).
     // `--` so a repo name that somehow reached here as "-x" is still a path.
     return [...args, 'clone', '--origin', 'origin', '--', url, dest];
 }

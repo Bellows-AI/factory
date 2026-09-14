@@ -320,7 +320,7 @@ function loadGitHub(env: NodeJS.ProcessEnv): Extract<GitHubConfig, { mode: 'app'
         privateKeyPem: pem,
         // Environment only, and deliberately not a documented variable, for the same reason
         // the three GITHUB_OAUTH_*_URL overrides are: a configurable API host in a file that ships
-        // with a deployment is somewhere to send a credential. index.ts logs it when it is set.
+        // with a deployment is somewhere to send a credential. main.ts logs it when it is set.
         apiUrl: (env.GITHUB_API_URL?.trim() || 'https://api.github.com').replace(/\/+$/, ''),
     });
 }
@@ -368,8 +368,8 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
          *
          * The hatch is required, not decorative. docker/Dockerfile sets HOST=0.0.0.0, because inside
          * a container that is normal and the isolation is compose's `127.0.0.1:8080:8080` publish —
-         * something loadConfig cannot see and must not guess at. So compose sets the hatch, and a
-         * human who sets it has typed the sentence once.
+         * something loadConfig cannot see and must not guess at. Compose pins AUTH_MODE=github
+         * instead, so a human who sets the hatch has typed the sentence once.
          */
         if (!LOOPBACK_HOSTS.has(host) && !bool(env.AUTH_ALLOW_PUBLIC_BIND, false, 'AUTH_ALLOW_PUBLIC_BIND')) {
             throw new Error(
@@ -466,8 +466,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
      * Fatal rather than ignored, like GITHUB_REPOS and CACHE_TTL_SECONDS before them and for the
      * same reason: each one used to decide what the page was made of, so an ignored one boots a
      * dashboard whose operator believes it is reading something else. An empty value is not an
-     * override, here as everywhere, or a bare `GITHUB_TOKEN=` left in .env would refuse to boot —
-     * which matters, because docker-compose passes exactly that whenever the host has no token.
+     * override, here as everywhere, or a bare `GITHUB_TOKEN=` left in .env would refuse to boot.
      */
     if (env.GITHUB_TOKEN) {
         throw new Error(

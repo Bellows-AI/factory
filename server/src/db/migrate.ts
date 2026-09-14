@@ -85,7 +85,7 @@ const ORG_OWNED = ['session_branch'] as const;
  *
  * This is the other half of the migration, and it cannot live in the .sql file because that file
  * cannot see the config. Without it a deployment that sets ORG_ID=bellows reads an empty partition:
- * 200 OK, zero PRs, no log line, indistinguishable from data loss.
+ * 200 OK, zero sessions, no log line, indistinguishable from data loss.
  *
  * Runs on every boot, and is a no-op after the first: nothing writes '__unclaimed__' once the
  * column default has been consumed, so the update matches nothing.

@@ -764,7 +764,8 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * job synthesised from the row: the thread's identity — its root id, repo label and workspace
      * path — is all the tree is filed under. The row's own id rides as the lease token, which is
      * exactly what makes the removal hold the checkout against a live attempt's startup sync
-     * under kubernetes (the claim ConfigMap is named from id + leaseToken), and the short claim
+     * under kubernetes (the claim ConfigMap is keyed by the job id, and its holder data carries
+     * the lease token), and the short claim
      * lease bounds how long a driver that dies mid-removal holds the row.
      *
      * A removed thread has no follow-ups — every row was deleted — so there is no reclaim barrier

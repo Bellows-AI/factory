@@ -21,7 +21,7 @@ restart with a warm database serves real data on the first request rather than a
   is a new file — 013 adding a check value and 023 removing the pull-request schema are the two
   precedents.
 - **`023_drop_pull_requests.sql` is how a feature's schema is removed.** It drops
-  `pull_request` and its four children, `branch_commit`, `branch_history`, `sync_state` and
+  `pull_request`, its four `pr_*` children, and `branch_commit`, `branch_history`, `sync_state` and
   `session_pr` — children listed before their parents, so the drops need no FK juggling. 004 and
   005 stay in place: a fresh database applies them and then drops what they made, which is the
   accepted cost of the filename-tracking rule. The telemetry tables and `002`'s views are untouched.

@@ -48,7 +48,7 @@ export interface AppDeps {
     /** Rides the same registration bargain as userRepos — no store, no routes. */
     userExecutors?: UserExecutorStore | undefined;
     /**
-     * Environment variables and secrets for runners. Unconditional in index.ts — the database is
+     * Environment variables and secrets for runners. Unconditional in main.ts — the database is
      * mandatory — but optional here, so the route tests that predate it stay as they are.
      */
     envVars?: EnvVarStore | undefined;
@@ -57,9 +57,9 @@ export interface AppDeps {
     /**
      * Absent means no auth at all — no hook, no /api/auth routes, every route open.
      *
-     * This is the ROUTE TESTS' mode, not a deployment's: index.ts always supplies one, because the
+     * This is the ROUTE TESTS' mode, not a deployment's: main.ts always supplies one, because the
      * database is mandatory and there is therefore always somewhere for accounts to live. It exists
-     * so the seventeen route-test files that predate accounts keep driving the app with no cookie,
+     * so the seven route-test files that predate accounts keep driving the app with no cookie,
      * and it is the same bargain `store` and `jobs` already make.
      *
      * A deployment that wants everything open sets AUTH_MODE=none, which is a different thing: the

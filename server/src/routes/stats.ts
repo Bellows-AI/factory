@@ -47,8 +47,8 @@ function parseRange(query: StatsQuery, now: Date): DateRange | { error: string }
 /**
  * One function, not an `OrgProvider`.
  *
- * The precedent for an early interface here — `TokenProvider` — ships with two implementations
- * already in tree, and has a signature that was load-bearing on day
+ * The precedent for an early interface here — `TokenProvider` — ships with one implementation
+ * in tree, and has a signature that was load-bearing on day
  * one. A directory's org list is per *user*, so its real signature is `resolve(caller, orgId)` in a
  * codebase that has no caller, no session and no auth: the interface would have to change shape the
  * day its second implementation arrived, having bought nothing but a provider threaded through
