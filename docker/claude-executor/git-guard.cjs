@@ -234,8 +234,8 @@ function analyze(segment, depth) {
         let g = i + 1;
         while (g < tokens.length && tokens[g].startsWith('-') && tokens[g] !== '--') {
             const t = tokens[g];
-            if (t === '-R' || t === '--repo' || t === '--hostname') g += 2;
-            else if (/^--(repo|hostname)=/.test(t)) g += 1;
+            if (t === '-R' || t === '--repo' || t === '--hostname' || t === '--jq' || t === '--template') g += 2;
+            else if (/^--(repo|hostname|jq|template)=/.test(t)) g += 1;
             else g += 1;
         }
         const verb = tokens[g + 1];
@@ -414,6 +414,8 @@ const CASES = [
     ['deny', 'gh repo view && gh pr create'],
     ['deny', "sh -c 'gh pr create --fill'"],
     ['deny', 'FOO=bar gh pr create'],
+    ['deny', 'gh --jq .x pr create'],
+    ['deny', 'gh --template t pr create'],
     ['deny', 'gh pr checkout 82'],
     ['allow', 'git status'],
     ['allow', 'git status --short'],

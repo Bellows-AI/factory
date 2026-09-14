@@ -48,7 +48,9 @@ function summarize() {
         return { title: null, body: null };
     }
 
-    const title = subjects.length ? subjects[0].slice(0, TITLE_MAX) : null;
+    // Code-point truncation, not UTF-16 units — a multi-byte character at the boundary must
+    // not become a lone surrogate in a PR title.
+    const title = subjects.length ? [...subjects[0]].slice(0, TITLE_MAX).join('') : null;
 
     const lines = [];
     if (subjects.length) {
