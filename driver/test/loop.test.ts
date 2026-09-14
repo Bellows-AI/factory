@@ -1348,6 +1348,43 @@ describe('the poll loop', () => {
             activity: '→ Read src/x.ts',
         });
         expect(sampled?.runtime?.sampledAt).toBeTruthy();
+        // A vitals-only sample is byte-identical to the pre-services wire shape: no key at all,
+        // never an empty array the board would store.
+        expect('services' in (sampled?.runtime ?? {})).toBe(false);
+    });
+
+    /**
+     * The attempt's service fleet rides the same flush (issue #60): the dashboard can answer
+     * "did db come up" while the run is going. A services-only sample — vitals unreadable, a
+     * kubernetes cluster with no metrics-server for one — carries null numbers rather than
+     * skipping the flush; the fleet must not depend on the metrics API.
+     */
+    it('flushes the service fleet beside the vitals, and null numbers when there are no vitals', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(
+            async (_job, _session, onOutput) => {
+                onOutput?.('$ docker compose up db\n→ waiting for postgres');
+                while (!board.board.progressed.some((p) => p.runtime?.services)) await sleep();
+                return ok({ output: 'final' });
+            },
+            null,
+            {
+                cpuPercent: null,
+                memUsedMb: null,
+                memPercent: null,
+                services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+            }
+        );
+
+        await drive({ ...board, runner });
+
+        const sampled = board.board.progressed.find((p) => p.runtime);
+        expect(sampled?.runtime).toMatchObject({
+            cpuPercent: null,
+            memUsedMb: null,
+            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+        });
+        expect(sampled?.runtime?.activity).toBe('→ waiting for postgres');
     });
 
     // A run is not failed by its own telemetry. The output stream is a preview; losing it costs

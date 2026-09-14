@@ -97,6 +97,58 @@ describe('the worker token', () => {
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/output');
         expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', output: 'partial output' });
     });
+
+    /**
+     * The runtime sample travels inside the progress body, verbatim. A vitals-only sample
+     * carries no `services` key at all — the byte-identical pin (issue #60): a job whose
+     * attempt declared no services must put exactly what it always put on the wire.
+     */
+    it('carries the runtime sample verbatim, with services only when there are any', async () => {
+        const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        const job = {
+            id: 'job-1',
+            command: 'echo hi',
+            attempts: 1,
+            leaseToken: 'token-1',
+            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+            resumeSessionId: null,
+            userId: null,
+        };
+
+        await board.progress(job, 'partial output', {
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7,
+            activity: '→ Read x',
+            sampledAt: '2026-09-14T10:00:00.000Z',
+        });
+
+        expect(calls[0]!.body).toEqual({
+            leaseToken: 'token-1',
+            output: 'partial output',
+            runtime: {
+                cpuPercent: 93,
+                memUsedMb: 544,
+                memPercent: 7,
+                activity: '→ Read x',
+                sampledAt: '2026-09-14T10:00:00.000Z',
+            },
+        });
+        const firstRuntime = (calls[0]!.body as { runtime: Record<string, unknown> }).runtime;
+        expect('services' in firstRuntime).toBe(false);
+
+        await board.progress(job, 'more', {
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            activity: null,
+            sampledAt: '2026-09-14T10:00:01.000Z',
+            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+        });
+        const secondRuntime = (calls[1]!.body as { runtime: Record<string, unknown> }).runtime;
+        expect(secondRuntime.services).toEqual([{ name: 'db', image: 'postgres:16', state: 'running' }]);
+    });
 });
 
 describe('the claimed job', () => {

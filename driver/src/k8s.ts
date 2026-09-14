@@ -21,7 +21,8 @@ import {
     SESSION_ID,
     workspacePathOf,
 } from './docker.js';
-import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
+import { composeRuntimeSample } from './docker.js';
+import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample, ServiceStatus } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
 import {
@@ -1272,6 +1273,37 @@ export function parsePodMetrics(body: string): Omit<RuntimeSample, 'sampledAt'> 
 }
 
 /**
+ * Pulls the attempt's service fleet out of the lease-scoped pod list — the same selector the
+ * teardown tears down with, so the runner and gate pods never answer it. Pure and exported for
+ * the pinning, like `parsePodMetrics`: the name is the `factory.service` label (the DNS name the
+ * runner resolves), the image the pod's first container's, the state the pod phase lowercased —
+ * `unknown` for a pod the API has not phased yet. Rows without a label or an image are skipped,
+ * and garbage answers empty.
+ */
+export function parseServicePods(body: string): ServiceStatus[] {
+    let list: {
+        items?: {
+            metadata?: { labels?: Record<string, string> };
+            spec?: { containers?: { image?: string }[] };
+            status?: { phase?: string };
+        }[];
+    };
+    try {
+        list = JSON.parse(body) as typeof list;
+    } catch {
+        return [];
+    }
+    const out: ServiceStatus[] = [];
+    for (const item of list.items ?? []) {
+        const name = item.metadata?.labels?.['factory.service'];
+        const image = item.spec?.containers?.[0]?.image;
+        if (!name || !image) continue;
+        out.push({ name, image, state: (item.status?.phase ?? 'unknown').toLowerCase() });
+    }
+    return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
  * Per-run cleanup state, created fresh inside run() for every run and threaded through run0 into
  * create — deliberately NOT a closure cell on the runner object: the runner object is reused
  * across runs and nothing structurally prevents runs from overlapping, so shared closure state
@@ -2001,9 +2033,17 @@ export function createKubernetesRunner(
         // The docker runner samples `docker stats`; the twin here is the metrics API, read from
         // the runner's own pod — discovered by the same job-name label the log read uses,
         // terminating pods skipped for the same reason. Every failure (no pod yet, no
-        // metrics-server in the cluster, a blink) answers null: "no fresh sample", never an
-        // error, exactly what a failed docker read answers.
+        // metrics-server in the cluster, a blink) answers null for the NUMBERS: "no fresh
+        // sample", never an error, exactly what a failed docker read answers. The attempt's
+        // service fleet is read FIRST and independently of the metrics API — a cluster with no
+        // metrics-server (kind, for one) must still report its service states — so a failed
+        // metrics read costs the numbers, not the fleet.
         async sampleRuntime(job: BoardJob) {
+            const services = config.servicesEnabled
+                ? await request('GET', podsByLeasePath(config.k8sNamespace, job))
+                      .then((found) => (found.status >= 300 ? null : parseServicePods(found.body)))
+                      .catch(() => null)
+                : undefined;
             let pods: K8sResponse;
             try {
                 pods = await request(
@@ -2011,12 +2051,12 @@ export function createKubernetesRunner(
                     `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${name(job)}`)}`
                 );
             } catch {
-                return null;
+                return composeRuntimeSample(null, services);
             }
-            if (pods.status >= 300) return null;
+            if (pods.status >= 300) return composeRuntimeSample(null, services);
             const runnerPod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp)
                 ?.metadata?.name;
-            if (!runnerPod) return null;
+            if (!runnerPod) return composeRuntimeSample(null, services);
             let metrics: K8sResponse;
             try {
                 metrics = await request(
@@ -2024,10 +2064,10 @@ export function createKubernetesRunner(
                     `/apis/metrics.k8s.io/v1beta1/namespaces/${config.k8sNamespace}/pods/${runnerPod}`
                 );
             } catch {
-                return null;
+                return composeRuntimeSample(null, services);
             }
-            if (metrics.status >= 300) return null;
-            return parsePodMetrics(metrics.body);
+            if (metrics.status >= 300) return composeRuntimeSample(null, services);
+            return composeRuntimeSample(parsePodMetrics(metrics.body), services);
         },
 
         // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing
