@@ -442,8 +442,8 @@ export function parseDockerServicePs(stdout: string): ServiceStatus[] {
         const labels = typeof fields.Labels === 'string' ? fields.Labels : '';
         const name = labels
             .split(',')
-            .map((pair) => pair.split('='))
-            .find((pair) => pair[0] === 'factory.service')?.[1];
+            .find((pair) => pair.startsWith('factory.service='))
+            ?.slice('factory.service='.length);
         const image = typeof fields.Image === 'string' ? fields.Image : null;
         const state = typeof fields.State === 'string' ? fields.State.toLowerCase() : null;
         if (!name || !image || !state) continue;

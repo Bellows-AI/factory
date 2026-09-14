@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { isTerminal, type Job } from '../src/api/useJobs.js';
+import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
 import { runDuration, taskTime } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
@@ -453,25 +453,27 @@ describe('TaskDetail', () => {
 
         /**
          * A services-only sample — the vitals read failed, a metrics-server-less cluster for one
-         * — carries null numbers: no pills at all beats pills that lie with zeros.
+         * — carries no readable numbers: no pills at all beats pills that lie with zeros. The
+         * board's key-wise merge OMITS the unreadable halves rather than storing nulls, so the
+         * keys can be absent outright; the guard reads both the same.
          */
         it('renders no pills the sample could not read', () => {
-            const html = renderDetail({
-                jobs: [
-                    job({
-                        status: 'running',
-                        runtime: {
-                            cpuPercent: null,
-                            memUsedMb: null,
-                            memPercent: null,
-                            activity: '→ Read x',
-                            sampledAt: '2026-09-01T12:02:00.000Z',
-                        },
-                    }),
-                ],
-            });
+            const servicesOnly = {
+                memPercent: null,
+                activity: '→ Read x',
+                sampledAt: '2026-09-01T12:02:00.000Z',
+                services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+            } as RuntimeVitals;
+            const html = renderDetail({ jobs: [job({ status: 'running', runtime: servicesOnly })] });
             expect(html).not.toContain('chat-runtime');
             for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+
+            const nulls = {
+                ...servicesOnly,
+                cpuPercent: null,
+                memUsedMb: null,
+            };
+            expect(renderDetail({ jobs: [job({ status: 'running', runtime: nulls })] })).not.toContain('chat-runtime');
         });
 
         it('omits the percentage the sample does not carry', () => {

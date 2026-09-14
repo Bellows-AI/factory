@@ -1375,15 +1375,17 @@ export function createJobStore({
         async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd }) {
             await gate();
             // The context stats ride the verdict and merge into the runtime vitals — the row keeps
-            // its last CPU sample AND gains the context the run reached. A run with no sample at
-            // all gets a vitals object holding the stats alone, so "died at a full window" is
-            // visible even where no container sample ever landed. Neither stat present → the
-            // column is left exactly as the samples left it.
+            // its last CPU sample AND gains the context the run reached. The stats are stored
+            // under the keys the task view reads (`contextTokens`, `costUsd`; the wire field is
+            // the driver's `contextCostUsd`, the stored key is the cost's own name). A run with no
+            // sample at all gets a vitals object holding the stats alone, so "died at a full
+            // window" is visible even where no container sample ever landed. Neither stat present
+            // → the column is left exactly as the samples left it.
             const context =
                 typeof contextTokens === 'number' || typeof contextCostUsd === 'number'
                     ? sql.json({
                           ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
-                          ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
+                          ...(typeof contextCostUsd === 'number' ? { costUsd: contextCostUsd } : {}),
                       } as never)
                     : null;
             // One transaction, because the terminality answer must describe the thread AS THE

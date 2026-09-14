@@ -241,9 +241,10 @@ describe.skipIf(!enabled)('job store', () => {
             contextCostUsd: 0.31,
         });
         // The context stats MERGE into the sampled vitals — the row keeps its last sample and
-        // gains the context the run reached beside it.
+        // gains the context the run reached beside it. The wire field is `contextCostUsd`; the
+        // stored key is the cost's own name, `costUsd` — the one the task view reads.
         expect(await store.get(id)).toMatchObject({
-            runtime: { ...vitals, contextTokens: 90433, contextCostUsd: 0.31 },
+            runtime: { ...vitals, contextTokens: 90433, costUsd: 0.31 },
         });
     });
 
@@ -333,7 +334,7 @@ describe.skipIf(!enabled)('job store', () => {
         });
 
         expect(await store.get(id)).toMatchObject({
-            runtime: { contextTokens: 1200, contextCostUsd: 0 },
+            runtime: { contextTokens: 1200, costUsd: 0 },
         });
         expect(await store.get(id)).toMatchObject({ output: 'done' });
     });
