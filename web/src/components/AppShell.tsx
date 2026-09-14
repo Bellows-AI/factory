@@ -4,6 +4,7 @@ import { useStats } from '../api/useStats.js';
 import type { StatsPayload, FetchState } from '../api/useStats.js';
 import { useJobs } from '../api/useJobs.js';
 import type { UseJobs } from '../api/useJobs.js';
+import { useSession } from '../api/useSession.js';
 import { DEFAULT_RANGE, rangeQuery } from './RangeSelector.js';
 import type { RangeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
@@ -72,13 +73,18 @@ export function AppShell() {
     // and the tasks strip, so they live here, beside the task poll they refer to.
     const tabs = useTaskTabs();
 
+    // The session for the topbar's user menu. A second `useSession` instance next to the gate's —
+    // the environment and settings pages already do the same; the module-level listener they
+    // register is a Set for exactly this reason.
+    const { session } = useSession();
+
     const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh, tasks, tabs };
 
     return (
         <div className="shell">
             <SideNav tasks={onTasks ? tasks.jobs : null} tabs={tabs} />
             <div className="shell-main">
-                <TopBar data={data} refreshing={refreshing} onRefresh={refresh} />
+                <TopBar data={data} refreshing={refreshing} onRefresh={refresh} session={session} />
                 <Outlet context={context} />
             </div>
         </div>

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -426,5 +427,56 @@ describe('AUTH_MODE=none', () => {
         });
 
         expect(response.statusCode).toBe(200);
+    });
+
+    it('reports the stand-in account from /api/auth/me, with nothing pretending to be GitHub data', async () => {
+        /*
+         * The settings page renders this caller. Its login is unrepresentable as a real GitHub
+         * login and its numeric id is 0, a value GitHub never issues — so the payload must carry
+         * the facts as they are and let the page decide what a stand-in looks like, rather than
+         * the server inventing a displayable identity.
+         */
+        const store = memoryAuthStore();
+        store.seedLocalUser(ORG);
+        const server = await build({ mode: 'none', ingestToken: null }, store);
+
+        const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+            user: { login: '__local__', githubUserId: 0, avatarUrl: null },
+            role: 'admin',
+            mode: 'none',
+            workspacePath: null,
+        });
+    });
+
+    it('reports the member workspace path once a root is configured, without creating anything', async () => {
+        const store = memoryAuthStore();
+        store.seedLocalUser(ORG);
+        const server = await buildApp({
+            config: testConfig({
+                auth: { mode: 'none', ingestToken: null },
+                workspaceRoot: '/tmp/factory-settings-test',
+            }),
+            service: createStatsService({
+                config: testConfig({ auth: { mode: 'none', ingestToken: null } }),
+                telemetry: stubTelemetryClient(),
+            }),
+            store: telemetryStub(),
+            jobs: jobStub(),
+            auth: store,
+        });
+        app = server;
+
+        const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().workspacePath).toBe(
+            '/tmp/factory-settings-test/test-org/00000000-0000-4000-8000-000000000000',
+        );
+        // Read-only display: computing a path must not provision a directory. That is
+        // GET /api/workspace's job, and it is idempotent there.
+        expect(existsSync('/tmp/factory-settings-test')).toBe(false);
     });
 });

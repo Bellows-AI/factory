@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 
 export interface Session {
-    user: { id: string; login: string; name: string | null };
+    user: {
+        id: string;
+        login: string;
+        name: string | null;
+        /** GitHub's numeric id — 0 for the AUTH_MODE=none stand-in, a value GitHub never issues. */
+        githubUserId: number;
+        avatarUrl: string | null;
+    };
     role: 'admin' | 'member';
+    membership: { invitedAt: string | null; claimedAt: string | null };
+    account: { createdAt: string | null; lastLoginAt: string | null };
     organization: { id: string; name: string };
+    /** The member's checkout root, or null when workspaces are switched off for the deployment. */
+    workspacePath: string | null;
     /** 'none' means the server is running open, so there is no session to end and no button. */
     mode: 'github' | 'none';
 }
@@ -17,13 +28,23 @@ export interface Session {
  * 401 arrives at the data layer, but the thing that has to react to it is the gate, and they have no
  * component relationship: the gate renders the tree that contains the poll.
  *
- * One module-level subscriber rather than a context, because there is exactly one gate and exactly
- * one thing to say to it.
+ * A Set rather than a single slot, because more than one `useSession` instance can be mounted at
+ * once (the shell reads the session for the user menu, and the settings and environment pages read
+ * it for themselves). A single slot let the second mount steal it and the first unmount silence the
+ * gate for both.
  */
-let listener: (() => void) | null = null;
+const listeners = new Set<() => void>();
 
 export function reportUnauthenticated(): void {
-    listener?.();
+    for (const listener of listeners) listener();
+}
+
+/** Registers a 401 listener; returns the unsubscribe. The effect below is one caller of it. */
+export function subscribeUnauthenticated(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
 }
 
 export interface UseSession {
@@ -62,10 +83,7 @@ export function useSession(): UseSession {
 
     useEffect(() => {
         void check();
-        listener = () => void check();
-        return () => {
-            listener = null;
-        };
+        return subscribeUnauthenticated(() => void check());
     }, [check]);
 
     return { session, loading, error };

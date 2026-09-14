@@ -304,9 +304,13 @@ describe('/api/auth/me', () => {
     });
 
     it('reports the caller, their role and the organization', async () => {
-        const { app } = await setup((store) => {
+        const { app, identity } = await setup((store) => {
             void store.invite(ORG, 'octocat', 'admin');
         });
+        identity.next = {
+            ...identity.next,
+            avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png',
+        };
         const state = await begin(app);
         const signIn = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
         const cookie = signIn.cookies.find((c) => c.name === SESSION_COOKIE)!.value;
@@ -319,9 +323,18 @@ describe('/api/auth/me', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json()).toMatchObject({
-            user: { login: 'octocat' },
+            user: {
+                login: 'octocat',
+                githubUserId: 4242,
+                avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png',
+            },
             role: 'admin',
+            membership: { invitedAt: expect.any(String), claimedAt: expect.any(String) },
+            account: { createdAt: expect.any(String), lastLoginAt: expect.any(String) },
             organization: { id: ORG },
+            // The harness configures no workspace root, and "off" is a supported state the SPA
+            // renders as an absence rather than an error — the same posture as /api/workspace.
+            workspacePath: null,
             mode: 'github',
         });
     });
