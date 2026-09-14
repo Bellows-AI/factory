@@ -29,7 +29,7 @@ const render = (forSession: Session) =>
     renderToStaticMarkup(
         <MemoryRouter>
             <UserMenu session={forSession} />
-        </MemoryRouter>,
+        </MemoryRouter>
     );
 
 describe('UserMenu', () => {

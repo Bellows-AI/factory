@@ -1,6 +1,6 @@
 ---
 name: backend-fix
-description: End-to-end fix of a backend bug under strict TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, then open the PR and clear review feedback. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
+description: End-to-end fix of a backend bug under strict TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, and hand off to the board's publish, which opens the pull request. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
 ---
 
 # Backend bug fix, end to end
@@ -214,15 +214,21 @@ Run the [Local review gate](#local-review-gate) on the diff about to be pushed. 
 actionable, re-review until clean, then push. Gate fixes go in a new commit
 (`<KEY> [fix] address local review: <summary>`) — never amend a commit already on the remote.
 
-### 5.13 Open the PR
+### 5.13 Report ready for publish — the board opens the PR
 
-Use the **github** skill. Do not ask first. Base it on the branch from 5.1. Capture the PR number.
+Do not create the pull request yourself. The factory board's publish flow pushes the task branch
+and opens (or reuses) the pull request after the gates pass, writing the title and description
+from the branch's commits — `gh pr create` is denied to you, and the deny is policy, not an
+obstacle. Finish the job the publish expects: work committed on the task branch, lint and tests
+green.
 
 ---
 
 ## Step 6 — Land the PR (one loop, max 5 iterations)
 
-One bounded loop, not two. Per iteration:
+The PR is the board's: its publish opens (or reuses) the pull request after your run ends and the
+gates pass — so on the run that fixed the ticket there is nothing to poll; finish at 5.13. On a
+follow-up run, after review feedback arrives, the PR exists and this loop applies. Per iteration:
 
 1. Poll the checks. Red → fix the **root cause** and re-push (each push repeats 5.10 and the review
    gate). Never bypass a check to make it green.

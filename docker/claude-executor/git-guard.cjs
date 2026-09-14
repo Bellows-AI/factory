@@ -2,9 +2,10 @@
 
 /*
  * The git guard: a PreToolUse hook that denies the Bash commands which would move HEAD or
- * rewrite refs in the task worktree. The tree standing on `factory/<root>` is the driver's
- * invariant (docs/jobs.md) — the restore-mode sync refuses a wrong checkout only after the
- * damage, and the damage strands the thread (job 43379d3a, 2026-09-13). This hook exists to
+ * rewrite refs in the task worktree, and the gh commands that would open a PR the driver's
+ * publish owns or move HEAD onto one (issue #82). The tree standing on `factory/<root>` is the
+ * driver's invariant (docs/jobs.md) — the restore-mode sync refuses a wrong checkout only after
+ * the damage, and the damage strands the thread (job 43379d3a, 2026-09-13). This hook exists to
  * keep threads runnable; it is a guardrail, not a security boundary — the agent is root in
  * its container, and the driver-side sync refusal stays the last line of defense.
  *
@@ -25,6 +26,17 @@ const denyOf = (what) => ({
         `git guard: ${what} would move HEAD or rewrite refs in the task worktree, and the ` +
         "checkout must stay on its task branch. Commit your work instead — branches, rebases " +
         'and publishing are the driver\'s job.',
+});
+
+const denyPrOf = (verb) => ({
+    deny: true,
+    reason:
+        verb === 'create'
+            ? "git guard: 'gh pr create' is the driver publish's job — after the gates the " +
+              'board pushes the task branch and opens (or reuses) the pull request with a ' +
+              'summary of the work. Commit your work; the publish happens on its own.'
+            : "git guard: 'gh pr checkout' would move HEAD off the task branch, and the " +
+              'checkout must stay on it. Read the PR with `gh pr view` / `gh pr diff` instead.',
 });
 
 // At i: a substitution opening ($( , <( or a backtick). Returns { body, end } — end one past
@@ -215,6 +227,21 @@ function analyze(segment, depth) {
         }
         break;
     }
+    // gh (issue #82): the publish flow — branch, push, PR — is the driver's, so the agent may
+    // not open a PR (the PR title/description are the driver summarizer's to write) nor check
+    // one out. Global flags taking a value are skipped; the pr subcommand decides.
+    if (tokens[i] === 'gh') {
+        let g = i + 1;
+        while (g < tokens.length && tokens[g].startsWith('-') && tokens[g] !== '--') {
+            const t = tokens[g];
+            if (t === '-R' || t === '--repo' || t === '--hostname' || t === '--jq' || t === '--template') g += 2;
+            else if (/^--(repo|hostname|jq|template)=/.test(t)) g += 1;
+            else g += 1;
+        }
+        const verb = tokens[g + 1];
+        if (tokens[g] === 'pr' && (verb === 'create' || verb === 'checkout')) return denyPrOf(verb);
+        return ALLOW;
+    }
     if (tokens[i] !== 'git') return ALLOW;
     // Global options: -C/-c take a value (attached or next token), the --key=value / --key
     // value relocations follow, everything else is a bare flag.
@@ -379,6 +406,17 @@ const CASES = [
     ['deny', 'git merge origin/main'],
     ['deny', 'git merge --no-ff feature'],
     ['deny', 'git commit -m x && git rebase main'],
+    // gh (issue #82): opening a pull request is the driver publish's, not the agent's — and
+    // `gh pr checkout` would move HEAD off the task branch, the same damage as `git checkout`.
+    ['deny', 'gh pr create --title "x" --body "y"'],
+    ['deny', 'gh pr create --fill'],
+    ['deny', 'gh -R owner/repo pr create'],
+    ['deny', 'gh repo view && gh pr create'],
+    ['deny', "sh -c 'gh pr create --fill'"],
+    ['deny', 'FOO=bar gh pr create'],
+    ['deny', 'gh --jq .x pr create'],
+    ['deny', 'gh --template t pr create'],
+    ['deny', 'gh pr checkout 82'],
     ['allow', 'git status'],
     ['allow', 'git status --short'],
     ['allow', 'git diff'],
@@ -413,6 +451,15 @@ const CASES = [
     ['allow', 'git rebase --abort'],
     ['allow', 'git rebase --quit'],
     ['allow', 'git rebase --continue'],
+    // Reading GitHub stays allowed (issue #82 is about opening PRs, not reading them) —
+    // commenting on review feedback included.
+    ['allow', 'gh pr view 82 --comments'],
+    ['allow', 'gh pr checks 82'],
+    ['allow', 'gh pr diff 82'],
+    ['allow', 'gh pr status'],
+    ['allow', 'gh pr comment 82 --body "fixed in abc"'],
+    ['allow', 'gh issue view 82 --comments'],
+    ['allow', 'gh api repos/o/r/pulls/82/comments'],
     ['allow', 'npm test'],
     ['allow', 'ls -la'],
     ['allow', "echo 'git switch main'"],

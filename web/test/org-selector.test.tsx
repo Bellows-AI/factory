@@ -77,7 +77,7 @@ describe('TopBar', () => {
             <MemoryRouter>
                 {/* The menu holds a NavLink, so the TopBar needs a router context to render it. */}
                 <TopBar data={payload} refreshing={false} onRefresh={() => {}} session={session} />
-            </MemoryRouter>,
+            </MemoryRouter>
         );
 
     it('puts the selector in the actions group, ahead of Refresh', () => {
@@ -94,7 +94,7 @@ describe('TopBar', () => {
 
     it('renders nothing before the first payload rather than an empty control', () => {
         const markup = renderToStaticMarkup(
-            <TopBar data={null} refreshing={false} onRefresh={() => {}} session={null} />,
+            <TopBar data={null} refreshing={false} onRefresh={() => {}} session={null} />
         );
         expect(markup).not.toContain('org-select');
         expect(markup).toContain('loading…');

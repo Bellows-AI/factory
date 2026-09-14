@@ -173,13 +173,17 @@ which is rarely the container's 1000, and git otherwise refuses the repository o
 ## Git guard
 
 `git-guard.cjs` is wired in `settings.json` as a `PreToolUse` hook on the Bash tool (`if:
-Bash(git *)`, so non-git commands never pay the node boot). It denies what would move HEAD or
-rewrite refs in the task worktree: `git switch`, `git checkout` of a branch or commit (path-scoped
-`git checkout -- <paths>` stays allowed), `git worktree` mutations (`list` stays allowed), `git
-branch` delete/rename/copy/force in short, combined and long forms, `git reset --hard`, and
-`git rebase` / `git merge` outright — rebasing onto the default branch is the driver sync's job.
-`--abort`/`--quit` (and rebase's `--continue`) stay allowed, since they only unwind a state the
-driver's own sync can have left behind. Read-only git, `git add` and `git commit` are untouched.
+Bash(git *)` and `if: Bash(gh *)`, so every other command never pays the node boot). It denies
+what would move HEAD or rewrite refs in the task worktree: `git switch`, `git checkout` of a
+branch or commit (path-scoped `git checkout -- <paths>` stays allowed), `git worktree` mutations
+(`list` stays allowed), `git branch` delete/rename/copy/force in short, combined and long forms,
+`git reset --hard`, and `git rebase` / `git merge` outright — rebasing onto the default branch is
+the driver sync's job. `--abort`/`--quit` (and rebase's `--continue`) stay allowed, since they
+only unwind a state the driver's own sync can have left behind. The gh arm (issue #82) denies
+`gh pr create` — the pull request belongs to the driver's publish, which writes its title and
+description from a summary of the branch — and `gh pr checkout`, which would move HEAD onto a
+PR's branch. Reading GitHub (`gh pr view`, `gh pr diff`, `gh api …`) and `gh pr comment` stay
+allowed. Read-only git, `git add` and `git commit` are untouched.
 
 The parser splits compound commands and lifts `$(…)`/backtick spans into segments of their own,
 strips env-assignment and `env`/`sh -c` prefixes, and walks git's global options (`git -C`, `git

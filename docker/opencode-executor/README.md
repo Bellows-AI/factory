@@ -89,7 +89,10 @@ driver's invariant. The deny lives in `permission.bash` — the config-native ta
 plugin hooking the bash tool because it is the documented mechanism and statically pinnable —
 with a narrower parse than the claude-executor's hook as the honest price:
 `git switch`, `git checkout` of a branch or commit, `git worktree` mutations, `git branch`
-delete/rename/copy/force, `git reset --hard`, and `git rebase` / `git merge`. Because opencode
+delete/rename/copy/force, `git reset --hard`, and `git rebase` / `git merge` — plus the PR
+boundary (issue #82): `gh pr create` (the pull request belongs to the driver's publish, which
+writes its title/description from a summary of the branch) and `gh pr checkout` (it would move
+HEAD off the task branch). Because opencode
 resolves rules with the **last matching rule winning**, key order is load-bearing: the catch-all
 first, the deny globs next, the allows last — and the allows are **exact matches** (`git worktree
 list`, `git rebase --abort`, `git merge --quit`, …). A trailing-glob allow (say

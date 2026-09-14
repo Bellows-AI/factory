@@ -1254,6 +1254,7 @@ describe('publishing the produced work', () => {
             { exit: 0, log: '' }, // commit
             { exit: 0, log: '' }, // push
             { exit: 1, log: '' }, // pr view — none yet
+            { exit: 0, log: JSON.stringify({ title: 'Fix the sync re-claim fence', body: '## Commits' }) }, // pr summary
             { exit: 0, log: `${PR_URL}\n` }, // pr create
         ]);
         const result = await runner(request).publishGit(ISSUE_JOB);
@@ -1261,7 +1262,7 @@ describe('publishing the produced work', () => {
         expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
         const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(posted.map((call) => (call.body as { metadata?: { name?: string } }).metadata?.name)).toEqual(
-            [1, 2, 3, 4, 5, 6, 7, 8].map((n) => publishStepJobName(ISSUE_JOB, n))
+            [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => publishStepJobName(ISSUE_JOB, n))
         );
         // Every step Job is inside the fence sweep — a dead driver's publish cannot outlive the
         // next claimant.
@@ -1273,24 +1274,52 @@ describe('publishing the produced work', () => {
         }
         // The decisions are the workflow's, identical to docker's: the commit carries the plan
         // title and the fallback identity, the push is force-with-lease behind the helper.
-        const commands = posted.map(
+        const containers = posted.map(
             (call) =>
-                (call.body as { spec?: { template?: { spec?: { containers?: { command?: string[] }[] } } } }).spec
-                    ?.template?.spec?.containers?.[0]?.command ?? []
+                (
+                    call.body as {
+                        spec?: {
+                            template?: {
+                                spec?: {
+                                    containers?: Array<
+                                        {
+                                            command?: string[];
+                                            env?: { name: string; value: string }[];
+                                            envFrom?: unknown[];
+                                            workingDir?: string;
+                                        }[]
+                                    >;
+                                };
+                            };
+                        };
+                    }
+                ).spec?.template?.spec?.containers?.[0] ?? {}
         );
+        const commands = containers.map((c) => c.command ?? []);
         const commit = commands.find((argv) => argv.includes('commit'));
         expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
         expect(commit).toContain('user.name=factory-ai');
         const push = commands.find((argv) => argv.includes('push'));
         expect(push.join(' ')).toContain('credential.helper=');
         expect(push).toContain('--force-with-lease');
+        // The summarizer is one Job like every step (issue #82): node over the worktree, the
+        // BASE ref as a literal env, and no credential — local git reads only. Its worktree
+        // anchor is pinned explicitly, because its failure mode without one is the quiet one:
+        // nulls, and the command title this issue removes.
+        const summary = containers.find((c) => c.command?.[2]?.includes('shortstat'));
+        expect(summary).toBeDefined();
+        expect(summary!.command).toEqual(['node', '-e', expect.stringContaining('shortstat')]);
+        expect(summary!.env).toEqual([{ name: 'BASE', value: 'origin/main' }]);
+        expect(summary!.envFrom).toBeUndefined();
+        expect(summary!.workingDir).toBe(WT);
         const create = commands.find((argv) => argv.includes('pr') && argv.includes('create'));
         expect(create).toContain('--head');
         expect(create).toContain('fix/10');
+        expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
         expect(JSON.stringify(commands)).not.toContain('t0k-3n');
         // Every step's Job goes when the step is done — names carry the attempt's token, so a
         // delete can never reach a replacement's anything.
-        for (let n = 1; n <= 8; n += 1) {
+        for (let n = 1; n <= 9; n += 1) {
             expect(
                 calls.some(
                     (call) =>

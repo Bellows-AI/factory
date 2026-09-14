@@ -35,11 +35,17 @@ export const gitWorktreeScript = script('git-worktree.cjs');
 /** The terminal reclaim's node script: see scripts/git-worktree-remove.cjs. */
 export const gitWorktreeRemoveScript = script('git-worktree-remove.cjs');
 
+/** The PR summary's node script: see scripts/pr-summary.cjs. */
+export const prSummaryScript = script('pr-summary.cjs');
+
 /** What the board intends to publish for one job. */
 export interface PublishPlan {
     /** The task branch: `fix/<issue>` when the command names an issue, `task/<date>` otherwise. */
     branch: string;
-    /** The commit / PR title: the command's first line, with the issue reference appended. */
+    /**
+     * The commit message — and the PR title's FALLBACK, for a branch the summarizer cannot
+     * read (issue #82): the command's first line, with the issue reference appended.
+     */
     title: string;
     /** The issue the command names, when it names one — the PR body closes it. */
     issueNumber: number | null;
@@ -199,6 +205,26 @@ export function parseGitState(stdout: string): GitState {
         };
     } catch {
         return { cloned: false, branch: '', defaultBranch: 'main', dirty: false, unpushed: 0, hasIdentity: false };
+    }
+}
+
+/** What the PR summary script answered — either half is optional; nulls mean "fall back". */
+export interface PrSummary {
+    title: string | null;
+    body: string | null;
+}
+
+/** Pulls the PR summary's answer out of its stdout, tolerating anything else. */
+export function parsePrSummary(stdout: string): PrSummary {
+    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+    try {
+        const p = JSON.parse(line) as Partial<PrSummary>;
+        return {
+            title: typeof p.title === 'string' && p.title ? p.title : null,
+            body: typeof p.body === 'string' && p.body ? p.body : null,
+        };
+    } catch {
+        return { title: null, body: null };
     }
 }
 
@@ -394,13 +420,39 @@ export async function publishCheckout(
             prUrl = existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
         }
         if (!prUrl) {
-            const body = plan.issueNumber
-                ? `Closes #${plan.issueNumber}.\n\nPublished by the factory board after the declared gates passed.`
-                : 'Published by the factory board after the declared gates passed.';
+            // The PR speaks for the work, not for the command that started it (issue #82): a
+            // summarizer script reads the branch — its commits and the diff against the default
+            // — in the same throwaway-container shape as every other step. It needs no
+            // credential (local git reads only) and its failure is decoration: the
+            // command-derived plan title and the plain body stay the fallback.
+            const summarized = await runStep({
+                label: 'pr summary',
+                entrypoint: 'node',
+                args: ['-e', prSummaryScript],
+                env: false,
+                envLiterals: { BASE: `origin/${state.defaultBranch}` },
+                inRepo: true,
+            })
+                .then((r) => parsePrSummary(r.stdout))
+                .catch(() => null);
+            let title = summarized?.title ?? plan.title;
+            // The ref is appended only when the branch's own title does not already END with it
+            // — the driver's own backstop commit and the repo's commit convention both close
+            // with `(#N)`, and a subject that merely MENTIONS the issue must not suppress it.
+            if (summarized?.title && plan.issueNumber && !summarized.title.endsWith(`(#${plan.issueNumber})`)) {
+                title = `${summarized.title} (#${plan.issueNumber})`;
+            }
+            const body = [
+                summarized?.body,
+                plan.issueNumber ? `Closes #${plan.issueNumber}.` : null,
+                'Published by the factory board after the declared gates passed.',
+            ]
+                .filter(Boolean)
+                .join('\n\n');
             const created = await step({
                 label: 'gh pr create',
                 entrypoint: 'gh',
-                args: ['pr', 'create', '--head', branch, '--title', plan.title, '--body', body],
+                args: ['pr', 'create', '--head', branch, '--title', title, '--body', body],
                 env: true,
                 inRepo: true,
             });
