@@ -301,6 +301,23 @@ OWN WORKING DIRECTORY — the same directory-scoped query the shipped readout ru
 two concurrent fresh runs of one member would cross-report each other's session id; a follow-up
 avoids the residual window entirely by carrying the id.
 
+**The runner images refuse checkout manipulation at the hook.** The task worktree standing on its
+`factory/<root>` branch is this system's invariant, and nothing stopped the agent from moving it —
+`git switch`, `git checkout <branch>`, branch delete/rename, a worktree of its own all ran
+unimpeded, and the restore-mode sync's refusal (below) arrived only after the damage, stranding
+the thread (job `43379d3a`, 2026-09-13: nine committed, gate-green commits locked in a worktree
+standing on `fix/62-…`). Both runner images now deny the deny-list at the tool boundary, each in
+its CLI's native mechanism — claude-executor through a `PreToolUse` Bash hook
+(`git-guard.cjs`, which parses the command: compounds, `$(…)`, env prefixes, `sh -c`, `git -C`),
+opencode-executor through the baked `permission.bash` table (exact-match allows ranked after the
+deny globs, because opencode resolves rules last-match-wins). Read-only git, `git add` and
+`git commit` stay allowed on both: a commit endangers no checkout, and publishing is the driver's
+publish flow. This is a guardrail, not a security boundary — the agent is root in its container,
+and the sync refusal stays the last line of defense. The same images serve both executors, so one
+change covers docker and kubernetes; the case table lives in `git-guard.cjs` itself and is pinned
+twice — offline by vitest (`driver/test/executor-images.test.ts`) and against the baked copy by
+the image suites' checks.
+
 **`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own
 ids (`ses_…`) and cannot adopt one minted in advance — minting a uuid anyway would put a session
@@ -716,7 +733,11 @@ already run is not an error: the next acquire re-fences and recreates, the same 
 spawn here does.
 
 **The gates run between the agent finishing and the verdict**, with the heartbeat still beating —
-a test suite can take minutes, and it must not outrun the lease it runs under. Each state change
+a test suite can take minutes, and it must not outrun the lease it runs under. Each gate
+re-acquires the environment before it runs, exactly as the ad-hoc endpoint does: a run can
+outlive `GATE_COOLDOWN_MS` past the agent's last ad-hoc gate call, and acquire is the idempotent
+revive (it cancels a pending teardown and recreates a torn-down environment), so a cooldown
+firing mid-run costs a re-acquire, never a failed gate. Each state change
 is reported to `POST /api/jobs/:id/gates`, which **replaces** the stored list: the job row's
 `gates` jsonb holds the current/last state only, which is what makes the task view's "no history"
 honest (the report is bounded so the whole list always fits the board's body limit, whatever the
@@ -978,6 +999,16 @@ is unchanged, and a wrong-but-well-formed label in a hand-written API call is as
 typo'd command. Wiring an executor into the driver remains future work — that change will decide
 what an executor name means to a worker, and whether existence is then checked at create or at
 claim. "Nothing runs an executor yet" stays true.
+
+**The git guard lives in the images, not the sync.** The restore-mode sync enforces the checkout
+invariant only when a claim STARTS — by then a wrong checkout already exists and the thread is
+stranded: the follow-up that would fix it is exactly the run the refusal blocks (job `43379d3a`,
+2026-09-13). So the enforcement moved upstream of the damage: the runner images deny checkout
+manipulation at the tool boundary, in each CLI's native mechanism, and keep the sync as the last
+line rather than the only one. A guardrail and not a security boundary is a stated posture, not a
+disclaimer — the agent is root in its container and can flag its way around any hook — but the
+threat being handled is a competent agent's ordinary command, not a hostile one, and an ordinary
+command is exactly what a hook intercepts.
 
 ## Deliberately absent
 

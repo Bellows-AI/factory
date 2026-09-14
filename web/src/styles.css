@@ -1166,3 +1166,105 @@ button.primary {
 .task-compose .composer-input {
     min-height: 160px;
 }
+
+/* The topbar's user menu and the settings page's identity section. */
+
+.user-menu {
+    position: relative;
+}
+
+.user-menu summary {
+    /* A summary is a disclosure control by default; this one is styled as the topbar's other
+       controls and must not show the triangle. */
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #21262d;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.user-menu summary::-webkit-details-marker {
+    display: none;
+}
+
+.user-menu summary:hover {
+    border-color: var(--primary);
+}
+
+.user-menu-login {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.avatar {
+    border-radius: 50%;
+    display: block;
+    background: #21262d;
+    border: 1px solid var(--border);
+}
+
+.avatar-fallback {
+    /* No picture from GitHub — the login's initial, sized to the avatar it stands in for. */
+    color: var(--muted);
+    text-align: center;
+    line-height: 22px;
+    font-size: 12px;
+    width: 24px;
+    height: 24px;
+}
+
+.avatar-lg.avatar-fallback {
+    line-height: 38px;
+    font-size: 18px;
+    width: 40px;
+    height: 40px;
+}
+
+.user-menu-panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 160px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px;
+    z-index: 10;
+}
+
+.user-menu-panel a {
+    display: block;
+    padding: 6px 10px;
+    border-radius: 4px;
+    text-decoration: none;
+}
+
+.user-menu-panel a:hover {
+    background: #21262d;
+}
+
+.user-menu-panel a.active {
+    color: var(--primary);
+}
+
+.identity-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.identity-head p {
+    margin: 0;
+}
+
+.identity-name {
+    font-weight: 600;
+}

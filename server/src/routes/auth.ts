@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { createUserResolver } from '../auth/plugin.js';
 import type { GitHubIdentityClient } from '../auth/github.js';
 import { ensureUserWorkspace } from '../workspace/provision.js';
+import { workspaceDir } from '../workspace/reconcile.js';
 import {
     OAUTH_COOKIE,
     SESSION_COOKIE,
@@ -52,9 +53,26 @@ export const authRoutes =
                     id: caller.user.id,
                     login: caller.user.login,
                     name: caller.user.displayName,
+                    // The identity and the avatar, for the settings page's read-only identity
+                    // section. Under AUTH_MODE=none these are 0 and null — facts, not display
+                    // hints; the page decides what a stand-in account looks like.
+                    githubUserId: caller.user.githubUserId,
+                    avatarUrl: caller.user.avatarUrl,
                 },
                 role: caller.role,
+                membership: caller.membership,
+                account: {
+                    createdAt: caller.user.createdAt,
+                    lastLoginAt: caller.user.lastLoginAt,
+                },
                 organization: { id: config.orgId, name: config.orgName },
+                // Null when workspaces are switched off — "off" is a configuration somebody chose,
+                // the same answer /api/workspace gives. Read-only: computing a path must not
+                // provision the directory, which GET /api/workspace already does idempotently.
+                workspacePath:
+                    config.workspaceRoot === null
+                        ? null
+                        : workspaceDir(config.workspaceRoot, config.orgId, caller.user.id),
                 // So the SPA knows whether to offer a sign-out at all: under AUTH_MODE=none there is
                 // no session to end, and a button that cannot work is worse than no button.
                 mode: auth.mode,

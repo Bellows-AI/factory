@@ -482,6 +482,9 @@ export function memoryAuthStore(): MemoryAuthStore {
         githubUserId: number;
         login: string;
         displayName: string | null;
+        avatarUrl: string | null;
+        createdAt: string;
+        lastLoginAt: string | null;
     }
     interface Member {
         orgId: string;
@@ -489,6 +492,8 @@ export function memoryAuthStore(): MemoryAuthStore {
         userId: string | null;
         role: Role;
         claimed: boolean;
+        invitedAt: string;
+        claimedAt: string | null;
     }
 
     const users: User[] = [];
@@ -496,6 +501,9 @@ export function memoryAuthStore(): MemoryAuthStore {
     const sessions = new Map<string, { userId: string; expiresAt: number }>();
     const workerTokens: { orgId: string; id: string; name: string; hash: string; revoked: boolean }[] = [];
     let nextId = 1;
+
+    /** A fixed stamp, the same trick listWorkerTokens uses: timestamps are not what most tests vary. */
+    const STAMP = '2026-08-21T12:00:00.000Z';
 
     /**
      * A uuid, like app_user.id. Not cosmetic: that id becomes a workspace path segment and a docker
@@ -506,7 +514,16 @@ export function memoryAuthStore(): MemoryAuthStore {
 
     const key = (hash: Buffer) => hash.toString('hex');
     const callerFor = (user: User, member: Member): Caller => ({
-        user: { id: user.id, githubUserId: user.githubUserId, login: user.login, displayName: user.displayName },
+        user: {
+            id: user.id,
+            githubUserId: user.githubUserId,
+            login: user.login,
+            displayName: user.displayName,
+            avatarUrl: user.avatarUrl,
+            createdAt: user.createdAt,
+            lastLoginAt: user.lastLoginAt,
+        },
+        membership: { invitedAt: member.invitedAt, claimedAt: member.claimedAt },
         role: member.role,
     });
     const memberOf = (userId: string, orgId: string): Caller | null => {
@@ -522,16 +539,35 @@ export function memoryAuthStore(): MemoryAuthStore {
                 githubUserId: nextId,
                 login: login.toLowerCase(),
                 displayName: login,
+                avatarUrl: null,
+                createdAt: STAMP,
+                lastLoginAt: STAMP,
             };
             nextId += 1;
             users.push(user);
-            const member: Member = { orgId, login: user.login, userId: user.id, role, claimed: true };
+            const member: Member = {
+                orgId,
+                login: user.login,
+                userId: user.id,
+                role,
+                claimed: true,
+                invitedAt: STAMP,
+                claimedAt: STAMP,
+            };
             members.push(member);
             return callerFor(user, member);
         },
 
         seedLocalUser(orgId) {
-            const user: User = { id: userId(0), githubUserId: 0, login: '__local__', displayName: 'Local' };
+            const user: User = {
+                id: userId(0),
+                githubUserId: 0,
+                login: '__local__',
+                displayName: 'Local',
+                avatarUrl: null,
+                createdAt: STAMP,
+                lastLoginAt: STAMP,
+            };
             users.push(user);
             const member: Member = {
                 orgId,
@@ -539,6 +575,8 @@ export function memoryAuthStore(): MemoryAuthStore {
                 userId: user.id,
                 role: 'admin',
                 claimed: true,
+                invitedAt: STAMP,
+                claimedAt: STAMP,
             };
             members.push(member);
             return callerFor(user, member);
@@ -558,18 +596,25 @@ export function memoryAuthStore(): MemoryAuthStore {
 
         async signIn(identity, orgId, options) {
             const login = identity.login.toLowerCase();
+            const now = new Date().toISOString();
             let user = users.find((u) => u.githubUserId === identity.githubUserId);
             if (user) {
                 // A rename updates the label. It never creates a second account, and it never
-                // detaches the membership already bound to this numeric id.
+                // detaches the membership already bound to this numeric id. Avatar and last sign-in
+                // mirror the SQL upsert's `excluded.avatar_url` / `last_login_at = now()`.
                 user.login = login;
                 user.displayName = identity.displayName;
+                user.avatarUrl = identity.avatarUrl;
+                user.lastLoginAt = now;
             } else {
                 user = {
                     id: userId(nextId),
                     githubUserId: identity.githubUserId,
                     login,
                     displayName: identity.displayName,
+                    avatarUrl: identity.avatarUrl,
+                    createdAt: now,
+                    lastLoginAt: now,
                 };
                 nextId += 1;
                 users.push(user);
@@ -580,13 +625,22 @@ export function memoryAuthStore(): MemoryAuthStore {
                 if (members.some((m) => m.orgId === member.orgId && m.userId === user.id)) continue;
                 member.userId = user.id;
                 member.claimed = true;
+                member.claimedAt = now;
             }
             const claimed = memberOf(user.id, orgId);
             if (claimed || !options?.autoJoin) return claimed;
             // Mirrors the SQL store's `on conflict do nothing`: an existing row for this login keeps
             // whatever role it has rather than being reset to `member`.
             if (!members.some((m) => m.orgId === orgId && m.login === login)) {
-                members.push({ orgId, login, userId: user.id, role: 'member', claimed: true });
+                members.push({
+                    orgId,
+                    login,
+                    userId: user.id,
+                    role: 'member',
+                    claimed: true,
+                    invitedAt: now,
+                    claimedAt: now,
+                });
             }
             return memberOf(user.id, orgId);
         },
@@ -622,7 +676,15 @@ export function memoryAuthStore(): MemoryAuthStore {
                 held.role = role;
                 return 'updated';
             }
-            members.push({ orgId, login: normalised, userId: null, role, claimed: false });
+            members.push({
+                orgId,
+                login: normalised,
+                userId: null,
+                role,
+                claimed: false,
+                invitedAt: new Date().toISOString(),
+                claimedAt: null,
+            });
             return 'created';
         },
 

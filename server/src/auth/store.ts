@@ -9,11 +9,22 @@ export interface AuthUser {
     githubUserId: number;
     login: string;
     displayName: string | null;
+    avatarUrl: string | null;
+    /** ISO 8601. Row facts about the account, for the settings page's read-only identity section. */
+    createdAt: string | null;
+    lastLoginAt: string | null;
+}
+
+/** When the membership was created and when this account claimed it, as ISO 8601. */
+export interface Membership {
+    invitedAt: string | null;
+    claimedAt: string | null;
 }
 
 /** An authenticated request's subject: who, and what they may do in the bound organization. */
 export interface Caller {
     user: AuthUser;
+    membership: Membership;
     role: Role;
 }
 
@@ -60,8 +71,15 @@ interface CallerRow {
     github_user_id: string | number;
     github_login: string;
     display_name: string | null;
+    avatar_url: string | null;
+    created_at: Date | null;
+    last_login_at: Date | null;
+    invited_at: Date | null;
+    claimed_at: Date | null;
     role: Role;
 }
+
+const toIso = (at: Date | null): string | null => (at === null ? null : at.toISOString());
 
 const toCaller = (row: CallerRow): Caller => ({
     user: {
@@ -71,7 +89,11 @@ const toCaller = (row: CallerRow): Caller => ({
         githubUserId: Number(row.github_user_id),
         login: row.github_login,
         displayName: row.display_name,
+        avatarUrl: row.avatar_url,
+        createdAt: toIso(row.created_at),
+        lastLoginAt: toIso(row.last_login_at),
     },
+    membership: { invitedAt: toIso(row.invited_at), claimedAt: toIso(row.claimed_at) },
     role: row.role,
 });
 
@@ -93,7 +115,9 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
 
     const memberOf = async (userId: string, orgId: string): Promise<Caller | null> => {
         const rows = await sql<CallerRow[]>`
-            select u.id, u.github_user_id, u.github_login, u.display_name, m.role
+            select u.id, u.github_user_id, u.github_login, u.display_name,
+                   u.avatar_url, u.created_at, u.last_login_at,
+                   m.invited_at, m.claimed_at, m.role
             from org_membership m join app_user u on u.id = m.user_id
             where m.org_id = ${orgId} and m.user_id = ${userId}
         `;
@@ -165,7 +189,9 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         async findSession(tokenHash, orgId) {
             await gate();
             const rows = await sql<CallerRow[]>`
-                select u.id, u.github_user_id, u.github_login, u.display_name, m.role
+                select u.id, u.github_user_id, u.github_login, u.display_name,
+                       u.avatar_url, u.created_at, u.last_login_at,
+                       m.invited_at, m.claimed_at, m.role
                 from session s
                 join app_user u on u.id = s.user_id
                 -- An inner join, so losing the membership ends the session's usefulness on the very
@@ -186,7 +212,9 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         async localCaller(orgId) {
             await gate();
             const rows = await sql<CallerRow[]>`
-                select u.id, u.github_user_id, u.github_login, u.display_name, m.role
+                select u.id, u.github_user_id, u.github_login, u.display_name,
+                       u.avatar_url, u.created_at, u.last_login_at,
+                       m.invited_at, m.claimed_at, m.role
                 from app_user u join org_membership m on m.user_id = u.id and m.org_id = ${orgId}
                 where u.github_user_id = 0
             `;

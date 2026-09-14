@@ -1665,7 +1665,8 @@ describe('verification gates', () => {
 
     // The worktree (issue #35) is the checkout the gates share with the coding agent: the
     // environment is acquired, and every gate runs, in `<org>/<uuid>/.worktrees/<root id>` —
-    // the tree the run edits — never in the pristine clone.
+    // the tree the run edits — never in the pristine clone. The acquire repeats before every
+    // gate: the cooldown may have torn the environment down mid-run, and acquire is the revive.
     it('acquires the gate environment under the task worktree key', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
@@ -1673,7 +1674,12 @@ describe('verification gates', () => {
 
         await drive({ ...board, runner, gates: stack.gates });
 
-        expect(stack.stack.acquired).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
+        // One acquire in beginGates plus one per declared gate (2 in the fixture).
+        expect(stack.stack.acquired).toEqual([
+            `bellows/${USER}/.worktrees/${gatedJob(1).id}`,
+            `bellows/${USER}/.worktrees/${gatedJob(1).id}`,
+            `bellows/${USER}/.worktrees/${gatedJob(1).id}`,
+        ]);
         expect(stack.stack.ran.key).toBe(`bellows/${USER}/.worktrees/${gatedJob(1).id}`);
     });
 
@@ -1703,6 +1709,104 @@ describe('verification gates', () => {
 
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 125 });
         expect(board.board.completed[0]?.output).toContain('No such container');
+    });
+
+    // The gate cooldown can tear the environment down mid-run — the agent's last ad-hoc gate
+    // call armed it, and a run that keeps working past GATE_COOLDOWN_MS watches the timer fire
+    // before the gates pass. The close-of-run gates re-acquire, exactly as the ad-hoc endpoint
+    // does, so a cooldown teardown can never fail a finished run at the finish line.
+    it('re-acquires the gate environment before each gate, so a cooldown teardown mid-run cannot fail the close-of-run gates', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let up = true;
+        const acquired: string[] = [];
+        const ran: string[] = [];
+        stack.gates.manager.acquire = async (key: string) => {
+            up = true;
+            acquired.push(key);
+        };
+        stack.gates.manager.runGate = async (key: string, name: string) => {
+            if (!up) throw Object.assign(new Error(`no gate environment for ${key}`), { code: 125 });
+            ran.push(name);
+            return { exitCode: 0, output: `${name} ok` };
+        };
+        const key = `bellows/${USER}/.worktrees/${gatedJob(1).id}`;
+        // The cooldown fired while the agent kept working past its last ad-hoc gate call.
+        const runner = stubRunner(async () => {
+            up = false;
+            return ok({ output: 'agent did the work' });
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(board.board.completed[0]?.output).not.toContain('no gate environment');
+        expect(ran).toEqual(['test', 'lint']);
+        expect(acquired).toEqual([key, key, key]);
+    });
+
+    // A gate that cannot run at all is a failed gate — an environment that cannot be re-acquired
+    // at the gates pass is the same shape, never a silent pass and never a run crash.
+    it('fails the gate, not the run, when the environment cannot be re-acquired at the gates pass', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let acquires = 0;
+        stack.gates.manager.acquire = async (key: string) => {
+            acquires += 1;
+            if (acquires > 1) throw new Error('daemon unreachable');
+        };
+        const ran: string[] = [];
+        stack.gates.manager.runGate = async (_key: string, name: string) => {
+            ran.push(name);
+            return { exitCode: 0, output: `${name} ok` };
+        };
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }));
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 125 });
+        expect(board.board.completed[0]?.output).toContain('daemon unreachable');
+        expect(ran).toEqual([]);
+    });
+
+    // The lease is checked BEFORE the re-acquire, but the heartbeat can mark it lost while the
+    // acquire is still pending — a slow docker revival or cluster request outlives that beat. A
+    // superseded attempt must not start its gate on a checkout another attempt owns.
+    it('does not start the gate when the lease is lost while the environment is being re-acquired', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let loseLease = false;
+        board.board.heartbeat = async () => {
+            board.board.beats += 1;
+            return loseLease ? 'lost' : { result: 'held', cancelRequested: false };
+        };
+        const realGates = board.board.gates.bind(board.board);
+        board.board.gates = async (claimed, results) => {
+            // The gates pass opens with its first report; the lease is reclaimed from that moment.
+            loseLease = true;
+            return realGates(claimed, results);
+        };
+        let acquires = 0;
+        stack.gates.manager.acquire = async () => {
+            acquires += 1;
+            if (acquires === 1) return; // beginGates, before the run — no re-acquire yet.
+            // The revival is slow: the heartbeat's lost verdict lands while this is pending.
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        };
+        const ran: string[] = [];
+        stack.gates.manager.runGate = async (_key: string, name: string) => {
+            ran.push(name);
+            return { exitCode: 0, output: `${name} ok` };
+        };
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }));
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        // The heartbeat did mark the lease lost while the re-acquire was pending…
+        expect(runner.killed).toEqual([gatedJob(1).id]);
+        // …and the gate never ran against the checkout the next attempt now owns.
+        expect(ran).toEqual([]);
+        expect(board.board.completed).toHaveLength(1);
     });
 
     // The report must fit the board's body however many gates declared and however verbose they

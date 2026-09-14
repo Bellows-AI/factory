@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { EnvPage } from './pages/EnvPage.js';
+import { SettingsPage } from './pages/SettingsPage.js';
 import { TaskComposerPage } from './pages/TaskComposerPage.js';
 import { TaskDetailPage } from './pages/TaskDetailPage.js';
 import { TasksLayout } from './pages/TasksLayout.js';
@@ -34,6 +35,9 @@ export function App() {
                     <Route index element={<TaskComposerPage />} />
                     <Route path=":id" element={<TaskDetailPage />} />
                 </Route>
+                {/* The member's own account. Reached from the topbar's user menu, not the sidenav:
+                    it is personal, not a section of the dashboard. */}
+                <Route path="settings" element={<SettingsPage />} />
                 {/* A mistyped path lands on the dashboard rather than on nothing. `replace` so the
                     back button does not walk back into the 404. */}
                 <Route path="*" element={<Navigate to="/" replace />} />

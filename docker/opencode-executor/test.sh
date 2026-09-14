@@ -48,7 +48,11 @@ esac
 # The baked policy, exactly: permissionless inside the workspace, hard gates outside. "ask" is
 # unusable headless — an unanswered ask auto-rejects — so nothing may resolve to it. The read
 # allow-all is pinned because opencode seeds a default `*.env.*` deny that once matched a test
-# file's name (routes.env.test.ts) and broke a run mid-investigation.
+# file's name (routes.env.test.ts) and broke a run mid-investigation. The bash table is the git
+# guard (issue #73): opencode takes no hooks for this, so the deny lives here, and because the
+# rules resolve LAST MATCHING WINS, key order is load-bearing — the exact-match allows sit
+# after the deny globs they must outrank, and no allow uses a trailing glob that a compound
+# command could ride through.
 policy="$(docker run --rm --entrypoint sh "$IMAGE" -c 'cat "$OPENCODE_CONFIG"')"
 expect_exact() { # expect_exact <name> <json> <dotted.key.path> <want>
     local got
@@ -64,9 +68,32 @@ fi
 expect_exact 'everything is allowed by default' "$policy" 'permission.*' allow
 expect_exact 'read allows every path'           "$policy" 'permission.read.*' allow
 expect_exact 'webfetch is denied'               "$policy" 'permission.webfetch' deny
+expect_exact 'bash is allowed by default'       "$policy" 'permission.bash.*' allow
+expect_exact 'git switch is denied'             "$policy" 'permission.bash.git switch *' deny
+expect_exact 'git checkout is denied'           "$policy" 'permission.bash.git checkout *' deny
+expect_exact 'git worktree is denied'           "$policy" 'permission.bash.git worktree *' deny
+expect_exact 'branch deletion is denied'        "$policy" 'permission.bash.git branch -d*' deny
+expect_exact 'a branch rename is denied'        "$policy" 'permission.bash.git branch -m*' deny
+expect_exact 'a hard reset is denied'           "$policy" 'permission.bash.git reset --hard *' deny
+expect_exact 'git rebase is denied'             "$policy" 'permission.bash.git rebase *' deny
+expect_exact 'git merge is denied'              "$policy" 'permission.bash.git merge *' deny
+expect_exact 'worktree list stays allowed'      "$policy" 'permission.bash.git worktree list' allow
+expect_exact 'rebase --abort stays allowed'     "$policy" 'permission.bash.git rebase --abort' allow
+expect_exact 'merge --quit stays allowed'       "$policy" 'permission.bash.git merge --quit' allow
 expect_exact 'external paths are denied by default' "$policy" 'permission.external_directory.*' deny
 expect_exact 'the runner scratch is reachable'  "$policy" 'permission.external_directory./tmp/*' allow
 expect_exact 'home scratch is reachable'        "$policy" 'permission.external_directory./home/node/*' allow
+if node -e \
+    'const p = JSON.parse(process.argv[1]).permission.bash; const keys = Object.keys(p);
+     const lastDeny = keys.reduce((acc, k, i) => (p[k] === "deny" ? i : acc), -1);
+     const firstAllow = keys.findIndex((k, i) => i > 0 && p[k] === "allow");
+     process.exit(firstAllow > lastDeny ? 0 : 1);' \
+    "$policy" >/dev/null 2>&1; then
+    ok 'bash-guard allows rank after the denies (last matching rule wins)'
+else
+    bad 'bash-guard allows rank after the denies (last matching rule wins)' \
+        'an allow placed before a deny it must outrank silently loses'
+fi
 
 # The telemetry surface is baked, not fetched at runtime: the plugin package must exist in the
 # image and the baked config must wire it to the compose collector. opencode would silently slurp

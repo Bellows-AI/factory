@@ -1,8 +1,10 @@
 import type { OrganizationMeta } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { OrgSelector } from '../src/components/OrgSelector.js';
 import { TopBar } from '../src/components/TopBar.js';
+import type { Session } from '../src/api/useSession.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 
 const CONFIG: OrganizationMeta = {
@@ -70,7 +72,13 @@ describe('TopBar', () => {
         },
     } as unknown as StatsPayload;
 
-    const html = () => renderToStaticMarkup(<TopBar data={payload} refreshing={false} onRefresh={() => {}} />);
+    const html = (session: Session | null = null) =>
+        renderToStaticMarkup(
+            <MemoryRouter>
+                {/* The menu holds a NavLink, so the TopBar needs a router context to render it. */}
+                <TopBar data={payload} refreshing={false} onRefresh={() => {}} session={session} />
+            </MemoryRouter>,
+        );
 
     it('puts the selector in the actions group, ahead of Refresh', () => {
         const markup = html();
@@ -85,8 +93,32 @@ describe('TopBar', () => {
     });
 
     it('renders nothing before the first payload rather than an empty control', () => {
-        const markup = renderToStaticMarkup(<TopBar data={null} refreshing={false} onRefresh={() => {}} />);
+        const markup = renderToStaticMarkup(
+            <TopBar data={null} refreshing={false} onRefresh={() => {}} session={null} />,
+        );
         expect(markup).not.toContain('org-select');
         expect(markup).toContain('loading…');
+    });
+
+    it('renders the user menu once the session is known, and nothing before it', () => {
+        expect(html()).not.toContain('user-menu');
+        const withSession: Session = {
+            user: {
+                id: '00000000-0000-4000-8000-000000000001',
+                login: 'octocat',
+                name: 'The Octocat',
+                githubUserId: 4242,
+                avatarUrl: null,
+            },
+            role: 'member',
+            membership: { invitedAt: null, claimedAt: null },
+            account: { createdAt: null, lastLoginAt: null },
+            organization: { id: 'bellows', name: 'Bellows AI' },
+            workspacePath: null,
+            mode: 'github',
+        };
+        const markup = html(withSession);
+        expect(markup).toContain('user-menu');
+        expect(markup).toContain('/settings');
     });
 });

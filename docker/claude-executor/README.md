@@ -10,10 +10,11 @@ checkout; it does not build or run this repo's application.
 | `Dockerfile` | the image — Node 24 (debian), git, `@anthropic-ai/claude-code`, `gh`, `acli`, the `context-mode` plugin |
 | `entrypoint.sh` | `/usr/local/bin/claude-executor` — the `ENTRYPOINT` |
 | `branch-reporter.cjs` | `/usr/local/bin/branch-reporter.cjs` — the branch reporter the entrypoint launches beside the CLI |
+| `git-guard.cjs` | `/usr/local/bin/git-guard.cjs` — the git guard wired as the `PreToolUse` hook in `settings.json` |
 | `run.sh` | starts a Remote Control session, with a full-scope login in a named volume — deliberately not the `.env` token, which is model-requests-only and not shipped inside the image |
 | `test.sh` | builds the image and exercises it against this repo — not shipped inside it |
 | `claude-home/` | `/home/node/.claude` inside the image, via `CLAUDE_CONFIG_DIR` |
-| `claude-home/settings.json` | telemetry configuration |
+| `claude-home/settings.json` | telemetry configuration and the git-guard hook wiring |
 | `claude-home/CLAUDE.md` | the global instructions every session loads |
 | `claude-home/skills/` | `github`, `jira`, `backend-fix`, `gates` — loaded on demand, not every session |
 
@@ -70,11 +71,12 @@ The build context is this directory, not the repo root.
 docker/claude-executor/test.sh
 ```
 
-Builds the image as `claude-executor-test` and runs sixteen checks against this repo as the mounted
+Builds the image as `claude-executor-test` and runs its checks against this repo as the mounted
 checkout: the CLI, `gh`, `acli`, the plugin (including a real MCP stdio handshake, since installed
 is not the same as working), `CLAUDE.md`, the skills, the three `$WORKDIR` behaviours, both prompt
-suppressions (onboarding done, trust off unless `TRUST_WORKDIR` is set), and git reading the mount.
-Prints `ok`/`FAIL` per check and exits non-zero if any fail.
+suppressions (onboarding done, trust off unless `TRUST_WORKDIR` is set), git reading the mount,
+and the git guard — the baked case table (`--selftest`), the hook wire protocol, and the
+`settings.json` wiring. Prints `ok`/`FAIL` per check and exits non-zero if any fail.
 
 It always asserts that a run without a token reaches the login prompt — that is what proves no
 credential is baked into the image. It then runs one live prompt using
@@ -167,6 +169,34 @@ than letting `claude` start in the wrong directory and answer about the wrong tr
 It also marks the checkout `safe.directory` when one is mounted. A bind mount keeps the host's uid,
 which is rarely the container's 1000, and git otherwise refuses the repository outright with a
 "dubious ownership" error that never mentions uids.
+
+## Git guard
+
+`git-guard.cjs` is wired in `settings.json` as a `PreToolUse` hook on the Bash tool (`if:
+Bash(git *)`, so non-git commands never pay the node boot). It denies what would move HEAD or
+rewrite refs in the task worktree: `git switch`, `git checkout` of a branch or commit (path-scoped
+`git checkout -- <paths>` stays allowed), `git worktree` mutations (`list` stays allowed), `git
+branch` delete/rename/copy/force in short, combined and long forms, `git reset --hard`, and
+`git rebase` / `git merge` outright — rebasing onto the default branch is the driver sync's job.
+`--abort`/`--quit` (and rebase's `--continue`) stay allowed, since they only unwind a state the
+driver's own sync can have left behind. Read-only git, `git add` and `git commit` are untouched.
+
+The parser splits compound commands and lifts `$(…)`/backtick spans into segments of their own,
+strips env-assignment and `env`/`sh -c` prefixes, and walks git's global options (`git -C`, `git
+--git-dir …`) before reading the subcommand. A deny returns the JSON decision with a reason — the
+reason is the instruction the agent sees at the moment of the block. What it does not do, on
+purpose: splice partially-quoted tokens (`g"it switch"` stays unread), chase every value-taking
+global option, or unroll exotic launchers (`env -S`, `xargs`) — an agent writing those after a
+denied plain command is evading, and evading a guardrail is not what this defends against.
+
+Why: the task tree standing on its `factory/<root>` branch is the driver's invariant, and the
+restore-mode sync refuses a wrong checkout only *after* the damage — which strands the thread
+(job `43379d3a`, 2026-09-13). This is a guardrail, not a security boundary — the agent is root in
+its container, and the sync refusal stays the last line of defense. The script lives in
+`/usr/local/bin` (like the branch reporter) so the Remote Control auth volume cannot shadow it.
+The canonical case table ships inside the script: vitest runs it offline
+(`driver/test/executor-images.test.ts`), and `test.sh` runs `git-guard.cjs --selftest` against
+the baked copy, so the table tests the bytes that actually ship.
 
 ## Branch reporter
 

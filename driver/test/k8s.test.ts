@@ -4195,6 +4195,27 @@ describe('the kubernetes gate manager', () => {
         expect(names[0]).toMatch(GATE_JOB);
         expect(names[0]).not.toBe(names[1]);
     });
+
+    // The close-of-run gates re-acquire before every run (the cooldown heal, issue #78), so a
+    // re-acquire of the SAME attempt must not reset the run counter back onto a name a previous
+    // run of that gate already used — the reaped Job can still exist when the create lands.
+    // The re-acquire also re-POSTs the attempt's env Secret, answered 409 already-exists —
+    // the tolerance the production re-acquire relies on.
+    it('keeps the run counter across re-acquires of the same attempt, so a re-acquired run never reuses a name', async () => {
+        const { request, calls } = gateFake({ secretCreate: { status: 409, body: '{}' } });
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', job);
+        await m.runGate(KEY, 'test', 'npm test');
+        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', job);
+        await m.runGate(KEY, 'test', 'npm test');
+        const names = calls
+            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
+            .map((c) => (c.body as { metadata?: { name?: string } })?.metadata?.name);
+        expect(names).toHaveLength(2);
+        expect(names[0]).toMatch(GATE_JOB);
+        expect(names[1]).toMatch(GATE_JOB);
+        expect(names[0]).not.toBe(names[1]);
+    });
 });
 
 // ==============================================================================================
