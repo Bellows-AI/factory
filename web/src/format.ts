@@ -88,7 +88,7 @@ export function wallClock(
     runningSince: string | null | undefined,
     now: Date = new Date()
 ): string {
-    const banked = totalMs ?? 0;
+    const banked = totalMs ?? 0; // feeds the sum only — the null contract is the dash branch below
     let live = 0;
     if (runningSince) {
         const from = new Date(runningSince);

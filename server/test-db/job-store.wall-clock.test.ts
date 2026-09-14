@@ -56,13 +56,14 @@ beforeEach(async () => {
 /**
  * Writes a job row in whatever state the case needs, straight SQL. `startedMinutesAgo` backdates
  * the attempt's start so a duration can be asserted without sleeping; `wallClockMs` seeds the
- * accumulated column directly, for threads whose members finished before this test ran.
+ * accumulated column directly, for threads whose members finished before this test ran. The lease
+ * always starts expired: every case that runs the row claims it first, and the rest never reach
+ * the claim.
  */
 const craft = async (
     shape: {
         parent?: string | null;
         status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
-        lease?: 'live' | 'expired';
         startedMinutesAgo?: number;
         wallClockMs?: number;
     } = {}
@@ -78,7 +79,7 @@ const craft = async (
             ${shape.parent ?? id},
             ${AUTHOR},
             'acme/widgets',
-            ${shape.lease === 'live' ? sql`now() + interval '5 minutes'` : sql`now() - interval '1 second'`},
+            now() - interval '1 second',
             now(),
             ${
                 shape.startedMinutesAgo === undefined
@@ -103,7 +104,7 @@ const wallOf = async (id: string): Promise<number | null> => {
 /** A completed claim's lease token, with the attempt's start backdated `minutes` into the past —
  * what every duration assertion below measures without a sleep. */
 const claimBackdated = async (minutes: number): Promise<{ id: string; token: string }> => {
-    const id = await craft({ status: 'running', lease: 'expired' });
+    const id = await craft({ status: 'running' });
     const { leaseToken } = (await store.claim('w1', 300))!;
     await sql`update job set started_at = now() - (${minutes} * interval '1 minute') where id = ${id}`;
     return { id, token: leaseToken };
@@ -121,10 +122,12 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         const wall = await wallOf(id);
         expect(wall).toBeGreaterThanOrEqual(599_000);
         expect(wall).toBeLessThan(660_000);
+        // The single read does not serve the total — the thread read is the task view's source.
+        expect((await store.get(id))?.taskWallClockMs).toBeNull();
     });
 
     it('a re-claim keeps counting the segment it supersedes', async () => {
-        const id = await craft({ status: 'running', lease: 'expired' });
+        const id = await craft({ status: 'running' });
         await store.claim('w1', 300);
         await sql`update job set started_at = now() - interval '5 minutes',
                   lease_expires_at = now() - interval '1 second' where id = ${id}`;
@@ -144,7 +147,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
     });
 
     it('a row retired dead keeps its last segment', async () => {
-        const id = await craft({ status: 'running', lease: 'expired' });
+        const id = await craft({ status: 'running' });
         await store.claim('w1', 300);
         // Burn the last attempt, expire the lease, backdate the start: the next claim retires the
         // row dead, and the six minutes it ran first must survive the retirement.
@@ -187,6 +190,18 @@ describe.skipIf(!enabled)('the task wall clock', () => {
 
         expect(await store.stop(id)).toEqual({ result: 'stopped' });
         expect(await wallOf(id)).toBeNull();
+    });
+
+    it('the first claim of a task that never ran banks nothing', async () => {
+        // A queued row has no segment behind it: the claim starts its first attempt, and a clock
+        // of zero there would claim a measurement that was never made. Null until something runs.
+        const id = await craft();
+        expect(await store.claim('w1', 300)).not.toBeNull();
+
+        expect(await wallOf(id)).toBeNull();
+        for (const job of (await store.thread(id)) ?? []) {
+            expect(job.taskWallClockMs).toBeNull();
+        }
     });
 
     it('thread serves the whole thread total on every member, and nulls add nothing', async () => {

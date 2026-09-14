@@ -944,8 +944,11 @@ export function createJobStore({
                             started_at       = now(),
                             -- The attempt this claim supersedes banked its segment in the same
                             -- statement (the SET reads the pre-update row): a run that crashed after
-                            -- forty minutes and was retried keeps its forty minutes.
-                            wall_clock_ms    = ${wallTick},
+                            -- forty minutes and was retried keeps its forty minutes. A row that never
+                            -- started (the first claim of a queued one) banks nothing — its clock
+                            -- stays null, because null means "never ran" and zero would claim a
+                            -- measurement that was never made.
+                            wall_clock_ms    = case when started_at is null then wall_clock_ms else ${wallTick} end,
                             -- Kept on a follow-up only, whose session IS the parent conversation it
                             -- continues. The status read here is the row's value BEFORE this update, so
                             -- 'running' means a lease that expired: for an ordinary job that attempt's

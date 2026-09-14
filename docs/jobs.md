@@ -234,6 +234,19 @@ of the lease — 100s by default — and awaiting it before reporting left every
 in `running` for a minute and a half. Found by running the driver for real; a unit test with an
 instant fake clock cannot see it, so `loop.test.ts` models a period that never elapses.
 
+**The board banks the task's wall clock at its own settle points.** `job.wall_clock_ms` (024)
+accumulates the milliseconds each row actually spent executing, and the task view's head clock is
+the thread's sum of them (`taskWallClockMs`, served by the thread read; `get`/`list` answer null).
+Every statement that ends or supersedes a running attempt — the claim, the dead retirement, the
+verdict, the suspend park — adds `started_at → now()` to the row's total in the same breath, which
+is the only moment it can: `started_at` resetting on every claim is exactly what would otherwise
+erase the superseded segment, and a run that crashed after forty minutes and was retried keeps its
+forty minutes. The park banks too, whichever landing it takes — the segment it ends was real work;
+the parked time after it banks nothing. What never banks is a settle of a row that never executed:
+the first claim of a queued row leaves the clock null (null means "never ran"; zero would claim a
+measurement that was never made), and `stop`'s direct landing on a queued or parked row banks
+nothing.
+
 **Live output is a rolling tail, and the driver owns the window.** Without it the dashboard showed
 "Waiting for the executor…" for the whole run — the status moved, the work did not. The mechanics:
 

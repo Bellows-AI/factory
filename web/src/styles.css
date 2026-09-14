@@ -989,6 +989,15 @@ button.primary {
     gap: 8px;
 }
 
+/* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
+   activity line, never the exit code's red. */
+.task-clock {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
 .composer {
     border-top: 1px solid var(--border);
     margin-top: 16px;

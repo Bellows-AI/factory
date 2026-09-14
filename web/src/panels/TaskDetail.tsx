@@ -143,7 +143,7 @@ export function TaskDetail({
     // The thread arrives oldest first, so its first member is the ROOT — the task's stable name
     // is what was asked, and the head carries the command's first line so multi-line prose does
     // not swallow the title. The turn below renders the whole command.
-    const rootTask = jobs[0] as Job;
+    const rootTask = jobs[0]!;
     const title = rootTask.command.split('\n')[0]!.trim();
     // A follow-up continues the newest run's agent session, and the board refuses one for a run
     // that never reported a session — every run whose driver died before reporting — with 409
@@ -211,7 +211,7 @@ export function TaskDetail({
                         {/* The overall wall clock: everything the board has banked for the task,
                         plus the head run's live segment while it is going — the 2s poll is the
                         ticker. A task that has never run says so with a dash, not a zero. */}
-                        <span className="chat-exit">
+                        <span className="task-clock">
                             Wall clock{' '}
                             {wallClock(
                                 latestTask.taskWallClockMs,
