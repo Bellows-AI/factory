@@ -3,6 +3,8 @@ environment:
     gates:
          - name: test
            command: "npm test"
+         - name: lint
+           command: "npm run lint"
 
 services:
     - name: timescale
