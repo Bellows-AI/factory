@@ -30,6 +30,7 @@ const job = (id: string, overrides: Partial<Job> = {}): Job => ({
     createdAt: new Date(Date.UTC(2026, 8, 1, 12, 0, 0) + seq++ * 1000).toISOString(),
     startedAt: null,
     finishedAt: null,
+    taskWallClockMs: null,
     sessionId: null,
     remoteSessionId: null,
     ...overrides,

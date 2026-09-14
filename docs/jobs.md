@@ -245,7 +245,9 @@ forty minutes. The park banks too, whichever landing it takes — the segment it
 the parked time after it banks nothing. What never banks is a settle of a row that never executed:
 the first claim of a queued row leaves the clock null (null means "never ran"; zero would claim a
 measurement that was never made), and `stop`'s direct landing on a queued or parked row banks
-nothing.
+nothing. One known overcount is accepted as inherent: a superseded or retired attempt banks up to
+its lease expiry, because when a worker dies the board cannot know when the run actually stopped —
+the span is the same one the view's per-run "running time" already shows.
 
 **Live output is a rolling tail, and the driver owns the window.** Without it the dashboard showed
 "Waiting for the executor…" for the whole run — the status moved, the work did not. The mechanics:
