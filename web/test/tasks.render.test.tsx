@@ -564,10 +564,17 @@ describe('TaskDetail', () => {
                 rootJobId: root.id,
             };
         };
-        /** One turn's meta line: from its command paragraph to the next turn's. */
+        /**
+         * One turn's meta line: from its command paragraph to the next turn's. Anchored on the
+         * turn's own `msg-user` paragraph, not the first occurrence of the command text — the
+         * task head's `<h2>` repeats the root command above the thread, and a first-occurrence
+         * slice would stop before the turn's meta ever rendered.
+         */
         const turnMeta = (html: string, command: string): string => {
-            const start = html.indexOf(command);
-            const next = html.indexOf('msg-user', start + command.length);
+            const marker = `<p class="msg-user">${command}</p>`;
+            const start = html.indexOf(marker);
+            if (start === -1) return '';
+            const next = html.indexOf('msg-user', start + marker.length);
             return html.slice(start, next === -1 ? undefined : next);
         };
 
