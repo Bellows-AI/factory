@@ -451,6 +451,29 @@ describe('TaskDetail', () => {
             expect(renderDetail({ jobs: [job({ status: 'running' })] })).not.toContain('chat-runtime');
         });
 
+        /**
+         * A services-only sample — the vitals read failed, a metrics-server-less cluster for one
+         * — carries null numbers: no pills at all beats pills that lie with zeros.
+         */
+        it('renders no pills the sample could not read', () => {
+            const html = renderDetail({
+                jobs: [
+                    job({
+                        status: 'running',
+                        runtime: {
+                            cpuPercent: null,
+                            memUsedMb: null,
+                            memPercent: null,
+                            activity: '→ Read x',
+                            sampledAt: '2026-09-01T12:02:00.000Z',
+                        },
+                    }),
+                ],
+            });
+            expect(html).not.toContain('chat-runtime');
+            for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+        });
+
         it('omits the percentage the sample does not carry', () => {
             const html = renderDetail({
                 jobs: [job({ status: 'running', runtime: { ...runtime, memPercent: null } })],
@@ -514,6 +537,79 @@ describe('TaskDetail', () => {
     });
 
     /**
+     * The per-turn close-time scrape — `ctx … tok · $…` — belongs to EVERY terminal turn,
+     * including the newest: the scrape is written at close, so its absence is how a running turn
+     * says "not yet", and a finished thread's last turn is usually the most relevant one to read
+     * it on (issue #60).
+     */
+    describe('turn stats', () => {
+        const scrape = (contextTokens: number, costUsd: number | null) => ({
+            cpuPercent: 12,
+            memUsedMb: 300,
+            memPercent: null,
+            activity: null,
+            sampledAt: '2026-09-01T12:02:00.000Z',
+            contextTokens,
+            costUsd,
+        });
+        const child = (over: Partial<Job> = {}): Job => {
+            const root = job({ command: 'first command' });
+            return {
+                ...job({ command: 'second command', ...over }),
+                id: '44444444-4444-4444-8444-444444444444',
+                followUpTo: root.id,
+                rootJobId: root.id,
+            };
+        };
+        /** One turn's meta line: from its command paragraph to the next turn's. */
+        const turnMeta = (html: string, command: string): string => {
+            const start = html.indexOf(command);
+            const next = html.indexOf('msg-user', start + command.length);
+            return html.slice(start, next === -1 ? undefined : next);
+        };
+
+        it('shows its own scrape on every terminal turn, including the newest', () => {
+            const html = renderDetail({
+                jobs: [
+                    job({ command: 'first command', runtime: scrape(30000, 0.1) }),
+                    child({ runtime: scrape(90433, 0.21) }),
+                ],
+            });
+            const rootMeta = turnMeta(html, 'first command');
+            expect(rootMeta).toContain('ctx 30,000 tok');
+            expect(rootMeta).toContain('$0.1000');
+            const childMeta = turnMeta(html, 'second command');
+            expect(childMeta).toContain('ctx 90,433 tok');
+            expect(childMeta).toContain('$0.2100');
+        });
+
+        it('shows no scrape on a turn that is still going', () => {
+            const html = renderDetail({
+                jobs: [
+                    job({ command: 'first command', runtime: scrape(30000, 0.1) }),
+                    child({
+                        status: 'running',
+                        runtime: {
+                            cpuPercent: 12,
+                            memUsedMb: 300,
+                            memPercent: null,
+                            activity: null,
+                            sampledAt: '2026-09-01T12:02:00.000Z',
+                        },
+                    }),
+                ],
+            });
+            expect(turnMeta(html, 'second command')).not.toContain('ctx');
+        });
+
+        it('shows ctx without money on a zero-dollar turn', () => {
+            const html = renderDetail({ jobs: [job({ runtime: scrape(1200, 0) })] });
+            expect(html).toContain('ctx 1,200 tok');
+            expect(html).not.toContain('$0.0000');
+        });
+    });
+
+    /**
      * The status sidebar: one column beside the conversation, fed by the NEWEST run — the same
      * run the composer and Done verdict belong to. Everything it shows is either what the board
      * reports or an honest dash; nothing is inferred.
@@ -543,25 +639,111 @@ describe('TaskDetail', () => {
         });
 
         /**
-         * The context the run reached rides the close-time scrape — where "died at 90k tokens" is
-         * legible — and cost shows only once it is money.
+         * The thread's context and cost (issue #60): Context is the newest CLOSED turn's scrape —
+         * a follow-up resumes the same session, so the last turn's count IS the conversation's
+         * final context, and summing would double-count the shared prefix. Cost is the sum of
+         * every turn's scraped cost, where zero-dollar turns contribute nothing.
          */
-        it('shows the context the run reached, and its cost once it costs something', () => {
+        it('shows the thread context — the newest closed turn, never a sum', () => {
+            const closed = { ...runtime, contextTokens: 30433, costUsd: 0.1 };
+            const running = {
+                cpuPercent: 12,
+                memUsedMb: 300,
+                memPercent: null,
+                activity: null,
+                sampledAt: '2026-09-01T12:02:00.000Z',
+            };
+            const root = job({ command: 'first command', runtime: closed });
             const html = renderDetail({
-                jobs: [job({ runtime: { ...runtime, contextTokens: 90433, costUsd: 0.31 } })],
+                jobs: [
+                    root,
+                    {
+                        ...job({ command: 'second command', status: 'running', runtime: running }),
+                        id: '44444444-4444-4444-8444-444444444444',
+                        followUpTo: root.id,
+                        rootJobId: root.id,
+                    },
+                ],
             });
-            expect(html).toContain('<dt>Context</dt><dd>90,433 tok</dd>');
-            expect(html).toContain('<dt>Cost</dt><dd>$0.3100</dd>');
+            // The newest turn is running and carries no scrape; the last CLOSED turn's count is
+            // the conversation's final context.
+            expect(html).toContain('<dt>Context</dt><dd>30,433 tok</dd>');
+        });
 
+        it('shows the whole chain as the Cost row, once it costs something', () => {
+            const root = job({ command: 'first command', runtime: { ...runtime, contextTokens: 1000, costUsd: 0.1 } });
+            const html = renderDetail({
+                jobs: [
+                    root,
+                    {
+                        ...job({
+                            command: 'second command',
+                            runtime: { ...runtime, contextTokens: 90433, costUsd: 0.21 },
+                        }),
+                        id: '44444444-4444-4444-8444-444444444444',
+                        followUpTo: root.id,
+                        rootJobId: root.id,
+                    },
+                ],
+            });
+            expect(html).toContain('<dt>Cost</dt><dd>$0.3100</dd>');
+            // Context is NOT summed: the last turn's count IS the conversation's final context.
+            expect(html).toContain('<dt>Context</dt><dd>90,433 tok</dd>');
+        });
+
+        it('stays silent about a thread that cost nothing, and about one nothing scraped', () => {
             const free = renderDetail({
                 jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
             });
             expect(free).toContain('<dt>Context</dt><dd>1,200 tok</dd>');
+            expect(free).toContain('<dt>Cost</dt><dd>—</dd>');
             expect(free).not.toContain('$0.0000');
+
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd>—</dd>');
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Cost</dt><dd>—</dd>');
         });
 
-        it('shows nothing where the runner scraped no context', () => {
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd>—</dd>');
+        /**
+         * The attempt's declared services and their states (issue #60) — the "did db come up"
+         * answer, from the newest attempt only: a fleet is attempt-scoped on the driver side, and
+         * an older attempt's is long gone.
+         */
+        it('lists the newest attempt\u2019s services with their states', () => {
+            const html = renderDetail({
+                jobs: [
+                    job({
+                        status: 'running',
+                        runtime: { ...runtime, services: [{ name: 'db', image: 'postgres:16', state: 'running' }] },
+                    }),
+                ],
+            });
+            expect(html).toContain('<h2>Services</h2>');
+            expect(html).toContain('<dt>db</dt><dd>running</dd>');
+        });
+
+        it('renders nothing about services when the attempt declared none, and nothing from older attempts', () => {
+            expect(renderDetail({ jobs: [job()] })).not.toContain('Services</h2>');
+            expect(renderDetail({ jobs: [job({ runtime: { ...runtime, services: [] } })] })).not.toContain(
+                'Services</h2>'
+            );
+
+            const root = job({
+                command: 'first command',
+                runtime: { ...runtime, services: [{ name: 'db', image: 'postgres:16', state: 'running' }] },
+            });
+            const html = renderDetail({
+                jobs: [
+                    root,
+                    {
+                        ...job({ command: 'second command' }),
+                        id: '44444444-4444-4444-8444-444444444444',
+                        followUpTo: root.id,
+                        rootJobId: root.id,
+                    },
+                ],
+            });
+            expect(html).not.toContain('Services</h2>');
+            expect(html).not.toContain('<dt>db</dt>');
         });
 
         it('shows the running time of a finished run, and nothing before it starts or while parked', () => {

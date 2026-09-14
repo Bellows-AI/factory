@@ -50,16 +50,20 @@ const tokenCount = new Intl.NumberFormat('en-US');
  * and the exit code are what the reader wants there, and a stale "cpu 167%" beside them lies about
  * a run that is no longer going. (The agent's current activity line lives in the status sidebar,
  * the task summary at the top of this view, and the nav's task-tree summary — "currently running
- * task", wherever the task is met.)
+ * task", wherever the task is met.) Null numbers mean the sample could not read them this round —
+ * a services-only sample renders no pills rather than pills that lie with zeros.
  */
 function Runtime({ runtime }: { runtime: RuntimeVitals }) {
+    if (runtime.cpuPercent === null && runtime.memUsedMb === null) return null;
     return (
         <p className="chat-runtime">
-            <span className="pill">cpu {Math.round(runtime.cpuPercent)}%</span>
-            <span className="pill">
-                mem {Math.round(runtime.memUsedMb)} MiB
-                {runtime.memPercent !== null ? ` (${Math.round(runtime.memPercent)}%)` : ''}
-            </span>
+            {runtime.cpuPercent !== null ? <span className="pill">cpu {Math.round(runtime.cpuPercent)}%</span> : null}
+            {runtime.memUsedMb !== null ? (
+                <span className="pill">
+                    mem {Math.round(runtime.memUsedMb)} MiB
+                    {runtime.memPercent !== null ? ` (${Math.round(runtime.memPercent)}%)` : ''}
+                </span>
+            ) : null}
         </p>
     );
 }
@@ -225,7 +229,7 @@ export function TaskDetail({
                                     <span className="chat-exit">exit {task.exitCode}</span>
                                 ) : null}
                                 <span className="muted">{taskTime(task.createdAt)}</span>
-                                {history && task.runtime?.contextTokens != null ? (
+                                {task.runtime?.contextTokens != null ? (
                                     <span className="chat-activity">
                                         ctx {tokenCount.format(task.runtime.contextTokens)} tok
                                         {task.runtime.costUsd != null && task.runtime.costUsd > 0
