@@ -259,7 +259,15 @@ instant fake clock cannot see it, so `loop.test.ts` models a period that never e
   last good one stays; the claim clears the column (`started_at`'s precedent — the sample
   describes the attempt that took it), and the kubernetes runner samples the metrics API instead
   (`metrics.k8s.io`, read off the runner's own pod), answering the same null whenever the cluster
-  runs no metrics-server.
+  runs no metrics-server. The attempt's `.bellows.yaml` services ride the same object as
+  `runtime.services` (`[{ name, image, state }]`): the fleet's states, read in the same sampling
+  round as CPU/mem — docker's `ps` over the attempt's job+lease+service label pair, kubernetes's
+  lease-scoped pod list, the states lowercase platform-native words either way. A failed read
+  costs its half, never the sample: null numbers beside real service states (the fleet must not
+  depend on the metrics API — kind runs none), and no key at all when the attempt declared none,
+  so a service-less job's report is byte-identical to what it always was. The board merges the
+  object key-wise — a report without services keeps the stored fleet, null numbers keep the last
+  good numbers — and clears it whole on the claim, with the numbers.
 
 **`RUNNER_CACHE_WATCH` kills a run whose provider stopped caching, before the timeout reports
 only a corpse.** Off by default — arming a kill switch over provider quality is something somebody
@@ -432,6 +440,10 @@ connection and retry, which is what agents are for.
   starts service pods with a headless Service as the DNS name ([kubernetes.md](kubernetes.md),
   "Gates and services on this platform"). `RUNNER_SERVICES` decides whether they run at all, on
   either platform — nothing about the flag is executor-specific.
+- **The fleet is visible while it runs.** Each vitals flush carries the attempt's service states
+  under `runtime.services`, and the task view renders them in a Services section beside the
+  thread's context and cost — see "The vitals ride the same flush" above for the read, the merge
+  and the claim-time clear.
 
 ## The session ids, and driving a job from the Claude UI
 
