@@ -21,7 +21,10 @@ try {
     const dbPath = process.env.OPENCODE_DB;
     const dir = process.env.OPENCODE_DIR;
     if (!dbPath) throw new Error('OPENCODE_DB is not set');
-    if (!dir) throw new Error('OPENCODE_DIR is not set: the session database is per member, so a readout without a directory answers whichever task closed last');
+    if (!dir)
+        throw new Error(
+            'OPENCODE_DIR is not set: the session database is per member, so a readout without a directory answers whichever task closed last'
+        );
     const db = new DatabaseSync(dbPath, { readOnly: true });
     const s = db
         .prepare('select id from session where parent_id is null and directory = ? order by time_created desc limit 1')

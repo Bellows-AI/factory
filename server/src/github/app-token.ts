@@ -49,8 +49,7 @@ const REFRESH_MARGIN_MS = 5 * 60 * 1000;
  */
 const MINT_TIMEOUT_MS = 5000;
 
-const base64url = (value: string | Buffer): string =>
-    Buffer.from(value).toString('base64url');
+const base64url = (value: string | Buffer): string => Buffer.from(value).toString('base64url');
 
 /**
  * An RS256 JWT, which is the only signature GitHub accepts for an App.
@@ -61,9 +60,7 @@ const base64url = (value: string | Buffer): string =>
 function appJwt(appId: string, key: KeyObject, nowMs: number): string {
     const issued = Math.floor(nowMs / 1000) - JWT_CLOCK_SKEW_SECONDS;
     const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-    const payload = base64url(
-        JSON.stringify({ iat: issued, exp: issued + JWT_TTL_SECONDS, iss: appId }),
-    );
+    const payload = base64url(JSON.stringify({ iat: issued, exp: issued + JWT_TTL_SECONDS, iss: appId }));
     const signature = createSign('RSA-SHA256').update(`${header}.${payload}`).end().sign(key);
     return `${header}.${payload}.${base64url(signature)}`;
 }
@@ -98,7 +95,7 @@ async function discoverInstallation(
     apiUrl: string,
     jwt: string,
     fetchFn: typeof fetch,
-    timeoutMs: number,
+    timeoutMs: number
 ): Promise<string> {
     const response = await fetchFn(`${apiUrl}/app/installations?per_page=100`, {
         headers: {
@@ -118,13 +115,13 @@ async function discoverInstallation(
 
     if (!Array.isArray(body) || body.length === 0) {
         throw new GitHubAppError(
-            'this GitHub App is not installed anywhere. Install it on the organization or account whose repositories you want measured, then restart.',
+            'this GitHub App is not installed anywhere. Install it on the organization or account whose repositories you want measured, then restart.'
         );
     }
     if (body.length > 1) {
         const where = body.map((i) => i.account?.login ?? String(i.id)).join(', ');
         throw new GitHubAppError(
-            `this GitHub App is installed on ${body.length} accounts (${where}). Set GITHUB_APP_INSTALLATION_ID to say which one this deployment reports on — guessing would silently measure the wrong organization.`,
+            `this GitHub App is installed on ${body.length} accounts (${where}). Set GITHUB_APP_INSTALLATION_ID to say which one this deployment reports on — guessing would silently measure the wrong organization.`
         );
     }
     const [only] = body;
@@ -155,9 +152,7 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
     try {
         key = createPrivateKey(github.privateKeyPem);
     } catch (error) {
-        throw new GitHubAppError(
-            `GITHUB_APP_PRIVATE_KEY is not a usable private key: ${(error as Error).message}`,
-        );
+        throw new GitHubAppError(`GITHUB_APP_PRIVATE_KEY is not a usable private key: ${(error as Error).message}`);
     }
 
     let installation = github.installationId;

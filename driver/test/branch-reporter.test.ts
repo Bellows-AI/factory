@@ -37,7 +37,7 @@ interface Scripted {
 
 const board = async (
     status = 200,
-    scripted: Scripted[] = [],
+    scripted: Scripted[] = []
 ): Promise<{ url: string; requests: Request[]; waitForRequest: () => Promise<Request> }> => {
     const requests: Request[] = [];
     let notify: (() => void) | null = null;
@@ -104,7 +104,7 @@ const OUTER_ENV: Record<string, string> = (() => {
 const run = (
     script: string,
     env: Record<string, string>,
-    args: string[] = ['--once'],
+    args: string[] = ['--once']
 ): Promise<{ status: number | null; stdout: string; stderr: string }> =>
     new Promise((resolve) => {
         const child = spawn(process.execPath, [...NODE_ARGS, script, ...args], {
@@ -288,9 +288,19 @@ describe('the branch reporter', () => {
         const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
         db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
         db.prepare('insert into session values (?, ?, ?, ?)').run('ses_old', null, '2026-01-01 00:00:00.000', dir);
-        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_child', 'ses_old', '2026-01-02 00:00:00.000', dir);
+        db.prepare('insert into session values (?, ?, ?, ?)').run(
+            'ses_child',
+            'ses_old',
+            '2026-01-02 00:00:00.000',
+            dir
+        );
         // A NEWER root, but from another task's working directory: the scoping must keep it out.
-        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_foreign', null, '2026-01-03 00:00:00.000', join(data, 'elsewhere'));
+        db.prepare('insert into session values (?, ?, ?, ?)').run(
+            'ses_foreign',
+            null,
+            '2026-01-03 00:00:00.000',
+            join(data, 'elsewhere')
+        );
         db.close();
         try {
             const { status, stdout, stderr } = await run(OPENCODE_REPORTER, {
@@ -319,7 +329,12 @@ describe('the branch reporter', () => {
         mkdirSync(join(data, 'opencode'), { recursive: true });
         const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
         db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
-        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_db', null, '2026-01-01 00:00:00.000', 'somewhere/else');
+        db.prepare('insert into session values (?, ?, ?, ?)').run(
+            'ses_db',
+            null,
+            '2026-01-01 00:00:00.000',
+            'somewhere/else'
+        );
         db.close();
         try {
             await run(OPENCODE_REPORTER, {
@@ -383,7 +398,9 @@ describe('the branch reporter', () => {
                     if (requests.length >= count) return resolve();
                     if (Date.now() - startedAt > 4_000) {
                         return reject(
-                            new Error(`never saw ${count} reports; got ${JSON.stringify(requests.map((r) => r.body?.sessionId))}`),
+                            new Error(
+                                `never saw ${count} reports; got ${JSON.stringify(requests.map((r) => r.body?.sessionId))}`
+                            )
                         );
                     }
                     setTimeout(poll, 50);
@@ -404,7 +421,12 @@ describe('the branch reporter', () => {
                 // The row appears AFTER the first report — mid-loop, the state a live run is in
                 // when its conversation starts — and the change must be reported on the very
                 // next discovery, not a full sampling cycle later.
-                db.prepare('insert into session values (?, ?, ?, ?)').run('ses_second', null, '2026-01-02 00:00:00.000', dir);
+                db.prepare('insert into session values (?, ?, ?, ?)').run(
+                    'ses_second',
+                    null,
+                    '2026-01-02 00:00:00.000',
+                    dir
+                );
                 await untilRequest(2);
                 expect(requests[1].body?.sessionId).toBe('ses_second');
                 expect(stderr).toBe('');

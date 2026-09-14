@@ -20,19 +20,23 @@ import { tokens } from '../src/format.js';
 const REPO = 'Bellows-AI/bellows.ai';
 
 const input = JSON.parse(
-    readFileSync(new URL('../../core/test/fixtures/telemetry-sessions.json', import.meta.url), 'utf8'),
+    readFileSync(new URL('../../core/test/fixtures/telemetry-sessions.json', import.meta.url), 'utf8')
 ) as TelemetryInput;
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
 const telemetry = telemetryStats(input, { repos: [REPO], now: NOW });
-const empty = telemetryStats(
-    { sessions: [], coverage: { from: null, to: null } },
-    { repos: [REPO], now: NOW },
-);
+const empty = telemetryStats({ sessions: [], coverage: { from: null, to: null } }, { repos: [REPO], now: NOW });
 
 const meta = (over: Partial<TelemetryMeta> = {}): TelemetryMeta => ({
-    status: 'ok', reason: null, source: 'fixture', fetchedAt: NOW.toISOString(),
-    ageSeconds: 0, stale: false, repoFilter: [REPO], otherRepoSessions: 1, sessionsWithoutHook: 1,
+    status: 'ok',
+    reason: null,
+    source: 'fixture',
+    fetchedAt: NOW.toISOString(),
+    ageSeconds: 0,
+    stale: false,
+    repoFilter: [REPO],
+    otherRepoSessions: 1,
+    sessionsWithoutHook: 1,
     ...over,
 });
 
@@ -82,13 +86,17 @@ describe('telemetry panels render', () => {
 
     it('surfaces both setup failures in data quality', () => {
         const payloadMeta: StatsPayload['meta'] = {
-            fetchedAt: NOW.toISOString(), ageSeconds: 0, stale: false,
+            fetchedAt: NOW.toISOString(),
+            ageSeconds: 0,
+            stale: false,
             organization: {
-                mode: 'config', current: { id: 'x-org', name: 'X Org' },
+                mode: 'config',
+                current: { id: 'x-org', name: 'X Org' },
                 available: [{ id: 'x-org', name: 'X Org' }],
             },
             repos: [{ owner: 'x', name: 'y' }],
-            range: { preset: 'all', from: null, to: null }, telemetry: meta(),
+            range: { preset: 'all', from: null, to: null },
+            telemetry: meta(),
         };
         const html = renderToStaticMarkup(<DataQualityPanel meta={payloadMeta} />);
         expect(html).toContain('agent-telemetry plugin');

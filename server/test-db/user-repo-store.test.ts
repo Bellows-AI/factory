@@ -13,9 +13,7 @@ const url = process.env.DATABASE_URL;
 function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`,
-        );
+        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
     }
 }
 
@@ -96,7 +94,7 @@ describe.skipIf(!enabled)('the user repo store', () => {
         expect(byName).toEqual({ web: 'ready', api: 'queued' });
     });
 
-    it('re-queues a failed repo when it is re-selected, so a retry is the member\'s choice', async () => {
+    it("re-queues a failed repo when it is re-selected, so a retry is the member's choice", async () => {
         await store.select(ALICE, [web]);
         await store.claimPending(1);
         await store.markFailed(ALICE, web, 'fatal: repository not found');
@@ -106,7 +104,7 @@ describe.skipIf(!enabled)('the user repo store', () => {
         expect((await store.list(ALICE))[0]).toMatchObject({ status: 'queued', error: null });
     });
 
-    it('keeps two members\' selections apart', async () => {
+    it("keeps two members' selections apart", async () => {
         await store.select(ALICE, [web]);
         await store.select(BOB, [api]);
 
@@ -158,18 +156,18 @@ describe.skipIf(!enabled)('the user repo store', () => {
         }
     });
 
-    it('refuses two owners\' same-named repos, because they are one directory', async () => {
+    it("refuses two owners' same-named repos, because they are one directory", async () => {
         // The checkout is `<repo_name>` alone. This is the check `checkWorkspaceNames` used to make
         // against ORG_REPOS at boot, restated where a name actually becomes a path.
         await expect(
             store.select(ALICE, [
                 { owner: 'acme', name: 'api' },
                 { owner: 'other-owner', name: 'api' },
-            ]),
+            ])
         ).rejects.toThrow();
     });
 
-    it('removes a member\'s rows when the account goes, unlike a job\'s author', async () => {
+    it("removes a member's rows when the account goes, unlike a job's author", async () => {
         // `on delete cascade` here, `set null` on job.created_by. A job is an audit record of what
         // somebody ran and must outlive them; this row describes a directory nobody can reach.
         await store.select(BOB, [web]);

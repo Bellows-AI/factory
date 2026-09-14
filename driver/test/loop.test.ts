@@ -26,7 +26,10 @@ interface BoardStub extends Board {
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     beats: number;
-    gatesReported: { id: string; results: { name: string; status: string; exitCode: number | null; output: string | null }[] }[];
+    gatesReported: {
+        id: string;
+        results: { name: string; status: string; exitCode: number | null; output: string | null }[];
+    }[];
     gatesReread: number;
     publishTokenAsks: string[];
     reclaimGrants: Reclaim[];
@@ -57,7 +60,7 @@ function stubBoard(
         ackReclaimLease?: 'ok' | 'lost' | 'missing';
         failAckReclaim?: boolean;
         publishToken?: string | null;
-    } = {},
+    } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
     let idle = 0;
@@ -146,7 +149,7 @@ function stubRunner(
     sample: Omit<RuntimeSample, 'sampledAt'> | null = null,
     publish: PublishResult | null = null,
     sync: SyncResult | null = null,
-    reclaim: { ok: boolean; removed: boolean; reason: string | null } | null = null,
+    reclaim: { ok: boolean; removed: boolean; reason: string | null } | null = null
 ): Runner & {
     killed: string[];
     lookups: number;
@@ -214,7 +217,7 @@ const sleep = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 async function drive(
     deps: { board: BoardStub; attach: (loop: Loop) => void; runner: Runner; gates?: GateStack },
-    env = {},
+    env = {}
 ) {
     const loop = createLoop({
         board: deps.board,
@@ -297,7 +300,14 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null },
+            {
+                id: job(1).id,
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'done',
+                contextTokens: null,
+                contextCostUsd: null,
+            },
         ]);
     });
 
@@ -340,7 +350,7 @@ describe('the poll loop', () => {
                 output: 'reads only',
                 finishReason: 'tool-calls',
                 providerError: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
-            }),
+            })
         );
 
         await drive({ ...board, runner });
@@ -355,7 +365,7 @@ describe('the poll loop', () => {
     it('leaves a stopped run’s provider error out of the verdict', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () =>
-            ok({ finishReason: 'stop', providerError: 'Error from provider (Console): Rate limit exceeded.' }),
+            ok({ finishReason: 'stop', providerError: 'Error from provider (Console): Rate limit exceeded.' })
         );
 
         await drive({ ...board, runner });
@@ -381,7 +391,11 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', contextTokens: 90433, contextCostUsd: 0.31 });
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'succeeded',
+            contextTokens: 90433,
+            contextCostUsd: 0.31,
+        });
     });
 
     // An opencode run always leaves a session, so an empty scrape is a failed readout — said out
@@ -422,33 +436,39 @@ describe('the poll loop', () => {
     // and its result changes the verdict — work that landed nowhere is not a success.
     it('publishes a succeeded run and says where the work landed', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(
-            async () => ok(),
-            null,
-            null,
-            { ok: true, published: true, branch: 'fix/10', prUrl: 'https://github.com/Bellows-AI/factory/pull/42', reason: null },
-        );
+        const runner = stubRunner(async () => ok(), null, null, {
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+            reason: null,
+        });
 
         await drive({ ...board, runner });
 
         expect(runner.published).toHaveLength(1);
         expect(board.board.completed[0]?.status).toBe('succeeded');
-        expect(board.board.completed[0]?.output).toContain('[driver] published fix/10 — https://github.com/Bellows-AI/factory/pull/42');
+        expect(board.board.completed[0]?.output).toContain(
+            '[driver] published fix/10 — https://github.com/Bellows-AI/factory/pull/42'
+        );
     });
 
     it('fails the verdict when the publish does not land', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(
-            async () => ok(),
-            null,
-            null,
-            { ok: false, published: false, branch: null, prUrl: null, reason: 'git step failed: authentication refused' },
-        );
+        const runner = stubRunner(async () => ok(), null, null, {
+            ok: false,
+            published: false,
+            branch: null,
+            prUrl: null,
+            reason: 'git step failed: authentication refused',
+        });
 
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]?.status).toBe('failed');
-        expect(board.board.completed[0]?.output).toContain('[driver] publish failed — the work did not land: git step failed: authentication refused');
+        expect(board.board.completed[0]?.output).toContain(
+            '[driver] publish failed — the work did not land: git step failed: authentication refused'
+        );
     });
 
     // A runner with no publishGit at all — publishing is an optional capability the loop asks
@@ -469,7 +489,7 @@ describe('the poll loop', () => {
     // publish with a dead credential (job 43379d3a pushed with a token 34 minutes past expiry
     // and the publish failed on 401 with the work done). The loop asks right before the push
     // and lays the answer over the claim env; null keeps the claim env.
-    it('publishes with the board\'s fresh credential laid over the claim env', async () => {
+    it("publishes with the board's fresh credential laid over the claim env", async () => {
         const claimed = { ...job(1), env: { GITHUB_TOKEN: 'claim-token', CORE: 'claim-value' } };
         const board = stubBoard([claimed], { publishToken: 'ghs_fresh' });
         const runner = stubRunner(async () => ok());
@@ -546,13 +566,10 @@ describe('the poll loop', () => {
 
     it('fails the attempt with the reason when the checkout sync fails', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(
-            async () => ok(),
-            null,
-            null,
-            null,
-            { ok: false, reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts' },
-        );
+        const runner = stubRunner(async () => ok(), null, null, null, {
+            ok: false,
+            reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts',
+        });
 
         await drive({ ...board, runner });
 
@@ -760,7 +777,7 @@ describe('the poll loop', () => {
                 id,
                 new Promise<void>((resolve) => {
                     resolvers.set(id, resolve);
-                }),
+                })
             );
         };
         makeGate(job(1).id);
@@ -797,7 +814,9 @@ describe('the poll loop', () => {
         await started;
 
         expect(events.indexOf(`reclaim-done:${job(1).id}`)).toBeLessThan(events.indexOf(`sync:${firstFollowUp.id}`));
-        expect(events.indexOf(`reclaim-done:${firstFollowUp.id}`)).toBeLessThan(events.indexOf(`sync:${secondFollowUp.id}`));
+        expect(events.indexOf(`reclaim-done:${firstFollowUp.id}`)).toBeLessThan(
+            events.indexOf(`sync:${secondFollowUp.id}`)
+        );
         expect(board.board.completed).toHaveLength(3);
         expect(runner.reclaimed).toEqual([job(1), firstFollowUp]);
     });
@@ -813,7 +832,7 @@ describe('the poll loop', () => {
                 output: 'partial',
                 finishReason: 'tool-calls',
                 cacheLost: '3 consecutive turns with no prompt-cache reads (input 84k/80k/63k tokens, 150-250s each)',
-            }),
+            })
         );
 
         await drive({ ...board, runner });
@@ -834,7 +853,7 @@ describe('the poll loop', () => {
             () =>
                 new Promise<RunOutcome>((resolve) => {
                     finish = () => resolve(ok());
-                }),
+                })
         );
 
         const started = drive({ ...board, runner });
@@ -859,7 +878,7 @@ describe('the poll loop', () => {
             () =>
                 new Promise<RunOutcome>((resolve) => {
                     finish = () => resolve(ok());
-                }),
+                })
         );
 
         const started = drive({ ...board, runner });
@@ -884,7 +903,7 @@ describe('the poll loop', () => {
             () =>
                 new Promise<RunOutcome>((resolve) => {
                     finish = () => resolve(ok());
-                }),
+                })
         );
 
         const started = drive({ ...board, runner });
@@ -947,7 +966,15 @@ describe('the poll loop', () => {
         const logs: string[] = [];
         const board = stubBoard([], {
             idleBeforeStop: 1,
-            reclaims: [{ id: rowId, rootJobId: root, repo: null, workspacePath: null, leaseExpiresAt: '2026-08-21T12:05:00.000Z' }],
+            reclaims: [
+                {
+                    id: rowId,
+                    rootJobId: root,
+                    repo: null,
+                    workspacePath: null,
+                    leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+                },
+            ],
         });
         const runner = stubRunner(async () => ok());
         runner.reclaimWorktree = async () => ({ ok: false, removed: false, reason: 'the checkout is held' });
@@ -977,7 +1004,15 @@ describe('the poll loop', () => {
         const logs: string[] = [];
         const board = stubBoard([], {
             idleBeforeStop: 1,
-            reclaims: [{ id: rowId, rootJobId: root, repo: null, workspacePath: null, leaseExpiresAt: '2026-08-21T12:05:00.000Z' }],
+            reclaims: [
+                {
+                    id: rowId,
+                    rootJobId: root,
+                    repo: null,
+                    workspacePath: null,
+                    leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+                },
+            ],
             failAckReclaim: true,
         });
         const runner = stubRunner(async () => ok());
@@ -1119,7 +1154,10 @@ describe('the poll loop', () => {
     // the claim down itself (Foreground Job delete, then release) before answering ok:false.
     it('does not release the fence when the sync itself fails — the runner released it', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, null, { ok: false, reason: 'conflict in driver/src/loop.ts' });
+        const runner = stubRunner(async () => ok(), null, null, null, {
+            ok: false,
+            reason: 'conflict in driver/src/loop.ts',
+        });
         const { events } = releaseEvents(board.board, runner);
 
         await drive({ ...board, runner });
@@ -1135,7 +1173,11 @@ describe('the poll loop', () => {
     it('leaves a job to its lease when the runner reports the container never started', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () =>
-            ok({ exitCode: 125, output: 'docker: Error response from daemon: Conflict. The container name is already in use', started: false }),
+            ok({
+                exitCode: 125,
+                output: 'docker: Error response from daemon: Conflict. The container name is already in use',
+                started: false,
+            })
         );
 
         await drive({ ...board, runner });
@@ -1152,7 +1194,11 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: 125, output: 'the command failed' });
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            exitCode: 125,
+            output: 'the command failed',
+        });
     });
 
     // Found by running the driver for real, not by this suite: the beat period is a third of the
@@ -1192,9 +1238,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(given).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-        expect(board.board.sessions).toEqual([
-            { id: job(1).id, sessionId: given, remoteSessionId: null },
-        ]);
+        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: given, remoteSessionId: null }]);
         expect(reportedFirst).toBe(true);
     });
 
@@ -1212,9 +1256,7 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner }, { RUNNER_REMOTE_CONTROL: '1' });
 
-        expect(board.board.sessions.map((s) => s.remoteSessionId)).toContain(
-            'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
-        );
+        expect(board.board.sessions.map((s) => s.remoteSessionId)).toContain('cse_015tb2nHhHNrBuL7ZDhn9Wx5');
     });
 
     // Forty `docker exec`s that can never find anything: a headless run registers no bridge.
@@ -1263,7 +1305,14 @@ describe('the poll loop', () => {
             { id: job(1).id, output: 'tail two', runtime: null },
         ]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
+            {
+                id: job(1).id,
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'final',
+                contextTokens: null,
+                contextCostUsd: null,
+            },
         ]);
     });
 
@@ -1285,7 +1334,7 @@ describe('the poll loop', () => {
                 return ok({ output: 'final' });
             },
             null,
-            { cpuPercent: 93, memUsedMb: 544, memPercent: 7 },
+            { cpuPercent: 93, memUsedMb: 544, memPercent: 7 }
         );
 
         await drive({ ...board, runner });
@@ -1303,7 +1352,8 @@ describe('the poll loop', () => {
 
     // A run is not failed by its own telemetry. The output stream is a preview; losing it costs
     // freshness, never the job.
-    it('completes the job anyway when the output stream fails', async () => {        const board = stubBoard([job(1)], { failProgress: true });
+    it('completes the job anyway when the output stream fails', async () => {
+        const board = stubBoard([job(1)], { failProgress: true });
         const runner = stubRunner(async (_job, _session, onOutput) => {
             onOutput?.('tail one');
             await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1315,7 +1365,14 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
+            {
+                id: job(1).id,
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'final',
+                contextTokens: null,
+                contextCostUsd: null,
+            },
         ]);
     });
 
@@ -1360,7 +1417,14 @@ describe('the poll loop', () => {
         expect(board.board.progressed).toHaveLength(1);
         expect(runner.killed).toEqual([]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'final', contextTokens: null, contextCostUsd: null },
+            {
+                id: job(1).id,
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'final',
+                contextTokens: null,
+                contextCostUsd: null,
+            },
         ]);
     });
 
@@ -1444,7 +1508,14 @@ describe('an opencode runner', () => {
         expect(given).toBeNull();
         expect(board.board.sessions).toEqual([]);
         expect(board.board.completed).toEqual([
-            { id: job(1).id, status: 'succeeded', exitCode: 0, output: 'done', contextTokens: null, contextCostUsd: null },
+            {
+                id: job(1).id,
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'done',
+                contextTokens: null,
+                contextCostUsd: null,
+            },
         ]);
     });
 
@@ -1650,12 +1721,16 @@ describe('verification gates', () => {
         const last = board.board.gatesReported.at(-1)!.results;
         expect(last).toHaveLength(2);
         for (const gate of last) {
-            expect((gate.output ?? '').length).toBeLessThanOrEqual(16 * 1024 / 2);
+            expect((gate.output ?? '').length).toBeLessThanOrEqual((16 * 1024) / 2);
         }
     });
 
     it('fails a job whose gates file was broken, without running anything', async () => {
-        const broken: BoardJob = { ...job(1), repo: 'Bellows-AI/factory', gateError: '.bellows.yaml line 3: unknown key "timeout"' };
+        const broken: BoardJob = {
+            ...job(1),
+            repo: 'Bellows-AI/factory',
+            gateError: '.bellows.yaml line 3: unknown key "timeout"',
+        };
         const board = stubBoard([broken]);
         const stack = stubGateStack();
         let ran = 0;

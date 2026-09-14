@@ -90,9 +90,7 @@ export function createRepoSource({
             if (!client) {
                 if (!stored) return { repos: empty, installation: null };
                 const names = await stored();
-                const repos = names
-                    .map(parseFullName)
-                    .filter((repo): repo is InstallationRepo => repo !== null);
+                const repos = names.map(parseFullName).filter((repo): repo is InstallationRepo => repo !== null);
                 return { repos: Object.freeze(repos), installation: null };
             }
             try {
@@ -137,9 +135,7 @@ export function createRepoSource({
 /** A fixed list. The route tests and `npm run seed` use this instead of reaching GitHub. */
 export function staticRepoSource(repos: readonly Repo[]): RepoSource {
     const detailed = Object.freeze(
-        repos.map((repo) =>
-            Object.freeze({ ...repo, private: false, defaultBranch: null, pushedAt: null }),
-        ),
+        repos.map((repo) => Object.freeze({ ...repo, private: false, defaultBranch: null, pushedAt: null }))
     ) as readonly InstallationRepo[];
     return {
         snapshot: () => detailed,

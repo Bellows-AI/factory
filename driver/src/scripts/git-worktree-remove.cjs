@@ -56,7 +56,7 @@ function reclaim() {
                 wt +
                 ': the path holds a git tree that is not a registered worktree of ' +
                 repo +
-                '; remove it by hand if it is truly stale',
+                '; remove it by hand if it is truly stale'
         );
     }
     let removed = false;
@@ -74,5 +74,9 @@ function reclaim() {
 try {
     console.log(JSON.stringify(reclaim()));
 } catch (e) {
-    console.log(JSON.stringify(refused('worktree reclaim failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, 300))));
+    console.log(
+        JSON.stringify(
+            refused('worktree reclaim failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, 300))
+        )
+    );
 }

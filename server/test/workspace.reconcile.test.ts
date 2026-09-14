@@ -57,7 +57,7 @@ const repos: Repo[] = [
 const USER = '11111111-2222-3333-4444-555555555555';
 
 describe('workspaceDir', () => {
-    it('puts a member\'s checkouts under their user id', () => {
+    it("puts a member's checkouts under their user id", () => {
         expect(workspaceDir('/srv/f', 'acme', USER)).toBe(`/srv/f/acme/${USER}`);
     });
 
@@ -96,7 +96,7 @@ describe.skipIf(!hasGit())('cloning into a member workspace', () => {
         expect(existsSync(join(root, 'acme', USER, 'widgets', '.git'))).toBe(true);
     });
 
-    it('keeps two members\' checkouts of the same repo apart', async () => {
+    it("keeps two members' checkouts of the same repo apart", async () => {
         const other = '99999999-8888-7777-6666-555555555555';
         await clone(repos[0] as Repo);
         await cloneRepo({ root, orgId: 'acme', userId: other, repo: repos[0] as Repo, cloneUrl });
@@ -133,7 +133,7 @@ describe.skipIf(!hasGit())('cloning into a member workspace', () => {
                 userId: USER,
                 repo: { owner: 'acme', name: 'missing' },
                 cloneUrl: () => `file://${join(dir, 'nonexistent.git')}`,
-            }),
+            })
         ).rejects.toThrow();
 
         // Neither the destination nor the staging directory outlives the failure — a partial tree

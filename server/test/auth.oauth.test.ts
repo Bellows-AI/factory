@@ -39,8 +39,7 @@ const callback = (app: FastifyInstance, query: string, cookie?: string) =>
         ...(cookie ? { cookies: { [OAUTH_COOKIE]: cookie } } : {}),
     });
 
-const errorOf = (location: string): string | null =>
-    new URL(location, 'http://x').searchParams.get('auth_error');
+const errorOf = (location: string): string | null => new URL(location, 'http://x').searchParams.get('auth_error');
 
 describe('github sign-in', () => {
     it('sends the browser to GitHub with the state it just set as a cookie', async () => {

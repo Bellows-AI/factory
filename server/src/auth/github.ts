@@ -42,7 +42,7 @@ export class GitHubAuthError extends Error {}
 
 export function createGitHubIdentityClient(
     auth: Extract<AuthConfig, { mode: 'github' }>,
-    fetchFn: typeof fetch = fetch,
+    fetchFn: typeof fetch = fetch
 ): GitHubIdentityClient {
     const redirectUri = `${auth.publicUrl}${callbackPath}`;
 
@@ -80,7 +80,11 @@ export function createGitHubIdentityClient(
             if (!response.ok) {
                 throw new GitHubAuthError(`token exchange failed with ${response.status}`);
             }
-            const body = (await response.json()) as { access_token?: string; error_description?: string; error?: string };
+            const body = (await response.json()) as {
+                access_token?: string;
+                error_description?: string;
+                error?: string;
+            };
             if (!body.access_token) {
                 // GitHub reports a bad or reused code with a 200 and an `error` field, so the status
                 // check above does not cover it.

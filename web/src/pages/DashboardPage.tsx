@@ -22,10 +22,7 @@ export function DashboardPage() {
                         {data.telemetry ? (
                             <>
                                 <AiUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                                <TokenUsagePanel
-                                    telemetry={data.telemetry}
-                                    meta={data.meta.telemetry}
-                                />
+                                <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                             </>
                         ) : null}
                         <DataQualityPanel meta={data.meta} />

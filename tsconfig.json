@@ -1,9 +1,4 @@
 {
     "files": [],
-    "references": [
-        { "path": "./core" },
-        { "path": "./server" },
-        { "path": "./web" },
-        { "path": "./driver" }
-    ]
+    "references": [{ "path": "./core" }, { "path": "./server" }, { "path": "./web" }, { "path": "./driver" }]
 }

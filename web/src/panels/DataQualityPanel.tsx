@@ -23,17 +23,17 @@ export function DataQualityPanel({ meta }: { meta: StatsPayload['meta'] }) {
         }
         if (t.sessionsWithoutHook > 0) {
             items.push(
-                `${t.sessionsWithoutHook} agent session(s) sent telemetry but no repo, so they are not attributed to this dashboard — install the agent-telemetry plugin.`,
+                `${t.sessionsWithoutHook} agent session(s) sent telemetry but no repo, so they are not attributed to this dashboard — install the agent-telemetry plugin.`
             );
         }
         if (t.otherRepoSessions > 0) {
             items.push(
-                `${t.otherRepoSessions} agent session(s) happened in another repo and are excluded; this dashboard only counts ${t.repoFilter.join(', ')}.`,
+                `${t.otherRepoSessions} agent session(s) happened in another repo and are excluded; this dashboard only counts ${t.repoFilter.join(', ')}.`
             );
         }
         if (t.source === 'fixture') {
             items.push(
-                'AI usage figures are synthetic fixture data, not measurements. Set TELEMETRY_SOURCE=postgres to report real sessions.',
+                'AI usage figures are synthetic fixture data, not measurements. Set TELEMETRY_SOURCE=postgres to report real sessions.'
             );
         }
     }

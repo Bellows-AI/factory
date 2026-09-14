@@ -191,12 +191,11 @@ function scalar(raw: string): string {
                 // slice() returns less than asked near the end of the string, so the length
                 // check is what makes "\u12" malformed rather than a silent short decode.
                 const digits = body.slice(i + 2, i + 2 + hexLength);
-                const point =
-                    digits.length === hexLength && /^[0-9a-fA-F]+$/.test(digits) ? parseInt(digits, 16) : NaN;
+                const point = digits.length === hexLength && /^[0-9a-fA-F]+$/.test(digits) ? parseInt(digits, 16) : NaN;
                 if (Number.isNaN(point) || point > 0x10ffff) {
                     throw new Error(
                         `.bellows.yaml: malformed escape "\\${next}${digits}" in a double-quoted value — ` +
-                            `"\\${next}" takes exactly ${hexLength} hex digits within Unicode`,
+                            `"\\${next}" takes exactly ${hexLength} hex digits within Unicode`
                     );
                 }
                 out += String.fromCodePoint(point);
@@ -280,7 +279,7 @@ export function parseBellows(text: string): ServiceSpec[] {
         if (!SERVICE_NAME.test(name)) {
             throw new Error(
                 `.bellows.yaml: service name "${name}" must be a lowercase DNS label ` +
-                    '(letters, digits and hyphens, at most 30 characters, none at either end)',
+                    '(letters, digits and hyphens, at most 30 characters, none at either end)'
             );
         }
         if (!IMAGE.test(image)) {
@@ -389,7 +388,7 @@ export function parseBellows(text: string): ServiceSpec[] {
             if (key.length > MAX_ENV_KEY || value.length > MAX_ENV_VALUE) {
                 throw new Error(
                     `.bellows.yaml: "${key}" is too long — keys at most ${MAX_ENV_KEY} and values at most ` +
-                        `${MAX_ENV_VALUE} characters`,
+                        `${MAX_ENV_VALUE} characters`
                 );
             }
             if (current.envKeys.has(key)) {
@@ -429,7 +428,7 @@ export function splitBellowsSections(output: string): { repo: string; text: stri
             const repo = marker[1] ?? '';
             if (!repo || /[\\/]/.test(repo) || /^[-.]/.test(repo)) {
                 throw new Error(
-                    `.bellows.yaml: the readout named a checkout that is not a path segment: ${JSON.stringify(repo)}`,
+                    `.bellows.yaml: the readout named a checkout that is not a path segment: ${JSON.stringify(repo)}`
                 );
             }
             current = { repo, lines: [] };
@@ -469,7 +468,7 @@ export function collectServices(sections: { repo: string; text: string }[]): Ser
             if (existing !== undefined) {
                 throw new Error(
                     `.bellows.yaml: service "${spec.name}" is defined in both ${existing}/ and ${repo}/ — ` +
-                        'service names must be unique across a workspace',
+                        'service names must be unique across a workspace'
                 );
             }
             repoOf.set(spec.name, repo);
@@ -517,7 +516,7 @@ export function bellowsReadEnv(config: DriverConfig, job: BoardJob): Record<stri
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
         throw new Error(
             `refusing to read .bellows.yaml for job ${job.id}: ` +
-                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
     return {

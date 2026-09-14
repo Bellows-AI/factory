@@ -294,7 +294,11 @@ export interface JobStore {
      *
      * `target` carries the optional repo/executor labels the tasks chat groups and displays by.
      */
-    create(command: string, createdBy: string | null, target: { repo: string | null; executor: string | null }): Promise<{ id: string }>;
+    create(
+        command: string,
+        createdBy: string | null,
+        target: { repo: string | null; executor: string | null }
+    ): Promise<{ id: string }>;
     /**
      * Queues a follow-up on a finished task: a new job that inherits the parent's repo, executor
      * and session ids, linked through `followUpTo`. Atomic and conditional — the insert only
@@ -307,7 +311,11 @@ export interface JobStore {
      * conversation switching executors mid-thread is exactly the cross-CLI resume the driver
      * cannot do.
      */
-    createFollowUp(parentId: string, command: string, createdBy: string | null): Promise<{ id: string } | FollowUpRefusal>;
+    createFollowUp(
+        parentId: string,
+        command: string,
+        createdBy: string | null
+    ): Promise<{ id: string } | FollowUpRefusal>;
     /**
      * The user's verdict that the task is done. Terminal tasks only — a moving run is not the
      * user's to finish. Idempotent: marking a done task done again answers the same instant, and
@@ -349,7 +357,7 @@ export interface JobStore {
     heartbeat(
         id: string,
         leaseToken: string,
-        leaseSeconds: number,
+        leaseSeconds: number
     ): Promise<{ result: LeaseResult; leaseExpiresAt: string | null; cancelRequested: boolean }>;
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded
@@ -359,12 +367,7 @@ export interface JobStore {
      * remote one only after the bridge connects. A null `remoteSessionId` therefore leaves whatever
      * is already stored alone rather than clearing it.
      */
-    session(
-        id: string,
-        leaseToken: string,
-        sessionId: string,
-        remoteSessionId: string | null,
-    ): Promise<LeaseResult>;
+    session(id: string, leaseToken: string, sessionId: string, remoteSessionId: string | null): Promise<LeaseResult>;
     /**
      * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
      * while it happens instead of a silent spinner — with the attempt's last sampled vitals riding
@@ -392,8 +395,10 @@ export interface JobStore {
      */
     rereadGates(
         id: string,
-        leaseToken: string,
-    ): Promise<{ result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | { result: 'lost' | 'missing' }>;
+        leaseToken: string
+    ): Promise<
+        { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | { result: 'lost' | 'missing' }
+    >;
     /**
      * A publish credential for the run's final push. The claim mints a full-hour installation
      * token and a run can outlive it — observed 2026-09-13 (job 43379d3a): a 1h33m run published
@@ -408,7 +413,7 @@ export interface JobStore {
      */
     publishToken(
         id: string,
-        leaseToken: string,
+        leaseToken: string
     ): Promise<{ result: 'ok'; token: string | null } | { result: 'lost' | 'missing' }>;
     /**
      * Ends a running job's attempt. Lease-guarded, like every other worker write. Where it lands
@@ -446,7 +451,7 @@ export interface JobStore {
              */
             contextTokens?: number | null;
             contextCostUsd?: number | null;
-        },
+        }
     ): Promise<{ result: 'ok'; threadDone: boolean } | { result: 'lost' | 'missing' }>;
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
@@ -512,7 +517,7 @@ const iso = (value: Date | null): string | null => (value === null ? null : valu
  */
 export function withMintedToken(
     minted: string | undefined,
-    resolved: Record<string, string> | undefined,
+    resolved: Record<string, string> | undefined
 ): Record<string, string> | undefined {
     if (minted === undefined) return resolved;
     return { GITHUB_TOKEN: minted, ...resolved };
@@ -543,8 +548,8 @@ export function createJobStore({
     orgId: string;
     ready?: Promise<unknown>;
     /**
-      * The env-var store's resolver, when the deployment stores runner environment. Present in
-      * main.ts, absent in the tests that predate it — a claim then simply carries no `env`. The
+     * The env-var store's resolver, when the deployment stores runner environment. Present in
+     * main.ts, absent in the tests that predate it — a claim then simply carries no `env`. The
      * second parameter is the executor the resolver MUST run on: the claim's own transaction, so
      * a claim holds one connection rather than two (a resolver on the pool would let enough
      * concurrent claims wedge the pool against itself).
@@ -552,18 +557,18 @@ export function createJobStore({
     env?: {
         resolveFor(
             target: { userId: string | null; repo: string | null },
-            exec: Sql | TransactionSql,
+            exec: Sql | TransactionSql
         ): Promise<Record<string, string>>;
     };
     /**
      * The GitHub App's installation-token provider, laid under the resolved env as the base layer
-      * (`withMintedToken`). Present in main.ts under the App — which is every env-booted process —
-      * and absent in the offline tooling and the tests that predate it: a board that cannot fetch
-      * mints nothing. Declared inline, like
-      * `env`, because `db/` must not import from `github/`. Each claim mints FRESH rather than
-      * reading the provider's cache, because the credential has to outlive the claim: a runner's
-      * env is written once and a run is capped at two hours, so a cached token's remaining
-      * five minutes would die mid-run. A mint failure throws, and the same rollback that guards
+     * (`withMintedToken`). Present in main.ts under the App — which is every env-booted process —
+     * and absent in the offline tooling and the tests that predate it: a board that cannot fetch
+     * mints nothing. Declared inline, like
+     * `env`, because `db/` must not import from `github/`. Each claim mints FRESH rather than
+     * reading the provider's cache, because the credential has to outlive the claim: a runner's
+     * env is written once and a run is capped at two hours, so a cached token's remaining
+     * five minutes would die mid-run. A mint failure throws, and the same rollback that guards
      * the resolver leaves the job queued with its attempt unburned.
      */
     githubToken?: {
@@ -574,14 +579,14 @@ export function createJobStore({
      * inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a claim
      * hands it the workspace path, the repo label and the thread's root id (the worktree the run
      * edits), and gets the parsed `.bellows.yaml` or the reason the file could not be honoured.
-      * Present in main.ts, absent in the tests that predate gates — a claim then simply carries
-      * none.
+     * Present in main.ts, absent in the tests that predate gates — a claim then simply carries
+     * none.
      */
     gates?: {
         readFor(
             workspacePath: string,
             repo: string,
-            worktreeId: string | null,
+            worktreeId: string | null
         ): Promise<{ config: BellowsConfig | null; error: string | null }>;
     };
     /**
@@ -599,7 +604,7 @@ export function createJobStore({
         configFor(
             userId: string,
             name: string,
-            exec: Sql | TransactionSql,
+            exec: Sql | TransactionSql
         ): Promise<{ type: string; config: Record<string, unknown> } | null>;
     };
 }): JobStore {
@@ -745,8 +750,7 @@ export function createJobStore({
                         select repo, created_by from job
                         where org_id = ${orgId} and id = ${row.root_job_id}
                     `;
-                    const workspacePath =
-                        hasWorkspaces && root?.created_by ? `${orgId}/${root.created_by}` : null;
+                    const workspacePath = hasWorkspaces && root?.created_by ? `${orgId}/${root.created_by}` : null;
                     // Idempotent against a row already queued (an earlier done, or a concurrent
                     // one): one tree, one reclaim. The claim-ack cycle removes the row; until
                     // then a duplicate insert would only re-offer an already-removed tree, so
@@ -963,7 +967,9 @@ export function createJobStore({
                     // guard answers 503, the driver retries the claim, and a job is never handed
                     // out with half an environment. The minted installation token goes under it
                     // as the base layer, and its failure rolls back exactly the same way.
-                    const resolvedEnv = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined;
+                    const resolvedEnv = env
+                        ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx)
+                        : undefined;
                     // The mint fills only the gap: when the stacked env already carries a
                     // GITHUB_TOKEN, the mint would be discarded — so it is not made at all, rather
                     // than spend a GitHub call and leave a live token nothing holds.
@@ -985,7 +991,12 @@ export function createJobStore({
                     if (executorConfig && row.executor !== null && row.created_by !== null) {
                         const configured = await executorConfig.configFor(row.created_by, row.executor, tx);
                         const member = configured?.config;
-                        if (configured?.type === 'opencode' && member !== null && typeof member === 'object' && !Array.isArray(member)) {
+                        if (
+                            configured?.type === 'opencode' &&
+                            member !== null &&
+                            typeof member === 'object' &&
+                            !Array.isArray(member)
+                        ) {
                             // `permission` is the runner's fence, baked into the image and patched
                             // by its entrypoint — the one key the member does not get to set: a
                             // pasted `external_directory: allow` would open every member's tree
@@ -1026,9 +1037,7 @@ export function createJobStore({
                         followUp: row.follow_up,
                         ...(claimEnv ? { env: claimEnv } : {}),
                         ...(row.repo !== null ? { repo: row.repo } : {}),
-                        ...(claimGates || gateError
-                            ? { gates: claimGates, gateError: gateError }
-                            : {}),
+                        ...(claimGates || gateError ? { gates: claimGates, gateError: gateError } : {}),
                     };
                 }
             });
@@ -1056,7 +1065,11 @@ export function createJobStore({
                     cancelRequested: row.cancel_requested_at !== null,
                 };
             }
-            return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing', leaseExpiresAt: null, cancelRequested: false };
+            return {
+                result: (await exists(sql, orgId, id)) ? 'lost' : 'missing',
+                leaseExpiresAt: null,
+                cancelRequested: false,
+            };
         },
 
         async session(id, leaseToken, sessionId, remoteSessionId) {
@@ -1249,8 +1262,7 @@ export function createJobStore({
                 // otherwise — and takes the tree down, acking the row when it has. Same relative
                 // path the claim derives, empty labels included: a tree keyed only on the root id
                 // still gets reclaimed, pointing at nothing additional is fine.
-                const workspacePath =
-                    hasWorkspaces && root.created_by ? `${orgId}/${root.created_by}` : null;
+                const workspacePath = hasWorkspaces && root.created_by ? `${orgId}/${root.created_by}` : null;
                 await tx`
                     insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
                     values (${orgId}, ${rootJobId}, ${root.repo}, ${workspacePath})
@@ -1273,7 +1285,13 @@ export function createJobStore({
             // seconds in. The CTE exposes only claim_id, so the RETURNING columns read the target
             // table unambiguously.
             const rows = await sql<
-                { id: string; root_job_id: string; repo: string | null; workspace_path: string | null; lease_expires_at: Date }[]
+                {
+                    id: string;
+                    root_job_id: string;
+                    repo: string | null;
+                    workspace_path: string | null;
+                    lease_expires_at: Date;
+                }[]
             >`
                 with candidate as (
                     select id as claim_id from task_reclaim
@@ -1312,7 +1330,9 @@ export function createJobStore({
                 returning id
             `;
             if (rows[0]) return 'ok';
-            const present = await sql<{ id: string }[]>`select id from task_reclaim where org_id = ${orgId} and id = ${id}`;
+            const present = await sql<
+                { id: string }[]
+            >`select id from task_reclaim where org_id = ${orgId} and id = ${id}`;
             return present[0] ? 'lost' : 'missing';
         },
 
@@ -1369,8 +1389,7 @@ export function createJobStore({
                 `;
                 return {
                     result: 'ok',
-                    threadDone:
-                        (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0,
+                    threadDone: (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0,
                 };
             });
         },

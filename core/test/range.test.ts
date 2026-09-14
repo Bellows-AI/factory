@@ -85,12 +85,16 @@ describe('filterTelemetryInput', () => {
         const edge = filterTelemetryInput(
             {
                 sessions: [
-                    session({ sessionId: 'on-from', firstSeen: august.from as string, lastSeen: august.from as string }),
+                    session({
+                        sessionId: 'on-from',
+                        firstSeen: august.from as string,
+                        lastSeen: august.from as string,
+                    }),
                     session({ sessionId: 'on-to', firstSeen: august.to as string, lastSeen: august.to as string }),
                 ],
                 coverage: input.coverage,
             },
-            august,
+            august
         );
         expect(edge.sessions.map((s) => s.sessionId)).toEqual(['on-from']);
     });

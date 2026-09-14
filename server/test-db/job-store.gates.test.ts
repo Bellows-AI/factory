@@ -13,9 +13,7 @@ const url = process.env.DATABASE_URL;
 function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`,
-        );
+        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
     }
 }
 
@@ -166,7 +164,11 @@ describe.runIf(enabled)('gates on the job store', () => {
         // ungated job carries.
         expect(claim?.gates).toBeUndefined();
         const reread = await reader.rereadGates(claim!.id, claim!.leaseToken);
-        expect(reread).toEqual({ result: 'ok', gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, gateError: null });
+        expect(reread).toEqual({
+            result: 'ok',
+            gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+            gateError: null,
+        });
     });
 
     it('guards the gates re-read with the lease, like every other worker route', async () => {

@@ -63,7 +63,7 @@ try {
         await store.createWorkerToken(orgId, name!, hashToken(token));
         console.log(`worker token for "${name}" in "${orgId}" — shown once, only its hash is stored:\n`);
         console.log(`  JOB_BOARD_TOKEN=${token}\n`);
-        console.log('Put it in the driver\'s environment. It is not recoverable; reissue if lost.');
+        console.log("Put it in the driver's environment. It is not recoverable; reissue if lost.");
     }
 } finally {
     await sql.end({ timeout: 5 });

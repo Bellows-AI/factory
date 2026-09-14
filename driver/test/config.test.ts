@@ -25,9 +25,7 @@ describe('the driver config', () => {
     });
 
     it('trims the trailing slash, so a board url pastes in either form', () => {
-        expect(loadDriverConfig({ JOB_BOARD_URL: 'http://dashboard:8080/' }).boardUrl).toBe(
-            'http://dashboard:8080',
-        );
+        expect(loadDriverConfig({ JOB_BOARD_URL: 'http://dashboard:8080/' }).boardUrl).toBe('http://dashboard:8080');
     });
 
     it.each([
@@ -94,7 +92,7 @@ describe('the driver config', () => {
         expect(loadDriverConfig({ RUNNER_OTEL_ENDPOINT: '' }).otelEndpoint).toBe('http://collector:4318');
         expect(
             loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_OTEL_ENDPOINT: 'http://telemetry.internal:4318' })
-                .otelEndpoint,
+                .otelEndpoint
         ).toBe('http://telemetry.internal:4318');
     });
 
@@ -104,16 +102,14 @@ describe('the driver config', () => {
     // containerized runners) where only a host-gateway address reaches the API.
     it('defaults RUNNER_STATS_URL to the board url, overridable', () => {
         expect(loadDriverConfig({}).statsUrl).toBe('http://127.0.0.1:8080');
-        expect(loadDriverConfig({ JOB_BOARD_URL: 'http://dashboard:8080/' }).statsUrl).toBe(
-            'http://dashboard:8080',
-        );
+        expect(loadDriverConfig({ JOB_BOARD_URL: 'http://dashboard:8080/' }).statsUrl).toBe('http://dashboard:8080');
         expect(loadDriverConfig({ RUNNER_STATS_URL: 'http://stats.internal:8080' }).statsUrl).toBe(
-            'http://stats.internal:8080',
+            'http://stats.internal:8080'
         );
         // The reporter concatenates request paths onto this string — a trailing slash would 404
         // every report into the silence its error handling promises.
         expect(loadDriverConfig({ RUNNER_STATS_URL: 'http://stats.internal:8080/' }).statsUrl).toBe(
-            'http://stats.internal:8080',
+            'http://stats.internal:8080'
         );
         // Same scheme rule as JOB_BOARD_URL: a URL without a scheme parses as a path, and a
         // reporter pointed at a path posts nowhere, silently.
@@ -135,7 +131,7 @@ describe('the driver config', () => {
         expect(loadDriverConfig({}).credentialsSecret).toBeNull();
         expect(
             loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CREDENTIALS_SECRET: 'claude-credentials' })
-                .credentialsSecret,
+                .credentialsSecret
         ).toBe('claude-credentials');
     });
 
@@ -145,11 +141,9 @@ describe('the driver config', () => {
         expect(loadDriverConfig({}).imagePullPolicy).toBe('IfNotPresent');
         expect(loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'Always' }).imagePullPolicy).toBe('Always');
         expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'ifnotpresent' })).toThrow(
-            /RUNNER_IMAGE_PULL_POLICY/,
+            /RUNNER_IMAGE_PULL_POLICY/
         );
-        expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'sometimes' })).toThrow(
-            /RUNNER_IMAGE_PULL_POLICY/,
-        );
+        expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'sometimes' })).toThrow(/RUNNER_IMAGE_PULL_POLICY/);
     });
 
     /**
@@ -160,7 +154,7 @@ describe('the driver config', () => {
      */
     it('refuses Remote Control under the kubernetes executor', () => {
         expect(() => loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_REMOTE_CONTROL: '1' })).toThrow(
-            /RUNNER_REMOTE_CONTROL.*EXECUTOR|EXECUTOR.*RUNNER_REMOTE_CONTROL/s,
+            /RUNNER_REMOTE_CONTROL.*EXECUTOR|EXECUTOR.*RUNNER_REMOTE_CONTROL/s
         );
         // And the same combination is fine under docker, which is the only executor that has it.
         expect(() => loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' })).not.toThrow();
@@ -183,7 +177,7 @@ describe('the driver config', () => {
         expect(loadDriverConfig({ GATE_LISTEN_HOST: '0.0.0.0' }).gateListenHost).toBe('0.0.0.0');
         expect(loadDriverConfig({}).gateAdvertiseUrl).toBeNull();
         expect(loadDriverConfig({ GATE_ADVERTISE_URL: 'http://driver:9099' }).gateAdvertiseUrl).toBe(
-            'http://driver:9099',
+            'http://driver:9099'
         );
     });
 

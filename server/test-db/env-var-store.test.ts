@@ -2,11 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
-import {
-    createEnvVarStore,
-    stackEnv,
-    type EnvVarStore,
-} from '../src/db/env-var-store.js';
+import { createEnvVarStore, stackEnv, type EnvVarStore } from '../src/db/env-var-store.js';
 
 const url = process.env.DATABASE_URL;
 
@@ -18,9 +14,7 @@ const url = process.env.DATABASE_URL;
 function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`,
-        );
+        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
     }
 }
 
@@ -93,7 +87,7 @@ describe.skipIf(!enabled)('the env var store', () => {
             expect.arrayContaining([
                 expect.objectContaining({ name: 'SECRET', value: null, isSecret: true }),
                 expect.objectContaining({ name: 'PLAIN', value: 'visible', isSecret: false }),
-            ]),
+            ])
         );
 
         const resolved = await store.resolveFor({ userId: null, repo: null });
@@ -101,7 +95,10 @@ describe.skipIf(!enabled)('the env var store', () => {
     });
 
     it('stacks org under workspace under repo, the more specific winning', async () => {
-        await store.replaceOrg([{ name: 'LEVEL', value: 'org', isSecret: false }, { name: 'ONLY_ORG', value: 'o', isSecret: false }]);
+        await store.replaceOrg([
+            { name: 'LEVEL', value: 'org', isSecret: false },
+            { name: 'ONLY_ORG', value: 'o', isSecret: false },
+        ]);
         await store.replaceWorkspace(ALICE, [{ name: 'LEVEL', value: 'workspace', isSecret: false }]);
         await store.replaceRepo(REPO.owner, REPO.name, [
             { name: 'LEVEL', value: 'repo', isSecret: false },
@@ -136,7 +133,11 @@ describe.skipIf(!enabled)('the env var store', () => {
         const repos = await store.listRepos();
         expect(repos).toEqual([
             { owner: 'Bellows-AI', name: 'bellows.ai', vars: [expect.objectContaining({ name: 'R', value: '1' })] },
-            { owner: 'Other', name: 'repo', vars: [expect.objectContaining({ name: 'S', value: null, isSecret: true })] },
+            {
+                owner: 'Other',
+                name: 'repo',
+                vars: [expect.objectContaining({ name: 'S', value: null, isSecret: true })],
+            },
         ]);
     });
 
@@ -145,7 +146,7 @@ describe.skipIf(!enabled)('the env var store', () => {
             sql`
                 insert into env_var (org_id, user_id, repo_owner, repo_name, name, value)
                 values (${ORG}, ${ALICE}, 'Bellows-AI', 'bellows.ai', 'X', '1')
-            `,
+            `
         ).rejects.toThrow(/env_var_scope_ck/);
     });
 
@@ -154,15 +155,18 @@ describe.skipIf(!enabled)('the env var store', () => {
             sql`
                 insert into env_var (org_id, user_id, repo_owner, repo_name, name, value)
                 values (${ORG}, null, null, null, 'not a name', '1')
-            `,
+            `
         ).rejects.toThrow(/env_var_name_ck/);
     });
 });
 
 describe('stackEnv', () => {
     it('merges three scopes, most specific winning on collisions', () => {
-        expect(
-            stackEnv({ A: 'org', B: 'org' }, { B: 'workspace', C: 'workspace' }, { C: 'repo', D: 'repo' }),
-        ).toEqual({ A: 'org', B: 'workspace', C: 'repo', D: 'repo' });
+        expect(stackEnv({ A: 'org', B: 'org' }, { B: 'workspace', C: 'workspace' }, { C: 'repo', D: 'repo' })).toEqual({
+            A: 'org',
+            B: 'workspace',
+            C: 'repo',
+            D: 'repo',
+        });
     });
 });

@@ -50,9 +50,7 @@ export interface UseWorkspace {
     error: string | null;
     saving: boolean;
     save: (repos: { owner: string; name: string }[]) => Promise<string | null>;
-    saveExecutors: (
-        executors: { name: string; type: string; config: object }[],
-    ) => Promise<string | null>;
+    saveExecutors: (executors: { name: string; type: string; config: object }[]) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
@@ -189,7 +187,7 @@ export function useWorkspace(): UseWorkspace {
                 setSaving(false);
             }
         },
-        [start],
+        [start]
     );
 
     /**
@@ -220,7 +218,7 @@ export function useWorkspace(): UseWorkspace {
                 setSaving(false);
             }
         },
-        [start],
+        [start]
     );
 
     const listExecutorConfigs = useCallback(async () => {

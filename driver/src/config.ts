@@ -290,14 +290,14 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             throw new Error(
                 'RUNNER_REMOTE_CONTROL is not supported under RUNNER_CLI=opencode: Remote Control is ' +
                     "claude-code's bridge, and opencode has nothing that answers to it. Only " +
-                    'RUNNER_CLI=claude-code can be driven.',
+                    'RUNNER_CLI=claude-code can be driven.'
             );
         }
         if (flag(env.RUNNER_SKIP_PERMISSIONS)) {
             throw new Error(
                 'RUNNER_SKIP_PERMISSIONS is not supported under RUNNER_CLI=opencode: it appends a ' +
                     'claude-code flag, and opencode takes its permissions from the opencode.json ' +
-                    'baked into its image.',
+                    'baked into its image.'
             );
         }
     }
@@ -308,7 +308,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         'DRIVER_JOB_TIMEOUT_MS',
         DEFAULTS.jobTimeoutMs,
         1_000,
-        24 * 3600_000,
+        24 * 3600_000
     );
 
     // An explicit enum, like the server's AUTH_MODE: a value this process does not know is fatal,
@@ -326,7 +326,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         throw new Error(
             'RUNNER_REMOTE_CONTROL is not supported under EXECUTOR=kubernetes: it needs a tty, an auth ' +
                 'volume and an idle-parking loop that only the docker runner has. Run Remote Control ' +
-                'workloads on EXECUTOR=docker.',
+                'workloads on EXECUTOR=docker.'
         );
     }
 
@@ -358,14 +358,14 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         throw new Error(
             'RUNNER_CACHE_WATCH is not supported under RUNNER_CLI=claude-code: the watch reads the ' +
                 'opencode session database, which records per-turn input and cache tokens. Only ' +
-                'RUNNER_CLI=opencode runs can be watched.',
+                'RUNNER_CLI=opencode runs can be watched.'
         );
     }
     if (cacheWatch && executor === 'kubernetes') {
         throw new Error(
             'RUNNER_CACHE_WATCH is not supported under EXECUTOR=kubernetes: each watch tick is one ' +
                 'throwaway container on the docker daemon, and a Job per tick would put the cluster ' +
-                'under pod-admission load no watch is worth. Run the cache watch on EXECUTOR=docker.',
+                'under pod-admission load no watch is worth. Run the cache watch on EXECUTOR=docker.'
         );
     }
 

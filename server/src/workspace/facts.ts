@@ -112,10 +112,7 @@ export function createFactsCache(now: () => number = Date.now): FactsCache {
         entry.pending = (async () => {
             // Both off the request path — nothing awaits this promise — and both concurrent with
             // each other, because they are separate processes reading the same directory.
-            const [head, size] = await Promise.all([
-                wantHead ? readHead(dir) : null,
-                wantSize ? readSize(dir) : null,
-            ]);
+            const [head, size] = await Promise.all([wantHead ? readHead(dir) : null, wantSize ? readSize(dir) : null]);
             if (head) {
                 entry.facts = { ...entry.facts, ...head };
                 entry.headAt = now();

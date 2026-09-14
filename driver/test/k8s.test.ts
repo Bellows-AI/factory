@@ -87,7 +87,7 @@ describe('the runner job spec', () => {
         const followUpSpec = runnerJobSpec(
             loadDriverConfig({ EXECUTOR: 'kubernetes' }),
             { ...job, followUp: true },
-            { id: SESSION, resume: true },
+            { id: SESSION, resume: true }
         );
         expect(followUpSpec.spec.template.spec.containers[0].args).toEqual([
             '--resume',
@@ -111,10 +111,14 @@ describe('the runner job spec', () => {
     // worktree here exactly as the docker runner does — same WORKDIR rule, one code path on the
     // board side.
     it('starts a repo job in its task worktree', () => {
-        const repoSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), { ...job, repo: 'Bellows-AI/factory' }, {
-            id: SESSION,
-            resume: false,
-        });
+        const repoSpec = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, repo: 'Bellows-AI/factory' },
+            {
+                id: SESSION,
+                resume: false,
+            }
+        );
         expect(repoSpec.spec.template.spec.containers[0].env).toContainEqual({
             name: 'WORKDIR',
             value: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
@@ -123,10 +127,14 @@ describe('the runner job spec', () => {
 
     it('refuses to run a repo job whose worktree path cannot be asserted', () => {
         expect(() =>
-            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), { ...job, repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' }, {
-                id: SESSION,
-                resume: false,
-            }),
+            runnerJobSpec(
+                loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+                { ...job, repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' },
+                {
+                    id: SESSION,
+                    resume: false,
+                }
+            )
         ).toThrow(/worktree/);
     });
 
@@ -150,9 +158,9 @@ describe('the runner job spec', () => {
                     runnerJobSpec(
                         loadDriverConfig({ EXECUTOR: 'kubernetes' }),
                         { ...job, workspacePath: path },
-                        { id: SESSION, resume: false },
+                        { id: SESSION, resume: false }
                     ),
-                String(path),
+                String(path)
             ).toThrow(/no usable workspace path/);
         }
     });
@@ -161,10 +169,14 @@ describe('the runner job spec', () => {
     // docker runner guards before a `docker run`, from the same kind of board.
     it('refuses a job id that is not a uuid, rather than interpolating it', () => {
         expect(() =>
-            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), { ...job, id: '../../etc/passwd' }, {
-                id: SESSION,
-                resume: false,
-            }),
+            runnerJobSpec(
+                loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+                { ...job, id: '../../etc/passwd' },
+                {
+                    id: SESSION,
+                    resume: false,
+                }
+            )
         ).toThrow(/must be a uuid/);
     });
 
@@ -256,8 +268,9 @@ describe('the runner job spec', () => {
     it('names the board for the branch reporter, overridable', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(container.env).toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' });
-        expect(spec({ RUNNER_STATS_URL: 'http://stats.internal:8080' }).spec.template.spec.containers[0].env)
-            .toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://stats.internal:8080' });
+        expect(
+            spec({ RUNNER_STATS_URL: 'http://stats.internal:8080' }).spec.template.spec.containers[0].env
+        ).toContainEqual({ name: 'FACTORY_STATS_URL', value: 'http://stats.internal:8080' });
     });
 
     // The session the reporter names. Claude always has one (the driver mints it); opencode only
@@ -269,15 +282,15 @@ describe('the runner job spec', () => {
             value: SESSION,
         });
         const opencode = (env: NodeJS.ProcessEnv = {}) =>
-            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', ...env }), job, null)
-                .spec.template.spec.containers[0];
+            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', ...env }), job, null).spec
+                .template.spec.containers[0];
         expect(opencode().env.some((entry) => entry.name === 'BELLOWS_SESSION_ID')).toBe(false);
         expect(
             runnerJobSpec(
                 loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode' }),
                 { ...job, followUp: true },
-                { id: SESSION, resume: true },
-            ).spec.template.spec.containers[0].env,
+                { id: SESSION, resume: true }
+            ).spec.template.spec.containers[0].env
         ).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: SESSION });
     });
 
@@ -292,9 +305,7 @@ describe('the runner job spec', () => {
             valueFrom: { secretKeyRef: { name: secretName(job), key: 'INGEST_TOKEN' } },
         });
         expect(JSON.stringify(withToken)).not.toContain('shh-ingest');
-        expect(spec().spec.template.spec.containers[0].env.some((entry) => entry.name === 'INGEST_TOKEN')).toBe(
-            false,
-        );
+        expect(spec().spec.template.spec.containers[0].env.some((entry) => entry.name === 'INGEST_TOKEN')).toBe(false);
     });
 
     // A failed runner pod must never be re-run by the cluster: a kubelet retry would re-send the
@@ -342,7 +353,7 @@ describe('the runner job spec', () => {
     it('skips permissions only when told to', () => {
         expect(spec().spec.template.spec.containers[0].args).not.toContain('--dangerously-skip-permissions');
         expect(spec({ RUNNER_SKIP_PERMISSIONS: '1' }).spec.template.spec.containers[0].args).toContain(
-            '--dangerously-skip-permissions',
+            '--dangerously-skip-permissions'
         );
     });
 
@@ -354,7 +365,7 @@ describe('the runner job spec', () => {
     it('states the pull policy instead of letting kubernetes default to Always', () => {
         expect(spec().spec.template.spec.containers[0].imagePullPolicy).toBe('IfNotPresent');
         expect(spec({ RUNNER_IMAGE_PULL_POLICY: 'Always' }).spec.template.spec.containers[0].imagePullPolicy).toBe(
-            'Always',
+            'Always'
         );
     });
 });
@@ -440,14 +451,13 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
         }
         if (path.startsWith(`${servicesPath}?`)) return Promise.resolve(answers.fenceList as K8sResponse);
         if (path.startsWith(`${servicesPath}/`)) return Promise.resolve(answers.fenceDelete as K8sResponse);
-        if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+        if (
+            path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+            decodeURIComponent(path).includes('job-name=')
+        ) {
             return Promise.resolve(answers.pods as K8sResponse);
         }
-        if (
-            path.startsWith(`/api/v1/namespaces/${namespace}/pods/`) &&
-            !path.endsWith('/log') &&
-            method === 'DELETE'
-        ) {
+        if (path.startsWith(`/api/v1/namespaces/${namespace}/pods/`) && !path.endsWith('/log') && method === 'DELETE') {
             return Promise.resolve(answers.fenceDelete as K8sResponse);
         }
         if (path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)) {
@@ -462,7 +472,12 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     return { request, calls };
 };
 
-const runner = (request: K8sRequest) => createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), request, async () => {});
+const runner = (request: K8sRequest) =>
+    createKubernetesRunner(
+        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
+        request,
+        async () => {}
+    );
 
 /**
  * Default answers for the objects the runner touches beyond the runner Job itself: the fence
@@ -590,7 +605,9 @@ describe('the worktree sync', () => {
         const container = syncJobSpec(cfg(), envJob, syncEnvSecretName(envJob)).spec.template.spec.containers[0];
         expect(container.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(envJob) } }]);
         for (const entry of container.env ?? []) {
-            expect(entry.name === 'REPO' || entry.name === 'WORKTREE' || entry.name === 'BRANCH', entry.name).toBe(true);
+            expect(entry.name === 'REPO' || entry.name === 'WORKTREE' || entry.name === 'BRANCH', entry.name).toBe(
+                true
+            );
             expect(entry.valueFrom, entry.name).toBeUndefined();
         }
     });
@@ -608,15 +625,15 @@ describe('the worktree sync', () => {
         expect(JSON.stringify(withToken.env)).not.toContain('t0k-3n');
         expect(withToken.envFrom).toEqual([{ secretRef: { name: syncEnvSecretName(tokenJob) } }]);
 
-        const noToken = syncJobSpec(cfg(), { ...repoJob, env: { CORE_TOKEN: 'shh' } }, 'the-secret')
-            .spec.template.spec.containers[0];
+        const noToken = syncJobSpec(cfg(), { ...repoJob, env: { CORE_TOKEN: 'shh' } }, 'the-secret').spec.template.spec
+            .containers[0];
         expect(noToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
 
         // A PRESENT-BUT-EMPTY token is no token: the helper would answer an empty password and
         // break the public-repo plain fetch it exists to preserve — and a private repo with an
         // empty token fails auth either way. Property presence is not the test; the VALUE is.
-        const emptyToken = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: '' } }, 'the-secret')
-            .spec.template.spec.containers[0];
+        const emptyToken = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: '' } }, 'the-secret').spec.template
+            .spec.containers[0];
         expect(emptyToken.env.some((entry) => entry.name === 'CRED_HELPER')).toBe(false);
     });
 
@@ -635,13 +652,16 @@ describe('the worktree sync', () => {
         expect(container.envFrom).toBeUndefined();
 
         // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard.
-        const parked = syncJobSpec(cfg(), { ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } }, null)
-            .spec.template.spec.containers[0];
+        const parked = syncJobSpec(
+            cfg(),
+            { ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } },
+            null
+        ).spec.template.spec.containers[0];
         expect(parked.env).toContainEqual({ name: 'RESTORE', value: '1' });
 
         // A starting claim — even with a token — carries no RESTORE.
-        const fresh = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, 'the-secret')
-            .spec.template.spec.containers[0];
+        const fresh = syncJobSpec(cfg(), { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }, 'the-secret').spec.template
+            .spec.containers[0];
         expect(fresh.env.some((entry) => entry.name === 'RESTORE')).toBe(false);
     });
 
@@ -676,7 +696,11 @@ describe('the worktree sync', () => {
         const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
         expect(order.indexOf(`POST ${secretsPath}`)).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
         // Reaped with the verdict, the same accepted-leak posture the runner env Secret has.
-        expect(calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${syncEnvSecretName(envJob)}`)).toBe(true);
+        expect(
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${secretsPath}/${syncEnvSecretName(envJob)}`
+            )
+        ).toBe(true);
     });
 
     it('creates no Secret for an env-less claim', async () => {
@@ -710,7 +734,9 @@ describe('the worktree sync', () => {
     });
 
     it('answers ok:false with the script’s reason when the sync job fails', async () => {
-        const { request } = fakeRequest({ log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' } });
+        const { request } = fakeRequest({
+            log: { status: 200, body: '{"ok":false,"reason":"worktree sync failed: no space left"}\n' },
+        });
         const result = await runner(request).syncCheckout(repoJob);
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('no space left');
@@ -794,8 +820,10 @@ describe('the worktree sync', () => {
         await runner(request).syncCheckout(repoJob);
         expect(
             calls.some(
-                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
-            ),
+                (call) =>
+                    call.method === 'DELETE' &&
+                    call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`
+            )
         ).toBe(true);
     });
 
@@ -805,8 +833,10 @@ describe('the worktree sync', () => {
         expect(result.ok).toBe(false);
         expect(
             calls.some(
-                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
-            ),
+                (call) =>
+                    call.method === 'DELETE' &&
+                    call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`
+            )
         ).toBe(true);
     });
 
@@ -828,8 +858,10 @@ describe('the worktree sync', () => {
         await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/closed the connection/);
         expect(
             calls.some(
-                (call) => call.method === 'DELETE' && call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
-            ),
+                (call) =>
+                    call.method === 'DELETE' &&
+                    call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`
+            )
         ).toBe(true);
     });
 
@@ -862,7 +894,10 @@ describe('the worktree sync', () => {
         const completions: string[] = [];
         const gated: K8sRequest = async (method, path, body) => {
             const response = await base.request(method, path, body);
-            if (method === 'DELETE' && path === `${jobPath(namespace, syncJobName(repoJob))}?propagationPolicy=Foreground`) {
+            if (
+                method === 'DELETE' &&
+                path === `${jobPath(namespace, syncJobName(repoJob))}?propagationPolicy=Foreground`
+            ) {
                 // Foreground returns only once the dependents are gone — that takes time.
                 await new Promise((resolve) => setTimeout(resolve, 20));
                 completions.push('sync-job-gone');
@@ -914,13 +949,15 @@ describe('the worktree sync', () => {
         const result = await runner(request).syncCheckout(repoJob);
 
         expect(result).toEqual({ ok: true, reason: null });
-        expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes('propagationPolicy=Foreground'))).toBe(false);
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path?.includes('propagationPolicy=Foreground'))
+        ).toBe(false);
         expect(
             calls.some(
                 (call) =>
                     call.method === 'DELETE' &&
-                    call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`,
-            ),
+                    call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Background`
+            )
         ).toBe(true);
     });
 
@@ -973,7 +1010,9 @@ describe('the worktree reclaim', () => {
     });
 
     it('takes the checkout claim before the reclaim Job and releases it after the Job is deleted', async () => {
-        const { request, calls } = fakeRequest({ log: { status: 200, body: '{"ok":true,"removed":true,"reason":null}\n' } });
+        const { request, calls } = fakeRequest({
+            log: { status: 200, body: '{"ok":true,"removed":true,"reason":null}\n' },
+        });
         const result = await runner(request).reclaimWorktree(repoJob);
 
         expect(result).toEqual({ ok: true, removed: true, reason: null });
@@ -984,9 +1023,11 @@ describe('the worktree reclaim', () => {
         const jobDelete = calls.findIndex(
             (call) =>
                 call.method === 'DELETE' &&
-                call.path === `${jobsPath(namespace)}/${reclaimJobName(repoJob)}?propagationPolicy=Background`,
+                call.path === `${jobsPath(namespace)}/${reclaimJobName(repoJob)}?propagationPolicy=Background`
         );
-        const claimDelete = calls.findIndex((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
+        const claimDelete = calls.findIndex(
+            (call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id)
+        );
         expect(claimPost).toBeGreaterThanOrEqual(0);
         expect(jobPost).toBeGreaterThan(claimPost);
         expect(jobDelete).toBeGreaterThan(jobPost);
@@ -1027,16 +1068,21 @@ describe('the worktree reclaim', () => {
         const foregroundDelete = calls.findIndex(
             (call) =>
                 call.method === 'DELETE' &&
-                call.path === `${jobsPath(namespace)}/${reclaimJobName(repoJob)}?propagationPolicy=Foreground`,
+                call.path === `${jobsPath(namespace)}/${reclaimJobName(repoJob)}?propagationPolicy=Foreground`
         );
-        const claimDelete = calls.findIndex((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
+        const claimDelete = calls.findIndex(
+            (call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id)
+        );
         expect(foregroundDelete).toBeGreaterThanOrEqual(0);
         expect(claimDelete).toBeGreaterThan(foregroundDelete);
     });
 
     it('answers the script verdict when the reclaim script refuses', async () => {
         const { request } = fakeRequest({
-            log: { status: 200, body: '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}\n' },
+            log: {
+                status: 200,
+                body: '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}\n',
+            },
         });
         const result = await runner(request).reclaimWorktree(repoJob);
         expect(result.ok).toBe(false);
@@ -1077,12 +1123,20 @@ describe('publishing the produced work', () => {
             {
                 label: 'git push',
                 entrypoint: 'git',
-                args: ['-c', `credential.helper=${CREDENTIAL_HELPER}`, 'push', '-u', '--force-with-lease', 'origin', 'HEAD'],
+                args: [
+                    '-c',
+                    `credential.helper=${CREDENTIAL_HELPER}`,
+                    'push',
+                    '-u',
+                    '--force-with-lease',
+                    'origin',
+                    'HEAD',
+                ],
                 env: true,
                 inRepo: true,
             },
             publishEnvSecretName(ISSUE_JOB),
-            WT,
+            WT
         );
         expect(spec.metadata.name).toBe(publishStepJobName(ISSUE_JOB, 2));
         expect(spec.metadata.labels).toEqual({ 'factory.job': ISSUE_JOB.id, 'factory.lease': ISSUE_JOB.leaseToken });
@@ -1117,9 +1171,16 @@ describe('publishing the produced work', () => {
             cfg(),
             ISSUE_JOB,
             1,
-            { label: 'probe', entrypoint: 'node', args: ['-e', gitProbeScript], env: false, envLiterals: { REPO: WT }, inRepo: false },
+            {
+                label: 'probe',
+                entrypoint: 'node',
+                args: ['-e', gitProbeScript],
+                env: false,
+                envLiterals: { REPO: WT },
+                inRepo: false,
+            },
             publishEnvSecretName(ISSUE_JOB),
-            WT,
+            WT
         ).spec.template.spec.containers[0];
         expect(probe.workingDir).toBeUndefined();
         expect(probe.envFrom).toBeUndefined();
@@ -1133,7 +1194,7 @@ describe('publishing the produced work', () => {
             4,
             { label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true },
             publishEnvSecretName(ISSUE_JOB),
-            WT,
+            WT
         ).spec.template.spec.containers[0];
         expect(plain.envFrom).toBeUndefined();
         expect(plain.env).toBeUndefined();
@@ -1175,7 +1236,14 @@ describe('publishing the produced work', () => {
         return { request, calls: base.calls };
     };
 
-    const DIRTY_ON_MAIN = { cloned: true, branch: 'main', defaultBranch: 'main', dirty: true, unpushed: 0, hasIdentity: false };
+    const DIRTY_ON_MAIN = {
+        cloned: true,
+        branch: 'main',
+        defaultBranch: 'main',
+        dirty: true,
+        unpushed: 0,
+        hasIdentity: false,
+    };
 
     it('branches, commits, pushes and opens the PR — one Job per step, in order', async () => {
         const { request, calls } = scripted([
@@ -1193,7 +1261,7 @@ describe('publishing the produced work', () => {
         expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
         const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(posted.map((call) => (call.body as { metadata?: { name?: string } }).metadata?.name)).toEqual(
-            [1, 2, 3, 4, 5, 6, 7, 8].map((n) => publishStepJobName(ISSUE_JOB, n)),
+            [1, 2, 3, 4, 5, 6, 7, 8].map((n) => publishStepJobName(ISSUE_JOB, n))
         );
         // Every step Job is inside the fence sweep — a dead driver's publish cannot outlive the
         // next claimant.
@@ -1206,7 +1274,9 @@ describe('publishing the produced work', () => {
         // The decisions are the workflow's, identical to docker's: the commit carries the plan
         // title and the fallback identity, the push is force-with-lease behind the helper.
         const commands = posted.map(
-            (call) => (call.body as { spec?: { template?: { spec?: { containers?: { command?: string[] }[] } } } }).spec?.template?.spec?.containers?.[0]?.command ?? [],
+            (call) =>
+                (call.body as { spec?: { template?: { spec?: { containers?: { command?: string[] }[] } } } }).spec
+                    ?.template?.spec?.containers?.[0]?.command ?? []
         );
         const commit = commands.find((argv) => argv.includes('commit'));
         expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
@@ -1225,14 +1295,17 @@ describe('publishing the produced work', () => {
                 calls.some(
                     (call) =>
                         call.method === 'DELETE' &&
-                        call.path === `${jobsPath(namespace)}/${publishStepJobName(ISSUE_JOB, n)}?propagationPolicy=Background`,
-                ),
+                        call.path ===
+                            `${jobsPath(namespace)}/${publishStepJobName(ISSUE_JOB, n)}?propagationPolicy=Background`
+                )
             ).toBe(true);
         }
     });
 
     it('creates the publish env Secret before the first step, and reaps it at the end', async () => {
-        const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) }]);
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
+        ]);
         await runner(request).publishGit(ISSUE_JOB);
 
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
@@ -1241,10 +1314,12 @@ describe('publishing the produced work', () => {
             stringData: { GITHUB_TOKEN: 't0k-3n' },
         });
         expect(calls.findIndex((call) => call.method === 'POST' && call.path === secretsPath)).toBeLessThan(
-            calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace)),
+            calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace))
         );
         expect(
-            calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${publishEnvSecretName(ISSUE_JOB)}`),
+            calls.some(
+                (call) => call.method === 'DELETE' && call.path === `${secretsPath}/${publishEnvSecretName(ISSUE_JOB)}`
+            )
         ).toBe(true);
     });
 
@@ -1253,8 +1328,10 @@ describe('publishing the produced work', () => {
     // the work done. The loop asks the board for a fresh one; the Secret the steps ride must
     // carry THAT credential, and the claim's must be gone from it. Same shape as docker's pin —
     // the override lives in withPublishToken, and this is the check it did not drift.
-    it('publishes with the board\'s fresh credential in the Secret, not the claim\'s hour-old token', async () => {
-        const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) }]);
+    it("publishes with the board's fresh credential in the Secret, not the claim's hour-old token", async () => {
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
+        ]);
         await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
 
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
@@ -1280,7 +1357,9 @@ describe('publishing the produced work', () => {
     });
 
     it('answers the clean-tree no-op after the probe alone', async () => {
-        const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) }]);
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
+        ]);
         const result = await runner(request).publishGit(ISSUE_JOB);
 
         expect(result).toEqual({
@@ -1295,7 +1374,16 @@ describe('publishing the produced work', () => {
 
     it('reuses an existing task branch and an existing PR', async () => {
         const { request, calls } = scripted([
-            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false }) },
+            {
+                exit: 0,
+                log: JSON.stringify({
+                    ...DIRTY_ON_MAIN,
+                    branch: 'fix/10',
+                    hasIdentity: true,
+                    unpushed: 1,
+                    dirty: false,
+                }),
+            },
             { exit: 0, log: '' }, // push of the unpushed commit
             { exit: 0, log: `${PR_URL}\n` }, // pr view finds the branch's PR
         ]);
@@ -1333,20 +1421,26 @@ describe('publishing the produced work', () => {
  */
 describe('the runner vitals', () => {
     it('parses the PodMetrics object the metrics API answers', () => {
-        expect(
-            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '250m', memory: '150Mi' } }] })),
-        ).toEqual({ cpuPercent: 25, memUsedMb: 150, memPercent: null });
+        expect(parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '250m', memory: '150Mi' } }] }))).toEqual({
+            cpuPercent: 25,
+            memUsedMb: 150,
+            memPercent: null,
+        });
         // Nanocores and plain bytes — the other spellings metrics-server emits.
         expect(
-            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '1250000n', memory: '5368709120' } }] })),
+            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '1250000n', memory: '5368709120' } }] }))
         ).toEqual({ cpuPercent: 0.125, memUsedMb: 5120, memPercent: null });
         // Whole cores and binary memory sizes.
-        expect(
-            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '1.5', memory: '2Gi' } }] })),
-        ).toEqual({ cpuPercent: 150, memUsedMb: 2048, memPercent: null });
+        expect(parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '1.5', memory: '2Gi' } }] }))).toEqual({
+            cpuPercent: 150,
+            memUsedMb: 2048,
+            memPercent: null,
+        });
         expect(parsePodMetrics('')).toBeNull();
         expect(parsePodMetrics('{"containers":[]}')).toBeNull();
-        expect(parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: 'busy', memory: '150Mi' } }] }))).toBeNull();
+        expect(
+            parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: 'busy', memory: '150Mi' } }] }))
+        ).toBeNull();
     });
 
     it('samples through the metrics API, and answers null when the cluster runs no metrics-server', async () => {
@@ -1360,10 +1454,15 @@ describe('the runner vitals', () => {
             }
             return base.request(method, path, body);
         };
-        expect(await runner(withMetrics).sampleRuntime(job)).toEqual({ cpuPercent: 31, memUsedMb: 96, memPercent: null });
+        expect(await runner(withMetrics).sampleRuntime(job)).toEqual({
+            cpuPercent: 31,
+            memUsedMb: 96,
+            memPercent: null,
+        });
 
         const noMetricsServer: K8sRequest = (method, path, body) => {
-            if (path.startsWith('/apis/metrics.k8s.io/')) return Promise.resolve({ status: 404, body: 'no metrics-server' });
+            if (path.startsWith('/apis/metrics.k8s.io/'))
+                return Promise.resolve({ status: 404, body: 'no metrics-server' });
             return base.request(method, path, body);
         };
         expect(await runner(noMetricsServer).sampleRuntime(job)).toBeNull();
@@ -1402,7 +1501,13 @@ describe('the kubernetes runner', () => {
             'GET /api/v1/namespaces/factory/pods',
             'GET /api/v1/namespaces/factory/services',
         ]);
-        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
+        expect(outcome).toEqual({
+            exitCode: 0,
+            output: 'did the work\n',
+            timedOut: false,
+            idled: false,
+            started: true,
+        });
     });
 
     it('creates the per-job Secret before the Job when the claim carries env, and reaps it with the verdict', async () => {
@@ -1411,7 +1516,7 @@ describe('the kubernetes runner', () => {
         const r = createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
             request,
-            async () => {},
+            async () => {}
         );
         await r.run(envJob, { id: SESSION, resume: false });
 
@@ -1437,9 +1542,7 @@ describe('the kubernetes runner', () => {
         // Reaped once the verdict and the log have been read — not before, or the pod could not
         // have pulled the values at all.
         expect(
-            calls.some(
-                (call) => call.method === 'DELETE' && call.path === `${secretsPath}/${secretName(envJob)}`,
-            ),
+            calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${secretName(envJob)}`)
         ).toBe(true);
     });
 
@@ -1462,8 +1565,8 @@ describe('the kubernetes runner', () => {
         await runner(request).kill(envJob);
         expect(
             calls.some(
-                (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, containerName(envJob))),
-            ),
+                (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, containerName(envJob)))
+            )
         ).toBe(true);
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
@@ -1492,11 +1595,13 @@ describe('the kubernetes runner', () => {
         await runner(request).run(newJob, { id: SESSION, resume: false });
         const afterRun = calls.length;
         expect(
-            calls.slice(0, afterRun).some(
-                (call) =>
-                    call.method === 'DELETE' &&
-                    call.path === `/api/v1/namespaces/${namespace}/secrets/${secretName(newJob)}`,
-            ),
+            calls
+                .slice(0, afterRun)
+                .some(
+                    (call) =>
+                        call.method === 'DELETE' &&
+                        call.path === `/api/v1/namespaces/${namespace}/secrets/${secretName(newJob)}`
+                )
         ).toBe(true);
 
         // The superseded worker's kill must not be able to touch the replacement's Secret — and
@@ -1555,12 +1660,13 @@ describe('the kubernetes runner', () => {
                 gets += 1;
                 // First poll: still running, and worth a look at the log. Second: done.
                 return Promise.resolve(
-                    gets === 1
-                        ? { status: 200, body: JSON.stringify({ status: {} }) }
-                        : (FAKE.job as K8sResponse),
+                    gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse)
                 );
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) {
@@ -1575,12 +1681,16 @@ describe('the kubernetes runner', () => {
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) =>
-            tails.push(tail),
-        );
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
         expect(tails).toEqual(['partial output\n']);
-        expect(outcome).toEqual({ exitCode: 0, output: 'did the work\n', timedOut: false, idled: false, started: true });
+        expect(outcome).toEqual({
+            exitCode: 0,
+            output: 'did the work\n',
+            timedOut: false,
+            idled: false,
+            started: true,
+        });
     });
 
     // A pod that has not been scheduled yet, or a log endpoint that hiccups, is a skipped preview —
@@ -1604,12 +1714,13 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 gets += 1;
                 return Promise.resolve(
-                    gets === 1
-                        ? { status: 200, body: JSON.stringify({ status: {} }) }
-                        : (FAKE.job as K8sResponse),
+                    gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse)
                 );
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve({ status: 500, body: 'unavailable' });
@@ -1620,9 +1731,7 @@ describe('the kubernetes runner', () => {
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) =>
-            tails.push(tail),
-        );
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false }, (tail) => tails.push(tail));
 
         expect(tails).toEqual([]);
         expect(outcome.exitCode).toBe(0);
@@ -1657,7 +1766,7 @@ describe('the kubernetes runner', () => {
                                   items: [{ metadata: { name: leftover } }],
                               }),
                           }
-                        : { status: 200, body: JSON.stringify({ items: [] }) },
+                        : { status: 200, body: JSON.stringify({ items: [] }) }
                 );
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
@@ -1669,7 +1778,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -1747,9 +1859,7 @@ describe('the kubernetes runner', () => {
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /never disappeared/,
-        );
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/never disappeared/);
     });
 
     /*
@@ -1799,7 +1909,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -1853,7 +1966,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(newerJob))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -1867,15 +1983,15 @@ describe('the kubernetes runner', () => {
         const outcome = await createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
             request,
-            async () => {},
+            async () => {}
         ).run(newerJob, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
         // The takeover delete names the exact claim incarnation that was read.
         const takeover = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
-        expect(
-            (takeover?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid,
-        ).toBe('claim-uid-1');
+        expect((takeover?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
+            'claim-uid-1'
+        );
         expect(calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`)).toEqual([
             `POST ${configmapsPath}`,
             `GET ${claimPath}`,
@@ -1937,13 +2053,16 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                liveJobs.delete((path.slice(jobsPath(namespace).length + 1).split('?')[0]) ?? '');
+                liveJobs.delete(path.slice(jobsPath(namespace).length + 1).split('?')[0] ?? '');
                 return Promise.resolve({ status: 200, body: '{}' });
             }
             if (path === jobPath(namespace, containerName(olderJob)) || path === jobPath(namespace, newerJobName)) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -1967,14 +2086,18 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === configmapsPath) {
                 result.then(
                     () => signalOlderClaimed(),
-                    () => signalOlderClaimed(),
+                    () => signalOlderClaimed()
                 );
             }
             return result;
         };
 
         const makeRunner = (request: K8sRequest) =>
-            createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), request, async () => {});
+            createKubernetesRunner(
+                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
+                request,
+                async () => {}
+            );
 
         const olderRun = makeRunner(olderRequest).run(olderJob, { id: SESSION, resume: false });
         await olderClaimed;
@@ -2018,7 +2141,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2033,20 +2159,20 @@ describe('the kubernetes runner', () => {
         const outcome = await createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
             request,
-            async () => {},
+            async () => {}
         ).run(envJob, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
         // Created once, before the Job POST.
         const secretPosts = calls.filter((c) => c.method === 'POST' && c.path === secretsPath);
         expect(secretPosts).toHaveLength(1);
-        expect(
-            calls.findIndex((c) => c.method === 'POST' && c.path === secretsPath),
-        ).toBeLessThan(calls.findIndex((c) => c.method === 'POST' && c.path === jobsPath(namespace)));
+        expect(calls.findIndex((c) => c.method === 'POST' && c.path === secretsPath)).toBeLessThan(
+            calls.findIndex((c) => c.method === 'POST' && c.path === jobsPath(namespace))
+        );
         // And NOT deleted between the fence and the Job POST.
         const fenceList = calls.findIndex((c) => c.method === 'GET' && c.path?.includes('labelSelector='));
         const rePost = calls.findIndex(
-            (c, i) => i > fenceList && c.method === 'POST' && c.path === jobsPath(namespace),
+            (c, i) => i > fenceList && c.method === 'POST' && c.path === jobsPath(namespace)
         );
         const secretDeletesInTheFence = calls
             .slice(fenceList, rePost)
@@ -2104,7 +2230,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2199,7 +2328,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2213,9 +2345,14 @@ describe('the kubernetes runner', () => {
         // A 10s lease puts the entry-time cutoff 5s back: the predecessor — younger than that
         // at the deciding list — is a live writer on this checkout, and it must not survive.
         const r = createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, DRIVER_LEASE_SECONDS: '10', RUNNER_SERVICES: '0' }),
+            loadDriverConfig({
+                EXECUTOR: 'kubernetes',
+                K8S_NAMESPACE: namespace,
+                DRIVER_LEASE_SECONDS: '10',
+                RUNNER_SERVICES: '0',
+            }),
             request,
-            async () => {},
+            async () => {}
         );
         const outcome = await r.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
@@ -2270,7 +2407,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2326,7 +2466,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2381,7 +2524,7 @@ describe('the kubernetes runner', () => {
         expect(tail[1]?.method).toBe('DELETE');
         expect(tail[1]?.path).toBe(claimPath);
         expect((tail[1]?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
-            'claim-uid-1',
+            'claim-uid-1'
         );
         expect(tail[2]).toEqual({
             method: 'GET',
@@ -2423,7 +2566,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2470,7 +2616,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2487,9 +2636,13 @@ describe('the kubernetes runner', () => {
         expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(true);
         // And the takeover was conditioned on the incarnation the GET read.
         expect(
-            (calls.find((call) => call.method === 'DELETE' && call.path === claimPath)?.body as {
-                preconditions?: { uid?: string };
-            } | undefined)?.preconditions?.uid,
+            (
+                calls.find((call) => call.method === 'DELETE' && call.path === claimPath)?.body as
+                    | {
+                          preconditions?: { uid?: string };
+                      }
+                    | undefined
+            )?.preconditions?.uid
         ).toBe('claim-uid-1');
     });
 
@@ -2538,7 +2691,7 @@ describe('the kubernetes runner', () => {
                                       metadata: { uid: 'claim-uid-8' },
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
-                              },
+                              }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -2549,7 +2702,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2561,7 +2717,7 @@ describe('the kubernetes runner', () => {
         };
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /taken over before the runner could start/,
+            /taken over before the runner could start/
         );
         // Its OWN Job, by name, Foreground.
         expect(calls).toContainEqual({
@@ -2599,7 +2755,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2611,7 +2770,7 @@ describe('the kubernetes runner', () => {
         };
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be identified/,
+            /could not be identified/
         );
         // No delete anywhere near the configmaps path, least of all an unconditioned one.
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
@@ -2642,7 +2801,7 @@ describe('the kubernetes runner', () => {
                                       metadata: { uid: 'claim-uid-1' },
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
-                              },
+                              }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -2656,7 +2815,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2710,7 +2872,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2726,7 +2891,7 @@ describe('the kubernetes runner', () => {
         expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
         // ...and nothing on the jobs path is deleted — this attempt has nothing there to delete.
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(jobsPath(namespace)))).toBe(
-            false,
+            false
         );
     });
 
@@ -2756,7 +2921,7 @@ describe('the kubernetes runner', () => {
                                       metadata: { uid: 'claim-uid-1' },
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
-                              },
+                              }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -2770,7 +2935,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2818,7 +2986,7 @@ describe('the kubernetes runner', () => {
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
                               }
-                            : { status: 503, body: 'unavailable' },
+                            : { status: 503, body: 'unavailable' }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -2835,7 +3003,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2847,7 +3018,7 @@ describe('the kubernetes runner', () => {
         };
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /in a row|unavailable|checkout claim/i,
+            /in a row|unavailable|checkout claim/i
         );
         // The delete names only this attempt's own Job, Foreground — best-effort.
         expect(calls).toContainEqual({
@@ -2881,7 +3052,7 @@ describe('the kubernetes runner', () => {
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
                               }
-                            : { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) },
+                            : { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -2898,7 +3069,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -2910,7 +3084,7 @@ describe('the kubernetes runner', () => {
         };
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be confirmed/,
+            /could not be confirmed/
         );
         expect(calls).toContainEqual({
             method: 'DELETE',
@@ -2951,7 +3125,7 @@ describe('the kubernetes runner', () => {
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
                               }
-                            : { status: 500, body: 'unavailable' },
+                            : { status: 500, body: 'unavailable' }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -2969,7 +3143,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3009,7 +3186,7 @@ describe('the kubernetes runner', () => {
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
                               }
-                            : { status: 500, body: 'unavailable' },
+                            : { status: 500, body: 'unavailable' }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -3026,7 +3203,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3041,7 +3221,7 @@ describe('the kubernetes runner', () => {
         const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
         expect(release).toBeDefined();
         expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
-            'claim-uid-1',
+            'claim-uid-1'
         );
     });
 
@@ -3069,7 +3249,7 @@ describe('the kubernetes runner', () => {
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
                               }
-                            : { status: 500, body: 'unavailable' },
+                            : { status: 500, body: 'unavailable' }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -3086,7 +3266,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3101,7 +3284,7 @@ describe('the kubernetes runner', () => {
         const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
         expect(release).toBeDefined();
         expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBe(
-            'claim-uid-1',
+            'claim-uid-1'
         );
     });
 
@@ -3143,7 +3326,7 @@ describe('the kubernetes runner', () => {
                                   metadata: { uid: 'claim-uid-8' },
                                   data: { holder: job.leaseToken, attempt: '1' },
                               }),
-                          },
+                          }
                 );
             }
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
@@ -3155,7 +3338,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3167,7 +3353,7 @@ describe('the kubernetes runner', () => {
         };
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /taken over before the runner could start/,
+            /taken over before the runner could start/
         );
         // The stand-down did try its own Job delete — and only its own.
         expect(calls).toContainEqual({
@@ -3206,7 +3392,7 @@ describe('the kubernetes runner', () => {
                                       metadata: { uid: 'claim-uid-1' },
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
-                              },
+                              }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -3223,7 +3409,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3235,7 +3424,7 @@ describe('the kubernetes runner', () => {
         };
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /could not be confirmed/,
+            /could not be confirmed/
         );
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
     });
@@ -3267,7 +3456,7 @@ describe('the kubernetes runner', () => {
                                       metadata: { uid: 'claim-uid-1' },
                                       data: { holder: job.leaseToken, attempt: '1' },
                                   }),
-                              },
+                              }
                     );
                 }
                 return Promise.resolve({ status: 200, body: '{}' });
@@ -3288,7 +3477,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3380,7 +3572,10 @@ describe('the kubernetes runner', () => {
                 if (gets <= 2) return Promise.resolve({ status: 503, body: 'unavailable' });
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3441,10 +3636,11 @@ describe('the kubernetes runner', () => {
         });
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         await expect(
-            createKubernetesRunner(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), request, async () => {}).run(
-                envJob,
-                { id: SESSION, resume: false },
-            ),
+            createKubernetesRunner(
+                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
+                request,
+                async () => {}
+            ).run(envJob, { id: SESSION, resume: false })
         ).rejects.toThrow(/in a row/);
 
         const last = calls[calls.length - 1]!;
@@ -3484,7 +3680,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(script[served++] ?? outage());
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
@@ -3556,9 +3755,7 @@ describe('the kubernetes runner', () => {
     // on would hold a worker slot forever.
     it('abandons the run when the job object is gone', async () => {
         const { request } = fakeRequest({ job: { status: 404, body: '{"kind":"Status"}' } });
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
-            /no longer exists/,
-        );
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/no longer exists/);
     });
 
     // The deadline is enforced by the kubelet, so the Job reports failed with the reason attached;
@@ -3595,13 +3792,14 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 lists += 1;
                 // A 503 during an apiserver upgrade is not the run's verdict; the exit code is
                 // still out there. The third read succeeds.
-                return Promise.resolve(
-                    lists <= 2 ? { status: 503, body: 'unavailable' } : (FAKE.pods as K8sResponse),
-                );
+                return Promise.resolve(lists <= 2 ? { status: 503, body: 'unavailable' } : (FAKE.pods as K8sResponse));
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
             {
@@ -3635,7 +3833,10 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) && decodeURIComponent(path).includes('job-name=')) {
+            if (
+                path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                decodeURIComponent(path).includes('job-name=')
+            ) {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.reject(new Error('connection reset'));
@@ -3700,7 +3901,17 @@ const gatedConfig = loadDriverConfig({
 describe('the gate job spec', () => {
     const ROOT_KEY = '55555555-5555-4555-8555-555555555555';
     const gateSpec = (overrides: Parameters<typeof gateJobSpec>[6] = 1, envSecret: string | null = 'the-secret') =>
-        gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, 'node:24', 'test', 'npm test', overrides, envSecret, 30_000);
+        gateJobSpec(
+            gatedConfig,
+            job,
+            `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            'node:24',
+            'test',
+            'npm test',
+            overrides,
+            envSecret,
+            30_000
+        );
 
     it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
         expect(gateSpec().apiVersion).toBe('batch/v1');
@@ -3716,7 +3927,7 @@ describe('the gate job spec', () => {
         expect(gateSpec().spec.template.spec.containers[0].command).toEqual(['sh', '-c', 'npm test']);
     });
 
-    it("works at the checkout the coding agent edits — the same tree, via the same PVC", () => {
+    it('works at the checkout the coding agent edits — the same tree, via the same PVC', () => {
         const container = gateSpec().spec.template.spec.containers[0];
         expect(container.workingDir).toBe(`/workspaces/bellows/${USER}/.worktrees/${ROOT_KEY}`);
         expect(container.image).toBe('node:24');
@@ -3767,7 +3978,17 @@ describe('the gate job spec', () => {
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
-        const s = gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, 'node:24', 'UPPER Case!!', 'npm test', 1, null, 30_000);
+        const s = gateJobSpec(
+            gatedConfig,
+            job,
+            `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            'node:24',
+            'UPPER Case!!',
+            'npm test',
+            1,
+            null,
+            30_000
+        );
         expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{8}$/);
         expect(s.metadata.name).not.toContain('UPPER');
         expect(s.metadata.name).not.toContain('Case');
@@ -3776,10 +3997,20 @@ describe('the gate job spec', () => {
     it('refuses a checkout key or image that is not the shape the board legally produces', () => {
         expect(() => gateSpec(1, null)).not.toThrow();
         expect(() =>
-            gateJobSpec(gatedConfig, job, '../other-member/repo', 'node:24', 'test', 'npm test', 1, null, 30_000),
+            gateJobSpec(gatedConfig, job, '../other-member/repo', 'node:24', 'test', 'npm test', 1, null, 30_000)
         ).toThrow(/checkout key/);
         expect(() =>
-            gateJobSpec(gatedConfig, job, `bellows/${USER}/.worktrees/${ROOT_KEY}`, '-flag-image', 'test', 'npm test', 1, null, 30_000),
+            gateJobSpec(
+                gatedConfig,
+                job,
+                `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+                '-flag-image',
+                'test',
+                'npm test',
+                1,
+                null,
+                30_000
+            )
         ).toThrow(/image reference/);
     });
 });
@@ -3800,13 +4031,15 @@ describe('the kubernetes gate manager', () => {
     const GATE_JOB = /^factory-gate-test-[0-9a-f]{8}$/;
 
     /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
-    const gateFake = (options: {
-        job?: K8sResponse;
-        pods?: K8sResponse;
-        log?: K8sResponse;
-        secretCreate?: K8sResponse;
-        jobCreate?: K8sResponse;
-    } = {}) => {
+    const gateFake = (
+        options: {
+            job?: K8sResponse;
+            pods?: K8sResponse;
+            log?: K8sResponse;
+            secretCreate?: K8sResponse;
+            jobCreate?: K8sResponse;
+        } = {}
+    ) => {
         const calls: Call[] = [];
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
@@ -3815,7 +4048,8 @@ describe('the kubernetes gate manager', () => {
                 if (method === 'DELETE') return respond({ status: 200, body: '{}' });
                 return respond(options.secretCreate ?? { status: 201, body: '{}' });
             }
-            if (path.startsWith(`/api/v1/namespaces/${namespace}/secrets/`)) return respond({ status: 200, body: '{}' });
+            if (path.startsWith(`/api/v1/namespaces/${namespace}/secrets/`))
+                return respond({ status: 200, body: '{}' });
             if (path === jobsPath(namespace)) {
                 if (method === 'DELETE') return respond({ status: 200, body: '{}' });
                 return respond(options.jobCreate ?? { status: 201, body: '{}' });
@@ -3835,7 +4069,7 @@ describe('the kubernetes gate manager', () => {
                                 },
                             ],
                         }),
-                    },
+                    }
                 );
             }
             if (path.includes('/log')) return respond(options.log ?? { status: 200, body: 'gate said hi\n' });
@@ -3870,17 +4104,15 @@ describe('the kubernetes gate manager', () => {
         });
         // The Job goes once the verdict and log have been read; the Secret's life is the
         // attempt's, and release() is what ends it.
-        expect(
-            calls.some((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`)),
-        ).toBe(true);
+        expect(calls.some((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`))).toBe(true);
         expect(calls.some((c) => c.method === 'DELETE' && c.path?.includes('/secrets/'))).toBe(false);
         await m.release(KEY);
         expect(
             calls.some(
                 (c) =>
                     c.method === 'DELETE' &&
-                    c.path === `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(job)}`,
-            ),
+                    c.path === `/api/v1/namespaces/${namespace}/secrets/${gateEnvSecretName(job)}`
+            )
         ).toBe(true);
     });
 
@@ -3896,7 +4128,9 @@ describe('the kubernetes gate manager', () => {
         const { request } = gateFake({
             job: {
                 status: 200,
-                body: JSON.stringify({ status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] } }),
+                body: JSON.stringify({
+                    status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
+                }),
             },
         });
         const m = manager(request);
@@ -3992,7 +4226,7 @@ describe('the service pod and DNS specs', () => {
 
     it('refuses an environment key that is not a variable name', () => {
         expect(() =>
-            servicePodSpec(gatedConfig, job, { ...cache, environment: [{ key: 'not a key', value: 'x' }] }),
+            servicePodSpec(gatedConfig, job, { ...cache, environment: [{ key: 'not a key', value: 'x' }] })
         ).toThrow(/not a valid environment variable name/);
     });
 
@@ -4074,7 +4308,7 @@ describe('the kubernetes services flow', () => {
         createKubernetesRunner(
             loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
             request,
-            async () => {},
+            async () => {}
         );
 
     it('starts the declared fleet before the runner and tears it down with the attempt', async () => {
@@ -4084,14 +4318,16 @@ describe('the kubernetes services flow', () => {
 
         // The readout Job ran first, then the service pod and its DNS name, and only then the
         // runner Job — docker's fleet-before-runner order.
-        const bellowsPost = calls.findIndex((c) => c.body && (c.body as { metadata?: { name?: string } }).metadata?.name?.startsWith('factory-bellows-'));
+        const bellowsPost = calls.findIndex(
+            (c) => c.body && (c.body as { metadata?: { name?: string } }).metadata?.name?.startsWith('factory-bellows-')
+        );
         const podPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/pods'));
         const dnsPost = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/services'));
         const jobPost = calls.findIndex(
             (c) =>
                 c.method === 'POST' &&
                 c.path === jobsPath(namespace) &&
-                (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job),
+                (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job)
         );
         expect(bellowsPost).toBeGreaterThanOrEqual(0);
         expect(podPost).toBeGreaterThan(bellowsPost);
@@ -4112,20 +4348,29 @@ describe('the kubernetes services flow', () => {
         expect(outcome.output).toContain('already running for another job');
         // The runner Job was never created — a refused job has no runner to orphan.
         expect(
-            calls.some((c) => c.method === 'POST' && c.path === jobsPath(namespace) && (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job)),
+            calls.some(
+                (c) =>
+                    c.method === 'POST' &&
+                    c.path === jobsPath(namespace) &&
+                    (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job)
+            )
         ).toBe(false);
         // And the partial fleet was torn down on the way out: the lease lists ran (their empty
         // answers mean the fake had nothing left to delete), plus the DNS 409'd object is
         // this attempt's own to name.
         expect(
             calls.some(
-                (c) => c.method === 'GET' && c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`),
-            ),
+                (c) =>
+                    c.method === 'GET' &&
+                    c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
+            )
         ).toBe(true);
         expect(
             calls.some(
-                (c) => c.method === 'GET' && c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`),
-            ),
+                (c) =>
+                    c.method === 'GET' &&
+                    c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
+            )
         ).toBe(true);
     });
 
@@ -4151,7 +4396,12 @@ describe('the kubernetes services flow', () => {
  * scrape rides the run's outcome the way docker's verdict does.
  */
 describe('the runner job spec under opencode', () => {
-    const ocConfig = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
+    const ocConfig = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        RUNNER_CLI: 'opencode',
+        K8S_NAMESPACE: namespace,
+        RUNNER_SERVICES: '0',
+    });
 
     it('runs a fresh job headless, with no session argv at all', () => {
         const spec = runnerJobSpec(ocConfig, job, null);
@@ -4177,28 +4427,37 @@ describe('the runner job spec under opencode', () => {
     });
 
     it('never sets XDG_DATA_HOME for claude-code, whose sessions are not file-persisted', () => {
-        const spec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }), job, {
-            id: SESSION,
-            resume: false,
-        });
+        const spec = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
+            job,
+            {
+                id: SESSION,
+                resume: false,
+            }
+        );
         expect(spec.spec.template.spec.containers[0].env.some((e) => e.name === 'XDG_DATA_HOME')).toBe(false);
     });
 
     it('refuses to restore a session for anything but a follow-up, as dockerArgs does', () => {
         expect(() => runnerJobSpec(ocConfig, job, { id: 'ses_abc123', resume: true })).toThrow(
-            /restores a session only for a follow-up/,
+            /restores a session only for a follow-up/
         );
     });
 
     it('refuses a session id that is not a safe token, before it reaches argv', () => {
         expect(() =>
-            runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'bad id; rm -rf', resume: true }),
+            runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'bad id; rm -rf', resume: true })
         ).toThrow(/not a safe token/);
     });
 });
 
 describe('the opencode session readout job', () => {
-    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
+    const config = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        RUNNER_CLI: 'opencode',
+        K8S_NAMESPACE: namespace,
+        RUNNER_SERVICES: '0',
+    });
 
     it('runs the readout script by content, with the database path as an env value', () => {
         const spec = opencodeReadoutJobSpec(config, job);
@@ -4312,9 +4571,14 @@ describe('the kubernetes runner under opencode', () => {
 
     const ocRunner = (request: K8sRequest) =>
         createKubernetesRunner(
-            loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
+            loadDriverConfig({
+                EXECUTOR: 'kubernetes',
+                RUNNER_CLI: 'opencode',
+                K8S_NAMESPACE: namespace,
+                RUNNER_SERVICES: '0',
+            }),
             request,
-            async () => {},
+            async () => {}
         );
 
     it('scrapes the session the run minted, and rides it on the outcome', async () => {
@@ -4333,10 +4597,10 @@ describe('the kubernetes runner under opencode', () => {
 
         // The readout Job was created, read, and reaped — after the runner Job existed.
         const created = calls.findIndex(
-            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName,
+            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName
         );
         const deleted = calls.findIndex(
-            (c) => c.method === 'DELETE' && c.path?.startsWith(jobPath(namespace, ocreadName)),
+            (c) => c.method === 'DELETE' && c.path?.startsWith(jobPath(namespace, ocreadName))
         );
         expect(created).toBeGreaterThan(0);
         expect(deleted).toBeGreaterThan(created);
@@ -4358,7 +4622,9 @@ describe('the kubernetes runner under opencode', () => {
 
         expect(outcome.sessionId).toBe('ses_n3w');
         expect(outcome.finishReason).toBe('tool-calls');
-        expect(outcome.providerError).toBe('Error from provider (Console): Rate limit exceeded. Please try again later.');
+        expect(outcome.providerError).toBe(
+            'Error from provider (Console): Rate limit exceeded. Please try again later.'
+        );
         expect(outcome.readoutError).toBeUndefined();
     });
 
@@ -4392,7 +4658,7 @@ describe('the kubernetes runner under opencode', () => {
         expect(outcome.readoutError).toContain('the session readout job failed');
         // Retried to the end before giving up: three attempts, every one a POST of the readout.
         const scrapePosts = calls.filter(
-            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName,
+            (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName
         );
         expect(scrapePosts.length).toBe(3);
     });
@@ -4401,6 +4667,12 @@ describe('the kubernetes runner under opencode', () => {
         const { request, calls } = opencodeFake({ log: 'irrelevant' });
         await runner(request).run(job, { id: SESSION, resume: false });
         expect(calls.some((c) => decodeURIComponent(c.path ?? '').includes('ocread'))).toBe(false);
-        expect(calls.some((c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name?.startsWith('factory-ocread-'))).toBe(false);
+        expect(
+            calls.some(
+                (c) =>
+                    c.method === 'POST' &&
+                    (c.body as { metadata?: { name?: string } })?.metadata?.name?.startsWith('factory-ocread-')
+            )
+        ).toBe(false);
     });
 });

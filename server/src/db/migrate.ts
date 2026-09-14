@@ -131,12 +131,7 @@ async function seedOrganization(sql: Sql, orgId: string, orgName: string): Promi
  * restart. The invite is unclaimed, like any other — the account is bound when that person first
  * signs in, through exactly the same path.
  */
-async function bootstrapAdmin(
-    sql: Sql,
-    orgId: string,
-    login: string,
-    log: (message: string) => void,
-): Promise<void> {
+async function bootstrapAdmin(sql: Sql, orgId: string, login: string, log: (message: string) => void): Promise<void> {
     const normalised = login.trim().toLowerCase();
     if (!normalised) return;
 
@@ -235,9 +230,7 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
             await sql`delete from schema_migrations where version like '%.repeatable.sql'`;
 
             const applied = new Set(
-                (await sql<{ version: string }[]>`select version from schema_migrations`).map(
-                    (r) => r.version,
-                ),
+                (await sql<{ version: string }[]>`select version from schema_migrations`).map((r) => r.version)
             );
 
             for (const { version, sql: body, repeatable } of files()) {
@@ -274,6 +267,6 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
 
     throw new TelemetryError(
         `Migrations failed after ${attempts} attempts: ${(lastError as Error)?.message}`,
-        'MIGRATION',
+        'MIGRATION'
     );
 }

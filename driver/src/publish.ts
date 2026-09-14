@@ -207,7 +207,8 @@ export function parseGitState(stdout: string): GitState {
  * probe's names come from the checkout itself; the plan's are built here. Either way, assert the
  * shape a git branch can have before anything interpolates it.
  */
-export const isBranchName = (name: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name) && !name.includes('..');
+export const isBranchName = (name: string): boolean =>
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name) && !name.includes('..');
 
 /**
  * The push credential travels as an env-file value and is read by a git credential helper that
@@ -277,7 +278,11 @@ export type RunPublishStep = (step: PublishStep) => Promise<{ stdout: string }>;
  * runner's is one aux Job per step. Same steps, same order, same failure messages, so a
  * publish that fails reads identically wherever it ran.
  */
-export async function publishCheckout(config: DriverConfig, job: BoardJob, runStep: RunPublishStep): Promise<PublishResult> {
+export async function publishCheckout(
+    config: DriverConfig,
+    job: BoardJob,
+    runStep: RunPublishStep
+): Promise<PublishResult> {
     const repo = worktreeDir(config, job);
     // Null here means a COMMAND-ONLY job — the loop refuses a repo job whose worktree cannot
     // resolve before anything runs — and a command-only job has nothing to publish by
@@ -331,7 +336,13 @@ export async function publishCheckout(config: DriverConfig, job: BoardJob, runSt
                 inRepo: true,
             }).catch(() => null);
             if (!switched) {
-                await step({ label: 'git switch', entrypoint: 'git', args: ['switch', '-c', branch], env: false, inRepo: true });
+                await step({
+                    label: 'git switch',
+                    entrypoint: 'git',
+                    args: ['switch', '-c', branch],
+                    env: false,
+                    inRepo: true,
+                });
             }
         }
 
@@ -343,7 +354,13 @@ export async function publishCheckout(config: DriverConfig, job: BoardJob, runSt
             const identity = state.hasIdentity
                 ? []
                 : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
-            await step({ label: 'git commit', entrypoint: 'git', args: [...identity, 'commit', '-m', plan.title], env: false, inRepo: true });
+            await step({
+                label: 'git commit',
+                entrypoint: 'git',
+                args: [...identity, 'commit', '-m', plan.title],
+                env: false,
+                inRepo: true,
+            });
         }
 
         await step({

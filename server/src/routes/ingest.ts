@@ -8,8 +8,7 @@ import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js'
  */
 const BODY_LIMIT = 1_000_000;
 
-const isJson = (type: string | undefined) =>
-    typeof type === 'string' && /^application\/json\b/.test(type);
+const isJson = (type: string | undefined) => typeof type === 'string' && /^application\/json\b/.test(type);
 
 function branchReport(body: unknown): SessionBranchReport | null {
     const b = body as Record<string, unknown> | null;
@@ -34,31 +33,27 @@ function branchReport(body: unknown): SessionBranchReport | null {
 export const ingestRoutes =
     (store: TelemetryStore): FastifyPluginAsync =>
     async (app) => {
-        app.post(
-            '/api/otlp/v1/metrics',
-            { bodyLimit: BODY_LIMIT },
-            async (request, reply) => {
-                if (!isJson(request.headers['content-type'])) {
-                    return reply.code(415).send({ error: 'Expected application/json' });
-                }
+        app.post('/api/otlp/v1/metrics', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            if (!isJson(request.headers['content-type'])) {
+                return reply.code(415).send({ error: 'Expected application/json' });
+            }
 
-                const { rows, skipped } = flattenMetrics(request.body);
-                try {
-                    await store.insertMetrics(rows);
-                } catch (e) {
-                    // 5xx is the ONE signal that means "resend". Reserve it for a genuine
-                    // write failure, which is exactly the case a retry can fix.
-                    request.log.error({ err: e }, 'otlp insert failed');
-                    return reply.code(503).send({ error: (e as Error).message });
-                }
+            const { rows, skipped } = flattenMetrics(request.body);
+            try {
+                await store.insertMetrics(rows);
+            } catch (e) {
+                // 5xx is the ONE signal that means "resend". Reserve it for a genuine
+                // write failure, which is exactly the case a retry can fix.
+                request.log.error({ err: e }, 'otlp insert failed');
+                return reply.code(503).send({ error: (e as Error).message });
+            }
 
-                // 200 with an empty partialSuccess is the OTLP success shape. A body we could
-                // not fully parse is reported here, never as 5xx: exporters retry 5xx forever,
-                // so a shape our parser rejects would become an infinite loop.
-                app.log.debug({ accepted: rows.length, skipped }, 'otlp metrics');
-                return reply.code(200).send({ partialSuccess: {} });
-            },
-        );
+            // 200 with an empty partialSuccess is the OTLP success shape. A body we could
+            // not fully parse is reported here, never as 5xx: exporters retry 5xx forever,
+            // so a shape our parser rejects would become an infinite loop.
+            app.log.debug({ accepted: rows.length, skipped }, 'otlp metrics');
+            return reply.code(200).send({ partialSuccess: {} });
+        });
 
         // Accepted and dropped. Log records carry prompt.id and message.uuid, which are only
         // worth storing once there is a per-prompt view to spend them on (M6). Returning 200

@@ -59,11 +59,7 @@ export interface PostgresTelemetryDeps {
     ready?: Promise<unknown>;
 }
 
-export function createPostgresTelemetryClient({
-    sql,
-    orgId,
-    ready,
-}: PostgresTelemetryDeps): TelemetryClient {
+export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTelemetryDeps): TelemetryClient {
     return {
         async fetchRollups(): Promise<TelemetryInput> {
             try {
@@ -89,7 +85,7 @@ export function createPostgresTelemetryClient({
 
                 const sessions: SessionRollup[] = summaries.map((s) => {
                     const values = new Map<CanonicalField, number>(
-                        (byField.get(s.session_id) ?? []).map((r) => [r.field, Number(r.value)]),
+                        (byField.get(s.session_id) ?? []).map((r) => [r.field, Number(r.value)])
                     );
                     return {
                         sessionId: s.session_id,
@@ -106,12 +102,8 @@ export function createPostgresTelemetryClient({
                 return {
                     sessions,
                     coverage: {
-                        from: times.length
-                            ? new Date(Math.min(...times.map((t) => t.getTime()))).toISOString()
-                            : null,
-                        to: times.length
-                            ? new Date(Math.max(...times.map((t) => t.getTime()))).toISOString()
-                            : null,
+                        from: times.length ? new Date(Math.min(...times.map((t) => t.getTime()))).toISOString() : null,
+                        to: times.length ? new Date(Math.max(...times.map((t) => t.getTime()))).toISOString() : null,
                     },
                 };
             } catch (e) {

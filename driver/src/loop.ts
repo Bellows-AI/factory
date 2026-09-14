@@ -82,7 +82,12 @@ interface GateFailure {
 }
 
 /** What one gate looks like on the board, at one moment. */
-type GateReport = { name: string; status: 'running' | 'passed' | 'failed'; exitCode: number | null; output: string | null };
+type GateReport = {
+    name: string;
+    status: 'running' | 'passed' | 'failed';
+    exitCode: number | null;
+    output: string | null;
+};
 
 function newJobState(): JobState {
     let wake = () => {};
@@ -321,7 +326,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * run at all is a failed gate — an exit code of 125 is docker's "container not there", and
      * treating it as a pass would be the one lie this loop must never tell.
      */
-    async function runDeclaredGates(job: BoardJob, gateSession: GateSession, state: JobState): Promise<GateFailure | null> {
+    async function runDeclaredGates(
+        job: BoardJob,
+        gateSession: GateSession,
+        state: JobState
+    ): Promise<GateFailure | null> {
         if (!gates) return null;
         const results: GateReport[] = [];
         const report = async (): Promise<void> => {
@@ -338,7 +347,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         // The report must fit the board's 128 KiB body however many gates declared and however
         // verbose they were — JSON escaping can inflate bytes six-fold, so the raw budget per
         // gate shrinks as the list grows (16 gates still get 1 KiB of tail each).
-        const perGate = Math.max(1024, Math.floor(16 * 1024 / gateSession.declared.length));
+        const perGate = Math.max(1024, Math.floor((16 * 1024) / gateSession.declared.length));
         for (const gate of gateSession.declared) {
             // The lease can be reclaimed mid-gates. Everything after that is dead work on a
             // checkout another attempt owns, and the verdict will be refused anyway.
@@ -406,7 +415,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 `job ${job.id}: attempt ${job.attempts} ` +
                     (session
                         ? `${session.resume ? 'resuming' : 'starting as'} session ${session.id}`
-                        : 'starting (headless opencode run: no session id)'),
+                        : 'starting (headless opencode run: no session id)')
             );
             if (session && !session.resume) {
                 try {
@@ -470,7 +479,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     log(
                         verdict === 'lost'
                             ? `job ${job.id}: stopped, but the board had already reclaimed it`
-                            : `job ${job.id}: stopped, the board has settled the turn`,
+                            : `job ${job.id}: stopped, the board has settled the turn`
                     );
                     return;
                 }
@@ -501,7 +510,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     log(
                         verdict === 'lost'
                             ? `job ${job.id}: idle, but the board had already reclaimed it`
-                            : `job ${job.id}: idle for ${config.idleMs}ms, parked on standby`,
+                            : `job ${job.id}: idle for ${config.idleMs}ms, parked on standby`
                     );
                     return;
                 }
@@ -526,7 +535,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     // error line, the docker rejection, or its absence.
                     log(
                         `job ${job.id}: the session readout came up empty (${outcome.readoutError ?? 'no session in the database'}) — ` +
-                            'no session to follow up, finish reason and context stats unread',
+                            'no session to follow up, finish reason and context stats unread'
                     );
                 }
 
@@ -554,8 +563,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 // A cache-killed run was cut mid-tool-call, so its finish reason reads as one more
                 // premature stop — the cache note already says the whole story, and stacking
                 // "ended before it finished" on top would send its reader chasing a second cause.
-                const premature =
-                    typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost;
+                const premature = typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost;
 
                 /*
                  * The deterministic end of a task. A run that succeeded — clean exit, no timeout,
@@ -568,13 +576,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  * exists to prevent — and the reason rides the output the author reads.
                  */
                 let published: PublishResult | null = null;
-                if (
-                    outcome.exitCode === 0 &&
-                    !outcome.timedOut &&
-                    !premature &&
-                    !failure &&
-                    runner.publishGit
-                ) {
+                if (outcome.exitCode === 0 && !outcome.timedOut && !premature && !failure && runner.publishGit) {
                     // The claim's GITHUB_TOKEN was minted at claim time, and a run can outlive
                     // its hour — job 43379d3a pushed with a token 34 minutes past expiry and the
                     // publish failed on 401 with the work done and the gates green. Ask the
@@ -624,7 +626,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     // error, when the scrape lifted one, says WHY. Observed 2026-09-11: a 429 rate
                     // limit cut a run off mid-tool-call and the note named only "tool-calls",
                     // sending its reader into the session database for the cause.
-                    const cause = outcome.providerError ? ` The session's last provider error: ${outcome.providerError}.` : '';
+                    const cause = outcome.providerError
+                        ? ` The session's last provider error: ${outcome.providerError}.`
+                        : '';
                     output =
                         `${output}\n[driver] the agent's run ended before it finished (opencode finish reason: "${finish}") — ` +
                         `exit 0, but no completed final message.${cause} Re-queue the task, or follow up to continue the session.`;
@@ -643,7 +647,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 log(
                     verdict === 'lost'
                         ? `job ${job.id}: finished ${status}, but the board had already reclaimed it`
-                        : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''})`,
+                        : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''})`
                 );
             } finally {
                 // Either way the environment goes back to its cooldown, and the token dies with the
@@ -685,10 +689,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * this driver while the removal is in flight then waits it out before its startup sync (see
      * `reclaims`), instead of syncing against a tree mid-deletion.
      */
-    async function report(
-        job: BoardJob,
-        result: Parameters<Board['complete']>[1],
-    ): Promise<LeaseState> {
+    async function report(job: BoardJob, result: Parameters<Board['complete']>[1]): Promise<LeaseState> {
         const verdict = await board.complete(job, result);
         if (verdict.state !== 'held' || !verdict.threadDone) return verdict.state;
         const root = job.rootJobId ?? job.id;
@@ -768,7 +769,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             try {
                 outcome = await runner.reclaimWorktree(removed);
             } catch (e) {
-                log(`reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${(e as Error).message}`);
+                log(
+                    `reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${(e as Error).message}`
+                );
                 continue;
             }
             if (!outcome.ok) {
@@ -798,7 +801,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         async start() {
             log(
                 `polling ${config.boardUrl} every ${config.pollMs}ms as "${config.worker}", ` +
-                    `${config.concurrency} at a time, image ${config.image}`,
+                    `${config.concurrency} at a time, image ${config.image}`
             );
 
             // Drains the board's removed-thread queue in parallel with the claim loop. This loop
@@ -842,10 +845,8 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     await report(job, {
                         status: 'failed',
                         exitCode: null,
-                        output:
-                            'This job has no workspace. It was queued by an account this board cannot resolve a checkout directory for, or the board has no workspace root configured.',
-                    })
-                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                        output: 'This job has no workspace. It was queued by an account this board cannot resolve a checkout directory for, or the board has no workspace root configured.',
+                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
 
@@ -862,8 +863,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         status: 'failed',
                         exitCode: null,
                         output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
-                    })
-                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
 
@@ -882,10 +882,8 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     await report(job, {
                         status: 'failed',
                         exitCode: null,
-                        output:
-                            'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
-                    })
-                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                        output: 'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
+                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
 
@@ -936,8 +934,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         status: 'failed',
                         exitCode: null,
                         output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-                    })
-                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
 
@@ -977,8 +974,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         status: 'failed',
                         exitCode: null,
                         output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
-                    })
-                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
 
@@ -997,8 +993,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         status: 'failed',
                         exitCode: null,
                         output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
-                    })
-                        .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }
 

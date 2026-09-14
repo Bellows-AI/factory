@@ -137,7 +137,7 @@ export async function buildApp({
                 // two seconds does not become a `git log` and a directory walk every two seconds.
                 facts: createFactsCache(now),
                 queue: cloneQueue ?? null,
-            }),
+            })
         );
     }
 

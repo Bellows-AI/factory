@@ -50,7 +50,7 @@ describe('github mode is all-or-nothing', () => {
             // Named individually: the operator has one key to fix and should not have to diff the
             // example file to work out which.
             expect(() => github({ [key]: '' })).toThrow(new RegExp(key));
-        },
+        }
     );
 
     it('never degrades to an open deployment when half-configured', () => {
@@ -122,13 +122,12 @@ describe('the rest of [auth]', () => {
 
     it('lowercases the bootstrap admin, because GitHub logins are case-insensitive', () => {
         expect((github({ AUTH_BOOTSTRAP_ADMIN: 'OctoCat' }).auth as { bootstrapAdmin: string }).bootstrapAdmin).toBe(
-            'octocat',
+            'octocat'
         );
     });
 
     it('leaves auto-join off unless an organization is named', () => {
-        const auth = (env: NodeJS.ProcessEnv = {}) =>
-            github(env).auth as { autoJoinGithubOrg: string | null };
+        const auth = (env: NodeJS.ProcessEnv = {}) => github(env).auth as { autoJoinGithubOrg: string | null };
         // Off is invite-only membership, which is the state every existing deployment is in.
         expect(auth().autoJoinGithubOrg).toBeNull();
         expect(auth({ AUTH_AUTO_JOIN_GITHUB_ORG: '  ' }).autoJoinGithubOrg).toBeNull();
@@ -145,7 +144,7 @@ describe('the rest of [auth]', () => {
 
     it('points at github.com unless the environment overrides it', () => {
         expect((github().auth as { authorizeUrl: string }).authorizeUrl).toBe(
-            'https://github.com/login/oauth/authorize',
+            'https://github.com/login/oauth/authorize'
         );
     });
 });

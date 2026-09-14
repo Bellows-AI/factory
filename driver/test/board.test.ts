@@ -30,7 +30,7 @@ const claimed = (extra: Record<string, unknown> = {}) =>
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
             ...extra,
         }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
+        { status: 200, headers: { 'content-type': 'application/json' } }
     );
 
 describe('the worker token', () => {
@@ -159,8 +159,8 @@ describe('rereading the gates after the startup sync', () => {
         const { calls, fetch } = recorder(() =>
             Response.json(
                 { gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, gateError: null },
-                { status: 200 },
-            ),
+                { status: 200 }
+            )
         );
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
 
@@ -177,15 +177,21 @@ describe('rereading the gates after the startup sync', () => {
 
     it('answers null — keep the claim’s decision — when the board refuses or fails', async () => {
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).rereadGates(job)).toBeNull();
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).rereadGates(job)
+        ).toBeNull();
 
         const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).rereadGates(job)).toBeNull();
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).rereadGates(job)
+        ).toBeNull();
 
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).rereadGates(job)).toBeNull();
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).rereadGates(job)
+        ).toBeNull();
     });
 });
 
@@ -214,18 +220,26 @@ describe('asking for a publish-fresh credential', () => {
 
     it('answers null — keep the claim env — when the board holds nothing fresher, refuses, or fails', async () => {
         const nothing = recorder(() => Response.json({ GITHUB_TOKEN: null }, { status: 200 }));
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: nothing.fetch }).publishToken(job)).toBeNull();
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: nothing.fetch }).publishToken(job)
+        ).toBeNull();
 
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).publishToken(job)).toBeNull();
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).publishToken(job)
+        ).toBeNull();
 
         const dead = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).publishToken(job)).toBeNull();
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: dead.fetch }).publishToken(job)
+        ).toBeNull();
 
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).publishToken(job)).toBeNull();
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).publishToken(job)
+        ).toBeNull();
     });
 });
 
@@ -301,12 +315,18 @@ describe('the removed-thread reclaim queue', () => {
 
         const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
         expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).ackReclaim('row-1', 'driver-1'),
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: lost.fetch }).ackReclaim(
+                'row-1',
+                'driver-1'
+            )
         ).toBe('lost');
 
         const gone = recorder(() => Response.json({ error: 'No such reclaim' }, { status: 404 }));
         expect(
-            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: gone.fetch }).ackReclaim('row-1', 'driver-1'),
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: gone.fetch }).ackReclaim(
+                'row-1',
+                'driver-1'
+            )
         ).toBe('missing');
     });
 
@@ -334,7 +354,7 @@ describe('the complete verdict', () => {
         // so the driver reads both from the one complete round trip — no separate thread read to
         // race a follow-up's insertion against.
         const { calls, fetch } = recorder(() =>
-            Response.json({ id: 'job-1', status: 'succeeded', threadDone: true }, { status: 200 }),
+            Response.json({ id: 'job-1', status: 'succeeded', threadDone: true }, { status: 200 })
         );
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
 
@@ -354,7 +374,7 @@ describe('the complete verdict', () => {
                 status: 'succeeded',
                 exitCode: 0,
                 output: '',
-            }),
+            })
         ).toEqual({ state: 'held', threadDone: false });
 
         const falseBody = recorder(() => Response.json({ id: 'job-1', threadDone: false }, { status: 200 }));
@@ -363,7 +383,7 @@ describe('the complete verdict', () => {
                 status: 'succeeded',
                 exitCode: 0,
                 output: '',
-            }),
+            })
         ).toEqual({ state: 'held', threadDone: false });
 
         const lying = recorder(() => Response.json({ id: 'job-1', threadDone: 'yes' }, { status: 200 }));
@@ -372,7 +392,7 @@ describe('the complete verdict', () => {
                 status: 'succeeded',
                 exitCode: 0,
                 output: '',
-            }),
+            })
         ).toEqual({ state: 'held', threadDone: false });
     });
 

@@ -28,7 +28,9 @@ function Checks({ gates }: { gates: GateCheck[] }) {
                             <summary>
                                 <span>{gate.name}</span>
                                 <span className={`pill gate-${gate.status}`}>{gate.status}</span>
-                                {gate.exitCode !== null ? <span className="chat-exit">exit {gate.exitCode}</span> : null}
+                                {gate.exitCode !== null ? (
+                                    <span className="chat-exit">exit {gate.exitCode}</span>
+                                ) : null}
                             </summary>
                             {gate.output !== null ? <pre className="chat-output">{gate.output}</pre> : null}
                         </details>
@@ -127,11 +129,7 @@ export function TaskDetail({
                 <div className="panel-head">
                     <h2>Tasks</h2>
                 </div>
-                {error !== null ? (
-                    <p className="muted">{error}</p>
-                ) : (
-                    <p className="muted">Loading the task…</p>
-                )}
+                {error !== null ? <p className="muted">{error}</p> : <p className="muted">Loading the task…</p>}
             </section>
         );
     }
@@ -219,7 +217,9 @@ export function TaskDetail({
                             <p className="msg-user">{task.command}</p>
                             <p className="msg-meta">
                                 {history ? <span className="pill">{task.status}</span> : null}
-                                {history && task.executor !== null ? <span className="pill">{task.executor}</span> : null}
+                                {history && task.executor !== null ? (
+                                    <span className="pill">{task.executor}</span>
+                                ) : null}
                                 {history && task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
                                 {history && task.exitCode !== null ? (
                                     <span className="chat-exit">exit {task.exitCode}</span>
@@ -233,9 +233,7 @@ export function TaskDetail({
                                             : ''}
                                     </span>
                                 ) : null}
-                                {task.status === 'standby' ? (
-                                    <span className="pill">parked</span>
-                                ) : null}
+                                {task.status === 'standby' ? <span className="pill">parked</span> : null}
                                 {task.id === latestTask.id && task.status === 'running' ? (
                                     task.cancelRequestedAt !== null ? (
                                         <span className="pill chat-stop">Stopping…</span>
@@ -277,7 +275,10 @@ export function TaskDetail({
                                     <Checks gates={task.gates} />
                                 ) : null}
                                 {task.output !== null ? (
-                                    <pre ref={task.id === latestTask.id ? outputRef : undefined} className="chat-output">
+                                    <pre
+                                        ref={task.id === latestTask.id ? outputRef : undefined}
+                                        className="chat-output"
+                                    >
                                         {task.output}
                                     </pre>
                                 ) : isTerminal(task.status) ? (
@@ -301,7 +302,12 @@ export function TaskDetail({
                             }}
                         />
                         <div className="composer-row">
-                            <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+                            <button
+                                type="button"
+                                className="primary"
+                                disabled={!draft.trim() || sending}
+                                onClick={() => void send()}
+                            >
                                 Send
                             </button>
                         </div>
@@ -309,8 +315,8 @@ export function TaskDetail({
                 ) : null}
                 {sessionless ? (
                     <p className="muted">
-                        This run has no agent session to continue, so it cannot take a follow-up. Queue
-                        a new task instead.
+                        This run has no agent session to continue, so it cannot take a follow-up. Queue a new task
+                        instead.
                     </p>
                 ) : null}
             </section>

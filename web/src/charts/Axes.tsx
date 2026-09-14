@@ -37,12 +37,7 @@ export function YAxis({ scale, max, width, side = 'left', label, ticks = 4 }: YA
                 );
             })}
             {label ? (
-                <text
-                    x={x}
-                    y={PAD.top - 4}
-                    className="axis-label"
-                    textAnchor={side === 'left' ? 'start' : 'end'}
-                >
+                <text x={x} y={PAD.top - 4} className="axis-label" textAnchor={side === 'left' ? 'start' : 'end'}>
                     {label}
                 </text>
             ) : null}
@@ -62,37 +57,18 @@ export function XLabels({ labels, bandCentre, height, every = 1 }: XLabelsProps)
         <>
             {labels.map((label, i) =>
                 i % every !== 0 && i !== labels.length - 1 ? null : (
-                    <text
-                        key={i}
-                        x={bandCentre(i)}
-                        y={height - PAD.bottom + 16}
-                        className="tick"
-                        textAnchor="middle"
-                    >
+                    <text key={i} x={bandCentre(i)} y={height - PAD.bottom + 16} className="tick" textAnchor="middle">
                         {label}
                     </text>
-                ),
+                )
             )}
         </>
     );
 }
 
-export function ChartRoot({
-    width,
-    height,
-    children,
-}: {
-    width: number;
-    height: number;
-    children: React.ReactNode;
-}) {
+export function ChartRoot({ width, height, children }: { width: number; height: number; children: React.ReactNode }) {
     return (
-        <svg
-            viewBox={`0 0 ${width} ${height}`}
-            preserveAspectRatio="xMidYMid meet"
-            role="img"
-            className="chart"
-        >
+        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="img" className="chart">
             {children}
         </svg>
     );

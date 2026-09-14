@@ -21,8 +21,7 @@ export const mintToken = (): string => b64url(randomBytes(32));
  */
 export const hashToken = (token: string): Buffer => createHash('sha256').update(token).digest();
 
-const mac = (value: string, secret: string): string =>
-    b64url(createHmac('sha256', secret).update(value).digest());
+const mac = (value: string, secret: string): string => b64url(createHmac('sha256', secret).update(value).digest());
 
 /** `<value>.<hmac>`. */
 export const sign = (value: string, secret: string): string => `${value}.${mac(value, secret)}`;

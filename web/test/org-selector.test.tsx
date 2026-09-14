@@ -20,8 +20,7 @@ const DIRECTORY: OrganizationMeta = {
     ],
 };
 
-const render = (organization: OrganizationMeta) =>
-    renderToStaticMarkup(<OrgSelector organization={organization} />);
+const render = (organization: OrganizationMeta) => renderToStaticMarkup(<OrgSelector organization={organization} />);
 
 describe('OrgSelector', () => {
     it('renders the single organization as a disabled native select', () => {
@@ -71,8 +70,7 @@ describe('TopBar', () => {
         },
     } as unknown as StatsPayload;
 
-    const html = () =>
-        renderToStaticMarkup(<TopBar data={payload} refreshing={false} onRefresh={() => {}} />);
+    const html = () => renderToStaticMarkup(<TopBar data={payload} refreshing={false} onRefresh={() => {}} />);
 
     it('puts the selector in the actions group, ahead of Refresh', () => {
         const markup = html();
@@ -87,9 +85,7 @@ describe('TopBar', () => {
     });
 
     it('renders nothing before the first payload rather than an empty control', () => {
-        const markup = renderToStaticMarkup(
-            <TopBar data={null} refreshing={false} onRefresh={() => {}} />,
-        );
+        const markup = renderToStaticMarkup(<TopBar data={null} refreshing={false} onRefresh={() => {}} />);
         expect(markup).not.toContain('org-select');
         expect(markup).toContain('loading…');
     });

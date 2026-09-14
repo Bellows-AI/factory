@@ -37,7 +37,7 @@ export function DataTable<T extends object>({ columns, rows, sortable = false }:
 
     const toggle = (key: keyof T & string) =>
         setSort((current) =>
-            current?.key === key ? { key, descending: !current.descending } : { key, descending: true },
+            current?.key === key ? { key, descending: !current.descending } : { key, descending: true }
         );
 
     return (
@@ -55,13 +55,7 @@ export function DataTable<T extends object>({ columns, rows, sortable = false }:
                                 <th
                                     key={column.key}
                                     className={sortable ? `sortable ${direction}`.trim() : undefined}
-                                    aria-sort={
-                                        active
-                                            ? sort.descending
-                                                ? 'descending'
-                                                : 'ascending'
-                                            : 'none'
-                                    }
+                                    aria-sort={active ? (sort.descending ? 'descending' : 'ascending') : 'none'}
                                     onClick={sortable ? () => toggle(column.key) : undefined}
                                 >
                                     {column.label}
@@ -74,14 +68,10 @@ export function DataTable<T extends object>({ columns, rows, sortable = false }:
                     {sorted.map((row, i) => (
                         <tr key={i}>
                             {columns.map((column) => {
-                                const value = column.format
-                                    ? column.format(row)
-                                    : (row[column.key] as unknown);
+                                const value = column.format ? column.format(row) : (row[column.key] as unknown);
                                 return (
                                     <td key={column.key}>
-                                        {value === null || value === undefined
-                                            ? '—'
-                                            : String(value)}
+                                        {value === null || value === undefined ? '—' : String(value)}
                                     </td>
                                 );
                             })}

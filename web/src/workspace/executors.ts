@@ -26,9 +26,7 @@ export type ValidExecutor = {
     config: object;
 };
 
-export type ExecutorValidation =
-    | { ok: true; value: ValidExecutor }
-    | { ok: false; error: string };
+export type ExecutorValidation = { ok: true; value: ValidExecutor } | { ok: false; error: string };
 
 export function validateExecutorConfig(raw: string, name: string, type: ExecutorType): ExecutorValidation {
     const trimmed = raw.trim();
@@ -84,7 +82,7 @@ export type ExecutorRow = {
 export function mergeExecutors(
     existing: readonly ExecutorRow[],
     editing: string | null,
-    next: ValidExecutor,
+    next: ValidExecutor
 ): { ok: true; value: ExecutorRow[] } | { ok: false; error: string } {
     const clash = existing.some((row) => row.name === next.name && row.name !== editing);
     if (clash) return { ok: false, error: `An executor named "${next.name}" already exists.` };

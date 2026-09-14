@@ -82,7 +82,11 @@ function chainHead(id: string, jobs: readonly Job[] | null): Job | null {
     let head: Job | undefined;
     for (const job of jobs) {
         if (job.rootJobId !== named.rootJobId) continue;
-        if (head === undefined || job.createdAt > head.createdAt || (job.createdAt === head.createdAt && job.id > head.id)) {
+        if (
+            head === undefined ||
+            job.createdAt > head.createdAt ||
+            (job.createdAt === head.createdAt && job.id > head.id)
+        ) {
             head = job;
         }
     }
@@ -135,7 +139,7 @@ export function openTask(state: TaskTabsState, taskId: string): TaskTabsState {
     const group = groupById(state, state.activeGroup) ?? state.groups[0] ?? FIRST_GROUP;
     if (group.tabs.includes(taskId)) return state;
     const groups = state.groups.map((candidate) =>
-        candidate.id === group.id ? { ...candidate, tabs: [...candidate.tabs, taskId] } : candidate,
+        candidate.id === group.id ? { ...candidate, tabs: [...candidate.tabs, taskId] } : candidate
     );
     return { ...state, groups, activeGroup: group.id };
 }
@@ -259,7 +263,7 @@ export function useTaskTabs(): TaskTabs {
             setState({ ...stateRef.current, activeGroup: id });
             navigate(target.tabs[0] !== undefined ? `/tasks/${target.tabs[0]}` : '/tasks');
         },
-        [navigate, pathname],
+        [navigate, pathname]
     );
 
     const createGroup = useCallback(() => {
@@ -276,7 +280,7 @@ export function useTaskTabs(): TaskTabs {
             if (id !== taskIdFromPath(pathname)) return;
             navigate(result.next !== null ? `/tasks/${result.next}` : '/tasks');
         },
-        [navigate, pathname],
+        [navigate, pathname]
     );
 
     return { groups: state.groups, active, activateGroup, createGroup, removeTab };

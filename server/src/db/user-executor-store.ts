@@ -22,7 +22,10 @@ export interface UserExecutorStore {
      * user_repo there is nothing to preserve — a row tracks no disk state, so "keeping" an omitted
      * executor would only contradict the body the member just sent.
      */
-    replace(userId: string, executors: readonly { name: string; type: string; config: Record<string, unknown> }[]): Promise<void>;
+    replace(
+        userId: string,
+        executors: readonly { name: string; type: string; config: Record<string, unknown> }[]
+    ): Promise<void>;
     list(userId: string): Promise<UserExecutor[]>;
     /**
      * The whole list WITH its pasted configs — the on-demand read the workspace's edit dialog
@@ -39,11 +42,7 @@ export interface UserExecutorStore {
      * for the same reason the env resolver does: a claim holds one connection, so enough
      * concurrent claims can never wedge the pool against itself.
      */
-    configFor(
-        userId: string,
-        name: string,
-        exec?: Sql | TransactionSql,
-    ): Promise<UserExecutorConfig | null>;
+    configFor(userId: string, name: string, exec?: Sql | TransactionSql): Promise<UserExecutorConfig | null>;
 }
 
 interface Row {

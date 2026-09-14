@@ -63,7 +63,7 @@ const renderComposer = ({
             actionError={actionError}
             sending={sending}
             onSend={async () => null}
-        />,
+        />
     );
 
 interface DetailArgs {
@@ -74,12 +74,7 @@ interface DetailArgs {
     sending?: boolean;
 }
 
-const renderDetail = ({
-    jobs = [job()],
-    error = null,
-    actionError = null,
-    sending = false,
-}: DetailArgs = {}) =>
+const renderDetail = ({ jobs = [job()], error = null, actionError = null, sending = false }: DetailArgs = {}) =>
     renderToStaticMarkup(
         <TaskDetail
             jobs={jobs}
@@ -90,7 +85,7 @@ const renderDetail = ({
             onStop={async () => {}}
             onRemove={async () => {}}
             onDone={async () => {}}
-        />,
+        />
     );
 
 describe('TaskComposer', () => {
@@ -165,7 +160,7 @@ describe('TaskComposer', () => {
         expect(send).toContain('disabled');
     });
 
-    it('shows the board\'s refusal in place', () => {
+    it("shows the board's refusal in place", () => {
         const html = renderComposer({ actionError: 'Could not queue the task (503)' });
         expect(html).toContain('Could not queue the task (503)');
     });
@@ -202,7 +197,9 @@ describe('TaskDetail', () => {
         // A finished task whose detail has not arrived must not read as one with no output —
         // that is a false statement about a run somebody is waiting on.
         expect(renderDetail({ jobs: null })).toMatch(/Loading the task/);
-        const waiting = renderDetail({ jobs: [job({ status: 'running', output: null, exitCode: null, finishedAt: null, startedAt: null })] });
+        const waiting = renderDetail({
+            jobs: [job({ status: 'running', output: null, exitCode: null, finishedAt: null, startedAt: null })],
+        });
         expect(waiting).toContain('Waiting for the executor');
         const empty = renderDetail({ jobs: [job({ output: null })] });
         expect(empty).toContain('No output recorded');
@@ -236,7 +233,9 @@ describe('TaskDetail', () => {
         expect(finished).toContain('<textarea');
         expect(finished).toContain('>Send<');
         for (const status of ['queued', 'running', 'standby'] as const) {
-            const moving = renderDetail({ jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })] });
+            const moving = renderDetail({
+                jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
+            });
             expect(moving, status).not.toContain('>Done<');
             expect(moving, status).not.toContain('<textarea');
         }
@@ -251,7 +250,9 @@ describe('TaskDetail', () => {
     });
 
     it('offers Stop on the run that is going, and nothing the moment it is not', () => {
-        const running = renderDetail({ jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })] });
+        const running = renderDetail({
+            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+        });
         expect(running).toContain('>Stop<');
         for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
             const html = renderDetail({ jobs: [job({ status })] });
@@ -262,7 +263,16 @@ describe('TaskDetail', () => {
 
     it('says Stopping, not Stop, once the stop request has landed but the run has not parked', () => {
         const html = renderDetail({
-            jobs: [job({ status: 'running', cancelRequestedAt: '2026-09-01T12:01:00.000Z', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+            jobs: [
+                job({
+                    status: 'running',
+                    cancelRequestedAt: '2026-09-01T12:01:00.000Z',
+                    exitCode: null,
+                    finishedAt: null,
+                    startedAt: null,
+                    output: null,
+                }),
+            ],
         });
         expect(html).toContain('Stopping…');
         expect(html).not.toContain('>Stop<');
@@ -275,13 +285,20 @@ describe('TaskDetail', () => {
             const html = renderDetail({ jobs: [job({ status })] });
             expect(html, status).toContain('>Remove<');
         }
-        const running = renderDetail({ jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })] });
+        const running = renderDetail({
+            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+        });
         expect(running).not.toContain('>Remove<');
     });
 
     it('keeps the thread actions on the newest run only — history runs render no Remove of their own', () => {
         const root = job({ command: 'first command' });
-        const child = { ...job({ command: 'second command', status: 'failed' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
+        const child = {
+            ...job({ command: 'second command', status: 'failed' }),
+            id: '44444444-4444-4444-8444-444444444444',
+            followUpTo: root.id,
+            rootJobId: root.id,
+        };
         const html = renderDetail({ jobs: [root, child] });
         expect(html.match(/>Remove</g)).toHaveLength(1);
         expect(html).not.toContain('>Stop<');
@@ -334,7 +351,9 @@ describe('TaskDetail', () => {
 
     it('never emits a placeholder value', () => {
         const html = renderDetail({
-            jobs: [job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null })],
+            jobs: [
+                job({ executor: null, repo: null, output: null, exitCode: null, finishedAt: null, startedAt: null }),
+            ],
         });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
@@ -369,7 +388,13 @@ describe('TaskDetail', () => {
         it('labels each summary count with its meaning and status color', () => {
             // "Checks 1 1 0" tells nobody which number is which; each count is labelled and wears
             // the same status class the per-gate pill does.
-            const html = renderDetail({ jobs: [job({ gates: [...gates, { name: 'build', status: 'running' as const, exitCode: null, output: null }] })] });
+            const html = renderDetail({
+                jobs: [
+                    job({
+                        gates: [...gates, { name: 'build', status: 'running' as const, exitCode: null, output: null }],
+                    }),
+                ],
+            });
             const summary = html.slice(html.indexOf('Checks'), html.indexOf('</summary>'));
             expect(summary).toContain('pill gate-passed');
             expect(summary).toContain('pill gate-failed');
@@ -400,7 +425,13 @@ describe('TaskDetail', () => {
      * nav and tab summaries, and lives where the task is met.
      */
     describe('runtime', () => {
-        const runtime = { cpuPercent: 93.4, memUsedMb: 544.2, memPercent: 7, activity: '→ Read src/x.ts', sampledAt: '2026-09-09T10:00:00.000Z' };
+        const runtime = {
+            cpuPercent: 93.4,
+            memUsedMb: 544.2,
+            memPercent: 7,
+            activity: '→ Read src/x.ts',
+            sampledAt: '2026-09-09T10:00:00.000Z',
+        };
 
         it('renders cpu and memory above the output while the run is going', () => {
             const html = renderDetail({ jobs: [job({ status: 'running', runtime })] });
@@ -442,9 +473,15 @@ describe('TaskDetail', () => {
      */
     describe('summary', () => {
         const activity = '→ Bash npm test';
-        const runtime = { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity, sampledAt: '2026-09-01T12:02:00.000Z' };
+        const runtime = {
+            cpuPercent: 12,
+            memUsedMb: 300,
+            memPercent: null,
+            activity,
+            sampledAt: '2026-09-01T12:02:00.000Z',
+        };
 
-        it('shows the running task\'s summary at the top of the view', () => {
+        it("shows the running task's summary at the top of the view", () => {
             const html = renderDetail({ jobs: [job({ status: 'running', runtime })] });
             expect(html).toContain('task-summary');
             expect(html).toContain(activity);
@@ -452,7 +489,12 @@ describe('TaskDetail', () => {
 
         it('shows it for the whole chain, from the newest run forward', () => {
             const root = job({ command: 'first command' });
-            const child = { ...job({ status: 'running', runtime }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
+            const child = {
+                ...job({ status: 'running', runtime }),
+                id: '44444444-4444-4444-8444-444444444444',
+                followUpTo: root.id,
+                rootJobId: root.id,
+            };
             const html = renderDetail({ jobs: [root, child] });
             expect(html).toContain('task-summary');
             expect(html).toContain(activity);
@@ -477,7 +519,13 @@ describe('TaskDetail', () => {
      * reports or an honest dash; nothing is inferred.
      */
     describe('sidebar', () => {
-        const runtime = { cpuPercent: 12, memUsedMb: 300, memPercent: 2, activity: '→ Bash npm test', sampledAt: '2026-09-01T12:02:00.000Z' };
+        const runtime = {
+            cpuPercent: 12,
+            memUsedMb: 300,
+            memPercent: 2,
+            activity: '→ Bash npm test',
+            sampledAt: '2026-09-01T12:02:00.000Z',
+        };
 
         it('renders a status sidebar fed by the newest run', () => {
             const html = renderDetail({ jobs: [job({ executor: 'main' })] });
@@ -566,19 +614,35 @@ describe('TaskDetail', () => {
             expect(renderDetail({ jobs: [root] })).toContain('<dt>PR state</dt><dd>—</dd>');
         });
 
-        it('keeps older runs\' pills inline and moves only the newest run\'s to the sidebar', () => {
+        it("keeps older runs' pills inline and moves only the newest run's to the sidebar", () => {
             const root = job({ command: 'first command' });
-            const child = { ...job({ command: 'second command' }), id: '44444444-4444-4444-8444-444444444444', followUpTo: root.id, rootJobId: root.id };
+            const child = {
+                ...job({ command: 'second command' }),
+                id: '44444444-4444-4444-8444-444444444444',
+                followUpTo: root.id,
+                rootJobId: root.id,
+            };
             const html = renderDetail({ jobs: [root, child] });
             const rootMeta = html.slice(html.indexOf('first command'), html.indexOf('chat-detail'));
             expect(rootMeta).toContain('<span class="pill');
-            const childMeta = html.slice(html.indexOf('second command'), html.indexOf('chat-detail', html.indexOf('second command')));
+            const childMeta = html.slice(
+                html.indexOf('second command'),
+                html.indexOf('chat-detail', html.indexOf('second command'))
+            );
             expect(childMeta).not.toContain('<span class="pill');
         });
 
         it('never emits a placeholder value', () => {
             const html = renderDetail({
-                jobs: [job({ executor: null, workspacePath: null, output: null, exitCode: null, runtime: { ...runtime, activity: null, contextTokens: null, costUsd: null } })],
+                jobs: [
+                    job({
+                        executor: null,
+                        workspacePath: null,
+                        output: null,
+                        exitCode: null,
+                        runtime: { ...runtime, activity: null, contextTokens: null, costUsd: null },
+                    }),
+                ],
             });
             for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
         });
@@ -666,7 +730,9 @@ describe('thread derivations', () => {
         // carries a PR. The sidebar reads it; a structured field would be a follow-up.
         it('parses the published line into the branch and the PR url', () => {
             expect(
-                threadPublish([withCommand('x', { output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9' })]),
+                threadPublish([
+                    withCommand('x', { output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9' }),
+                ])
             ).toEqual({ branch: 'fix/44', url: 'https://github.com/o/r/pull/9' });
         });
 
@@ -679,9 +745,12 @@ describe('thread derivations', () => {
 
         it('reads the newest output first', () => {
             const root = withCommand('x', { output: '[driver] published fix/1 — https://github.com/o/r/pull/1' });
-            expect(threadPublish([root, followUp('y', { output: '[driver] published fix/2 — https://github.com/o/r/pull/2' })])?.url).toBe(
-                'https://github.com/o/r/pull/2',
-            );
+            expect(
+                threadPublish([
+                    root,
+                    followUp('y', { output: '[driver] published fix/2 — https://github.com/o/r/pull/2' }),
+                ])?.url
+            ).toBe('https://github.com/o/r/pull/2');
         });
 
         it('answers null when nothing was published', () => {
@@ -693,10 +762,10 @@ describe('thread derivations', () => {
             // The agent's output is arbitrary text; only a whole line at a line boundary is the
             // driver's, and only an http(s) url may become a href.
             expect(
-                threadPublish([withCommand('x', { output: 'the agent said [driver] published fake/1 — not-a-url' })]),
+                threadPublish([withCommand('x', { output: 'the agent said [driver] published fake/1 — not-a-url' })])
             ).toBeNull();
             expect(
-                threadPublish([withCommand('x', { output: '[driver] published fix/5 — javascript:alert(1)' })]),
+                threadPublish([withCommand('x', { output: '[driver] published fix/5 — javascript:alert(1)' })])
             ).toEqual({ branch: 'fix/5', url: 'javascript:alert(1)' });
         });
     });

@@ -37,7 +37,7 @@ export interface EnvVarStore {
      */
     resolveFor(
         target: { userId: string | null; repo: string | null },
-        exec?: Sql | TransactionSql,
+        exec?: Sql | TransactionSql
     ): Promise<Record<string, string>>;
 }
 
@@ -64,7 +64,7 @@ const toRow = (row: Row): EnvVarRow => ({
 export function stackEnv(
     org: Record<string, string>,
     workspace: Record<string, string>,
-    repo: Record<string, string>,
+    repo: Record<string, string>
 ): Record<string, string> {
     return { ...org, ...workspace, ...repo };
 }
@@ -74,10 +74,7 @@ export function stackEnv(
  * share their where-clauses instead of restating them — and so a fourth scope, if one ever lands,
  * is a case here and not a search for every query in the file.
  */
-type Scope =
-    | { kind: 'org' }
-    | { kind: 'workspace'; userId: string }
-    | { kind: 'repo'; owner: string; name: string };
+type Scope = { kind: 'org' } | { kind: 'workspace'; userId: string } | { kind: 'repo'; owner: string; name: string };
 
 /**
  * The scope's predicate, built off whichever executor (pool or transaction) will run it — a

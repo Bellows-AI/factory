@@ -85,9 +85,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
     return (
         <dialog className="picker" ref={ref} aria-labelledby="executor-title">
             <h2 id="executor-title">{editing ? 'Edit executor' : 'Add executor'}</h2>
-            <p className="muted">
-                An executor is what runs your agents' work. Paste its configuration as raw JSON.
-            </p>
+            <p className="muted">An executor is what runs your agents' work. Paste its configuration as raw JSON.</p>
 
             <label className="picker-search">
                 <span className="muted">type</span>
@@ -103,12 +101,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
 
             <label className="picker-search">
                 <span className="muted">name</span>
-                <input
-                    type="text"
-                    value={name}
-                    placeholder="main"
-                    onChange={(event) => setName(event.target.value)}
-                />
+                <input type="text" value={name} placeholder="main" onChange={(event) => setName(event.target.value)} />
             </label>
 
             <label className="picker-search">

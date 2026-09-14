@@ -29,9 +29,7 @@ export function TopBar({
         <header className="topbar">
             <div>
                 <h1>Factory stats</h1>
-                <p className="muted">
-                    {meta ? `${describeRepos(meta.repos)} — AI usage telemetry` : 'loading…'}
-                </p>
+                <p className="muted">{meta ? `${describeRepos(meta.repos)} — AI usage telemetry` : 'loading…'}</p>
             </div>
             <div className="topbar-actions">
                 {/*
@@ -52,9 +50,7 @@ export function TopBar({
                 {meta ? <OrgSelector organization={meta.organization} /> : null}
                 <span className="muted">
                     {meta
-                        ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}${
-                              meta.stale ? ' (stale)' : ''
-                          }`
+                        ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}${meta.stale ? ' (stale)' : ''}`
                         : ''}
                 </span>
                 <button type="button" onClick={onRefresh} disabled={refreshing}>

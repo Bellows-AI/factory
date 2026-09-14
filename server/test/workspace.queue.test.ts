@@ -22,9 +22,7 @@ beforeEach(() => {
 });
 
 /** A queue whose `run` records what it was asked to clone and creates the staging directory. */
-function queueWith(
-    options: { fail?: (name: string) => boolean; hold?: (name: string) => Promise<void> | null } = {},
-) {
+function queueWith(options: { fail?: (name: string) => boolean; hold?: (name: string) => Promise<void> | null } = {}) {
     const cloned: string[] = [];
     const idle: (() => void)[] = [];
     const queue = createCloneQueue({
@@ -34,7 +32,10 @@ function queueWith(
         cloneUrl: (repo) => `file:///origins/${repo.name}.git`,
         run: async (args) => {
             const dest = args[args.length - 1] as string;
-            const name = dest.replace(/\.tmp-\d+$/, '').split('/').pop() as string;
+            const name = dest
+                .replace(/\.tmp-\d+$/, '')
+                .split('/')
+                .pop() as string;
             cloned.push(name);
             // Stands in for a clone that takes minutes, without taking minutes.
             const wait = options.hold?.(name);

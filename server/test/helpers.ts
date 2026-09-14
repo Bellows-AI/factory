@@ -260,16 +260,18 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         },
 
         async list(userId) {
-            return rows
-                .filter((r) => r.userId === userId)
-                .map((r) => ({
-                    name: r.name,
-                    type: r.type,
-                    createdAt: r.createdAt,
-                    updatedAt: r.updatedAt,
-                }))
-                // The SQL orders the same way; created_at ties break on name.
-                .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name));
+            return (
+                rows
+                    .filter((r) => r.userId === userId)
+                    .map((r) => ({
+                        name: r.name,
+                        type: r.type,
+                        createdAt: r.createdAt,
+                        updatedAt: r.updatedAt,
+                    }))
+                    // The SQL orders the same way; created_at ties break on name.
+                    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name))
+            );
         },
 
         async listWithConfigs(userId) {
@@ -389,7 +391,7 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
             return stackEnv(
                 pick(rows.filter((r) => r.userId === null && r.owner === null)),
                 pick(userId ? rows.filter((r) => r.userId === userId) : []),
-                pick(owner && name ? rows.filter((r) => r.owner === owner && r.repoName === name) : []),
+                pick(owner && name ? rows.filter((r) => r.owner === owner && r.repoName === name) : [])
             );
         },
     };
@@ -405,13 +407,15 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
     }
 
     function compareRepoOrder(a: Row, b: Row): number {
-        return a.owner!.localeCompare(b.owner!) || a.repoName!.localeCompare(b.repoName!) || a.name.localeCompare(b.name);
+        return (
+            a.owner!.localeCompare(b.owner!) || a.repoName!.localeCompare(b.repoName!) || a.name.localeCompare(b.name)
+        );
     }
 
     /** The keep-a-null-secret replace, mirroring the store's transaction semantics. */
     function replaceRows(
         scope: 'org' | { userId: string } | { owner: string; name: string },
-        vars: readonly { name: string; value: string | null; isSecret: boolean }[],
+        vars: readonly { name: string; value: string | null; isSecret: boolean }[]
     ): void {
         if (store.broken) throw new Error('database is unreachable');
         const inScope = (row: Row): boolean => {
@@ -437,9 +441,11 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
     }
 
     /** The scope columns a row in this scope carries — null for every scope it is not. */
-    function scopeColumns(
-        scope: 'org' | { userId: string } | { owner: string; name: string },
-    ): { userId: string | null; owner: string | null; repoName: string | null } {
+    function scopeColumns(scope: 'org' | { userId: string } | { owner: string; name: string }): {
+        userId: string | null;
+        owner: string | null;
+        repoName: string | null;
+    } {
         if (scope === 'org') return { userId: null, owner: null, repoName: null };
         if ('userId' in scope) return { userId: scope.userId, owner: null, repoName: null };
         return { userId: null, owner: scope.owner, repoName: scope.name };
@@ -660,11 +666,7 @@ export function memoryAuthStore(): MemoryAuthStore {
 }
 
 /** Mints a live session for `caller` and returns the Cookie header that presents it. */
-export async function signedIn(
-    store: AuthStore,
-    caller: Caller,
-    secret = TEST_SESSION_SECRET,
-): Promise<string> {
+export async function signedIn(store: AuthStore, caller: Caller, secret = TEST_SESSION_SECRET): Promise<string> {
     const token = mintToken();
     await store.createSession(hashToken(token), caller.user.id, new Date(Date.now() + 3600_000));
     return `${SESSION_COOKIE}=${sign(token, secret)}`;
@@ -745,7 +747,8 @@ export async function harness({
     userRepos,
     userExecutors,
     envVars,
-}: {config?: Partial<AppConfig>;
+}: {
+    config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
     telemetry?: TelemetryStub;
     /**

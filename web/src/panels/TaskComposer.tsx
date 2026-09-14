@@ -170,7 +170,12 @@ export function TaskComposer({
                             ))}
                         </select>
                     </label>
-                    <button type="button" className="primary" disabled={!draft.trim() || sending} onClick={() => void send()}>
+                    <button
+                        type="button"
+                        className="primary"
+                        disabled={!draft.trim() || sending}
+                        onClick={() => void send()}
+                    >
                         Send
                     </button>
                 </div>

@@ -50,7 +50,7 @@ describe('parseBellows', () => {
 
     it('reads bare, single-quoted and double-quoted scalars', () => {
         const text = [
-            "environment:",
+            'environment:',
             "    image: 'ghcr.io/acme/ci:1'",
             '    gates:',
             '        - name: lint',
@@ -90,7 +90,7 @@ describe('parseBellows', () => {
         });
     });
 
-    it('skips a top-level services block — the services half is the driver parser\'s grammar', () => {
+    it("skips a top-level services block — the services half is the driver parser's grammar", () => {
         // One file may carry both halves: the driver reads `services:`, this parser reads
         // `environment:`, and each skips the other's block wholesale rather than judging its
         // grammar — a `- name:` item inside `services:` is Drone's, never a gate list item.
@@ -114,46 +114,46 @@ describe('parseBellows', () => {
     });
 
     it('answers null for a services-only file — it declares no gates', () => {
-        const text = [
-            'services:',
-            '    - name: db',
-            '      image: postgres:16',
-        ].join('\n');
+        const text = ['services:', '    - name: db', '      image: postgres:16'].join('\n');
         expect(parseBellows(text)).toBeNull();
     });
 
     it('rejects a second services block', () => {
         expect(() =>
-            parseBellows('services:\n    - name: db\n      image: postgres\nservices:\n    - name: cache\n      image: redis\n'),
+            parseBellows(
+                'services:\n    - name: db\n      image: postgres\nservices:\n    - name: cache\n      image: redis\n'
+            )
         ).toThrow(/second "services:" block/);
     });
 
     it('rejects services with an inline value', () => {
         expect(() => parseBellows('services: [db]\nenvironment:\n    image: node:24\n')).toThrow(
-            /services takes a list, not a value/,
+            /services takes a list, not a value/
         );
     });
 
     it('accepts gates: with a trailing space, as environment: is accepted', () => {
         expect(
-            parseBellows('environment: \n    image: node:24\n    gates: \n        - name: test\n          command: npm test\n'),
+            parseBellows(
+                'environment: \n    image: node:24\n    gates: \n        - name: test\n          command: npm test\n'
+            )
         ).toEqual({ image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
     });
 
     it('rejects a gate whose command is empty — a vacuously-green check', () => {
         expect(() =>
-            parseBellows("environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ''\n"),
+            parseBellows("environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ''\n")
         ).toThrow(/empty command/);
         expect(() =>
-            parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n          command:\n'),
+            parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n          command:\n')
         ).toThrow();
     });
 
     it('rejects a whitespace-only quoted command as empty — sh -c would exit green on it', () => {
         expect(() =>
             parseBellows(
-                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: "  "\n',
-            ),
+                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: "  "\n'
+            )
         ).toThrow(/empty command/);
     });
 
@@ -166,22 +166,18 @@ describe('parseBellows', () => {
     });
 
     it('rejects an unknown key inside environment', () => {
-        expect(() =>
-            parseBellows('environment:\n    image: node:24\n    timeout: 30\n'),
-        ).toThrow(/timeout/);
+        expect(() => parseBellows('environment:\n    image: node:24\n    timeout: 30\n')).toThrow(/timeout/);
     });
 
     it('rejects an unknown field in a gate', () => {
         expect(() =>
-            parseBellows(
-                'environment:\n    image: node:24\n    gates:\n        - name: test\n          cwd: /app\n',
-            ),
+            parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n          cwd: /app\n')
         ).toThrow(/cwd/);
     });
 
     it('rejects gates without an image', () => {
         expect(() =>
-            parseBellows('environment:\n    gates:\n        - name: test\n          command: npm t\n'),
+            parseBellows('environment:\n    gates:\n        - name: test\n          command: npm t\n')
         ).toThrow(/image/);
     });
 
@@ -201,56 +197,44 @@ describe('parseBellows', () => {
         const long = 'echo ' + 'x'.repeat(4100);
         expect(() =>
             parseBellows(
-                `environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ${long}\n`,
-            ),
+                `environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ${long}\n`
+            )
         ).toThrow(/4096/);
     });
 
     it('rejects a gate name that cannot be a path segment', () => {
         const base = 'environment:\n    image: node:24\n    gates:\n';
-        expect(() => parseBellows(`${base}        - name: a/b\n          command: x\n`)).toThrow(
-            /name/,
-        );
-        expect(() => parseBellows(`${base}        - name: -rf\n          command: x\n`)).toThrow(
-            /name/,
-        );
-        expect(() => parseBellows(`${base}        - name: ''\n          command: x\n`)).toThrow(
-            /name/,
-        );
+        expect(() => parseBellows(`${base}        - name: a/b\n          command: x\n`)).toThrow(/name/);
+        expect(() => parseBellows(`${base}        - name: -rf\n          command: x\n`)).toThrow(/name/);
+        expect(() => parseBellows(`${base}        - name: ''\n          command: x\n`)).toThrow(/name/);
     });
 
     it('rejects duplicate gate names', () => {
         expect(() =>
             parseBellows(
-                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: a\n        - name: test\n          command: b\n',
-            ),
+                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: a\n        - name: test\n          command: b\n'
+            )
         ).toThrow(/twice|duplicate/i);
     });
 
     it('rejects an image that smuggles a docker flag, whitespace or expansion', () => {
-        expect(() =>
-            parseBellows('environment:\n    image: -v /:/host\n    gates: []\n'),
-        ).toThrow(/image/);
-        expect(() =>
-            parseBellows('environment:\n    image: node:24 alpine\n    gates: []\n'),
-        ).toThrow(/image/);
-        expect(() =>
-            parseBellows('environment:\n    image: node:$TAG\n    gates: []\n'),
-        ).toThrow(/image/);
+        expect(() => parseBellows('environment:\n    image: -v /:/host\n    gates: []\n')).toThrow(/image/);
+        expect(() => parseBellows('environment:\n    image: node:24 alpine\n    gates: []\n')).toThrow(/image/);
+        expect(() => parseBellows('environment:\n    image: node:$TAG\n    gates: []\n')).toThrow(/image/);
     });
 
     it('rejects a mismatched or unclosed quote', () => {
         expect(() =>
             parseBellows(
-                "environment:\n    image: node:24\n    gates:\n        - name: test\n          command: 'npm test\n",
-            ),
+                "environment:\n    image: node:24\n    gates:\n        - name: test\n          command: 'npm test\n"
+            )
         ).toThrow(/quote/);
     });
 
     it('rejects a gate item missing its command', () => {
-        expect(() =>
-            parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n'),
-        ).toThrow(/command/);
+        expect(() => parseBellows('environment:\n    image: node:24\n    gates:\n        - name: test\n')).toThrow(
+            /command/
+        );
     });
 });
 
@@ -317,12 +301,14 @@ describe('readGatesFile', () => {
             seen.push(path);
             return Promise.resolve(EXAMPLE);
         };
-        expect(
-            await readGatesFile({ root: null, workspacePath: `o/${USER}`, repo: 'o/r', readFile }),
-        ).toEqual({ config: null, error: null });
-        expect(
-            await readGatesFile({ root: '/w', workspacePath: `o/${USER}`, repo: null, readFile }),
-        ).toEqual({ config: null, error: null });
+        expect(await readGatesFile({ root: null, workspacePath: `o/${USER}`, repo: 'o/r', readFile })).toEqual({
+            config: null,
+            error: null,
+        });
+        expect(await readGatesFile({ root: '/w', workspacePath: `o/${USER}`, repo: null, readFile })).toEqual({
+            config: null,
+            error: null,
+        });
         expect(seen).toEqual([]);
     });
 
@@ -378,7 +364,9 @@ describe('readGatesFile', () => {
             worktreeId: ROOT,
             readFile: (path) => {
                 seen.push(path);
-                return Promise.resolve('environment:\n    image: node:20\n    gates:\n        - name: wt\n          command: "npm test"\n');
+                return Promise.resolve(
+                    'environment:\n    image: node:20\n    gates:\n        - name: wt\n          command: "npm test"\n'
+                );
             },
         });
         // One read, one answer: the worktree's file is authoritative once it exists.
@@ -449,9 +437,7 @@ describe('readGatesFile against a real checkout', () => {
     });
 
     it('refuses an oversized .bellows.yaml with the size-limit error', async () => {
-        await checkoutWith(async (checkout) =>
-            writeFile(join(checkout, '.bellows.yaml'), 'x'.repeat(64 * 1024 + 1)),
-        );
+        await checkoutWith(async (checkout) => writeFile(join(checkout, '.bellows.yaml'), 'x'.repeat(64 * 1024 + 1)));
         const result = await read();
         expect(result.config).toBeNull();
         expect(result.error).toMatch(/larger than 65536 bytes/);
@@ -461,8 +447,8 @@ describe('readGatesFile against a real checkout', () => {
         await checkoutWith(async (checkout) =>
             writeFile(
                 join(checkout, '.bellows.yaml'),
-                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: "  "\n',
-            ),
+                'environment:\n    image: node:24\n    gates:\n        - name: test\n          command: "  "\n'
+            )
         );
         const result = await read();
         expect(result.config).toBeNull();

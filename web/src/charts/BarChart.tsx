@@ -17,14 +17,7 @@ export interface BarChartProps {
 }
 
 /** Vertical bars, stacked when more than one series is given. */
-export function BarChart({
-    labels,
-    series,
-    line,
-    width = 720,
-    height = 260,
-    labelEvery = 1,
-}: BarChartProps) {
+export function BarChart({ labels, series, line, width = 720, height = 260, labelEvery = 1 }: BarChartProps) {
     const innerWidth = width - PAD.left - PAD.right;
     const band = innerWidth / Math.max(labels.length, 1);
     // Capped, because the chart is fixed-width: a one-week range would otherwise render a
@@ -32,9 +25,7 @@ export function BarChart({
     const barWidth = Math.min(Math.max(band * 0.7, 1), 56);
     const bandCentre = (i: number) => PAD.left + band * i + band / 2;
 
-    const stackTotals = labels.map((_, i) =>
-        series.reduce((sum, s) => sum + (s.values[i] ?? 0), 0),
-    );
+    const stackTotals = labels.map((_, i) => series.reduce((sum, s) => sum + (s.values[i] ?? 0), 0));
     const max = niceMax(Math.max(...stackTotals, 0));
     const y = linearScale([0, max], [height - PAD.bottom, PAD.top]);
 
@@ -98,12 +89,5 @@ export function Histogram({
     width?: number;
     height?: number;
 }) {
-    return (
-        <BarChart
-            labels={labels}
-            series={[{ values, className: 'bar-primary' }]}
-            width={width}
-            height={height}
-        />
-    );
+    return <BarChart labels={labels} series={[{ values, className: 'bar-primary' }]} width={width} height={height} />;
 }

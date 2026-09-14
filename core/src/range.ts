@@ -34,7 +34,7 @@ export function isRangePreset(value: string): value is RangePreset {
 export function resolveRange(
     preset: RangePreset,
     now: Date,
-    custom?: { from?: string | null; to?: string | null },
+    custom?: { from?: string | null; to?: string | null }
 ): DateRange {
     if (preset === 'all') return ALL_TIME;
     if (preset === 'custom') {

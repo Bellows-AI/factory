@@ -209,9 +209,7 @@ describe('GET /api/stats', () => {
         const h = await harness({ telemetry });
         app = h.app;
 
-        await Promise.all(
-            Array.from({ length: 5 }, () => app!.inject({ method: 'GET', url: '/api/stats' })),
-        );
+        await Promise.all(Array.from({ length: 5 }, () => app!.inject({ method: 'GET', url: '/api/stats' })));
         await h.settle();
         expect(telemetry.rollupCalls).toBe(1);
     });

@@ -63,7 +63,7 @@ try {
         console.log(
             result === 'created'
                 ? `invited "${login}" to "${orgId}" as ${role}; they are a member once they sign in with GitHub`
-                : `"${login}" is now ${role} in "${orgId}"`,
+                : `"${login}" is now ${role} in "${orgId}"`
         );
     }
 } finally {

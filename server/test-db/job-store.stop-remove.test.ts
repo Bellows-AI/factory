@@ -11,9 +11,7 @@ const url = process.env.DATABASE_URL;
 function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`,
-        );
+        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
     }
 }
 
@@ -62,13 +60,15 @@ beforeEach(async () => {
 
 /** Writes a job row in whatever state the case needs. `created_by` defaults to an author, so the
  * workspace-path derivation has something to read. */
-const craft = async (shape: {
-    parent?: string | null;
-    status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
-    lease?: 'live' | 'expired';
-    createdBy?: string | null;
-    repo?: string | null;
-} = {}): Promise<string> => {
+const craft = async (
+    shape: {
+        parent?: string | null;
+        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        lease?: 'live' | 'expired';
+        createdBy?: string | null;
+        repo?: string | null;
+    } = {}
+): Promise<string> => {
     const id = randomUUID();
     await sql`
         insert into job (org_id, id, command, status, parent_job_id, root_job_id, created_by, repo, lease_expires_at, created_at)
@@ -144,7 +144,7 @@ describe.skipIf(!enabled)('stopping a task', () => {
         expect(await store.claim('w1', 300)).toBeNull();
     });
 
-    it('is reported by the worker\'s heartbeat, and suspending settles the run stopped', async () => {
+    it("is reported by the worker's heartbeat, and suspending settles the run stopped", async () => {
         const id = await craft();
         const token = (await store.claim('w1', 300))!.leaseToken;
 
@@ -260,7 +260,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
         expect(second).toMatchObject({ rootJobId: b });
     });
 
-    it('re-leases by the expiry GRANTED to the holder, never by the polling worker\'s requested lease', async () => {
+    it("re-leases by the expiry GRANTED to the holder, never by the polling worker's requested lease", async () => {
         const a = await craft();
         await store.removeThread(a);
 

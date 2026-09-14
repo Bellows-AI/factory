@@ -21,7 +21,6 @@ const run = promisify(execFile);
 /** The variable the credential helper below reads. Never appears on a command line. */
 const TOKEN_VAR = 'GIT_WORKSPACE_TOKEN';
 
-
 /** `present` means a checkout was already there and was left completely alone. */
 export type CloneOutcome = 'cloned' | 'present';
 
@@ -86,7 +85,7 @@ function gitArgs(url: string, dest: string, authenticated: boolean): string[] {
     if (authenticated) {
         args.push(
             '-c',
-            `credential.helper=!f(){ test "$1" = get && echo username=x-access-token && echo "password=\${${TOKEN_VAR}}"; }; f`,
+            `credential.helper=!f(){ test "$1" = get && echo username=x-access-token && echo "password=\${${TOKEN_VAR}}"; }; f`
         );
     }
     // Not --depth 1: base-branch history and revert detection both read history.

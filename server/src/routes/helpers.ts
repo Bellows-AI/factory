@@ -49,7 +49,7 @@ export function badSegment(label: string, value: string): string | null {
 export async function guard<T>(
     reply: FastifyReply,
     log: (e: Error) => void,
-    run: () => Promise<T>,
+    run: () => Promise<T>
 ): Promise<{ ok: true; value: T } | { ok: false }> {
     try {
         return { ok: true, value: await run() };

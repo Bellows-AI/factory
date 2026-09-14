@@ -76,8 +76,8 @@ export function WorkspacePage() {
                 <section className="panel">
                     <h2>Workspace</h2>
                     <p className="muted">
-                        This deployment has no workspace root configured, so no repositories are
-                        checked out. Set <code>ORG_WORKSPACE_ROOT</code> to turn it on.
+                        This deployment has no workspace root configured, so no repositories are checked out. Set{' '}
+                        <code>ORG_WORKSPACE_ROOT</code> to turn it on.
                     </p>
                 </section>
             </main>
@@ -105,8 +105,7 @@ export function WorkspacePage() {
             ) : (
                 <section className="panel">
                     <p className="muted">
-                        Nothing checked out yet. Choose repositories and they are cloned in the
-                        background.
+                        Nothing checked out yet. Choose repositories and they are cloned in the background.
                     </p>
                 </section>
             )}
@@ -118,8 +117,8 @@ export function WorkspacePage() {
                 <section className="panel">
                     <h2>Still on disk</h2>
                     <p className="muted">
-                        These are no longer selected, but their checkouts have not been removed —
-                        they may hold uncommitted work, so nothing deletes them automatically.
+                        These are no longer selected, but their checkouts have not been removed — they may hold
+                        uncommitted work, so nothing deletes them automatically.
                     </p>
                     <ul>
                         {data.orphaned.map((repo) => (

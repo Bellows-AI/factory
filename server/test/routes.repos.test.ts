@@ -87,7 +87,11 @@ describe('GET /api/repos', () => {
     });
 
     it('names the failure rather than reporting an empty installation', async () => {
-        const repos = createRepoSource({ client: stubAppClient(async () => { throw new Error('boom'); }) });
+        const repos = createRepoSource({
+            client: stubAppClient(async () => {
+                throw new Error('boom');
+            }),
+        });
         await repos.list();
         expect(repos.lastError()).toMatch(/boom/);
         expect(repos.snapshot()).toEqual([]);

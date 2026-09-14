@@ -56,7 +56,7 @@ if (!DISPOSABLE.test(name)) {
             `they are in a database, and there is no way to tell them apart afterwards.\n\n` +
             `Point DATABASE_URL at a database whose name ends in _seed, _synthetic, _demo, _e2e or _test:\n\n` +
             `  docker compose exec timescale psql -U factory -d postgres -c 'create database factory_seed'\n` +
-            `  DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run seed\n`,
+            `  DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run seed\n`
     );
     process.exit(1);
 }

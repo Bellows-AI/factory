@@ -1,14 +1,5 @@
-import {
-    ALL_TIME,
-    filterTelemetryInput,
-    telemetryStats,
-} from '@factory-ai/core';
-import type {
-    DateRange,
-    OrganizationMeta,
-    TelemetryInput,
-    TelemetryStats,
-} from '@factory-ai/core';
+import { ALL_TIME, filterTelemetryInput, telemetryStats } from '@factory-ai/core';
+import type { DateRange, OrganizationMeta, TelemetryInput, TelemetryStats } from '@factory-ai/core';
 import { createCache } from './cache.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
@@ -99,12 +90,7 @@ function idleState(): FetchState {
  */
 const ERROR_COOLDOWN_MS = 30_000;
 
-export function createStatsService({
-    config,
-    repos,
-    telemetry,
-    now = Date.now,
-}: StatsServiceDeps): StatsService {
+export function createStatsService({ config, repos, telemetry, now = Date.now }: StatsServiceDeps): StatsService {
     /**
      * The measured repos, as "owner/name" — the form the hook stamps onto every session.
      *
@@ -173,7 +159,7 @@ export function createStatsService({
 
     function telemetryMeta(
         entry: { value: TelemetrySnapshot; fetchedAt: number } | null,
-        stats: TelemetryStats | null,
+        stats: TelemetryStats | null
     ): TelemetryMeta {
         const source = config.telemetrySource === 'postgres' ? 'postgres' : 'fixture';
         const base = {
