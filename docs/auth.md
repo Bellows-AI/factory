@@ -195,6 +195,42 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
   dashboard's ability to fetch to whoever happened to log in last. See
   [configuration.md](configuration.md) for the App credential.
 
+## Access tokens
+
+`Authorization: Bearer fat_…` (personal) or `Bearer oat_…` (organization) — minted from the settings
+page, shown once, only the sha-256 stored, revoked from the same page. The credential for callers
+that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
+
+- **A personal token acts as its user, through the same join a session uses.** `findPersonalToken`
+  is `findSession` with the token row swapped for the cookie: same membership join, same immediacy.
+  Removing a member ends their tokens' reach on the very next request — `removeMember` marks them
+  revoked as well. That live re-resolution is what makes these safe to mint over HTTP while the
+  worker token is CLI-only.
+- **`POST /api/jobs` keeps a real author.** A personal token carries its user's id through
+  `callerOf` untouched, so `created_by` stays populated on the route that runs shell commands.
+- **An organization token names no person, so it stays off every route that needs one.** What an
+  `oat_` may reach is an allowlist (`ORG_TOKEN_ROUTES` in `plugin.ts`): the board reads, the repo
+  list and the cache poke — routes that consult no `callerOf`. Everything else answers **403
+  FORBIDDEN, not 401**: the token did authenticate, the route needs a human behind it. An allowlist,
+  because a refusal list would silently admit every route added after it. And no synthetic user
+  stands behind an org token — a fake `app_user` row would flow into membership joins, workspace
+  paths and member lists as a person who does not exist.
+- **Revocation keeps the row.** `revoked_at`, like every other revocation here. Sessions are the
+  exception (logout deletes) because a dead session row is worthless; "what tokens existed" is
+  history the list is there to show. A removed member's personal tokens are marked, not deleted,
+  for the same reason.
+- **`last_used_at` is minute-granular, on purpose.** The touch is throttled to one rewrite a minute
+  per token: an access token rides the dashboard's two-second poll, and a write on every read is
+  exactly what the session's write-free read path exists to avoid. The list must not promise more
+  than "used within the last minute".
+- **The prefix is the compare-before-query.** `fat_`/`oat_`/`fwt_` are dispatched on the string
+  alone, before any database round trip — a garbage bearer costs a hash and a 401, not a query.
+  A bearer on a session route IS the credential for that request: an unknown one is a 401, never a
+  fall-through to the cookie behind it.
+- **The settings page hides both sections under `AUTH_MODE=none`.** The mode ignores every
+  credential, these included — a mint button for a token nothing will ever honour is a button that
+  cannot work.
+
 ## Who needs which credential
 
 | Route | Credential |
@@ -202,14 +238,18 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 | `GET /api/health` | **open** — must answer while migrations retry, and the compose healthcheck carries none. Authenticating it restarts the container that was about to succeed. |
 | `/api/auth/*` | open. `/me` 401s on its own; being what *tells* the SPA it is unauthenticated is its purpose. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
-| `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove` | session cookie |
+| `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove`, `/api/tokens` with its org and revoke variants | session cookie, or `Bearer fat_…` — an `oat_` bearer passes on this row's reads plus the `POST /api/refresh` cache poke, and is `403` on the rest (see [Access tokens](#access-tokens)) |
 | `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `/api/reclaims/claim`, `/api/reclaims/:id/ack` | `Bearer fwt_…` worker token |
 | OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
 
-- **There is no overlap: every route takes exactly one credential.** A session accepted on
+- **There is no overlap between the three credential *kinds*, and a request carries one.** A session accepted on
   `/claim` would let any member steal another worker's lease; a worker token accepted on
   `POST /api/jobs` would produce a job with no author, silently breaking the audit trail on the
-  route that runs shell commands. `/api/jobs/:id/follow-up`, `/done`, `/stop` and
+  route that runs shell commands. On the session routes the cookie and the access-token bearer are
+  two *forms* of the same person/org credential, and only one is honoured: the bearer wins, because
+  a CLI never sends a cookie and a browser never sends a bearer — when both arrive something between
+  them is rewriting, and a failed or foreign bearer is a 401, never a fall-through to whoever the
+  cookie names. `/api/jobs/:id/follow-up`, `/done`, `/stop` and
   `/remove` are *human* routes: a finished task is over, and stopping
   or deleting one is a person's verdict — which is exactly what makes adjusting, closing,
   stopping and removing one a person's action. The reclaim queue is the opposite shape: it hands
@@ -231,7 +271,10 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
   the claim env, but that token is bounded by the installation, scoped to GitHub, and dead within
   the hour — see [env.md](env.md). The worker token is the only credential that answers for the
   board itself.) The `fwt_` prefix makes a leaked token greppable and makes "cookie or worker token?"
-  answerable without a database lookup.
+  answerable without a database lookup. The access tokens below are the deliberate contrast, and the
+  reason is the same property read the other way: their authority is a live membership,
+  re-resolved through the join on every request, so they can be minted over HTTP and still die the
+  moment the membership does.
 - **The token is also the driver's org binding** — it is how a process with no session says which
   organization it is working for, which is why `worker_token.token_hash` is uniquely indexed even
   though the primary key leads with `org_id`.

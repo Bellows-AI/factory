@@ -3,7 +3,7 @@ import type { TelemetryInput } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { GitHubIdentity, GitHubIdentityClient } from '../src/auth/github.js';
 import { SESSION_COOKIE, hashToken, mintToken, sign } from '../src/auth/session.js';
-import type { AuthStore, Caller, Role } from '../src/auth/store.js';
+import type { AuthStore, AccessTokenKind, AccessTokenView, Caller, OrgTokenIdentity, Role } from '../src/auth/store.js';
 import type { AppConfig, AuthConfig } from '../src/config.js';
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
@@ -469,6 +469,25 @@ export interface MemoryAuthStore extends AuthStore {
     /** Every live session's user id, so a test can assert one was created — or was not. */
     sessions(): string[];
     seedWorkerToken(orgId: string, name: string, token: string): void;
+    /**
+     * Plants an access token and returns its plaintext, so a test can present the Bearer header
+     * without driving the settings route to mint one.
+     */
+    seedAccessToken(
+        orgId: string,
+        kind: AccessTokenKind,
+        options?: { userId?: string; createdBy?: string; label?: string }
+    ): string;
+    /** Every access token row with its hash, so a test can assert what is stored at rest. */
+    accessTokens(): {
+        orgId: string;
+        id: string;
+        kind: AccessTokenKind;
+        userId: string | null;
+        label: string;
+        hashHex: string;
+        revoked: boolean;
+    }[];
 }
 
 /**
@@ -500,6 +519,19 @@ export function memoryAuthStore(): MemoryAuthStore {
     const members: Member[] = [];
     const sessions = new Map<string, { userId: string; expiresAt: number }>();
     const workerTokens: { orgId: string; id: string; name: string; hash: string; revoked: boolean }[] = [];
+    interface AccessTokenRow {
+        orgId: string;
+        id: string;
+        kind: AccessTokenKind;
+        userId: string | null;
+        createdBy: string | null;
+        label: string;
+        hash: string;
+        createdAt: string;
+        lastUsedAt: string | null;
+        revokedAt: string | null;
+    }
+    const accessTokenRows: AccessTokenRow[] = [];
     let nextId = 1;
 
     /** A fixed stamp, the same trick listWorkerTokens uses: timestamps are not what most tests vary. */
@@ -511,6 +543,10 @@ export function memoryAuthStore(): MemoryAuthStore {
      * minted `user-1` would let those assertions pass here and fail against a real database.
      */
     const userId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    // A uuid for access-token rows too — a different leading segment, so it can never be mistaken
+    // for a user id. The revoke route validates the shape, and a store that minted `access-1`
+    // would pass here and fail against a real database.
+    const tokenId = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
     const key = (hash: Buffer) => hash.toString('hex');
     const callerFor = (user: User, member: Member): Caller => ({
@@ -531,6 +567,25 @@ export function memoryAuthStore(): MemoryAuthStore {
         const user = users.find((u) => u.id === userId);
         return member && user ? callerFor(user, member) : null;
     };
+    const viewToken = (row: AccessTokenRow): AccessTokenView => ({
+        id: row.id,
+        label: row.label,
+        createdAt: row.createdAt,
+        lastUsedAt: row.lastUsedAt,
+        revokedAt: row.revokedAt,
+    });
+    const findLiveToken = (tokenHash: Buffer, orgId: string, kind: AccessTokenKind): AccessTokenRow | undefined =>
+        accessTokenRows.find(
+            (t) => t.hash === key(tokenHash) && t.kind === kind && t.orgId === orgId && t.revokedAt === null
+        );
+    // The SQL store throttles the stamp to one rewrite a minute — an access token rides the
+    // dashboard's two-second poll — and the memory store mirrors that contract, not the write rate.
+    const touch = (row: AccessTokenRow) => {
+        if (row.lastUsedAt === null || Date.now() - Date.parse(row.lastUsedAt) >= 60_000) {
+            row.lastUsedAt = now();
+        }
+    };
+    const now = () => new Date().toISOString();
 
     const store: MemoryAuthStore = {
         seedMember(orgId, login, role = 'member') {
@@ -593,6 +648,34 @@ export function memoryAuthStore(): MemoryAuthStore {
                 revoked: false,
             });
         },
+
+        seedAccessToken(orgId, kind, options = {}) {
+            const token = `${kind === 'personal' ? 'fat_' : 'oat_'}seed-${accessTokenRows.length + 1}`;
+            accessTokenRows.push({
+                orgId,
+                id: tokenId(accessTokenRows.length + 1),
+                kind,
+                userId: options.userId ?? null,
+                createdBy: options.createdBy ?? null,
+                label: options.label ?? `${kind} token`,
+                hash: key(hashToken(token)),
+                createdAt: STAMP,
+                lastUsedAt: null,
+                revokedAt: null,
+            });
+            return token;
+        },
+
+        accessTokens: () =>
+            accessTokenRows.map((t) => ({
+                orgId: t.orgId,
+                id: t.id,
+                kind: t.kind,
+                userId: t.userId,
+                label: t.label,
+                hashHex: t.hash,
+                revoked: t.revokedAt !== null,
+            })),
 
         async signIn(identity, orgId, options) {
             const login = identity.login.toLowerCase();
@@ -669,6 +752,70 @@ export function memoryAuthStore(): MemoryAuthStore {
             return found ? { orgId: found.orgId, id: found.id, name: found.name } : null;
         },
 
+        async createAccessToken(input) {
+            const row: AccessTokenRow = {
+                orgId: input.orgId,
+                id: tokenId(accessTokenRows.length + 1),
+                kind: input.kind,
+                userId: input.userId,
+                createdBy: input.createdBy,
+                label: input.label,
+                hash: key(input.tokenHash),
+                createdAt: now(),
+                lastUsedAt: null,
+                revokedAt: null,
+            };
+            accessTokenRows.push(row);
+            return { id: row.id };
+        },
+
+        async findPersonalToken(tokenHash, orgId) {
+            const row = findLiveToken(tokenHash, orgId, 'personal');
+            if (!row || row.userId === null) return null;
+            touch(row);
+            return memberOf(row.userId, orgId);
+        },
+
+        async findOrgToken(tokenHash, orgId): Promise<OrgTokenIdentity | null> {
+            const row = findLiveToken(tokenHash, orgId, 'org');
+            if (!row) return null;
+            touch(row);
+            return { id: row.id, label: row.label };
+        },
+
+        async listPersonalTokens(orgId, userId) {
+            return accessTokenRows
+                .filter((t) => t.orgId === orgId && t.kind === 'personal' && t.userId === userId)
+                .map(viewToken);
+        },
+
+        async listOrgTokens(orgId) {
+            return accessTokenRows.filter((t) => t.orgId === orgId && t.kind === 'org').map(viewToken);
+        },
+
+        async revokePersonalToken(orgId, userId, id) {
+            const row = accessTokenRows.find(
+                (t) =>
+                    t.orgId === orgId &&
+                    t.userId === userId &&
+                    t.id === id &&
+                    t.kind === 'personal' &&
+                    t.revokedAt === null
+            );
+            if (!row) return 'missing';
+            row.revokedAt = now();
+            return 'revoked';
+        },
+
+        async revokeOrgToken(orgId, id) {
+            const row = accessTokenRows.find(
+                (t) => t.orgId === orgId && t.id === id && t.kind === 'org' && t.revokedAt === null
+            );
+            if (!row) return 'missing';
+            row.revokedAt = now();
+            return 'revoked';
+        },
+
         async invite(orgId, login, role) {
             const normalised = login.toLowerCase();
             const held = members.find((m) => m.orgId === orgId && m.login === normalised);
@@ -695,6 +842,13 @@ export function memoryAuthStore(): MemoryAuthStore {
             const [removed] = members.splice(index, 1);
             for (const [hash, session] of sessions) {
                 if (session.userId === removed!.userId) sessions.delete(hash);
+            }
+            // The membership is what findPersonalToken joins through, so access already ended —
+            // but the rows stay as history with revoked_at set, matching the SQL store.
+            for (const row of accessTokenRows) {
+                if (row.orgId === orgId && row.userId === removed!.userId && row.revokedAt === null) {
+                    row.revokedAt = now();
+                }
             }
             return 'removed';
         },

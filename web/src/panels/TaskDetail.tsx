@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
-import { taskTime } from '../format.js';
+import { taskTime, wallClock } from '../format.js';
 import { taskSummary } from '../task-tree.js';
 import { TaskSide } from './TaskSide.js';
 
@@ -146,6 +146,11 @@ export function TaskDetail({
     // apart from the per-run `task` in the map below, which shadows it otherwise.)
     const latestTask = latest as Job;
     const open = isTerminal(latestTask.status) && latestTask.doneAt === null;
+    // The thread arrives oldest first, so its first member is the ROOT — the task's stable name
+    // is what was asked, and the head carries the command's first line so multi-line prose does
+    // not swallow the title. The turn below renders the whole command.
+    const rootTask = jobs[0]!;
+    const title = rootTask.command.split('\n')[0]!.trim();
     // A follow-up continues the newest run's agent session, and the board refuses one for a run
     // that never reported a session — every run whose driver died before reporting — with 409
     // NO_SESSION. Offering the composer there would be a control that can only fail, so the page
@@ -207,12 +212,61 @@ export function TaskDetail({
         <div className="task-layout">
             <section className="panel">
                 <div className="panel-head">
-                    <h2>Tasks</h2>
+                    <h2>Task - {title}</h2>
+                    <div className="task-actions">
+                        {/* The overall wall clock: everything the board has banked for the task,
+                        plus the head run's live segment while it is going — the 2s poll is the
+                        ticker. A task that has never run says so with a dash, not a zero. */}
+                        <span className="task-clock">
+                            Wall clock{' '}
+                            {wallClock(
+                                latestTask.taskWallClockMs,
+                                latestTask.status === 'running' ? latestTask.startedAt : null
+                            )}
+                        </span>
+                        {/* Every control the task can take, at the very top — the turns are a
+                        transcript and carry none. The conditions are the ones the turn UI had:
+                        Stop (or its landed pill) on the moving run, Done on an open task, Remove
+                        whenever the thread is not running. */}
+                        {latestTask.status === 'running' ? (
+                            latestTask.cancelRequestedAt !== null ? (
+                                <span className="pill chat-stop">Stopping…</span>
+                            ) : (
+                                <button
+                                    type="button"
+                                    className="chat-resume chat-stop"
+                                    disabled={stoppingId === latestTask.id}
+                                    onClick={() => void stop(latestTask.id)}
+                                >
+                                    Stop
+                                </button>
+                            )
+                        ) : null}
+                        {open ? (
+                            <button
+                                type="button"
+                                className="chat-resume"
+                                disabled={doneId === latestTask.id}
+                                onClick={() => void done(latestTask.id)}
+                            >
+                                Done
+                            </button>
+                        ) : null}
+                        {latestTask.status !== 'running' ? (
+                            <button
+                                type="button"
+                                className="chat-remove"
+                                disabled={removingId === latestTask.id}
+                                onClick={() => void remove(latestTask.id)}
+                            >
+                                Remove
+                            </button>
+                        ) : null}
+                    </div>
                 </div>
                 {summary !== null ? <p className="task-summary">{summary}</p> : null}
                 {actionError !== null ? <p className="status">{actionError}</p> : null}
                 {jobs.map((task) => {
-                    const taskOpen = isTerminal(task.status) && task.doneAt === null && task.id === latestTask.id;
                     // The newest run's statuses live in the sidebar — one status surface for the
                     // whole task, fed by the run the composer and Done act on. History runs keep
                     // theirs inline: the sidebar does not carry their per-run verdicts, and
@@ -240,40 +294,6 @@ export function TaskDetail({
                                     </span>
                                 ) : null}
                                 {task.status === 'standby' ? <span className="pill">parked</span> : null}
-                                {task.id === latestTask.id && task.status === 'running' ? (
-                                    task.cancelRequestedAt !== null ? (
-                                        <span className="pill chat-stop">Stopping…</span>
-                                    ) : (
-                                        <button
-                                            type="button"
-                                            className="chat-resume chat-stop"
-                                            disabled={stoppingId === task.id}
-                                            onClick={() => void stop(task.id)}
-                                        >
-                                            Stop
-                                        </button>
-                                    )
-                                ) : null}
-                                {task.id === latestTask.id && task.status !== 'running' ? (
-                                    <button
-                                        type="button"
-                                        className="chat-remove"
-                                        disabled={removingId === task.id}
-                                        onClick={() => void remove(task.id)}
-                                    >
-                                        Remove
-                                    </button>
-                                ) : null}
-                                {taskOpen ? (
-                                    <button
-                                        type="button"
-                                        className="chat-resume"
-                                        disabled={doneId === task.id}
-                                        onClick={() => void done(task.id)}
-                                    >
-                                        Done
-                                    </button>
-                                ) : null}
                             </p>
                             <div className="chat-detail">
                                 {task.status === 'running' && task.runtime ? <Runtime runtime={task.runtime} /> : null}

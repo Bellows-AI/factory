@@ -1,16 +1,22 @@
 import { useSession } from '../api/useSession.js';
+import { AccessTokensSection } from '../panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../panels/IdentityPanel.js';
 
 /**
- * The member's own account: identity today, one section per future concern (personal access
- * tokens, …). Sections stack as plain `section.panel`s — the vocabulary every other page uses — so
- * a new concern is one more block, not a nav framework.
+ * The member's own account: identity, then the access tokens minted from here (#70). Sections
+ * stack as plain `section.panel`s — the vocabulary every other page uses — so a new concern is one
+ * more block, not a nav framework.
+ *
+ * Both token sections are hidden under `AUTH_MODE=none`: the hook ignores every credential there,
+ * so a mint button would issue a token nothing honours. The org section is admin-gated, and a
+ * member gets the sentence saying who manages it rather than a disabled editor.
  */
 export function SettingsPage() {
     // Unreachable null: LoginGate only mounts the app once a session exists. The hook re-checks
     // on 401, so a session expiring while this page is open unmounts the tree at the gate.
     const { session } = useSession();
     if (!session) return null;
+    const github = session.mode === 'github';
     return (
         <main>
             <section className="panel">
@@ -19,6 +25,21 @@ export function SettingsPage() {
                 </div>
                 <IdentityPanel session={session} />
             </section>
+            {github ? (
+                <>
+                    <AccessTokensSection scope="personal" />
+                    {session.role === 'admin' ? (
+                        <AccessTokensSection scope="org" />
+                    ) : (
+                        <section className="panel">
+                            <div className="panel-head">
+                                <h2>Organization access tokens</h2>
+                            </div>
+                            <p className="muted">Organization tokens are minted by an administrator.</p>
+                        </section>
+                    )}
+                </>
+            ) : null}
         </main>
     );
 }

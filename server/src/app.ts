@@ -19,6 +19,7 @@ import { ingestRoutes } from './routes/ingest.js';
 import { jobRoutes } from './routes/jobs.js';
 import { repoRoutes } from './routes/repos.js';
 import { statsRoutes } from './routes/stats.js';
+import { tokenRoutes } from './routes/tokens.js';
 import type { StatsService } from './stats-service.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
@@ -122,7 +123,16 @@ export async function buildApp({
     else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(config));
-    if (auth) await app.register(authRoutes({ config, store: auth, identity }));
+    if (auth) {
+        await app.register(authRoutes({ config, store: auth, identity }));
+        // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
+        // credential, so a token minted here would be inert at best — and a live personal
+        // credential the day the same database flips to `github`. The settings page hides both
+        // sections for exactly this reason; the API matches it.
+        if (auth && config.auth.mode !== 'none') {
+            await app.register(tokenRoutes({ store: auth, orgId: config.orgId }));
+        }
+    }
     await app.register(statsRoutes(config, service, now));
     await app.register(repoRoutes(repos));
     if (store) await app.register(ingestRoutes(store));

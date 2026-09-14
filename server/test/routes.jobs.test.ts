@@ -1254,6 +1254,7 @@ describe('GET /api/jobs', () => {
         createdAt: '2026-08-21T12:00:00.000Z',
         startedAt: '2026-08-21T12:00:01.000Z',
         finishedAt: '2026-08-21T12:00:09.000Z',
+        taskWallClockMs: null,
     };
 
     it('reads one job', async () => {

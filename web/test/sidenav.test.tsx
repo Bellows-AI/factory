@@ -39,6 +39,7 @@ function job(overrides: Partial<Job> = {}): Job {
         createdAt: '2026-09-02T12:00:00.000Z',
         startedAt: null,
         finishedAt: null,
+        taskWallClockMs: null,
         sessionId: null,
         remoteSessionId: null,
         ...overrides,
@@ -128,6 +129,36 @@ describe('SideNav task tree', () => {
         expect(html).toContain('href="/tasks/22222222-2222-4222-8222-222222222222"');
         expect(html).toContain('href="/tasks/33333333-3333-4333-8333-333333333333"');
         expect(html.indexOf('newer task')).toBeLessThan(html.indexOf('older task'));
+    });
+
+    it('pins New task above the running rows, itself no task row', () => {
+        // The affordance is rendered outside the sorted rows, so the activity ordering can never
+        // slide a task above it — and it carries no dot, because it is not a task.
+        const html = render('/tasks', [
+            job(running()),
+            job({
+                id: '33333333-3333-4333-8333-333333333333',
+                command: 'older task',
+                status: 'running',
+                createdAt: '2026-09-02T11:00:00.000Z',
+                startedAt: '2026-09-02T11:00:00.000Z',
+            }),
+        ]);
+        const runningSection = section(html, 'Running (', 'Need review (');
+        expect(runningSection).toContain('href="/tasks"');
+        expect(runningSection.indexOf('New task')).toBeLessThan(runningSection.indexOf('newer task'));
+        expect(runningSection.indexOf('newer task')).toBeLessThan(runningSection.indexOf('older task'));
+        const button = runningSection.slice(runningSection.indexOf('sidenav-newtask'), runningSection.indexOf('</a>'));
+        expect(button).not.toContain('sidenav-dot');
+    });
+
+    it('marks New task active only on the composer page itself', () => {
+        // `end`: on a task's detail page the link stays quiet — the tree's own markers speak there.
+        const composer = render('/tasks', [job()]);
+        expect(composer).toContain('sidenav-newtask is-active');
+        const detail = render('/tasks/22222222-2222-4222-8222-222222222222', [job()]);
+        expect(detail).toContain('sidenav-newtask');
+        expect(detail).not.toContain('sidenav-newtask is-active');
     });
 
     it('collapses Past tasks by default behind a labelled toggle', () => {

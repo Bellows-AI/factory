@@ -98,6 +98,12 @@ export interface Job {
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
+    /**
+     * The wall clock the task's whole thread has banked — every executed segment of every run,
+     * accumulated by the board and served on the thread read. Null where nothing has
+     * accumulated; the head's clock renders a dash there, never a zero.
+     */
+    taskWallClockMs: number | null;
     sessionId: string | null;
     remoteSessionId: string | null;
 }

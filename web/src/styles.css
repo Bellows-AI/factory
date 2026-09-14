@@ -650,6 +650,29 @@ footer {
     color: var(--text);
 }
 
+/* The New task action pinned above the Running rows — a link to the composer (/tasks), not a
+   task row: rows order by activity, so a task that just starts slides in BELOW it and can never
+   reorder above the affordance. Sized to the task rows so the list keeps one rhythm; `end` keeps
+   the active mark on the composer page itself. */
+.sidenav-newtask {
+    border-radius: 6px;
+    color: var(--muted);
+    display: block;
+    font-size: 12px;
+    margin: 2px 0;
+    padding: 4px 10px 4px 24px;
+    text-decoration: none;
+}
+
+.sidenav-newtask:hover {
+    background: var(--panel);
+    color: var(--text);
+}
+
+.sidenav-newtask.is-active {
+    color: var(--primary);
+}
+
 /* Below this the two columns stop fitting side by side: 220 of nav leaves under 700 for a grid
    whose track floor is 440, so the panels would already be one-up and the nav is just tax. */
 @media (max-width: 900px) {
@@ -977,6 +1000,25 @@ button.primary {
 .chat-remove {
     border-color: #5a1e1c;
     color: var(--bad);
+}
+
+/* The task head's row of controls and its overall wall clock — every button the task can take,
+   at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
+   title from squeezing the buttons; the title wraps instead. */
+.task-actions {
+    align-items: center;
+    display: flex;
+    flex: none;
+    gap: 8px;
+}
+
+/* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
+   activity line, never the exit code's red. */
+.task-clock {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: nowrap;
 }
 
 .composer {

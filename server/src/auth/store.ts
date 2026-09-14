@@ -34,6 +34,23 @@ export interface WorkerIdentity {
     name: string;
 }
 
+export type AccessTokenKind = 'personal' | 'org';
+
+/** A list-row view of an access token. The token and its hash are never in it. */
+export interface AccessTokenView {
+    id: string;
+    label: string;
+    createdAt: string;
+    lastUsedAt: string | null;
+    revokedAt: string | null;
+}
+
+/** What the board learns about the organization token a request arrived with. */
+export interface OrgTokenIdentity {
+    id: string;
+    label: string;
+}
+
 export interface AuthStore {
     /**
      * Binds a GitHub identity to an account and claims whatever invites are waiting for it.
@@ -55,6 +72,26 @@ export interface AuthStore {
     /** The stand-in account AUTH_MODE=none attributes every request to. */
     localCaller(orgId: string): Promise<Caller | null>;
     findWorkerToken(tokenHash: Buffer): Promise<WorkerIdentity | null>;
+
+    // Access tokens (fat_/oat_). They resolve through the same org_membership join a session does,
+    // so removing a member ends their tokens' reach on the very next request — the property that
+    // lets them be minted over HTTP from the settings UI, unlike the worker token.
+    createAccessToken(input: {
+        kind: AccessTokenKind;
+        orgId: string;
+        userId: string | null;
+        createdBy: string;
+        label: string;
+        tokenHash: Buffer;
+    }): Promise<{ id: string }>;
+    /** The caller behind a live personal token, through the same join findSession uses. */
+    findPersonalToken(tokenHash: Buffer, orgId: string): Promise<Caller | null>;
+    /** The organization token behind a hash, or null when unknown, revoked, or from another org. */
+    findOrgToken(tokenHash: Buffer, orgId: string): Promise<OrgTokenIdentity | null>;
+    listPersonalTokens(orgId: string, userId: string): Promise<AccessTokenView[]>;
+    listOrgTokens(orgId: string): Promise<AccessTokenView[]>;
+    revokePersonalToken(orgId: string, userId: string, id: string): Promise<'revoked' | 'missing'>;
+    revokeOrgToken(orgId: string, id: string): Promise<'revoked' | 'missing'>;
 
     // Used by the CLIs. They write through the store rather than their own SQL so that the claim
     // predicate and the session cleanup on removal exist in exactly one place.
@@ -79,7 +116,23 @@ interface CallerRow {
     role: Role;
 }
 
+interface TokenRow {
+    id: string;
+    label: string;
+    created_at: Date;
+    last_used_at: Date | null;
+    revoked_at: Date | null;
+}
+
 const toIso = (at: Date | null): string | null => (at === null ? null : at.toISOString());
+
+const toTokenView = (row: TokenRow): AccessTokenView => ({
+    id: row.id,
+    label: row.label,
+    createdAt: row.created_at.toISOString(),
+    lastUsedAt: toIso(row.last_used_at),
+    revokedAt: toIso(row.revoked_at),
+});
 
 const toCaller = (row: CallerRow): Caller => ({
     user: {
@@ -233,6 +286,107 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             return row ? { orgId: row.org_id, id: row.id, name: row.name } : null;
         },
 
+        async createAccessToken(input) {
+            await gate();
+            const rows = await sql<{ id: string }[]>`
+                insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+                values (${input.orgId}, ${input.kind}, ${input.userId}, ${input.createdBy},
+                        ${input.label}, ${input.tokenHash})
+                returning id
+            `;
+            return { id: rows[0]!.id };
+        },
+
+        async findPersonalToken(tokenHash, orgId) {
+            await gate();
+            // A throttled touch, not findWorkerToken's unconditional one: worker routes are one
+            // driver's heartbeat, while an access token rides the dashboard's two-second poll, and
+            // a write on every one of those reads is exactly what the session's write-free read
+            // path exists to avoid. The stale-row predicate keeps it to one rewrite a minute. The
+            // org and kind in the predicate keep a token from another organization — which the
+            // select below will refuse — from being stamped as used here.
+            await sql`
+                update access_token set last_used_at = now()
+                where token_hash = ${tokenHash} and org_id = ${orgId} and kind = 'personal'
+                  and revoked_at is null
+                  and (last_used_at is null or last_used_at < now() - interval '60 seconds')
+            `;
+            const rows = await sql<CallerRow[]>`
+                select u.id, u.github_user_id, u.github_login, u.display_name,
+                       u.avatar_url, u.created_at, u.last_login_at,
+                       m.invited_at, m.claimed_at, m.role
+                from access_token t
+                join app_user u on u.id = t.user_id
+                -- The same join findSession runs, so losing the membership ends the token's reach
+                -- on the very next request — the property that makes it safe to have minted it.
+                join org_membership m on m.user_id = u.id and m.org_id = ${orgId}
+                where t.token_hash = ${tokenHash} and t.kind = 'personal'
+                  and t.org_id = ${orgId} and t.revoked_at is null
+            `;
+            const row = rows[0];
+            return row ? toCaller(row) : null;
+        },
+
+        async findOrgToken(tokenHash, orgId) {
+            await gate();
+            await sql`
+                update access_token set last_used_at = now()
+                where token_hash = ${tokenHash} and org_id = ${orgId} and kind = 'org'
+                  and revoked_at is null
+                  and (last_used_at is null or last_used_at < now() - interval '60 seconds')
+            `;
+            const rows = await sql<{ id: string; label: string }[]>`
+                select id, label from access_token
+                where token_hash = ${tokenHash} and kind = 'org'
+                  and org_id = ${orgId} and revoked_at is null
+            `;
+            const row = rows[0];
+            return row ? { id: row.id, label: row.label } : null;
+        },
+
+        async listPersonalTokens(orgId, userId) {
+            await gate();
+            // Never the hash: the list answers "what tokens exist", not "who can use them".
+            const rows = await sql<TokenRow[]>`
+                select id, label, created_at, last_used_at, revoked_at from access_token
+                where org_id = ${orgId} and kind = 'personal' and user_id = ${userId}
+                order by created_at
+            `;
+            return rows.map(toTokenView);
+        },
+
+        async listOrgTokens(orgId) {
+            await gate();
+            const rows = await sql<TokenRow[]>`
+                select id, label, created_at, last_used_at, revoked_at from access_token
+                where org_id = ${orgId} and kind = 'org'
+                order by created_at
+            `;
+            return rows.map(toTokenView);
+        },
+
+        async revokePersonalToken(orgId, userId, id) {
+            await gate();
+            const rows = await sql<{ id: string }[]>`
+                update access_token set revoked_at = now()
+                where org_id = ${orgId} and user_id = ${userId} and id = ${id}
+                  and kind = 'personal' and revoked_at is null
+                returning id
+            `;
+            return rows[0] ? 'revoked' : 'missing';
+        },
+
+        async revokeOrgToken(orgId, id) {
+            await gate();
+            const rows = await sql<{ id: string }[]>`
+                update access_token set revoked_at = now()
+                where org_id = ${orgId} and id = ${id}
+                  and kind = 'org' and revoked_at is null
+                returning id
+            `;
+            return rows[0] ? 'revoked' : 'missing';
+        },
+
         async invite(orgId, login, role) {
             await gate();
             const rows = await sql<{ claimed_at: Date | null; inserted: boolean }[]>`
@@ -255,8 +409,17 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             if (!row) return 'missing';
             // The membership is what findSession joins through, so deleting it already ends access.
             // The sessions go too because a revoked credential should not outlive the decision by
-            // even one request if the membership is ever restored.
-            if (row.user_id) await sql`delete from session where user_id = ${row.user_id}`;
+            // even one request if the membership is ever restored. A personal token reaches the
+            // same place through the same join, so it is marked rather than deleted: rows keep the
+            // history, the way every other revocation here does.
+            if (row.user_id) {
+                await sql`delete from session where user_id = ${row.user_id}`;
+                await sql`
+                    update access_token set revoked_at = now()
+                    where org_id = ${orgId} and user_id = ${row.user_id}
+                      and kind = 'personal' and revoked_at is null
+                `;
+            }
             return 'removed';
         },
 

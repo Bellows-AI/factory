@@ -148,6 +148,11 @@ describe('the route table', () => {
         ['/api/repos', 'user'],
         ['/api/workspace', 'user'],
         ['/api/workspace/repos', 'user'],
+        // Access-token management: a person's settings act, so session cookie or personal bearer —
+        // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
+        ['/api/tokens', 'user'],
+        ['/api/tokens/org', 'user'],
+        [`/api/tokens/${JOB_ID}/revoke`, 'user'],
     ])('classifies %s as %s', (path, expected) => {
         expect(requirementFor(path)).toBe(expected);
     });

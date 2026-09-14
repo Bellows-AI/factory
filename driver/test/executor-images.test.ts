@@ -461,3 +461,25 @@ describe('the opencode-executor git guard policy', () => {
         expect(policy.permission.bash['*']).toBe('allow');
     });
 });
+
+/*
+ * The infrastructure-access guide: a real run burned time probing `127.0.0.1:5432` for a database
+ * that was reachable at the hostname the injected DATABASE_URL named — a localhost refusal here is
+ * the wrong address, not an outage. These pins keep the instruction in both guides: look up the
+ * injected env first, treat declared `.bellows.yaml` services as DNS names.
+ */
+describe('the executor infrastructure-access guide', () => {
+    const GUIDES = [
+        'docker/claude-executor/claude-home/CLAUDE.md',
+        'docker/opencode-executor/opencode-home/AGENTS.md',
+    ];
+
+    it.each(GUIDES)('%s tells the agent to use injected env and declared services', (guide) => {
+        const text = read(guide);
+        expect(text).toContain('## Infrastructure access');
+        expect(text).toContain('injected env variables');
+        expect(text).toContain('`services:`');
+        expect(text).toContain('127.0.0.1');
+        expect(text).toContain('DNS');
+    });
+});

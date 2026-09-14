@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
-import { runDuration, taskTime } from '../src/format.js';
+import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
@@ -31,6 +31,7 @@ function job(overrides: Partial<Job> = {}): Job {
         createdAt: '2026-09-01T12:00:00.000Z',
         startedAt: '2026-09-01T12:00:01.000Z',
         finishedAt: '2026-09-01T12:04:00.000Z',
+        taskWallClockMs: null,
         // A finished claude-code run has a session by default here: the follow-up composer is
         // offered for exactly these, and the sessionless case has its own test below.
         sessionId: '33333333-3333-4333-8333-333333333333',
@@ -833,6 +834,67 @@ describe('TaskDetail', () => {
     });
 });
 
+describe('the task head', () => {
+    // The head region sits between the panel's heading and the first turn of the conversation —
+    // slicing it keeps the placement assertions about the title, the controls and the clock from
+    // matching text that merely also appears in a turn below.
+    const head = (html: string): string => html.slice(html.indexOf('panel-head'), html.indexOf('chat-exchange'));
+    /** One turn's meta line — where the controls used to live, and must no longer. */
+    const meta = (html: string): string => html.slice(html.indexOf('msg-user'), html.indexOf('chat-detail'));
+
+    it('names the task after its opening command', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html).toContain('<h2>Task - fix the flaky login test</h2>');
+
+        // A multi-line command is prose; the head carries its first line, the turn carries it all.
+        const multiline = renderDetail({ jobs: [job({ command: 'first line\nsecond line' })] });
+        expect(multiline).toContain('<h2>Task - first line</h2>');
+        expect(head(multiline)).not.toContain('second line');
+    });
+
+    it('keeps the plain Tasks heading while nothing is loaded', () => {
+        // No task yet, so there is nothing to name — the detail poll has not landed.
+        expect(renderDetail({ jobs: null })).toContain('<h2>Tasks</h2>');
+    });
+
+    it('keeps the controls in the panel head, out of the turn meta', () => {
+        const running = renderDetail({
+            jobs: [job({ status: 'running', startedAt: '2026-09-01T12:00:01.000Z', finishedAt: null, exitCode: null })],
+        });
+        expect(head(running)).toContain('>Stop<');
+        expect(meta(running)).not.toContain('<button');
+
+        const finished = renderDetail({ jobs: [job()] });
+        expect(head(finished)).toContain('>Done<');
+        expect(head(finished)).toContain('>Remove<');
+        expect(meta(finished)).not.toContain('<button');
+    });
+
+    it('says Stopping in the panel head once the stop request has landed', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    status: 'running',
+                    cancelRequestedAt: '2026-09-01T12:02:00.000Z',
+                    startedAt: '2026-09-01T12:00:01.000Z',
+                    finishedAt: null,
+                    exitCode: null,
+                }),
+            ],
+        });
+        expect(head(html)).toContain('Stopping…');
+        expect(head(html)).not.toContain('>Stop<');
+    });
+
+    it('shows the overall wall clock in the head, and a dash where nothing is measurable', () => {
+        const timed = renderDetail({ jobs: [job({ taskWallClockMs: 5_400_000 })] });
+        expect(head(timed)).toContain('1.5h');
+
+        const untimed = renderDetail({ jobs: [job()] });
+        expect(head(untimed)).toContain('—');
+    });
+});
+
 describe('isTerminal', () => {
     // This is what stops the detail poll: a finished job is never going to grow an output.
     it('is true for every status a worker or the board has finished with', () => {
@@ -872,6 +934,30 @@ describe('runDuration', () => {
         expect(runDuration(null, null)).toBe('—');
         expect(runDuration('not a date', null)).toBe('—');
         expect(runDuration('2026-09-01T12:04:00.000Z', '2026-09-01T12:00:00.000Z')).toBe('—');
+    });
+});
+
+describe('wallClock', () => {
+    // The task head's clock: everything the board has banked for the task so far, plus the head
+    // run's live in-flight segment while it is going. Pure — the caller decides what "now" is.
+    it('renders the persisted total', () => {
+        expect(wallClock(3_600_000, null)).toBe('1h');
+        expect(wallClock(1_800_000, null)).toBe('30m');
+    });
+
+    it('renders a dash where nothing has been banked and nothing is going', () => {
+        expect(wallClock(null, null)).toBe('—');
+    });
+
+    it('adds the live run to the banked total, and ticks a live run alone', () => {
+        expect(wallClock(600_000, '2026-09-01T12:00:00.000Z', new Date('2026-09-01T12:05:00.000Z'))).toBe('15m');
+        expect(wallClock(null, '2026-09-01T12:00:00.000Z', new Date('2026-09-01T12:30:00.000Z'))).toBe('30m');
+    });
+
+    it('a finished run adds nothing, and a nonsense or future start is ignored rather than negative', () => {
+        expect(wallClock(600_000, null)).toBe('10m');
+        expect(wallClock(600_000, 'not a date')).toBe('10m');
+        expect(wallClock(null, '2026-09-01T12:00:00.000Z', new Date('2026-09-01T11:00:00.000Z'))).toBe('—');
     });
 });
 

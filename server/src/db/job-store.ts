@@ -153,6 +153,15 @@ export interface Job {
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
+    /**
+     * The wall clock the task's WHOLE thread has banked — every executed segment of every run,
+     * accumulated by the board at the settle points (claim, the dead retirement, the verdict,
+     * the suspend park) into `wall_clock_ms` and summed over the thread by the read. Served by
+     * `thread()` only: the task view's head is where the overall clock renders, and the list has
+     * no surface for it. Null where nothing has accumulated — never zero, which would claim a
+     * measurement that was never made.
+     */
+    taskWallClockMs: number | null;
 }
 
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */
@@ -534,6 +543,8 @@ interface JobRow {
     created_at: Date;
     started_at: Date | null;
     finished_at: Date | null;
+    /** Only thread() selects it; bigint (and the sum over it) read back as a string. */
+    task_wall_clock_ms?: string | null;
 }
 
 const iso = (value: Date | null): string | null => (value === null ? null : value.toISOString());
@@ -646,6 +657,15 @@ export function createJobStore({
         if (ready) await ready;
     };
 
+    // The wall-clock banking, shared by every settle point that ends (or supersedes) an executed
+    // segment: add the segment `started_at → now()` to what the row has banked. Built from the
+    // pool handle and used inside transactions, like the claim's sameThreadRunning fragment. The
+    // SET expression reads the PRE-update row, so it composes beside `started_at = now()` in the
+    // claim — the superseded segment is banked in the same statement that resets the stamp,
+    // which is the only moment it can be. `greatest` ignores nulls, so a row that never started
+    // measures zero, and a clock never runs backwards.
+    const wallTick = sql`coalesce(wall_clock_ms, 0) + greatest(0, (extract(epoch from (now() - started_at)) * 1000)::bigint)`;
+
     // Inside the factory, so the reads' `workspacePath` derivation closes over the org and the
     // has-a-workspace-root decision — the claim's own `claimPath` rule, shared rather than copied.
     const toJob = (row: JobRow): Job => ({
@@ -674,6 +694,7 @@ export function createJobStore({
         createdAt: row.created_at.toISOString(),
         startedAt: iso(row.started_at),
         finishedAt: iso(row.finished_at),
+        taskWallClockMs: row.task_wall_clock_ms == null ? null : Number(row.task_wall_clock_ms),
     });
 
     return {
@@ -892,8 +913,11 @@ export function createJobStore({
             return sql.begin(async (tx) => {
                 // Retire what has burned its attempts, before looking for work. Without this a
                 // command that kills its worker is reclaimed every time its lease expires, forever.
+                // The dead attempt's segment banks here: the row ran for real before its worker
+                // went quiet, and the retirement must not erase it.
                 await tx`
-                    update job set status = 'dead', finished_at = now(), lease_token = null
+                    update job set status = 'dead', finished_at = now(), lease_token = null,
+                                   wall_clock_ms = ${wallTick}
                     where org_id = ${orgId} and status = 'running'
                       and lease_expires_at <= now() and attempts >= max_attempts
                 `;
@@ -952,6 +976,13 @@ export function createJobStore({
                             -- Unconditional, not coalesce(started_at, now()): this must describe the
                             -- attempt that is about to run, or every duration is measured from attempt 1.
                             started_at       = now(),
+                            -- The attempt this claim supersedes banked its segment in the same
+                            -- statement (the SET reads the pre-update row): a run that crashed after
+                            -- forty minutes and was retried keeps its forty minutes. A row that never
+                            -- started (the first claim of a queued one) banks nothing — its clock
+                            -- stays null, because null means "never ran" and zero would claim a
+                            -- measurement that was never made.
+                            wall_clock_ms    = case when started_at is null then wall_clock_ms else ${wallTick} end,
                             -- Kept on a follow-up only, whose session IS the parent conversation it
                             -- continues. The status read here is the row's value BEFORE this update, so
                             -- 'running' means a lease that expired: for an ordinary job that attempt's
@@ -1225,6 +1256,10 @@ export function createJobStore({
                                            when cancel_requested_at is not null then now()
                                            else finished_at
                                        end,
+                    -- The park ends the segment the attempt was running, whichever landing it
+                    -- takes: stopped or standby, the container was doing real work up to now, and
+                    -- the parked time after this statement banks nothing.
+                    wall_clock_ms    = ${wallTick},
                     lease_token      = null,
                     -- Expired on the way in, exactly as insert does it.
                     lease_expires_at = now(),
@@ -1399,6 +1434,9 @@ export function createJobStore({
                         output      = ${output},
                         finished_at = now(),
                         lease_token = null,
+                        -- The verdict is the last settle point of the attempt: bank its segment,
+                        -- so the task's clock covers the run that just ended.
+                        wall_clock_ms = ${wallTick},
                         -- A stop request that never landed is settled by the run ending: the task
                         -- finished, there is nothing left to park.
                         cancel_requested_at = null,
@@ -1442,7 +1480,11 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at,
+                       -- The task's overall wall clock, summed over the thread the WHERE already
+                       -- scoped: every member carries the total, so the view reads it off any of
+                       -- them. A sum over all-null banks is null — nothing measurable, never zero.
+                       sum(wall_clock_ms) over () as task_wall_clock_ms
                 from job
                 where org_id = ${orgId}
                   and root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
