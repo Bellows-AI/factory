@@ -1698,6 +1698,46 @@ describe('verification gates', () => {
         expect(ran).toEqual([]);
     });
 
+    // The lease is checked BEFORE the re-acquire, but the heartbeat can mark it lost while the
+    // acquire is still pending — a slow docker revival or cluster request outlives that beat. A
+    // superseded attempt must not start its gate on a checkout another attempt owns.
+    it('does not start the gate when the lease is lost while the environment is being re-acquired', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let loseLease = false;
+        board.board.heartbeat = async () => {
+            board.board.beats += 1;
+            return loseLease ? 'lost' : { result: 'held', cancelRequested: false };
+        };
+        const realGates = board.board.gates.bind(board.board);
+        board.board.gates = async (claimed, results) => {
+            // The gates pass opens with its first report; the lease is reclaimed from that moment.
+            loseLease = true;
+            return realGates(claimed, results);
+        };
+        let acquires = 0;
+        stack.gates.manager.acquire = async () => {
+            acquires += 1;
+            if (acquires === 1) return; // beginGates, before the run — no re-acquire yet.
+            // The revival is slow: the heartbeat's lost verdict lands while this is pending.
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        };
+        const ran: string[] = [];
+        stack.gates.manager.runGate = async (_key: string, name: string) => {
+            ran.push(name);
+            return { exitCode: 0, output: `${name} ok` };
+        };
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }));
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        // The heartbeat did mark the lease lost while the re-acquire was pending…
+        expect(runner.killed).toEqual([gatedJob(1).id]);
+        // …and the gate never ran against the checkout the next attempt now owns.
+        expect(ran).toEqual([]);
+        expect(board.board.completed).toHaveLength(1);
+    });
+
     // The report must fit the board's body however many gates declared and however verbose they
     // were: the per-gate tail shrinks as the list grows.
     it('bounds the total reported gate output', async () => {

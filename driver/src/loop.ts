@@ -360,8 +360,17 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
             const outcome = await gates.manager
                 .acquire(gateSession.key, gateSession.image, gateSession.envBody, job)
-                .then(() => gates.manager.runGate(gateSession.key, gate.name, gate.command))
+                .then(() => {
+                    // The heartbeat can mark the lease lost while acquire is pending — a slow
+                    // revival or cluster request outlives the beat that said so. Starting the gate
+                    // then would run it on a checkout another attempt owns: the same dead work the
+                    // check before the acquire refuses.
+                    if (state.lost) return null;
+                    return gates.manager.runGate(gateSession.key, gate.name, gate.command);
+                })
                 .catch((e: Error) => ({ exitCode: 125, output: e.message }));
+            // `runGate` never answers null, so a null here is the lost-lease abandonment above.
+            if (!outcome) return null;
             const failed = outcome.exitCode !== 0;
             // Replace the gate's own entry — one entry per declared gate, always, so the list the
             // board stores IS the declared list at its current state.

@@ -3977,7 +3977,9 @@ describe('the kubernetes gate manager', () => {
         const names = calls
             .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
             .map((c) => (c.body as { metadata?: { name?: string } })?.metadata?.name);
+        expect(names).toHaveLength(2);
         expect(names[0]).toMatch(GATE_JOB);
+        expect(names[1]).toMatch(GATE_JOB);
         expect(names[0]).not.toBe(names[1]);
     });
 });
