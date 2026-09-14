@@ -15,6 +15,17 @@ export interface GateReport {
 }
 
 /**
+ * One declared service of the attempt's `.bellows.yaml`, as the driver's platform reports it:
+ * the declared name (the DNS name inside the job), the image, and a lowercase state word —
+ * docker's container State, or the pod phase under kubernetes.
+ */
+export interface ServiceStatus {
+    name: string;
+    image: string;
+    state: string;
+}
+
+/**
  * The running attempt's vitals, sampled by the driver off its runner container and reported beside
  * the output tail: whether the container is actually doing work (CPU, memory) and what the agent
  * says it is doing right now (the stream's last line, its tool call most often). Current/last
@@ -22,16 +33,39 @@ export interface GateReport {
  * job with no sample yet (a fresh attempt, or a kubernetes runner, which reports none).
  */
 export interface RuntimeVitals {
-    /** Whole-container CPU, percent of one host core; can exceed 100 on multi-core hosts. */
-    cpuPercent: number;
-    /** Resident memory, in MiB. */
-    memUsedMb: number;
+    /** Whole-container CPU, percent of one host core; null when it could not be read this round. */
+    cpuPercent: number | null;
+    /** Resident memory, in MiB; null when it could not be read this round. */
+    memUsedMb: number | null;
     /** Resident memory against the container's limit, percent; null when the daemon reports none. */
     memPercent: number | null;
     /** The agent's newest output line, ANSI-stripped and capped — the current tool call, usually. */
     activity: string | null;
     /** When the driver took the sample. A reader can see staleness from this alone. */
     sampledAt: string;
+    /**
+     * The attempt's declared `.bellows.yaml` services and their current states — present only
+     * when the attempt declared any and the driver could read them. Cleared with the numbers on
+     * the next claim: the fleet describes the attempt that took the lease.
+     */
+    services?: ServiceStatus[];
+}
+
+/**
+ * The key-wise patch one vitals report applies to the stored `runtime` jsonb. Null numbers are
+ * "not read this round" — left OUT, so the last good sample stays (the missed-sample rule, now
+ * per part) — and a missing `services` key means the fleet half did not change and stays too.
+ * `activity`, `sampledAt` and `memPercent` are always written: null is legitimate data for each.
+ */
+function runtimePatch(runtime: RuntimeVitals): Record<string, unknown> {
+    return {
+        ...(runtime.cpuPercent !== null ? { cpuPercent: runtime.cpuPercent } : {}),
+        ...(runtime.memUsedMb !== null ? { memUsedMb: runtime.memUsedMb } : {}),
+        memPercent: runtime.memPercent,
+        activity: runtime.activity,
+        sampledAt: runtime.sampledAt,
+        ...(runtime.services ? { services: runtime.services } : {}),
+    };
 }
 
 export interface Job {
@@ -1093,11 +1127,13 @@ export function createJobStore({
             // The tail the driver sent IS the output while the run is going — stored verbatim,
             // replaced on every report. No append, no merge: this side cannot know where the
             // previous tail ended, and the driver already keeps the window bounded. The vitals
-            // ride the same statement: replaced when the driver sampled one this round, left alone
-            // when it did not (coalesce) — a missed sample must not erase the last good answer.
+            // ride the same statement, merged KEY-WISE: a report without services keeps the fleet
+            // a previous one carried, a report whose numbers could not be read keeps the last
+            // good numbers, and a null sample still leaves the whole column alone.
+            const patch = runtime === null ? null : runtimePatch(runtime);
             const rows = await sql<{ id: string }[]>`
                 update job set output = ${output},
-                               runtime = coalesce(${runtime === null ? null : sql.json(runtime as never)}, runtime)
+                               runtime = ${patch === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${sql.json(patch as never)}`}
                 where org_id = ${orgId} and id = ${id}
                   and status = 'running' and lease_token = ${leaseToken}
                 returning id

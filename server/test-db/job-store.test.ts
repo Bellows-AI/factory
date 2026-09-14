@@ -247,6 +247,58 @@ describe.skipIf(!enabled)('job store', () => {
         });
     });
 
+    /**
+     * The attempt's service fleet rides the same runtime object (issue #60), and the object
+     * merges KEY-WISE: a report without services keeps the fleet a previous one carried, a
+     * report whose numbers could not be read keeps the last good numbers, and the claim clears
+     * the whole column — the fleet describes the attempt that took the lease, exactly like the
+     * numbers do.
+     */
+    it('merges service states key-wise into the runtime, and clears them with it on a new attempt', async () => {
+        const { id } = await queue('echo hi');
+        const first = await store.claim('w1', 300);
+        const vitals = {
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7,
+            activity: '→ Read src/x.ts',
+            sampledAt: '2026-09-09T10:00:00.000Z',
+        };
+        const services = [{ name: 'db', image: 'postgres:16', state: 'running' }];
+
+        await store.progress(id, first!.leaseToken, 'working', { ...vitals, services });
+        expect(await store.get(id)).toMatchObject({ runtime: { ...vitals, services } });
+
+        // A vitals-only report keeps the fleet: the services half did not change this round.
+        await store.progress(id, first!.leaseToken, 'still working', vitals);
+        expect(await store.get(id)).toMatchObject({ runtime: { ...vitals, services } });
+
+        // A services-only report (the vitals read failed this round) keeps the last good numbers.
+        await store.progress(id, first!.leaseToken, 'still working', {
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            activity: null,
+            sampledAt: '2026-09-09T10:01:00.000Z',
+            services: [{ name: 'db', image: 'postgres:16', state: 'exited' }],
+        });
+        expect(await store.get(id)).toMatchObject({
+            runtime: {
+                cpuPercent: 93,
+                memUsedMb: 544,
+                services: [{ name: 'db', image: 'postgres:16', state: 'exited' }],
+            },
+        });
+
+        // The next attempt's claim clears the whole column, fleet included — and the fresh
+        // attempt's sample is exactly what it reports, nothing of the previous fleet left.
+        await expireLease(id);
+        const second = await store.claim('w2', 300);
+        expect(await store.get(id)).toMatchObject({ runtime: null });
+        await store.progress(id, second!.leaseToken, 'again', vitals);
+        expect((await store.get(id)).runtime).toEqual(vitals);
+    });
+
     // The list feeds the task tree, whose task rows render the newest run's `activity` — so the
     // list projection carries the vitals too, the one field `gates` stays spared from and
     // `output` stays spared from still.
