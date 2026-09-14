@@ -1286,6 +1286,7 @@ describe('publishing the produced work', () => {
                                             command?: string[];
                                             env?: { name: string; value: string }[];
                                             envFrom?: unknown[];
+                                            workingDir?: string;
                                         }[]
                                     >;
                                 };
@@ -1302,12 +1303,15 @@ describe('publishing the produced work', () => {
         expect(push.join(' ')).toContain('credential.helper=');
         expect(push).toContain('--force-with-lease');
         // The summarizer is one Job like every step (issue #82): node over the worktree, the
-        // BASE ref as a literal env, and no credential — local git reads only.
+        // BASE ref as a literal env, and no credential — local git reads only. Its worktree
+        // anchor is pinned explicitly, because its failure mode without one is the quiet one:
+        // nulls, and the command title this issue removes.
         const summary = containers.find((c) => c.command?.[2]?.includes('shortstat'));
         expect(summary).toBeDefined();
         expect(summary!.command).toEqual(['node', '-e', expect.stringContaining('shortstat')]);
         expect(summary!.env).toEqual([{ name: 'BASE', value: 'origin/main' }]);
         expect(summary!.envFrom).toBeUndefined();
+        expect(summary!.workingDir).toBe(WT);
         const create = commands.find((argv) => argv.includes('pr') && argv.includes('create'));
         expect(create).toContain('--head');
         expect(create).toContain('fix/10');

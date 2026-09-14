@@ -436,7 +436,10 @@ export async function publishCheckout(
                 .then((r) => parsePrSummary(r.stdout))
                 .catch(() => null);
             let title = summarized?.title ?? plan.title;
-            if (summarized?.title && plan.issueNumber && !summarized.title.includes(`#${plan.issueNumber}`)) {
+            // The ref is appended only when the branch's own title does not already END with it
+            // — the driver's own backstop commit and the repo's commit convention both close
+            // with `(#N)`, and a subject that merely MENTIONS the issue must not suppress it.
+            if (summarized?.title && plan.issueNumber && !summarized.title.endsWith(`(#${plan.issueNumber})`)) {
                 title = `${summarized.title} (#${plan.issueNumber})`;
             }
             const body = [

@@ -226,7 +226,9 @@ green.
 
 ## Step 6 — Land the PR (one loop, max 5 iterations)
 
-The PR already exists — the board's publish created it. One bounded loop, not two. Per iteration:
+The PR is the board's: its publish opens (or reuses) the pull request after your run ends and the
+gates pass — so on the run that fixed the ticket there is nothing to poll; finish at 5.13. On a
+follow-up run, after review feedback arrives, the PR exists and this loop applies. Per iteration:
 
 1. Poll the checks. Red → fix the **root cause** and re-push (each push repeats 5.10 and the review
    gate). Never bypass a check to make it green.

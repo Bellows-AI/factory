@@ -928,7 +928,10 @@ branch, and answers one JSON line the driver turns into the PR title and body â€
 subject is the title (the issue reference appended when absent), the commit list and shortstat
 the body, with the issue closure and a published-by line appended by the driver. The step needs
 no credential (local git reads only) and its failure is decoration: the command-derived title
-and plain body of the early publishes remain the fallback.
+and plain body of the early publishes remain the fallback. The boundary is exactly creating and
+checking out: `gh pr edit`, `gh pr merge`, `gh pr close` stay allowed â€” the issue's scope was
+opening, and a follow-up that answers review feedback may still need to comment on the PR it
+did not create.
 
 **A publish failure fails the verdict.** The work did not land; a green badge over a tree that
 exists on one machine only is the exact lie this exists to prevent. The reason (which git step,
