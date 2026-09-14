@@ -56,9 +56,11 @@ WORKDIR /workspace
 COPY entrypoint.sh /usr/local/bin/claude-executor
 # The branch reporter lives in /usr/local/bin, NOT claude-home/: the Remote Control auth volume
 # mounts over CLAUDE_CONFIG_DIR and would shadow anything baked there — exactly the runs that
-# most want to be attributed.
+# most want to be attributed. The git guard (settings.json's PreToolUse hook) is in the same
+# boat and for the same reason: the checkout it protects matters most on driver-run attempts.
 COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
-RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs
+COPY git-guard.cjs /usr/local/bin/git-guard.cjs
+RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs
 
 USER node
 
