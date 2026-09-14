@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
-import { groupLabel, taskStatus, taskSummary, taskTitle } from '../tabs.js';
-import type { TaskTabs } from '../tabs.js';
+import { taskDotClass, taskSections } from '../task-tree.js';
+import type { TaskTreeEntry } from '../task-tree.js';
 
 /**
  * The left navigation.
@@ -10,12 +11,13 @@ import type { TaskTabs } from '../tabs.js';
  * the current page is. `aria-current="page"` comes from the router; the class is what the stylesheet
  * hangs off, and both are set from the same source so they cannot disagree.
  *
- * Under the Tasks item sits the task tree the issue asked for: the top level is the task GROUPS
- * (each a heading that focuses the group), then each group's open tabs. Tasks not open in any group
- * stay visible under "Recent", so a colleague's newly queued task is reachable even though nobody
- * opened a tab for it. The list is a PROP, not a poll: AppShell owns the one `/api/jobs` request and
- * gates it to `/tasks*` (see its comment), so this component stays a pure function of what it is
- * handed. The tab groups themselves are state — `useTaskTabs` — and arrive as a prop too.
+ * Under the Tasks item sits the task tree: three automatic sections — Running, Need review, Past
+ * tasks — computed from task state on every render (see `task-tree.ts`). Nothing is arranged by
+ * hand and nothing is persisted: the poll's answer IS the tree, so every browser sees the same one,
+ * and a task finishing simply moves from Running to the top of Need review. The list is a PROP, not
+ * a poll: AppShell owns the one `/api/jobs` request and gates it to `/tasks*` (see its comment), so
+ * this component stays a pure function of what it is handed — plus one session-only bit of state,
+ * whether the history in Past tasks is expanded.
  */
 
 interface Item {
@@ -44,28 +46,44 @@ const ITEMS: readonly Item[] = [
  * paying for one on every page. And it lists TASKS, not runs: a follow-up is a new row on the
  * board, but it continues the conversation it was asked on, so only thread roots
  * (`followUpTo === null`) appear here — the detail view resolves any member's id to the whole
- * chain. A task's address IS its tab, so opening anything lands it inside a group; "Recent" is
- * what is left over.
+ * chain.
  */
-export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: TaskTabs }) {
-    const openIds = new Set(tabs.groups.flatMap((group) => group.tabs));
-    const recent = (tasks ?? []).filter((task) => task.followUpTo === null && !openIds.has(task.id));
-    const taskById = (id: string): Job | null => tasks?.find((task) => task.id === id) ?? null;
 
-    // The task's own state, not the run's: `taskStatus` resolves the newest member of the chain,
-    // and the dot wears the state that state paints — a live run blinks, a parked or queued one
-    // holds grey, a failed/dead one is red, and anything finished or declared done is solid green.
-    // A stopped task stays on the plain dot: the user ended that turn themselves, and neither a
-    // failure's red nor a done task's green would say that.
-    const dotClass = (id: string): string => {
-        const status = taskStatus(id, tasks);
-        if (status.doneAt !== null || status.status === 'succeeded') return 'sidenav-dot-done';
-        if (status.status === 'running')
-            return status.cancelRequestedAt !== null ? 'sidenav-dot-stopping' : 'sidenav-dot-running';
-        if (status.status === 'standby' || status.status === 'queued') return 'sidenav-dot-paused';
-        if (status.status === 'failed' || status.status === 'dead') return 'sidenav-dot-failed';
-        return '';
-    };
+/** One task row: the dot that says the conversation's present tense, the title, the live summary. */
+function TaskRow({ entry }: { entry: TaskTreeEntry }) {
+    const dot = taskDotClass(entry.status);
+    return (
+        <li>
+            <NavLink
+                to={`/tasks/${entry.id}`}
+                title={entry.title}
+                className={({ isActive }) => (isActive ? 'sidenav-task is-active' : 'sidenav-task')}
+            >
+                {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
+                <span className="sidenav-task-title">{entry.title}</span>
+                {entry.summary !== null ? <span className="sidenav-task-summary">{entry.summary}</span> : null}
+            </NavLink>
+        </li>
+    );
+}
+
+/** A section's rows, or the sentence that says the section is empty. */
+function SectionRows({ entries, empty }: { entries: readonly TaskTreeEntry[]; empty: string }) {
+    if (entries.length === 0) return <p className="sidenav-empty">{empty}</p>;
+    return (
+        <ul className="sidenav-subitems">
+            {entries.map((entry) => (
+                <TaskRow key={entry.id} entry={entry} />
+            ))}
+        </ul>
+    );
+}
+
+export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
+    // History stays folded away until the reader asks for it: the live sections are why the panel
+    // is open, and Past tasks must not push them off screen. Session-only — no persistence.
+    const [pastOpen, setPastOpen] = useState(false);
+    const sections = taskSections(tasks);
 
     return (
         <nav className="sidenav" aria-label="Sections">
@@ -81,101 +99,34 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                             {item.label}
                         </NavLink>
                         {item.to === '/tasks' && tasks !== null ? (
-                            <>
-                                <ul className="sidenav-groups">
-                                    {tabs.groups.map((group) => (
-                                        <li key={group.id}>
-                                            <button
-                                                type="button"
-                                                aria-pressed={group.id === tabs.active.id}
-                                                className={
-                                                    group.id === tabs.active.id
-                                                        ? 'sidenav-group is-active'
-                                                        : 'sidenav-group'
-                                                }
-                                                onClick={() => tabs.activateGroup(group.id)}
-                                            >
-                                                {groupLabel(group)}
-                                            </button>
-                                            {group.tabs.length > 0 ? (
-                                                <ul className="sidenav-subitems">
-                                                    {group.tabs.map((id) => {
-                                                        const task = taskById(id);
-                                                        const dot = dotClass(id);
-                                                        const summary = taskSummary(id, tasks);
-                                                        return (
-                                                            <li key={id}>
-                                                                <NavLink
-                                                                    to={`/tasks/${id}`}
-                                                                    title={task?.command ?? id}
-                                                                    className={({ isActive }) =>
-                                                                        isActive
-                                                                            ? 'sidenav-task is-active'
-                                                                            : 'sidenav-task'
-                                                                    }
-                                                                >
-                                                                    {dot !== '' ? (
-                                                                        <span className={`sidenav-dot ${dot}`} />
-                                                                    ) : null}
-                                                                    <span className="sidenav-task-title">
-                                                                        {taskTitle(id, tasks)}
-                                                                    </span>
-                                                                    {summary !== null ? (
-                                                                        <span className="sidenav-task-summary">
-                                                                            {summary}
-                                                                        </span>
-                                                                    ) : null}
-                                                                </NavLink>
-                                                            </li>
-                                                        );
-                                                    })}
-                                                </ul>
-                                            ) : null}
-                                        </li>
-                                    ))}
-                                    <li>
-                                        <button
-                                            type="button"
-                                            className="sidenav-add-group"
-                                            onClick={() => tabs.createGroup()}
-                                        >
-                                            + Group
-                                        </button>
-                                    </li>
-                                </ul>
-                                {tasks.length === 0 ? (
-                                    <p className="sidenav-empty">No tasks yet</p>
-                                ) : recent.length > 0 ? (
-                                    <>
-                                        <p className="sidenav-recent">Recent</p>
-                                        <ul className="sidenav-subitems">
-                                            {recent.map((task) => {
-                                                const dot = dotClass(task.id);
-                                                const summary = taskSummary(task.id, tasks);
-                                                return (
-                                                    <li key={task.id}>
-                                                        <NavLink
-                                                            to={`/tasks/${task.id}`}
-                                                            title={task.command}
-                                                            className={({ isActive }) =>
-                                                                isActive ? 'sidenav-task is-active' : 'sidenav-task'
-                                                            }
-                                                        >
-                                                            {dot !== '' ? (
-                                                                <span className={`sidenav-dot ${dot}`} />
-                                                            ) : null}
-                                                            <span className="sidenav-task-title">{task.command}</span>
-                                                            {summary !== null ? (
-                                                                <span className="sidenav-task-summary">{summary}</span>
-                                                            ) : null}
-                                                        </NavLink>
-                                                    </li>
-                                                );
-                                            })}
+                            tasks.length === 0 ? (
+                                <p className="sidenav-empty">No tasks yet</p>
+                            ) : (
+                                <>
+                                    <p className="sidenav-section">Running ({sections.running.length})</p>
+                                    <SectionRows entries={sections.running} empty="Nothing running" />
+                                    <p className="sidenav-section">Need review ({sections.review.length})</p>
+                                    <SectionRows entries={sections.review} empty="Nothing to review" />
+                                    <button
+                                        type="button"
+                                        className="sidenav-section"
+                                        aria-expanded={pastOpen}
+                                        aria-controls={sections.past.length > 0 ? 'sidenav-past' : undefined}
+                                        onClick={() => setPastOpen((open) => !open)}
+                                    >
+                                        Past tasks ({sections.past.length})
+                                    </button>
+                                    {sections.past.length > 0 ? (
+                                        <ul className="sidenav-subitems" id="sidenav-past" hidden={!pastOpen}>
+                                            {sections.past.map((entry) => (
+                                                <TaskRow key={entry.id} entry={entry} />
+                                            ))}
                                         </ul>
-                                    </>
-                                ) : null}
-                            </>
+                                    ) : (
+                                        <p className="sidenav-empty">No past tasks</p>
+                                    )}
+                                </>
+                            )
                         ) : null}
                     </li>
                 ))}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
 import { useTasksPage } from './TasksLayout.js';
@@ -14,7 +14,8 @@ import { useTasksPage } from './TasksLayout.js';
  * not yet closed — so the page reads it off the polled chain rather than off the URL.
  */
 export function TaskDetailPage() {
-    const { tasks, tabs } = useTasksPage();
+    const { tasks } = useTasksPage();
+    const navigate = useNavigate();
     const params = useParams();
     const id = params.id ?? null;
     const detail = useThread(id);
@@ -75,9 +76,8 @@ export function TaskDetailPage() {
 
     // The confirm lives here, with the navigation it owns: deleting a thread is not an accident the
     // sidebar should be able to make, and once the board has deleted the rows this page has nothing
-    // left to render — the tab closes and the area falls back to the composer (its neighbour, if one
-    // was open). The refusal needs no confirm, so a TASK_RUNNING state slid past the button just
-    // errors in place like every other refusal.
+    // left to render — the area falls back to the composer. The refusal needs no confirm, so a
+    // TASK_RUNNING state slid past the button just errors in place like every other refusal.
     const removeTask = async (taskId: string) => {
         setActionError(null);
         if (!window.confirm('Remove this task? Every run of the thread and its worktree are deleted.')) return;
@@ -87,7 +87,7 @@ export function TaskDetailPage() {
             setActionError(message);
             return;
         }
-        tabs.removeTab(taskId);
+        navigate('/tasks');
     };
 
     return (

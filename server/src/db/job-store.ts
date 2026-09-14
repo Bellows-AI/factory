@@ -464,7 +464,7 @@ export interface JobStore {
     /**
      * Newest first. `output` is not selected — it is unbounded and no list view shows it — and
      * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose
-     * `activity` line is the live summary the nav, tab strip and task view render (issue #61).
+     * `activity` line is the live summary the nav and task view render (issue #61).
      */
     list(filter: { status?: JobStatus | undefined; repo?: string | undefined; limit: number }): Promise<Job[]>;
 }

@@ -247,10 +247,10 @@ describe.skipIf(!enabled)('job store', () => {
         });
     });
 
-    // The list feeds the task tree and the tab strip, whose task summaries render the newest
-    // run's `activity` — so the list projection carries the vitals too, the one field `gates`
-    // stays spared from and `output` stays spared from still.
-    it('carries the runtime vitals on list rows, for the tree and tab strip summaries', async () => {
+    // The list feeds the task tree, whose task rows render the newest run's `activity` — so the
+    // list projection carries the vitals too, the one field `gates` stays spared from and
+    // `output` stays spared from still.
+    it('carries the runtime vitals on list rows, for the task tree summaries', async () => {
         const { id } = await store.create('echo hi', null, { repo: 'owner/repo', executor: null });
         const claim = await store.claim('w1', 300);
         const vitals = {
