@@ -63,6 +63,16 @@ const ORG_TOKEN_ROUTES: readonly (readonly [string, RegExp])[] = [
 ];
 
 /**
+ * Fastify auto-creates a HEAD route for every GET, so a `curl -I` probe must ride the GET entry —
+ * refusing it would 403 a request the equivalent GET answers.
+ */
+const orgTokenAllowed = (method: string, path: string): boolean =>
+    ORG_TOKEN_ROUTES.some(([routeMethod, route]) => {
+        const matches = routeMethod === 'GET' && method === 'HEAD' ? true : method === routeMethod;
+        return matches && route.test(path);
+    });
+
+/**
  * Routes that answer without a credential, and why each one has to.
  *
  * - `/api/health` must answer while the migrations are still retrying, and the compose healthcheck
@@ -209,7 +219,7 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
                         return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
                     }
                     const path = pathOf(request.url);
-                    if (!ORG_TOKEN_ROUTES.some(([method, route]) => request.method === method && route.test(path))) {
+                    if (!orgTokenAllowed(request.method, path)) {
                         return reply.code(403).send({ error: 'Organization tokens can only read', code: 'FORBIDDEN' });
                     }
                     request.auth = { kind: 'org', token: orgToken };

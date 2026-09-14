@@ -334,28 +334,68 @@ describe('organization access tokens', () => {
         expect(response.statusCode).toBe(401);
     });
 
-    it('is minted by an admin only', async () => {
+    it('is minted by an admin only — mint, list, and revoke alike', async () => {
         const store = memoryAuthStore();
         const member = store.seedMember(ORG, 'member');
         const admin = store.seedMember(ORG, 'admin', 'admin');
+        const memberCookie = await signedIn(store, member);
+        const adminCookie = await signedIn(store, admin);
         const server = await build(githubAuth(), store);
 
-        const refused = await server.inject({
+        const refusedMint = await server.inject({
             method: 'POST',
             url: '/api/tokens/org',
             payload: { label: 'ci' },
-            headers: { cookie: await signedIn(store, member) },
+            headers: { cookie: memberCookie },
         });
-        expect(refused.statusCode).toBe(403);
+        expect(refusedMint.statusCode).toBe(403);
+
+        const refusedList = await server.inject({
+            method: 'GET',
+            url: '/api/tokens/org',
+            headers: { cookie: memberCookie },
+        });
+        expect(refusedList.statusCode).toBe(403);
+
+        const refusedRevoke = await server.inject({
+            method: 'POST',
+            url: '/api/tokens/org/10000000-0000-4000-8000-000000000009/revoke',
+            headers: { cookie: memberCookie },
+        });
+        expect(refusedRevoke.statusCode).toBe(403);
 
         const allowed = await server.inject({
             method: 'POST',
             url: '/api/tokens/org',
             payload: { label: 'ci' },
-            headers: { cookie: await signedIn(store, admin) },
+            headers: { cookie: adminCookie },
         });
         expect(allowed.statusCode).toBe(201);
         expect((allowed.json() as { token: string }).token.startsWith(OAT)).toBe(true);
+
+        const adminList = await server.inject({
+            method: 'GET',
+            url: '/api/tokens/org',
+            headers: { cookie: adminCookie },
+        });
+        expect(adminList.statusCode).toBe(200);
+        expect(adminList.json()).toMatchObject({ tokens: [{ label: 'ci' }] });
+    });
+
+    it('validates the revoke id as a uuid', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat');
+        const cookie = await signedIn(store, caller);
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/tokens/not-a-uuid/revoke',
+            headers: { cookie },
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
     });
 
     it('rejects an unknown or wrong-prefix bearer without falling through to a session', async () => {

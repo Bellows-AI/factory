@@ -12,8 +12,6 @@ export interface AccessTokensPanelProps {
     error: string | null;
     onCreate: (label: string) => Promise<MintResult>;
     onRevoke: (id: string) => Promise<string | null>;
-    /** Rendered read-only while a write is in flight or the scope is not the caller's to edit. */
-    disabled?: boolean;
 }
 
 /**
@@ -23,16 +21,7 @@ export interface AccessTokensPanelProps {
  * mint response, and `minted` is the state that keeps it on screen until Done is pressed. No
  * `<form>`: the CSP sends `form-action 'none'`, the same trap that makes LoginGate an anchor.
  */
-export function AccessTokensPanel({
-    title,
-    hint,
-    tokens,
-    loading,
-    error,
-    onCreate,
-    onRevoke,
-    disabled = false,
-}: AccessTokensPanelProps) {
+export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreate, onRevoke }: AccessTokensPanelProps) {
     const [label, setLabel] = useState('');
     const [minted, setMinted] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
@@ -103,13 +92,13 @@ export function AccessTokensPanel({
                             aria-label="Token label"
                             placeholder="what this token is for"
                             value={label}
-                            disabled={disabled || busy}
+                            disabled={busy}
                             onChange={(e) => setLabel(e.target.value)}
                         />{' '}
                         <button
                             type="button"
                             className="primary"
-                            disabled={disabled || busy || label.trim() === ''}
+                            disabled={busy || label.trim() === ''}
                             onClick={() => void submit()}
                         >
                             {busy ? 'Creating…' : 'Create token'}
@@ -142,7 +131,7 @@ export function AccessTokensPanel({
                                             ) : (
                                                 <button
                                                     type="button"
-                                                    disabled={disabled || busy}
+                                                    disabled={busy}
                                                     aria-label={`Revoke ${token.label}`}
                                                     onClick={() => void revoke(token.id)}
                                                 >
