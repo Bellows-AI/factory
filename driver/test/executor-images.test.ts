@@ -269,21 +269,23 @@ describe('the claude-executor git guard', () => {
     // case must stay silent. A deny carries a reason — it is the only instruction the agent
     // sees at the moment of the block. The rows are narrowed to the command so the test title
     // names the case it runs — a regression must be diagnosable from the failure list alone.
-    it.each(loadGuard().CASES.filter(([want]) => want === 'deny').map(([, command]) => [command]))(
-        'denies %s',
-        (command) => {
-            const verdict = loadGuard().decide(command);
-            expect(verdict.deny).toBe(true);
-            expect(typeof verdict.reason).toBe('string');
-        },
-    );
+    it.each(
+        loadGuard()
+            .CASES.filter(([want]) => want === 'deny')
+            .map(([, command]) => [command])
+    )('denies %s', (command) => {
+        const verdict = loadGuard().decide(command);
+        expect(verdict.deny).toBe(true);
+        expect(typeof verdict.reason).toBe('string');
+    });
 
-    it.each(loadGuard().CASES.filter(([want]) => want === 'allow').map(([, command]) => [command]))(
-        'allows %s',
-        (command) => {
-            expect(loadGuard().decide(command).deny).toBe(false);
-        },
-    );
+    it.each(
+        loadGuard()
+            .CASES.filter(([want]) => want === 'allow')
+            .map(([, command]) => [command])
+    )('allows %s', (command) => {
+        expect(loadGuard().decide(command).deny).toBe(false);
+    });
 
     // The wire contract with Claude Code: JSON on stdin, the deny decision as JSON on stdout,
     // exit 0 either way — exit 2 would block every Bash call, and silence means "no decision".
@@ -408,4 +410,3 @@ describe('the opencode-executor git guard policy', () => {
         expect(policy.permission.bash['*']).toBe('allow');
     });
 });
-
