@@ -72,7 +72,8 @@ const CONTEXT_COST_MAX = 1_000_000;
 const SERVICES_MAX = 10;
 const SERVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/;
 const SERVICE_STATE = /^[a-z][a-z-]{0,31}$/;
-const SERVICE_IMAGE_LIMIT = 256;
+/** Past any legal registry path — an image that long must not bounce every flush of a live run. */
+const SERVICE_IMAGE_LIMIT = 2048;
 
 function serviceStatus(raw: unknown, at: string): ServiceStatus | string {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return `${at} must be an object`;
@@ -133,6 +134,8 @@ function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
             if (typeof one === 'string') return one;
             fleet.push(one);
         }
+        // An empty list is "no fleet", the shape the driver actually reports: no key at all.
+        if (fleet.length === 0) fleet = undefined;
     }
     return {
         cpuPercent: cpuPercent as number | null,

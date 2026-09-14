@@ -636,6 +636,14 @@ describe('POST /api/jobs/:id/output', () => {
         };
         await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step', runtime: fleetOnly });
         expect(store.progressed[4]?.runtime).toEqual(fleetOnly);
+
+        // An empty list is "no fleet" — the key the driver never sends is the key not stored.
+        await post(instance, `/api/jobs/${ID}/output`, {
+            leaseToken: TOKEN,
+            output: 'step',
+            runtime: { ...runtime, services: [] },
+        });
+        expect('services' in (store.progressed[5]?.runtime ?? {})).toBe(false);
     });
 
     it.each([

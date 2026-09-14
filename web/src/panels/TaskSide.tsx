@@ -129,6 +129,8 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
                     <div className="panel-head">
                         <h2>Services</h2>
                     </div>
+                    {/* The newest attempt's last observed states — the fleet is torn down when the
+                    attempt ends, so these are its record of it, not a claim about now. */}
                     <KeyValues
                         pairs={latest.runtime.services.map(
                             (service) => [service.name, service.state] as [string, ReactNode]

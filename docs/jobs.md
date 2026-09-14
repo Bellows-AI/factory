@@ -440,10 +440,12 @@ connection and retry, which is what agents are for.
   starts service pods with a headless Service as the DNS name ([kubernetes.md](kubernetes.md),
   "Gates and services on this platform"). `RUNNER_SERVICES` decides whether they run at all, on
   either platform — nothing about the flag is executor-specific.
-- **The fleet is visible while it runs.** Each vitals flush carries the attempt's service states
-  under `runtime.services`, and the task view renders them in a Services section beside the
-  thread's context and cost — see "The vitals ride the same flush" above for the read, the merge
-  and the claim-time clear.
+- **The fleet is visible in the task view.** Each vitals flush carries the attempt's service
+  states under `runtime.services`, and the task view renders the newest attempt's last observed
+  states in a Services section beside the thread's context and cost. The states freeze when the
+  attempt ends — the fleet is torn down, and what remains is the attempt's record of it, the same
+  record-not-liveness rule the verdict and exit code follow. See "The vitals ride the same flush"
+  above for the read, the merge and the claim-time clear.
 
 ## The session ids, and driving a job from the Claude UI
 
