@@ -1597,7 +1597,9 @@ describe('the runner vitals', () => {
         });
 
         it('skips pods without the service label or an image, and garbage', () => {
-            expect(parseServicePods(JSON.stringify({ items: [{ metadata: {}, spec: { containers: [] } }] }))).toEqual([]);
+            expect(parseServicePods(JSON.stringify({ items: [{ metadata: {}, spec: { containers: [] } }] }))).toEqual(
+                []
+            );
             expect(parseServicePods('not json')).toEqual([]);
             expect(parseServicePods('{"items":[]}')).toEqual([]);
         });

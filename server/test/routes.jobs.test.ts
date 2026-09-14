@@ -650,7 +650,10 @@ describe('POST /api/jobs/:id/output', () => {
             { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, sampledAt: 'noonish' } },
         ],
         ['a runtime with no sample time', { leaseToken: TOKEN, output: 'x', runtime: { cpuPercent: 1, memUsedMb: 1 } }],
-        ['a service list that is not a list', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, services: 'db' } }],
+        [
+            'a service list that is not a list',
+            { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, services: 'db' } },
+        ],
         [
             'more services than a workspace may declare',
             {
@@ -658,21 +661,37 @@ describe('POST /api/jobs/:id/output', () => {
                 output: 'x',
                 runtime: {
                     ...VITALS,
-                    services: Array.from({ length: 11 }, () => ({ name: 'db', image: 'postgres:16', state: 'running' })),
+                    services: Array.from({ length: 11 }, () => ({
+                        name: 'db',
+                        image: 'postgres:16',
+                        state: 'running',
+                    })),
                 },
             },
         ],
         [
             'a service name that is not a DNS label',
-            { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, services: [{ name: 'My DB', image: 'postgres:16', state: 'running' }] } },
+            {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: { ...VITALS, services: [{ name: 'My DB', image: 'postgres:16', state: 'running' }] },
+            },
         ],
         [
             'a service with no image',
-            { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, services: [{ name: 'db', image: '', state: 'running' }] } },
+            {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: { ...VITALS, services: [{ name: 'db', image: '', state: 'running' }] },
+            },
         ],
         [
             'a service state that is not a lowercase word',
-            { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, services: [{ name: 'db', image: 'postgres:16', state: 'Running!' }] } },
+            {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: { ...VITALS, services: [{ name: 'db', image: 'postgres:16', state: 'Running!' }] },
+            },
         ],
     ])('refuses %s with BAD_RUNTIME', async (_label, payload) => {
         const instance = await harnessWith(stubStore());
