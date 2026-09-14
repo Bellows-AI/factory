@@ -1,6 +1,6 @@
 ---
 name: github
-description: Work with GitHub through the gh CLI — opening pull requests, reading PR reviews and line comments, checking CI status, and replying to review feedback. Use whenever a GitHub URL, PR number or issue is mentioned, after pushing a branch, or when asked to address review comments. Covers the reply-with-what-changed convention.
+description: Work with GitHub through the gh CLI — reading PR reviews and line comments, checking CI status, reading issues, and replying to review feedback. Use whenever a GitHub URL, PR number or issue is mentioned, or when asked to address review comments. Covers the reply-with-what-changed convention.
 ---
 
 # GitHub through gh
@@ -14,30 +14,19 @@ gh api repos/<owner/repo>/pulls/<N>/comments   # line-level review comments
 gh pr status
 gh pr checks <N>
 gh pr diff <N>
-gh pr checkout <N>
 ```
 
-## Opening a pull request
+## Pull requests are the board's, not yours
 
-After pushing a feature branch, open the PR without waiting to be asked.
+Never run `gh pr create` — the guard denies it, and the deny is policy, not an obstacle to route
+around. When a task is done (work committed on the task branch, gates green), the factory board
+pushes the branch and opens (or reuses) the pull request itself, with a title and description
+summarized from the branch's commits by the driver's publish flow. Your job ends at committed
+work.
 
-Before writing the body, read **every** commit on the branch — `git diff <base>...HEAD` and
-`git log <base>..HEAD`, not just the last commit. Keep the title under 70 characters; detail
-belongs in the body.
-
-```bash
-gh pr create --title "Short title" --body "$(cat <<'EOF'
-## Summary
-<what changed and why>
-
-## Test plan
-- [ ] ...
-EOF
-)"
-```
-
-State what was verified and what was not. An unchecked box is information; a checked box that was
-never run is a lie the reviewer will act on.
+A PR that already exists is yours to read — reviews, checks, diffs — and to fix on request,
+never to create. Reading a PR's diff happens with `gh pr diff`, never by checking the branch out:
+`gh pr checkout` moves HEAD off the task branch and is denied for the same reason.
 
 ## Addressing review feedback
 

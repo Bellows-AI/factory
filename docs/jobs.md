@@ -918,6 +918,18 @@ because the publish runs after `runDeclaredGates` returns null and never otherwi
 failed, timed out, was cache-killed, or stopped talking early publishes nothing — its tree may be
 mid-thought, and pushing it would publish work no verdict was ever given on.
 
+**The PR speaks for the work, not for the command that started it (issue #82).** The executor
+may not open pull requests — the claude guard denies `gh pr create` (a second `Bash(gh *)` hook
+arm), the opencode permission fence refuses the same, and the baked skills say the board
+publishes. The title/description are not the author's prompt text either: a summarizer script
+(`driver/src/scripts/pr-summary.cjs`) runs as one more publish step in the same throwaway
+container/Job shape, reads the branch's commit subjects and the diffstat against the default
+branch, and answers one JSON line the driver turns into the PR title and body — the first commit
+subject is the title (the issue reference appended when absent), the commit list and shortstat
+the body, with the issue closure and a published-by line appended by the driver. The step needs
+no credential (local git reads only) and its failure is decoration: the command-derived title
+and plain body of the early publishes remain the fallback.
+
 **A publish failure fails the verdict.** The work did not land; a green badge over a tree that
 exists on one machine only is the exact lie this exists to prevent. The reason (which git step,
 what it said) rides the output the author reads. No credential passes through an argv: the claim

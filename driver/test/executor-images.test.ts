@@ -269,21 +269,23 @@ describe('the claude-executor git guard', () => {
     // case must stay silent. A deny carries a reason — it is the only instruction the agent
     // sees at the moment of the block. The rows are narrowed to the command so the test title
     // names the case it runs — a regression must be diagnosable from the failure list alone.
-    it.each(loadGuard().CASES.filter(([want]) => want === 'deny').map(([, command]) => [command]))(
-        'denies %s',
-        (command) => {
-            const verdict = loadGuard().decide(command);
-            expect(verdict.deny).toBe(true);
-            expect(typeof verdict.reason).toBe('string');
-        },
-    );
+    it.each(
+        loadGuard()
+            .CASES.filter(([want]) => want === 'deny')
+            .map(([, command]) => [command])
+    )('denies %s', (command) => {
+        const verdict = loadGuard().decide(command);
+        expect(verdict.deny).toBe(true);
+        expect(typeof verdict.reason).toBe('string');
+    });
 
-    it.each(loadGuard().CASES.filter(([want]) => want === 'allow').map(([, command]) => [command]))(
-        'allows %s',
-        (command) => {
-            expect(loadGuard().decide(command).deny).toBe(false);
-        },
-    );
+    it.each(
+        loadGuard()
+            .CASES.filter(([want]) => want === 'allow')
+            .map(([, command]) => [command])
+    )('allows %s', (command) => {
+        expect(loadGuard().decide(command).deny).toBe(false);
+    });
 
     // The wire contract with Claude Code: JSON on stdin, the deny decision as JSON on stdout,
     // exit 0 either way — exit 2 would block every Bash call, and silence means "no decision".
@@ -331,14 +333,61 @@ describe('the claude-executor git guard', () => {
         const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json'));
         const group = (settings.hooks?.PreToolUse ?? []).find((g: { matcher?: string }) => g.matcher === 'Bash');
         expect(group).toBeDefined();
-        const hook = group.hooks[0];
-        expect(hook.type).toBe('command');
-        expect(hook.command).toBe('node /usr/local/bin/git-guard.cjs');
-        // The `if` filter keeps the node boot off every non-git Bash call; Claude Code checks
-        // it per subcommand and runs the hook anyway when it cannot tell — compounds and
-        // substitutions still reach the guard.
-        expect(hook.if).toBe('Bash(git *)');
-        expect(hook.timeout).toBe(10);
+        const [gitHook, ghHook] = group.hooks;
+        for (const hook of [gitHook, ghHook]) {
+            expect(hook.type).toBe('command');
+            expect(hook.command).toBe('node /usr/local/bin/git-guard.cjs');
+            expect(hook.timeout).toBe(10);
+        }
+        // The `if` filters keep the node boot off every Bash call the guard does not read;
+        // Claude Code checks them per subcommand and runs the hook anyway when it cannot
+        // tell — compounds and substitutions still reach the guard. The gh arm is issue #82:
+        // the guard denies `gh pr create` / `gh pr checkout`, so gh calls must reach it too.
+        expect(gitHook.if).toBe('Bash(git *)');
+        expect(ghHook.if).toBe('Bash(gh *)');
+    });
+});
+
+/*
+ * The PR boundary (issue #82): executors do not open pull requests — that is the driver
+ * publish's, with the title/description written by the summarizer script. The enforcement is
+ * the two guards above; these pins keep the INSTRUCTIONS from teaching the old behavior, the
+ * way the baked github skill once did ("open the PR without waiting to be asked").
+ */
+describe('the executor PR boundary', () => {
+    const GITHUB_SKILL = 'docker/claude-executor/claude-home/skills/github/SKILL.md';
+
+    it('no baked skill instructs opening a pull request', () => {
+        const skills = [
+            GITHUB_SKILL,
+            'docker/claude-executor/claude-home/skills/backend-fix/SKILL.md',
+            'docker/opencode-executor/opencode-home/AGENTS.md',
+        ];
+        for (const skill of skills) {
+            const text = read(skill);
+            // The deny is policy the skills may NAME ("Never run `gh pr create`"); what must
+            // not survive is the instruction — a runnable command line, or the old call to
+            // action.
+            expect(text).not.toMatch(/^\s*gh pr create\b/m);
+            expect(text).not.toMatch(/open the PR/i);
+        }
+    });
+
+    it('the github skill names the board as the PR author instead', () => {
+        const text = read(GITHUB_SKILL);
+        expect(text).toContain('opens (or reuses) the pull request');
+        expect(text).toContain('Never run');
+        // And the one command it listed that moves HEAD onto a PR is gone with the section —
+        // named only as denied policy, never as a line to run.
+        expect(text).not.toMatch(/^\s*gh pr checkout\b/m);
+    });
+
+    it('the opencode fence denies gh pr create and gh pr checkout', () => {
+        const policy = JSON.parse(read('docker/opencode-executor/opencode-home/opencode.json'));
+        const bash: Record<string, string> = policy.permission.bash;
+        for (const rule of ['gh pr create', 'gh pr create *', 'gh pr checkout', 'gh pr checkout *']) {
+            expect(bash[rule]).toBe('deny');
+        }
     });
 });
 
@@ -378,6 +427,10 @@ describe('the opencode-executor git guard policy', () => {
             'git rebase *',
             'git merge',
             'git merge *',
+            'gh pr create',
+            'gh pr create *',
+            'gh pr checkout',
+            'gh pr checkout *',
             'git worktree list',
             'git rebase --abort',
             'git rebase --quit',
@@ -408,4 +461,3 @@ describe('the opencode-executor git guard policy', () => {
         expect(policy.permission.bash['*']).toBe('allow');
     });
 });
-
