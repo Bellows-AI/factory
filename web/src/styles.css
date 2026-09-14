@@ -1002,6 +1002,25 @@ button.primary {
     color: var(--bad);
 }
 
+/* The task head's row of controls and its overall wall clock — every button the task can take,
+   at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
+   title from squeezing the buttons; the title wraps instead. */
+.task-actions {
+    align-items: center;
+    display: flex;
+    flex: none;
+    gap: 8px;
+}
+
+/* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
+   activity line, never the exit code's red. */
+.task-clock {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
 .composer {
     border-top: 1px solid var(--border);
     margin-top: 16px;

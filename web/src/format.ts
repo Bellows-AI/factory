@@ -76,6 +76,29 @@ export function runDuration(
 }
 
 /**
+ * A task's overall wall clock: what the board has banked for the thread so far, plus the head
+ * run's live in-flight segment while it is still going (`runningSince` is passed only then — a
+ * finished run's stale start stamp would double-count a segment the board already banked). A
+ * dash where nothing has been banked and nothing is going: null means "no clock", which is not
+ * zero. Pure, like `runDuration` — the caller decides what "now" is, and the detail page's 2s
+ * poll is the ticker.
+ */
+export function wallClock(
+    totalMs: number | null | undefined,
+    runningSince: string | null | undefined,
+    now: Date = new Date()
+): string {
+    const banked = totalMs ?? 0; // feeds the sum only — the null contract is the dash branch below
+    let live = 0;
+    if (runningSince) {
+        const from = new Date(runningSince);
+        if (!Number.isNaN(from.getTime())) live = Math.max(0, now.getTime() - from.getTime());
+    }
+    if (totalMs == null && live === 0) return '—';
+    return duration((banked + live) / 3_600_000);
+}
+
+/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */

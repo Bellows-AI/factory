@@ -1,0 +1,20 @@
+-- The task wall clock: how long a task has actually spent executing, across every attempt of
+-- every run in its thread — the number the task view's head renders as the overall clock.
+--
+-- ONE COLUMN PER JOB ROW, storing what THAT row's own attempts banked. It is written by the
+-- board at the settle points — claim (banking the superseded attempt's segment before resetting
+-- started_at), the dead retirement, the verdict and the suspend park — and never by a worker,
+-- because it is derived from stamps the board already holds (started_at, finished_at) rather
+-- than something a runner reports. claim resets started_at on every attempt, so the banking
+-- must happen in the same statement or the superseded segment is lost: a run that crashed after
+-- forty minutes and was retried would otherwise erase those minutes.
+--
+-- Accumulated, not overwritten, for the same reason: a row re-claimed after a lease expiry ran
+-- more than one attempt, and the task's wall clock is the SUM of the segments, not the last
+-- one's. Nullable, because null and zero are different facts — a task that never ran has no
+-- clock at all, and the formatters render an em dash for null, never a zero (see web/format.ts).
+--
+-- bigint milliseconds: the wire and the UI formatter speak ms, runs are capped at hours, and a
+-- thread of follow-ups can in principle accumulate days. No index: only the thread read
+-- aggregates it, one windowed sum over a result the root_job_id predicate already scoped.
+alter table job add column if not exists wall_clock_ms bigint;
