@@ -467,7 +467,7 @@ describe('AUTH_MODE=none', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json().workspacePath).toBe(
-            '/tmp/factory-settings-test/test-org/00000000-0000-4000-8000-000000000000',
+            '/tmp/factory-settings-test/test-org/00000000-0000-4000-8000-000000000000'
         );
         // Read-only display: computing a path must not provision a directory. That is
         // GET /api/workspace's job, and it is idempotent there.

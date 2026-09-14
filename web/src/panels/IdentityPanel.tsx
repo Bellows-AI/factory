@@ -31,8 +31,8 @@ export function IdentityPanel({ session }: { session: Session }) {
                     <p className="identity-name">{user.name ?? user.login}</p>
                     {local ? (
                         <p className="muted">
-                            This deployment has authentication off (<code>AUTH_MODE=none</code>);
-                            everything is attributed to a local stand-in account.
+                            This deployment has authentication off (<code>AUTH_MODE=none</code>); everything is
+                            attributed to a local stand-in account.
                         </p>
                     ) : (
                         <p className="muted">{role === 'admin' ? 'Administrator' : 'Member'} of this organization</p>
