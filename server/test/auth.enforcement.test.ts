@@ -136,6 +136,12 @@ describe('the route table', () => {
         // worker token 401, while the gates themselves ran and passed unseen.
         [`/api/jobs/${JOB_ID}/gates`, 'worker'],
         [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
+        // The publish credential ask is the driver's too — the loop calls it right before the
+        // push. Missing from this table is what made it answer the worker token 401 in
+        // production while the fix looked deployed (jobs 9bf1002a, 4bcfe8be and b0ac2284,
+        // 2026-09-14): the silent null sent every long run to the push with its expired
+        // claim-time token, and only runs under an hour published.
+        [`/api/jobs/${JOB_ID}/publish-token`, 'worker'],
         // The thread read is a person's again: it carries commands, output and session ids of the
         // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
         // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the

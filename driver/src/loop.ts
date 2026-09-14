@@ -610,6 +610,14 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     // board for a publish-fresh one; null — nothing fresher, or the ask failed —
                     // keeps the claim env, the shape every short run still publishes with.
                     const publishToken = await board.publishToken(job);
+                    // Null doubles as the route's honest "nothing fresher" and its failure shape —
+                    // any non-ok answer (a 401 among them) comes back as null, and jobs 9bf1002a,
+                    // 4bcfe8be and b0ac2284 (2026-09-14) pushed with dead claim credentials for
+                    // hours before anyone looked, because the degradation was silent. Publish
+                    // goes ahead with the claim env either way; it just says so.
+                    if (!publishToken) {
+                        log(`job ${job.id}: publish-token ask answered nothing fresh — publishing with the claim env`);
+                    }
                     published = await runner.publishGit(job, publishToken ?? undefined);
                 }
 

@@ -216,7 +216,13 @@ const config = (env: NodeJS.ProcessEnv = {}): DriverConfig => loadDriverConfig(e
 const sleep = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 async function drive(
-    deps: { board: BoardStub; attach: (loop: Loop) => void; runner: Runner; gates?: GateStack },
+    deps: {
+        board: BoardStub;
+        attach: (loop: Loop) => void;
+        runner: Runner;
+        gates?: GateStack;
+        log?: (message: string) => void;
+    },
     env = {}
 ) {
     const loop = createLoop({
@@ -224,6 +230,7 @@ async function drive(
         runner: deps.runner,
         config: config(env),
         gates: deps.gates,
+        log: deps.log,
         sleep,
     });
     deps.attach(loop);
@@ -506,11 +513,15 @@ describe('the poll loop', () => {
         const claimed = { ...job(1), env: { GITHUB_TOKEN: 'claim-token', CORE: 'claim-value' } };
         const board = stubBoard([claimed]);
         const runner = stubRunner(async () => ok());
+        const logs: string[] = [];
 
-        await drive({ ...board, runner });
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.publishTokenAsks).toEqual([job(1).id]);
         expect(runner.publishTokens).toEqual([undefined]);
+        // Null is both the route's honest "nothing fresher" and its failure shape — the driver
+        // cannot tell a 401 from an answer, so the degradation says itself either way.
+        expect(logs.some((m) => m.includes('publish-token ask answered nothing fresh'))).toBe(true);
     });
 
     // Only a succeeded run publishes: a failed or truncated run's tree may be mid-thought, and

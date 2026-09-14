@@ -40,7 +40,7 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // `stop`, `follow-up`, `done` and `remove` are person actions: the driver is told to stop
     // through the heartbeat it already holds, and a worker token moving or deleting the audit
     // rows of jobs it never held would be the thread-read hole again.
-    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread)$/,
+    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread|publish-token)$/,
 ];
 
 /** Machine-to-machine telemetry, from the collector and from developer laptops. */
