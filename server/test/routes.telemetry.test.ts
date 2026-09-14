@@ -112,14 +112,12 @@ describe('loadConfig', () => {
     // subject of any case here.
     const DB = 'postgres://factory:factory@127.0.0.1:5432/factory_dev';
     // The App credentials likewise: required now, and none of these cases is about them.
-    const env = (extra: NodeJS.ProcessEnv = {}) => (
-        {
-            DATABASE_URL: DB,
-            GITHUB_APP_ID: '123',
-            GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----',
-            ...extra,
-        }
-    );
+    const env = (extra: NodeJS.ProcessEnv = {}) => ({
+        DATABASE_URL: DB,
+        GITHUB_APP_ID: '123',
+        GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----',
+        ...extra,
+    });
 
     it('rejects an unknown source', () => {
         expect(() => loadConfig(env({ TELEMETRY_SOURCE: 'clickhouse' }))).toThrow(/TELEMETRY_SOURCE/);

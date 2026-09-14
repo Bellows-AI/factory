@@ -13,21 +13,18 @@ describe('rangeQuery', () => {
     });
 
     it('sends a half-open custom range without an empty parameter', () => {
-        expect(rangeQuery({ preset: 'custom', from: '2026-08-01', to: '' })).toBe(
-            'range=custom&from=2026-08-01',
-        );
+        expect(rangeQuery({ preset: 'custom', from: '2026-08-01', to: '' })).toBe('range=custom&from=2026-08-01');
     });
 
     it('sends both bounds when both are set', () => {
         expect(rangeQuery({ preset: 'custom', from: '2026-08-01', to: '2026-08-07' })).toBe(
-            'range=custom&from=2026-08-01&to=2026-08-07',
+            'range=custom&from=2026-08-01&to=2026-08-07'
         );
     });
 });
 
 describe('RangeSelector', () => {
-    const render = (range = DEFAULT_RANGE) =>
-        renderToStaticMarkup(<RangeSelector range={range} onChange={() => {}} />);
+    const render = (range = DEFAULT_RANGE) => renderToStaticMarkup(<RangeSelector range={range} onChange={() => {}} />);
 
     it('offers every preset and marks the active one', () => {
         const html = render({ ...DEFAULT_RANGE, preset: 'month' });
@@ -45,9 +42,7 @@ describe('RangeSelector', () => {
 
     it('says what it is showing while a custom range is still empty', () => {
         expect(render({ preset: 'custom', from: '', to: '' })).toContain('showing all time');
-        expect(render({ preset: 'custom', from: '2026-08-01', to: '' })).not.toContain(
-            'showing all time',
-        );
+        expect(render({ preset: 'custom', from: '2026-08-01', to: '' })).not.toContain('showing all time');
     });
 
     it('stops the from picker from crossing the to date', () => {

@@ -56,7 +56,12 @@ describe('task groups', () => {
     it('numbers the next group after the highest existing number', () => {
         expect(nextGroupId([])).toBe('1');
         expect(nextGroupId([{ id: '1', tabs: [] }])).toBe('2');
-        expect(nextGroupId([{ id: '2', tabs: [] }, { id: '4', tabs: [] }])).toBe('5');
+        expect(
+            nextGroupId([
+                { id: '2', tabs: [] },
+                { id: '4', tabs: [] },
+            ])
+        ).toBe('5');
         // A non-numeric id is no lower bound; the count still advances.
         expect(nextGroupId([{ id: 'x', tabs: [] }])).toBe('1');
     });
@@ -205,7 +210,7 @@ describe('taskStatus', () => {
         expect(taskStatus('c', chain)).toEqual(expected);
     });
 
-    it('picks the newest member of the thread regardless of the rows\' order', () => {
+    it("picks the newest member of the thread regardless of the rows' order", () => {
         // The head is the member with the highest createdAt, not the first row — a shuffled list
         // answers the same task state. Timestamps explicit, so the shuffle cannot shade them.
         const at = (minute: number): string => new Date(Date.UTC(2026, 8, 1, 12, minute)).toISOString();
@@ -215,19 +220,22 @@ describe('taskStatus', () => {
             createdAt: at(3),
         });
         const expected = { status: 'failed', cancelRequestedAt: null, doneAt: '2026-09-01T14:00:00.000Z' };
-        expect(taskStatus('b', [newest, followUp('b', 'a', { createdAt: at(2) }), job('a', { createdAt: at(1) })])).toEqual(
-            expected,
-        );
-        expect(taskStatus('b', [job('a', { createdAt: at(1) }), followUp('b', 'a', { createdAt: at(2) }), newest])).toEqual(
-            expected,
-        );
+        expect(
+            taskStatus('b', [newest, followUp('b', 'a', { createdAt: at(2) }), job('a', { createdAt: at(1) })])
+        ).toEqual(expected);
+        expect(
+            taskStatus('b', [job('a', { createdAt: at(1) }), followUp('b', 'a', { createdAt: at(2) }), newest])
+        ).toEqual(expected);
     });
 
     it('resolves a thread whose root row fell out of the poll window', () => {
         // The window holds only the newest turns, but each carries the served root, so the
         // conversation still resolves to its newest member — the case the old client-side climb
         // could only approximate with a segment.
-        const window = [followUp('b', 'a'), followUp('c', 'a', { status: 'failed', doneAt: '2026-09-01T14:00:00.000Z' })];
+        const window = [
+            followUp('b', 'a'),
+            followUp('c', 'a', { status: 'failed', doneAt: '2026-09-01T14:00:00.000Z' }),
+        ];
         const expected = { status: 'failed', cancelRequestedAt: null, doneAt: '2026-09-01T14:00:00.000Z' };
         expect(taskStatus('b', window)).toEqual(expected);
         expect(taskStatus('c', window)).toEqual(expected);
@@ -279,11 +287,11 @@ describe('taskSummary', () => {
         runtime: { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity, sampledAt: '2026-09-01T12:05:00.000Z' },
     });
 
-    it('answers the newest run\'s activity line while that run is running', () => {
+    it("answers the newest run's activity line while that run is running", () => {
         expect(taskSummary('a', [job('a', sampled('→ Read src/x.ts'))])).toBe('→ Read src/x.ts');
     });
 
-    it('resolves ANY member to the head run\'s activity, the same run the status dot answers for', () => {
+    it("resolves ANY member to the head run's activity, the same run the status dot answers for", () => {
         // The thread, oldest first: root a, follow-up b (running, with an activity line).
         const chain = [job('a'), followUp('b', 'a', sampled('→ Bash npm test'))];
         expect(taskSummary('a', chain)).toBe('→ Bash npm test');
@@ -291,15 +299,18 @@ describe('taskSummary', () => {
     });
 
     it('answers the head run, not an older run that happened to carry an activity line', () => {
-        const chain = [
-            job('a', sampled('→ superseded run still talking')),
-            followUp('b', 'a', { status: 'running' }),
-        ];
+        const chain = [job('a', sampled('→ superseded run still talking')), followUp('b', 'a', { status: 'running' })];
         expect(taskSummary('a', chain)).toBeNull();
     });
 
     it('stays silent once the head run is not going — a stale line beside a parked or finished verdict lies', () => {
-        const stale = { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity: '→ stale', sampledAt: '2026-09-01T12:05:00.000Z' };
+        const stale = {
+            cpuPercent: 12,
+            memUsedMb: 300,
+            memPercent: null,
+            activity: '→ stale',
+            sampledAt: '2026-09-01T12:05:00.000Z',
+        };
         for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
             expect(taskSummary('a', [job('a', { status, runtime: stale })]), status).toBeNull();
         }
@@ -309,8 +320,17 @@ describe('taskSummary', () => {
         expect(taskSummary('a', [job('a', { status: 'running' })])).toBeNull();
         expect(
             taskSummary('a', [
-                job('a', { status: 'running', runtime: { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity: null, sampledAt: '2026-09-01T12:05:00.000Z' } }),
-            ]),
+                job('a', {
+                    status: 'running',
+                    runtime: {
+                        cpuPercent: 12,
+                        memUsedMb: 300,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:05:00.000Z',
+                    },
+                }),
+            ])
         ).toBeNull();
     });
 
@@ -351,7 +371,13 @@ describe('task-tabs storage', () => {
             // group falls back to the first.
             localStorage.setItem(
                 'factory.task-tabs.v1',
-                JSON.stringify({ groups: [{ id: '2', tabs: [3, 'ok'] }, { id: '2', tabs: [] }], activeGroup: '9' }),
+                JSON.stringify({
+                    groups: [
+                        { id: '2', tabs: [3, 'ok'] },
+                        { id: '2', tabs: [] },
+                    ],
+                    activeGroup: '9',
+                })
             );
             expect(loadTaskTabs()).toEqual({ groups: [{ id: '2', tabs: ['ok'] }], activeGroup: '2' });
         } finally {

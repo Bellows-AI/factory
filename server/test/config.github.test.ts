@@ -4,8 +4,7 @@ import { loadConfig, resolveConfig } from '../src/config.js';
 const DB = 'postgres://factory:factory@127.0.0.1:5432/factory_dev';
 const PEM = '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----';
 const env = (extra: NodeJS.ProcessEnv = {}) => ({ DATABASE_URL: DB, ...extra });
-const app = (extra: NodeJS.ProcessEnv = {}) =>
-    env({ GITHUB_APP_ID: '123', GITHUB_APP_PRIVATE_KEY: PEM, ...extra });
+const app = (extra: NodeJS.ProcessEnv = {}) => env({ GITHUB_APP_ID: '123', GITHUB_APP_PRIVATE_KEY: PEM, ...extra });
 
 describe('the GitHub App', () => {
     it('is the only configuration there is: missing credentials refuse to boot', () => {
@@ -25,7 +24,7 @@ describe('the GitHub App', () => {
         // A mode reached by typo is the failure nobody notices. GITHUB_APP_IDD must leave the
         // deployment loudly unconfigured, not quietly reading nothing.
         expect(() => loadConfig(env({ GITHUB_APP_IDD: '123', GITHUB_APP_PRIVATE_KEY: PEM }))).toThrow(
-            /GITHUB_APP_ID is not set/,
+            /GITHUB_APP_ID is not set/
         );
     });
 
@@ -33,7 +32,7 @@ describe('the GitHub App', () => {
         // The operator has one key to fix and should not have to diff the example file to find it.
         expect(() => loadConfig(app({ GITHUB_APP_ID: undefined }))).toThrow(/GITHUB_APP_ID is not set/);
         expect(() => loadConfig(app({ GITHUB_APP_PRIVATE_KEY: undefined }))).toThrow(
-            /GITHUB_APP_PRIVATE_KEY is not set/,
+            /GITHUB_APP_PRIVATE_KEY is not set/
         );
     });
 });
@@ -62,7 +61,7 @@ describe('the App private key', () => {
 
     it('rejects something that is neither', () => {
         expect(() => loadConfig(app({ GITHUB_APP_PRIVATE_KEY: 'ghp_a_personal_access_token' }))).toThrow(
-            /not a PEM private key/,
+            /not a PEM private key/
         );
     });
 

@@ -1,12 +1,6 @@
 import { HOUR } from './config.js';
 import { isoWeekKey, ratio, weekStart } from './metrics.js';
-import type {
-    SessionRollup,
-    TelemetryInput,
-    TelemetryStats,
-    TelemetryWeekPoint,
-    TokenTotals,
-} from './types.js';
+import type { SessionRollup, TelemetryInput, TelemetryStats, TelemetryWeekPoint, TokenTotals } from './types.js';
 
 /**
  * Sums the measured values and returns null only when nothing was measured at all.
@@ -109,10 +103,7 @@ function weeklySeries(sessions: SessionRollup[], now: Date): TelemetryWeekPoint[
  * `otherRepoSessions` rather than the totals, and sessions with no hook report at all are
  * counted in `sessionsWithoutHook` — three different setup failures must stay distinguishable.
  */
-export function telemetryStats(
-    input: TelemetryInput,
-    options: TelemetryStatsOptions = {},
-): TelemetryStats {
+export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOptions = {}): TelemetryStats {
     const { repos, now = new Date() } = options;
     const inRepoScope = (name: string) => repos === undefined || repos.includes(name);
 

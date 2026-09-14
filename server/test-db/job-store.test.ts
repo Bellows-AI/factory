@@ -15,9 +15,7 @@ const url = process.env.DATABASE_URL;
 function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`,
-        );
+        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
     }
 }
 
@@ -68,8 +66,7 @@ beforeEach(async () => {
 const queue = (command: string) => store.create(command, null, { repo: null, executor: null });
 
 /** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
-const expireLease = (id: string) =>
-    sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
 
 const row = (id: string) =>
     sql<{ status: string; attempts: number; claimed_by: string | null; started_at: Date | null }[]>`
@@ -236,7 +233,13 @@ describe.skipIf(!enabled)('job store', () => {
         // The last sample stays on a FINISHED row: "was it doing anything when it died" reads off
         // sampledAt.
         await store.progress(id, second!.leaseToken, 'again', vitals);
-        await store.complete(id, second!.leaseToken, { status: 'failed', exitCode: 1, output: 'done', contextTokens: 90433, contextCostUsd: 0.31 });
+        await store.complete(id, second!.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'done',
+            contextTokens: 90433,
+            contextCostUsd: 0.31,
+        });
         // The context stats MERGE into the sampled vitals — the row keeps its last sample and
         // gains the context the run reached beside it.
         expect(await store.get(id)).toMatchObject({
@@ -487,9 +490,7 @@ describe.skipIf(!enabled)('job store', () => {
         const ids = new Set<string>();
         for (let i = 0; i < 50; i += 1) ids.add((await queue(`job ${i}`)).id);
 
-        const claims = await Promise.all(
-            Array.from({ length: 50 }, (_, i) => store.claim(`w${i}`, 300)),
-        );
+        const claims = await Promise.all(Array.from({ length: 50 }, (_, i) => store.claim(`w${i}`, 300)));
 
         expect(claims.filter((claim) => claim === null)).toHaveLength(0);
         expect(new Set(claims.map((claim) => claim?.id)).size).toBe(50);
@@ -517,7 +518,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     const finishWithSession = async (
         command: string,
         target: { repo: string | null; executor: string | null } = { repo: null, executor: null },
-        remote = false,
+        remote = false
     ): Promise<string> => {
         const { id } = await store.create(command, null, target);
         const claim = await store.claim('w1', 300);
@@ -716,11 +717,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         for (const member of [parent, first.id, second.id]) {
             const chain = await store.thread(member);
-            expect(chain?.map((task) => task.command)).toEqual([
-                'drive me',
-                'first adjustment',
-                'second adjustment',
-            ]);
+            expect(chain?.map((task) => task.command)).toEqual(['drive me', 'first adjustment', 'second adjustment']);
         }
 
         // And the org guard holds: another org's store reads nothing of this conversation.

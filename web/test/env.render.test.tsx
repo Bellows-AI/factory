@@ -10,7 +10,7 @@ const noop = async () => null;
 describe('the env vars panel', () => {
     it('offers an empty scope a way in', () => {
         const html = renderToStaticMarkup(
-            <EnvVarsPanel title="Core" hint="Injected into every runner." initialVars={[]} onSave={noop} />,
+            <EnvVarsPanel title="Core" hint="Injected into every runner." initialVars={[]} onSave={noop} />
         );
         expect(html).toContain('Core');
         expect(html).toContain('No variables configured');
@@ -27,7 +27,7 @@ describe('the env vars panel', () => {
                     { name: 'LOG_LEVEL', value: 'debug', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' },
                 ]}
                 onSave={noop}
-            />,
+            />
         );
         expect(html).toContain('LOG_LEVEL');
         expect(html).toContain('debug');
@@ -44,7 +44,7 @@ describe('the env vars panel', () => {
                     { name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' },
                 ]}
                 onSave={noop}
-            />,
+            />
         );
         expect(html).toContain('CORE_SECRET');
         expect(html).toContain('secret');
@@ -63,7 +63,7 @@ describe('the env vars panel', () => {
                     { name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' },
                 ]}
                 onSave={noop}
-            />,
+            />
         );
         expect(html).toContain('type="password"');
         expect(html).toContain('autoComplete="off"');
@@ -80,15 +80,13 @@ describe('the env vars panel', () => {
                     { name: 'B_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' },
                 ]}
                 onSave={noop}
-            />,
+            />
         );
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
     it('uses no form, because the CSP sends form-action none', () => {
-        const html = renderToStaticMarkup(
-            <EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />,
-        );
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />);
         expect(html).not.toContain('<form');
     });
 });

@@ -27,14 +27,12 @@ describe('RUNNER_CLI', () => {
     // EXECUTOR_IMAGE still wins — an operator pinning a registry image knows better than the
     // default. The empty string counts as unset: that is exactly what compose's
     // `${EXECUTOR_IMAGE:-}` delivers, and it is how the cli-aware default survives compose.
-    it('defaults the image to the selected CLI\'s runner', () => {
+    it("defaults the image to the selected CLI's runner", () => {
         expect(loadDriverConfig({}).image).toBe('claude-executor');
         expect(loadDriverConfig({ RUNNER_CLI: 'opencode' }).image).toBe('opencode-executor');
-        expect(loadDriverConfig({ RUNNER_CLI: 'opencode', EXECUTOR_IMAGE: '' }).image).toBe(
-            'opencode-executor',
-        );
+        expect(loadDriverConfig({ RUNNER_CLI: 'opencode', EXECUTOR_IMAGE: '' }).image).toBe('opencode-executor');
         expect(loadDriverConfig({ RUNNER_CLI: 'opencode', EXECUTOR_IMAGE: 'registry/oc:2' }).image).toBe(
-            'registry/oc:2',
+            'registry/oc:2'
         );
     });
 
@@ -43,7 +41,7 @@ describe('RUNNER_CLI', () => {
     // refuses to start — the job would run headless and simply never appear anywhere drivable.
     it('refuses Remote Control under opencode', () => {
         expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_REMOTE_CONTROL: '1' })).toThrow(
-            /RUNNER_REMOTE_CONTROL.*RUNNER_CLI|RUNNER_CLI.*RUNNER_REMOTE_CONTROL/s,
+            /RUNNER_REMOTE_CONTROL.*RUNNER_CLI|RUNNER_CLI.*RUNNER_REMOTE_CONTROL/s
         );
         expect(() => loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' })).not.toThrow();
     });
@@ -53,7 +51,7 @@ describe('RUNNER_CLI', () => {
     // made — the exact silent lie it exists to avoid.
     it('refuses skip-permissions under opencode', () => {
         expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_SKIP_PERMISSIONS: '1' })).toThrow(
-            /RUNNER_SKIP_PERMISSIONS.*RUNNER_CLI|RUNNER_CLI.*RUNNER_SKIP_PERMISSIONS/s,
+            /RUNNER_SKIP_PERMISSIONS.*RUNNER_CLI|RUNNER_CLI.*RUNNER_SKIP_PERMISSIONS/s
         );
         expect(() => loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '1' })).not.toThrow();
     });
@@ -90,14 +88,16 @@ describe('RUNNER_CACHE_WATCH', () => {
     it('accepts an explicit poll period', () => {
         expect(
             loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '5000' })
-                .cacheWatchPollMs,
+                .cacheWatchPollMs
         ).toBe(5_000);
     });
 
     // The probe reads opencode's session database — a claude-code transcript answers nothing to
     // the query, and a watch that could never fire would read as a broken feature.
     it('refuses claude-code, where there is nothing to read', () => {
-        expect(() => loadDriverConfig({ RUNNER_CACHE_WATCH: '1' })).toThrow(/RUNNER_CACHE_WATCH.*RUNNER_CLI|RUNNER_CLI.*RUNNER_CACHE_WATCH/s);
+        expect(() => loadDriverConfig({ RUNNER_CACHE_WATCH: '1' })).toThrow(
+            /RUNNER_CACHE_WATCH.*RUNNER_CLI|RUNNER_CLI.*RUNNER_CACHE_WATCH/s
+        );
         expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1' })).not.toThrow();
     });
 
@@ -107,7 +107,7 @@ describe('RUNNER_CACHE_WATCH', () => {
     // reorder of the config checks.
     it('refuses the kubernetes executor, where every tick would be a Job', () => {
         expect(() =>
-            loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1', EXECUTOR: 'kubernetes' }),
+            loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1', EXECUTOR: 'kubernetes' })
         ).toThrow(/RUNNER_CACHE_WATCH.*EXECUTOR=kubernetes|EXECUTOR=kubernetes.*RUNNER_CACHE_WATCH/s);
         // And each half alone is fine — the refusal is about the pair, not either half.
         expect(() => loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_CACHE_WATCH: '1' })).not.toThrow();
@@ -118,15 +118,15 @@ describe('RUNNER_CACHE_WATCH', () => {
     // refusal above already fires — an armed watch is headless by construction. Pinned here so
     // that invariant survives a later reorder of the checks.
     it('is unrepresentable under Remote Control', () => {
-        expect(() =>
-            loadDriverConfig({ RUNNER_CACHE_WATCH: '1', RUNNER_REMOTE_CONTROL: '1' }),
-        ).toThrow(/RUNNER_CLI=claude-code/);
+        expect(() => loadDriverConfig({ RUNNER_CACHE_WATCH: '1', RUNNER_REMOTE_CONTROL: '1' })).toThrow(
+            /RUNNER_CLI=claude-code/
+        );
         expect(() =>
             loadDriverConfig({
                 RUNNER_CLI: 'opencode',
                 RUNNER_CACHE_WATCH: '1',
                 RUNNER_REMOTE_CONTROL: '1',
-            }),
+            })
         ).toThrow(/RUNNER_REMOTE_CONTROL is not supported under RUNNER_CLI=opencode/);
     });
 });

@@ -16,9 +16,7 @@ import type { AuthStore, Caller, WorkerIdentity } from './store.js';
  * and session data of jobs it never held a lease on, so it is gone — the driver's one need from
  * that read rides the lease-guarded complete response instead.
  */
-export type Principal =
-    | { kind: 'user'; caller: Caller }
-    | { kind: 'worker'; worker: WorkerIdentity };
+export type Principal = { kind: 'user'; caller: Caller } | { kind: 'worker'; worker: WorkerIdentity };
 
 declare module 'fastify' {
     interface FastifyRequest {

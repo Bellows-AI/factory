@@ -1,0 +1,91 @@
+{
+    "$schema": "https://biomejs.dev/schemas/2.5.13/schema.json",
+    "vcs": {
+        "enabled": true,
+        "clientKind": "git",
+        "useIgnoreFile": true
+    },
+    "files": {
+        "includes": [
+            "core/**",
+            "server/**",
+            "web/**",
+            "driver/**",
+            "*.ts",
+            "package.json",
+            "tsconfig.json",
+            "tsconfig.base.json",
+            "biome.json",
+            "!**/dist",
+            "!**/dist-types",
+            "!**/node_modules"
+        ]
+    },
+    "formatter": {
+        "enabled": true,
+        "indentStyle": "space",
+        "indentWidth": 4,
+        "lineWidth": 120,
+        "lineEnding": "lf"
+    },
+    "assist": {
+        "enabled": false
+    },
+    "linter": {
+        "enabled": true,
+        "rules": {
+            "preset": "recommended",
+            "a11y": {
+                "noSvgWithoutTitle": "off"
+            },
+            "complexity": {
+                "noAdjacentSpacesInRegex": "off",
+                "noUselessFragments": "off",
+                "useLiteralKeys": "off",
+                "useOptionalChain": "off",
+                "useRegexLiterals": "off"
+            },
+            "correctness": {
+                "noUnusedFunctionParameters": "off",
+                "noUnusedImports": "off",
+                "noUnusedVariables": "off",
+                "noUnsafeOptionalChaining": "off",
+                "useExhaustiveDependencies": "off",
+                "useJsxKeyInIterable": "off"
+            },
+            "style": {
+                "noNonNullAssertion": "off",
+                "useImportType": "off",
+                "useTemplate": "off"
+            },
+            "suspicious": {
+                "noArrayIndexKey": "off",
+                "noAssignInExpressions": "off",
+                "noControlCharactersInRegex": "off",
+                "noImplicitAnyLet": "off",
+                "noPrototypeBuiltins": "off",
+                "noRedeclare": "off",
+                "useIterableCallbackReturn": "off"
+            }
+        }
+    },
+    "javascript": {
+        "formatter": {
+            "quoteStyle": "single",
+            "jsxQuoteStyle": "double",
+            "semicolons": "always",
+            "trailingCommas": "es5",
+            "arrowParentheses": "always"
+        }
+    },
+    "json": {
+        "formatter": {
+            "indentWidth": 4,
+            "lineWidth": 120
+        }
+    },
+    "css": {
+        "formatter": { "enabled": false },
+        "linter": { "enabled": false }
+    }
+}

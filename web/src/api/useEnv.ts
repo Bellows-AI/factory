@@ -90,32 +90,29 @@ export function useEnv(): UseEnv {
         return () => controller.current?.abort();
     }, [refresh]);
 
-    const put = useCallback(
-        async (url: string, body: unknown): Promise<string | null> => {
-            setSaving(true);
-            try {
-                const response = await fetch(url, {
-                    method: 'PUT',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                if (response.status === 401) {
-                    reportUnauthenticated();
-                    return 'Your session expired';
-                }
-                if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not save (${response.status})`;
-                }
-                return null;
-            } catch (e) {
-                return (e as Error).message;
-            } finally {
-                setSaving(false);
+    const put = useCallback(async (url: string, body: unknown): Promise<string | null> => {
+        setSaving(true);
+        try {
+            const response = await fetch(url, {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (response.status === 401) {
+                reportUnauthenticated();
+                return 'Your session expired';
             }
-        },
-        [],
-    );
+            if (!response.ok) {
+                const body = (await response.json().catch(() => ({}))) as { error?: string };
+                return body.error ?? `Could not save (${response.status})`;
+            }
+            return null;
+        } catch (e) {
+            return (e as Error).message;
+        } finally {
+            setSaving(false);
+        }
+    }, []);
 
     // Each save refetches on success, so the panel remounts showing exactly what is stored —
     // including a secret that just went from null-keep to set.
@@ -125,7 +122,7 @@ export function useEnv(): UseEnv {
             if (failure === null) refresh();
             return failure;
         },
-        [put, refresh],
+        [put, refresh]
     );
 
     const saveWorkspace = useCallback(
@@ -134,7 +131,7 @@ export function useEnv(): UseEnv {
             if (failure === null) refresh();
             return failure;
         },
-        [put, refresh],
+        [put, refresh]
     );
 
     const saveRepo = useCallback(
@@ -143,7 +140,7 @@ export function useEnv(): UseEnv {
             if (failure === null) refresh();
             return failure;
         },
-        [put, refresh],
+        [put, refresh]
     );
 
     return { data, loading, error, saving, refresh, saveOrg, saveWorkspace, saveRepo };

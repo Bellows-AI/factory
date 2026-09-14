@@ -35,9 +35,7 @@ describe('repo scoping', () => {
 
     it('excludes another repo from the totals entirely', () => {
         // s09-other-repo is the largest session in the fixture, so a broken filter inflates this.
-        expect(stats.totals.tokens.input).toBe(
-            inScope.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0),
-        );
+        expect(stats.totals.tokens.input).toBe(inScope.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0));
     });
 });
 
@@ -121,11 +119,9 @@ describe('output invariants', () => {
     it('never sums the four token types into one figure', () => {
         // A long cached conversation would count the same context repeatedly.
         expect(billable(stats.totals.tokens)).toBe(
-            (stats.totals.tokens.input ?? 0) + (stats.totals.tokens.output ?? 0),
+            (stats.totals.tokens.input ?? 0) + (stats.totals.tokens.output ?? 0)
         );
-        expect(Object.keys(stats.totals.tokens).sort()).toEqual([
-            'cacheCreation', 'cacheRead', 'input', 'output',
-        ]);
+        expect(Object.keys(stats.totals.tokens).sort()).toEqual(['cacheCreation', 'cacheRead', 'input', 'output']);
     });
 });
 
@@ -133,7 +129,7 @@ describe('the null-not-zero contract', () => {
     it('reports an empty store as zero sessions with null tokens, not zeros', () => {
         const empty = telemetryStats(
             { sessions: [], coverage: { from: null, to: null } },
-            { repos: [FIXTURE_REPO], now: FIXTURE_NOW },
+            { repos: [FIXTURE_REPO], now: FIXTURE_NOW }
         );
         expect(empty.totals.sessions).toBe(0);
         expect(empty.totals.tokens.input).toBeNull();
@@ -144,13 +140,13 @@ describe('the null-not-zero contract', () => {
     it('returns a null accept ratio when nothing was measured, and 1 when everything was accepted', () => {
         const nothing = telemetryStats(
             { sessions: [session({ editsAccepted: null, editsRejected: null })], coverage: { from: null, to: null } },
-            { now: FIXTURE_NOW },
+            { now: FIXTURE_NOW }
         );
         expect(nothing.totals.acceptRatio).toBeNull();
 
         const all = telemetryStats(
             { sessions: [session({ editsAccepted: 5, editsRejected: 0 })], coverage: { from: null, to: null } },
-            { now: FIXTURE_NOW },
+            { now: FIXTURE_NOW }
         );
         expect(all.totals.acceptRatio).toBe(1);
     });

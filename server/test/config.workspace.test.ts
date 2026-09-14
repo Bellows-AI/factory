@@ -2,14 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 
 const DB = 'postgres://factory:factory@127.0.0.1:5432/factory_dev';
-const env = (extra: NodeJS.ProcessEnv = {}) => (
-    {
-        DATABASE_URL: DB,
-        GITHUB_APP_ID: '123',
-        GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----',
-        ...extra,
-    }
-);
+const env = (extra: NodeJS.ProcessEnv = {}) => ({
+    DATABASE_URL: DB,
+    GITHUB_APP_ID: '123',
+    GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nshape-checked-only\n-----END RSA PRIVATE KEY-----',
+    ...extra,
+});
 
 describe('the workspace root', () => {
     it('is null unless one is configured', () => {
@@ -28,7 +26,7 @@ describe('the workspace root', () => {
         // loadConfig has to stay a pure function of its argument; os.homedir() would read the
         // environment behind the validator's back and the case would pass on one machine only.
         expect(loadConfig(env({ ORG_WORKSPACE_ROOT: '~/work', HOME: '/home/ada' })).workspaceRoot).toBe(
-            '/home/ada/work',
+            '/home/ada/work'
         );
         expect(loadConfig(env({ ORG_WORKSPACE_ROOT: '~', HOME: '/home/ada' })).workspaceRoot).toBe('/home/ada');
     });

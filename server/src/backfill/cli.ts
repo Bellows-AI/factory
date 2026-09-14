@@ -12,7 +12,7 @@ import { backfillTranscripts } from './transcripts.js';
 const { config } = resolveConfig();
 if (!config.databaseUrl) {
     console.error(
-        'backfill requires DATABASE_URL or telemetry.database_url (and TELEMETRY_SOURCE=postgres to see the result)',
+        'backfill requires DATABASE_URL or telemetry.database_url (and TELEMETRY_SOURCE=postgres to see the result)'
     );
     process.exit(1);
 }

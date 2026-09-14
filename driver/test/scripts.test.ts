@@ -1,5 +1,15 @@
 import { execFile as execFileCb, execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -178,7 +188,7 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', 
                     ...env,
                 },
                 encoding: 'utf8',
-            },
+            }
         );
         return JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!);
     };
@@ -196,7 +206,11 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', 
         git(work, 'init');
         writeFileSync(join(work, 'README.md'), '# cred\n');
         execFileSync('git', [...FIXTURE_CONFIG, '-C', work, 'add', 'README.md'], { stdio: 'ignore' });
-        execFileSync('git', [...FIXTURE_CONFIG, '-C', work, '-c', 'user.email=t@e.c', '-c', 'user.name=T', 'commit', '-m', 'init'], { stdio: 'ignore' });
+        execFileSync(
+            'git',
+            [...FIXTURE_CONFIG, '-C', work, '-c', 'user.email=t@e.c', '-c', 'user.name=T', 'commit', '-m', 'init'],
+            { stdio: 'ignore' }
+        );
         bare = join(dir, 'cred.git');
         execFileSync('git', [...FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
         execFileSync('git', [...FIXTURE_CONFIG, 'clone', `file://${bare}`, join(dir, 'clone')], { stdio: 'ignore' });
@@ -207,8 +221,22 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', 
         const cert = join(dir, 'cert.pem');
         execFileSync(
             'openssl',
-            ['req', '-x509', '-newkey', 'rsa:2048', '-keyout', key, '-out', cert, '-days', '2', '-nodes', '-subj', '/CN=127.0.0.1'],
-            { stdio: 'ignore' },
+            [
+                'req',
+                '-x509',
+                '-newkey',
+                'rsa:2048',
+                '-keyout',
+                key,
+                '-out',
+                cert,
+                '-days',
+                '2',
+                '-nodes',
+                '-subj',
+                '/CN=127.0.0.1',
+            ],
+            { stdio: 'ignore' }
         );
         // The 401-everything remote: the first unauthenticated request is refused, which is
         // what sends git looking for a credential helper. Offline — loopback only.
@@ -217,10 +245,16 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', 
             (_req, res) => {
                 res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="factory-test"' });
                 res.end('no');
-            },
+            }
         );
         await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-        git(clone, 'remote', 'set-url', 'origin', `https://127.0.0.1:${(server.address() as AddressInfo).port}/repo.git`);
+        git(
+            clone,
+            'remote',
+            'set-url',
+            'origin',
+            `https://127.0.0.1:${(server.address() as AddressInfo).port}/repo.git`
+        );
     });
 
     afterEach(async () => {
@@ -268,7 +302,9 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', 
         chmodSync(join(shimDir, 'git'), 0o755);
         await sync({ CRED_HELPER: markerHelper(join(dir, 'helper-invoked')), PATH: `${shimDir}:${process.env.PATH}` });
         const lines = readFileSync(log, 'utf8').split('\n').filter(Boolean);
-        expect(lines.some((line) => line.includes('http.followRedirects=initial') && line.includes('fetch origin --prune'))).toBe(true);
+        expect(
+            lines.some((line) => line.includes('http.followRedirects=initial') && line.includes('fetch origin --prune'))
+        ).toBe(true);
     });
 
     it('leaves the plain uncredentialed fetch ungated: a file:// origin still syncs', async () => {
@@ -299,7 +335,7 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
         db.prepare('insert into session (id, parent_id, directory, time_created) values (?, null, ?, ?)').run(
             id,
             directory,
-            created,
+            created
         );
     };
 
@@ -379,7 +415,10 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
         insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'tool-calls', tokens: { total: 100016 }, cost: 0 });
         insertMessage(db, 'ses_mine', {
             role: 'assistant',
-            error: { name: 'APIError', data: { message: 'Error from provider (Console): Rate limit exceeded.', statusCode: 429 } },
+            error: {
+                name: 'APIError',
+                data: { message: 'Error from provider (Console): Rate limit exceeded.', statusCode: 429 },
+            },
         });
         db.close();
 

@@ -70,7 +70,12 @@ function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
     if (typeof raw !== 'object' || Array.isArray(raw)) return 'runtime must be an object';
     const fields = raw as Record<string, unknown>;
     const { cpuPercent, memUsedMb, memPercent, activity, sampledAt } = fields;
-    if (typeof cpuPercent !== 'number' || !Number.isFinite(cpuPercent) || cpuPercent < 0 || cpuPercent > CPU_PERCENT_MAX) {
+    if (
+        typeof cpuPercent !== 'number' ||
+        !Number.isFinite(cpuPercent) ||
+        cpuPercent < 0 ||
+        cpuPercent > CPU_PERCENT_MAX
+    ) {
         return `runtime.cpuPercent must be a number 0..${CPU_PERCENT_MAX}`;
     }
     if (typeof memUsedMb !== 'number' || !Number.isFinite(memUsedMb) || memUsedMb < 0 || memUsedMb > MEM_MB_MAX) {
@@ -154,11 +159,14 @@ export const jobRoutes =
             // the route tests' configuration rather than a deployment's.
             const createdBy = callerOf(request)?.user.id ?? null;
 
-            const created = await guard(reply, (e) => request.log.error({ err: e }, 'job create failed'), () =>
-                store.create(command, createdBy, {
-                    repo: typeof repo === 'string' ? repo : null,
-                    executor: typeof executor === 'string' ? executor : null,
-                }),
+            const created = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job create failed'),
+                () =>
+                    store.create(command, createdBy, {
+                        repo: typeof repo === 'string' ? repo : null,
+                        executor: typeof executor === 'string' ? executor : null,
+                    })
             );
             if (!created.ok) return reply;
             return reply.code(201).send({ id: created.value.id, status: 'queued' });
@@ -176,8 +184,10 @@ export const jobRoutes =
                 return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
             }
 
-            const claim = await guard(reply, (e) => request.log.error({ err: e }, 'job claim failed'), () =>
-                store.claim(worker, lease),
+            const claim = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job claim failed'),
+                () => store.claim(worker, lease)
             );
             if (!claim.ok) return reply;
             // 204, not 200 with a null: an idle poll is the common case and it should not have to
@@ -199,8 +209,10 @@ export const jobRoutes =
                 return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
             }
 
-            const beat = await guard(reply, (e) => request.log.error({ err: e }, 'job heartbeat failed'), () =>
-                store.heartbeat(id, leaseToken, lease),
+            const beat = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job heartbeat failed'),
+                () => store.heartbeat(id, leaseToken, lease)
             );
             if (!beat.ok) return reply;
             if (beat.value.result === 'missing') {
@@ -244,12 +256,14 @@ export const jobRoutes =
                 return bad(
                     reply,
                     'BAD_REMOTE_SESSION_ID',
-                    `remoteSessionId must be a non-empty string of at most ${REMOTE_SESSION_LIMIT} characters`,
+                    `remoteSessionId must be a non-empty string of at most ${REMOTE_SESSION_LIMIT} characters`
                 );
             }
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job session failed'), () =>
-                store.session(id, leaseToken, sessionId, (remoteSessionId as string | undefined) ?? null),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job session failed'),
+                () => store.session(id, leaseToken, sessionId, (remoteSessionId as string | undefined) ?? null)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -283,8 +297,10 @@ export const jobRoutes =
             const vitals = runtimeVitals(runtime);
             if (typeof vitals === 'string') return bad(reply, 'BAD_RUNTIME', vitals);
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job output failed'), () =>
-                store.progress(id, leaseToken, output.slice(0, OUTPUT_LIMIT), vitals),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job output failed'),
+                () => store.progress(id, leaseToken, output.slice(0, OUTPUT_LIMIT), vitals)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -338,8 +354,10 @@ export const jobRoutes =
                 });
             }
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job gates failed'), () =>
-                store.gates(id, leaseToken, results),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job gates failed'),
+                () => store.gates(id, leaseToken, results)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -368,7 +386,7 @@ export const jobRoutes =
             const reread = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job gates re-read failed'),
-                () => store.rereadGates(id, leaseToken),
+                () => store.rereadGates(id, leaseToken)
             );
             if (!reread.ok) return reply;
             if (reread.value.result !== 'ok') {
@@ -400,7 +418,7 @@ export const jobRoutes =
             const minted = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'publish token mint failed'),
-                () => store.publishToken(id, leaseToken),
+                () => store.publishToken(id, leaseToken)
             );
             if (!minted.ok) return reply;
             if (minted.value.result !== 'ok') {
@@ -427,8 +445,10 @@ export const jobRoutes =
                 return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
             }
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job suspend failed'), () =>
-                store.suspend(id, leaseToken),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job suspend failed'),
+                () => store.suspend(id, leaseToken)
             );
             if (!result.ok) return reply;
             if (result.value.result === 'missing') {
@@ -463,8 +483,10 @@ export const jobRoutes =
             // about impersonation applies word for word here.
             const createdBy = callerOf(request)?.user.id ?? null;
 
-            const created = await guard(reply, (e) => request.log.error({ err: e }, 'job follow-up failed'), () =>
-                store.createFollowUp(id, command, createdBy),
+            const created = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job follow-up failed'),
+                () => store.createFollowUp(id, command, createdBy)
             );
             if (!created.ok) return reply;
             if (typeof created.value === 'string') {
@@ -492,8 +514,10 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job done failed'), () =>
-                store.markDone(id),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job done failed'),
+                () => store.markDone(id)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -515,8 +539,10 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job stop failed'), () =>
-                store.stop(id),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job stop failed'),
+                () => store.stop(id)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -544,8 +570,10 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job remove failed'), () =>
-                store.removeThread(id),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job remove failed'),
+                () => store.removeThread(id)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -576,7 +604,7 @@ export const jobRoutes =
             const claim = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'reclaim claim failed'),
-                () => store.claimReclaim(worker, lease),
+                () => store.claimReclaim(worker, lease)
             );
             if (!claim.ok) return reply;
             if (claim.value === null) return reply.code(204).send();
@@ -597,7 +625,7 @@ export const jobRoutes =
             const result = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'reclaim ack failed'),
-                () => store.ackReclaim(id, worker),
+                () => store.ackReclaim(id, worker)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -635,7 +663,9 @@ export const jobRoutes =
             if (
                 contextTokens !== undefined &&
                 contextTokens !== null &&
-                (!Number.isInteger(contextTokens) || (contextTokens as number) < 0 || (contextTokens as number) > CONTEXT_TOKENS_MAX)
+                (!Number.isInteger(contextTokens) ||
+                    (contextTokens as number) < 0 ||
+                    (contextTokens as number) > CONTEXT_TOKENS_MAX)
             ) {
                 return bad(reply, 'BAD_CONTEXT', `contextTokens must be an integer 0..${CONTEXT_TOKENS_MAX}`);
             }
@@ -650,14 +680,17 @@ export const jobRoutes =
                 return bad(reply, 'BAD_CONTEXT', `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}`);
             }
 
-            const result = await guard(reply, (e) => request.log.error({ err: e }, 'job complete failed'), () =>
-                store.complete(id, leaseToken, {
-                    status: status as JobOutcome,
-                    exitCode: (exitCode as number | undefined) ?? null,
-                    output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
-                    contextTokens: (contextTokens as number | undefined) ?? null,
-                    contextCostUsd: (contextCostUsd as number | undefined) ?? null,
-                }),
+            const result = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job complete failed'),
+                () =>
+                    store.complete(id, leaseToken, {
+                        status: status as JobOutcome,
+                        exitCode: (exitCode as number | undefined) ?? null,
+                        output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
+                        contextTokens: (contextTokens as number | undefined) ?? null,
+                        contextCostUsd: (contextCostUsd as number | undefined) ?? null,
+                    })
             );
             if (!result.ok) return reply;
             if (result.value.result !== 'ok') {
@@ -673,8 +706,10 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const job = await guard(reply, (e) => request.log.error({ err: e }, 'job read failed'), () =>
-                store.get(id),
+            const job = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job read failed'),
+                () => store.get(id)
             );
             if (!job.ok) return reply;
             if (job.value === null) return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
@@ -688,8 +723,10 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const jobs = await guard(reply, (e) => request.log.error({ err: e }, 'job thread read failed'), () =>
-                store.thread(id),
+            const jobs = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job thread read failed'),
+                () => store.thread(id)
             );
             if (!jobs.ok) return reply;
             if (jobs.value === null) return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
@@ -713,8 +750,10 @@ export const jobRoutes =
                 return bad(reply, 'BAD_REPO', reason ?? 'repo must be owner/name');
             }
 
-            const jobs = await guard(reply, (e) => request.log.error({ err: e }, 'job list failed'), () =>
-                store.list({ status: query.status as JobStatus | undefined, repo, limit }),
+            const jobs = await guard(
+                reply,
+                (e) => request.log.error({ err: e }, 'job list failed'),
+                () => store.list({ status: query.status as JobStatus | undefined, repo, limit })
             );
             if (!jobs.ok) return reply;
             return reply.code(200).send({ jobs: jobs.value });

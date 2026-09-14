@@ -22,11 +22,7 @@ const NANOS = '1787308800000000000'; // 2026-08-21T10:40:00Z
 const attr = (key: string, value: string) => ({ key, value: { stringValue: value } });
 
 /** `temporality` is spread, not defaulted, so a test can genuinely omit the field. */
-function sum(
-    name: string,
-    points: Record<string, unknown>[],
-    ...temporality: unknown[]
-): Record<string, unknown> {
+function sum(name: string, points: Record<string, unknown>[], ...temporality: unknown[]): Record<string, unknown> {
     const agg = temporality.length ? { aggregationTemporality: temporality[0] } : {};
     return { name, sum: { ...agg, dataPoints: points } };
 }
@@ -34,9 +30,11 @@ function sum(
 describe('the OTLP wire format', () => {
     it('reads asInt, which is a string-encoded int64', () => {
         const { rows } = flattenMetrics(
-            body(sum('claude_code.token.usage', [
-                { asInt: '4210', timeUnixNano: NANOS, attributes: [attr('type', 'input')] },
-            ])),
+            body(
+                sum('claude_code.token.usage', [
+                    { asInt: '4210', timeUnixNano: NANOS, attributes: [attr('type', 'input')] },
+                ])
+            )
         );
         expect(rows[0]?.value).toBe(4210);
         expect(typeof rows[0]?.value).toBe('number');
@@ -45,12 +43,12 @@ describe('the OTLP wire format', () => {
 
     it('reads asDouble and a gauge', () => {
         const { rows } = flattenMetrics(
-            body(sum('claude_code.active_time.total', [{ asDouble: 12.5, timeUnixNano: NANOS }])),
+            body(sum('claude_code.active_time.total', [{ asDouble: 12.5, timeUnixNano: NANOS }]))
         );
         expect(rows[0]?.value).toBe(12.5);
 
         const gauge = flattenMetrics(
-            body({ name: 'claude_code.session.count', gauge: { dataPoints: [{ asInt: '1', timeUnixNano: NANOS }] } }),
+            body({ name: 'claude_code.session.count', gauge: { dataPoints: [{ asInt: '1', timeUnixNano: NANOS }] } })
         );
         // A gauge has no temporality, and calling it a delta would make it summable.
         expect(gauge.rows[0]?.temporality).toBe('unspecified');
@@ -60,7 +58,7 @@ describe('the OTLP wire format', () => {
         // The 1e9 mistake puts every point in 1970, so the branch join silently returns
         // nothing and the symptom looks like a broken hook.
         const { rows } = flattenMetrics(
-            body(sum('claude_code.commit.count', [{ asInt: '1', timeUnixNano: NANOS, startTimeUnixNano: NANOS }])),
+            body(sum('claude_code.commit.count', [{ asInt: '1', timeUnixNano: NANOS, startTimeUnixNano: NANOS }]))
         );
         expect(rows[0]?.time).toBe('2026-08-21T10:40:00.000Z');
         expect(rows[0]?.startTime).toBe('2026-08-21T10:40:00.000Z');
@@ -68,9 +66,8 @@ describe('the OTLP wire format', () => {
 
     it('maps aggregation temporality in both encodings', () => {
         const of = (...t: unknown[]) =>
-            flattenMetrics(
-                body(sum('claude_code.commit.count', [{ asInt: '1', timeUnixNano: NANOS }], ...t)),
-            ).rows[0]?.temporality;
+            flattenMetrics(body(sum('claude_code.commit.count', [{ asInt: '1', timeUnixNano: NANOS }], ...t))).rows[0]
+                ?.temporality;
         expect(of(1)).toBe('delta');
         expect(of(2)).toBe('cumulative');
         expect(of('AGGREGATION_TEMPORALITY_CUMULATIVE')).toBe('cumulative');
@@ -98,7 +95,7 @@ describe('the OTLP wire format', () => {
                         },
                     ],
                 },
-            }),
+            })
         );
         expect(rows[0]?.attrs).toEqual({
             type: 'input',
@@ -117,8 +114,8 @@ describe('the OTLP wire format', () => {
                 sum('claude_code.token.usage', [
                     { asInt: '5', timeUnixNano: NANOS, attributes: [attr('type', 'output')] },
                 ]),
-                { 'session.id': 'abc123', 'terminal.type': 'iTerm.app' },
-            ),
+                { 'session.id': 'abc123', 'terminal.type': 'iTerm.app' }
+            )
         );
         expect(rows[0]?.sessionId).toBe('abc123');
         expect(rows[0]?.attrs['terminal.type']).toBe('iTerm.app');
@@ -131,7 +128,7 @@ describe('the OTLP wire format', () => {
 
     it('skips a histogram without throwing', () => {
         const { rows, skipped } = flattenMetrics(
-            body({ name: 'claude_code.whatever', histogram: { dataPoints: [{}] } }),
+            body({ name: 'claude_code.whatever', histogram: { dataPoints: [{}] } })
         );
         expect(rows).toEqual([]);
         expect(skipped.histogram).toBe(1);
@@ -139,10 +136,8 @@ describe('the OTLP wire format', () => {
 
     it('produces stable rows for a replayed body, so the dedup index can match', () => {
         const payload = body(
-            sum('claude_code.token.usage', [
-                { asInt: '7', timeUnixNano: NANOS, attributes: [attr('type', 'input')] },
-            ]),
-            { 'session.id': 's1' },
+            sum('claude_code.token.usage', [{ asInt: '7', timeUnixNano: NANOS, attributes: [attr('type', 'input')] }]),
+            { 'session.id': 's1' }
         );
         expect(flattenMetrics(payload).rows).toEqual(flattenMetrics(payload).rows);
     });
@@ -151,8 +146,7 @@ describe('the OTLP wire format', () => {
 describe('the metric map', () => {
     it('resolves canonical fields from the disambiguating attribute', () => {
         const field = (name: string, attrs: { key: string; value: { stringValue: string } }[]) =>
-            flattenMetrics(body(sum(name, [{ asInt: '1', timeUnixNano: NANOS, attributes: attrs }])))
-                .rows[0]?.field;
+            flattenMetrics(body(sum(name, [{ asInt: '1', timeUnixNano: NANOS, attributes: attrs }]))).rows[0]?.field;
 
         expect(field('claude_code.token.usage', [attr('type', 'cacheRead')])).toBe('tokens_cacheRead');
         expect(field('claude_code.lines_of_code.count', [attr('type', 'removed')])).toBe('lines_removed');
@@ -168,9 +162,7 @@ describe('the metric map', () => {
 
     it('stores an unknown metric with a null field rather than rejecting it', () => {
         // A future tool's data must accumulate before support for it is written.
-        const { rows } = flattenMetrics(
-            body(sum('future_agent.tokens.total', [{ asInt: '9', timeUnixNano: NANOS }])),
-        );
+        const { rows } = flattenMetrics(body(sum('future_agent.tokens.total', [{ asInt: '9', timeUnixNano: NANOS }])));
         expect(rows).toHaveLength(1);
         expect(rows[0]?.field).toBeNull();
         expect(rows[0]?.metric).toBe('future_agent.tokens.total');
@@ -208,14 +200,20 @@ describe('the two exclusions', () => {
                         ],
                     },
                 ]),
-                { 'user.email': 'resource@example.com' },
-            ),
+                { 'user.email': 'resource@example.com' }
+            )
         );
 
         expect(Object.keys(rows[0]?.attrs ?? {})).toEqual(['type']);
         for (const forbidden of [
-            'user.email', 'user.id', 'user.account_uuid', 'user.account_id', 'user.groups',
-            'organization.id', 'workspace.host_paths', 'some.future.identity',
+            'user.email',
+            'user.id',
+            'user.account_uuid',
+            'user.account_id',
+            'user.groups',
+            'organization.id',
+            'workspace.host_paths',
+            'some.future.identity',
         ]) {
             expect(rows[0]?.attrs[forbidden]).toBeUndefined();
         }

@@ -56,7 +56,7 @@ interface RepoPayload {
 export function createGitHubAppClient(
     github: Extract<GitHubConfig, { mode: 'app' }>,
     tokens: InstallationTokenProvider,
-    fetchFn: typeof fetch = fetch,
+    fetchFn: typeof fetch = fetch
 ): GitHubAppClient {
     const call = async (path: string): Promise<unknown> => {
         const response = await fetchFn(`${github.apiUrl}${path}`, {
@@ -97,7 +97,7 @@ export function createGitHubAppClient(
                             private: repo.private ?? false,
                             defaultBranch: repo.default_branch ?? null,
                             pushedAt: repo.pushed_at ?? null,
-                        }),
+                        })
                     );
                 }
                 // Both conditions, not just the count: an empty page ends the walk even if
@@ -116,8 +116,7 @@ export function createGitHubAppClient(
                 installation: Object.freeze({
                     id: await tokens.installationId(),
                     account: owners.size === 1 ? ([...owners][0] as string) : null,
-                    repositorySelection:
-                        selection === 'all' || selection === 'selected' ? selection : null,
+                    repositorySelection: selection === 'all' || selection === 'selected' ? selection : null,
                 }),
             });
         },

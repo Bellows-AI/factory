@@ -42,7 +42,7 @@ export function EnvPage() {
 
     const isAdmin = session?.role === 'admin';
     const repoScope = data?.repos.find(
-        (scope) => selectedRepo && scope.owner === selectedRepo.owner && scope.name === selectedRepo.name,
+        (scope) => selectedRepo && scope.owner === selectedRepo.owner && scope.name === selectedRepo.name
     );
 
     if (loading && !data) {
@@ -60,9 +60,8 @@ export function EnvPage() {
             <section className="panel">
                 <h2>Environment</h2>
                 <p className="muted">
-                    Variables and secrets a runner starts with. They stack — core first, then your
-                    workspace, then the repository, the most specific winning — and they are injected
-                    when a task is claimed.
+                    Variables and secrets a runner starts with. They stack — core first, then your workspace, then the
+                    repository, the most specific winning — and they are injected when a task is claimed.
                 </p>
             </section>
 
@@ -100,16 +99,17 @@ export function EnvPage() {
                         }}
                     >
                         <option value="">Choose a repository…</option>
-                        {repos.loading ? (
-                            <option disabled>Loading repositories…</option>
-                        ) : null}
+                        {repos.loading ? <option disabled>Loading repositories…</option> : null}
                         {(data?.repos ?? []).map((scope) => (
                             <option key={`${scope.owner}/${scope.name}`} value={`${scope.owner}/${scope.name}`}>
                                 {scope.owner}/{scope.name}
                             </option>
                         ))}
                         {(repos.data?.repos ?? [])
-                            .filter((repo) => !(data?.repos ?? []).some((s) => s.owner === repo.owner && s.name === repo.name))
+                            .filter(
+                                (repo) =>
+                                    !(data?.repos ?? []).some((s) => s.owner === repo.owner && s.name === repo.name)
+                            )
                             .map((repo) => (
                                 <option key={`${repo.owner}/${repo.name}`} value={`${repo.owner}/${repo.name}`}>
                                     {repo.owner}/{repo.name}

@@ -72,7 +72,7 @@ describe('parseBellows', () => {
         expect(parseBellows('services:\n')).toEqual([]);
     });
 
-    it('skips a top-level environment block — the gates half is the board parser\'s grammar', () => {
+    it("skips a top-level environment block — the gates half is the board parser's grammar", () => {
         // One file may carry both halves: the board reads `environment:`, this parser reads
         // `services:`, and each skips the other's block wholesale rather than judging its
         // grammar. Both orders parse, and the gates list's `- name:` items are never mistaken
@@ -149,14 +149,14 @@ describe('parseBellows', () => {
             '    image: postgres',
             '    environment:',
             '      PASSWORD: "pa\\"ss"',
-            '      KEY: \'it\'\'s\'',
+            "      KEY: 'it''s'",
             '      PATH: "a\\\\b"',
-            '      WINPATH: \'C:\\path\'',
+            "      WINPATH: 'C:\\path'",
             '      BODY: "line1\\nline2\\tend"',
         ].join('\n');
         expect(parseBellows(text)[0]?.environment).toEqual([
             { key: 'PASSWORD', value: 'pa"ss' },
-            { key: 'KEY', value: 'it\'s' },
+            { key: 'KEY', value: "it's" },
             { key: 'PATH', value: 'a\\b' },
             { key: 'WINPATH', value: 'C:\\path' },
             { key: 'BODY', value: 'line1\nline2\tend' },
@@ -167,7 +167,7 @@ describe('parseBellows', () => {
         // Strictness posture: a typo like `\q` passed through with its backslash would hand the
         // container a credential the author did not write, silently.
         expect(() =>
-            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      BAD: "a\\qb"\n'),
+            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      BAD: "a\\qb"\n')
         ).toThrow(/escape/);
     });
 
@@ -214,7 +214,7 @@ describe('parseBellows', () => {
         // and an oversize one is an error the spec itself names.
         for (const bad of ['\\u12', '\\xZZ', '\\U001F600', '\\UFFFFFFFF']) {
             expect(() =>
-                parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      BAD: "${bad}"\n`),
+                parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      BAD: "${bad}"\n`)
             ).toThrow(/escape/);
         }
     });
@@ -245,7 +245,7 @@ describe('parseBellows', () => {
         // refused at parse, where the message can say why, rather than at the daemon.
         for (const name of ['Cache', 'cache-2-x-', '-cache', 'ca che', 'ca/che', 'a'.repeat(31)]) {
             expect(() => parseBellows(`services:\n  - name: ${name}\n    image: redis\n`), name).toThrow(
-                /lowercase DNS label/,
+                /lowercase DNS label/
             );
         }
         expect(parseBellows('services:\n  - name: a\n    image: redis\n')).toHaveLength(1);
@@ -263,31 +263,29 @@ describe('parseBellows', () => {
         // would publish them on the HOST, and the driver's daemon is root on that host, so a
         // published port is not a supported feature that failed but a key that never parses.
         expect(() => parseBellows('services:\n  - name: db\n    image: postgres\n    ports: ["5432:5432"]\n')).toThrow(
-            /unknown service key "ports"/,
+            /unknown service key "ports"/
         );
         expect(() => parseBellows('services:\n  - name: db\n    image: postgres\n    volumes: ["/x:/y"]\n')).toThrow(
-            /unknown service key "volumes"/,
+            /unknown service key "volumes"/
         );
     });
 
     it('refuses a duplicate service name in one file', () => {
         expect(() =>
-            parseBellows('services:\n  - name: cache\n    image: redis\n  - name: cache\n    image: valkey\n'),
+            parseBellows('services:\n  - name: cache\n    image: redis\n  - name: cache\n    image: valkey\n')
         ).toThrow(/duplicate service name "cache"/);
     });
 
     it('refuses an environment key that is not a shell identifier', () => {
         expect(() =>
-            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      "A B": 1\n'),
+            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      "A B": 1\n')
         ).toThrow(/not a valid environment variable name/);
     });
 
     it('refuses a duplicate environment key in one service, like every other duplicate', () => {
         // Two `A:` lines would reach docker as `-e A=1 -e A=2` and silently resolve to the last.
         expect(() =>
-            parseBellows(
-                'services:\n  - name: db\n    image: postgres\n    environment:\n      A: 1\n      A: 2\n',
-            ),
+            parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      A: 1\n      A: 2\n')
         ).toThrow(/duplicate environment key "A"/);
     });
 
@@ -297,11 +295,11 @@ describe('parseBellows', () => {
         // a daemon error that reads as infrastructure.
         const big = 'x'.repeat(8193);
         expect(() =>
-            parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      PEM: ${big}\n`),
+            parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      PEM: ${big}\n`)
         ).toThrow(/too long/);
         const longKey = 'K'.repeat(257);
         expect(() =>
-            parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      ${longKey}: 1\n`),
+            parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      ${longKey}: 1\n`)
         ).toThrow(/too long/);
     });
 
@@ -311,7 +309,7 @@ describe('parseBellows', () => {
         // daemon would take is a clear refusal, where the reverse trade is flag injection.
         for (const image of ['--privileged', '-v=/:/host', 'alpine sh -c pwn', '$(id)', '`id`', 'redis=latest']) {
             expect(() => parseBellows(`services:\n  - name: db\n    image: "${image}"\n`), image).toThrow(
-                /does not look like an image reference/,
+                /does not look like an image reference/
             );
         }
     });
@@ -322,7 +320,7 @@ describe('parseBellows', () => {
         }
         const digest = `${'a'.repeat(64)}`;
         expect(parseBellows(`services:\n  - name: db\n    image: redis@sha256:${digest}\n`)[0]?.image).toBe(
-            `redis@sha256:${digest}`,
+            `redis@sha256:${digest}`
         );
     });
 
@@ -336,7 +334,7 @@ describe('parseBellows', () => {
         // multiply its way past a per-file cap.
         const items = Array.from({ length: 11 }, (_, i) => `  - name: svc${i}\n    image: redis\n`).join('');
         expect(() => collectServices([{ repo: 'demo', text: `services:\n${items}` }])).toThrow(
-            /at most 10 services across the workspace, got 11/,
+            /at most 10 services across the workspace, got 11/
         );
         const ten = Array.from({ length: 10 }, (_, i) => `  - name: svc${i}\n    image: redis\n`).join('');
         expect(collectServices([{ repo: 'demo', text: `services:\n${ten}` }])).toHaveLength(10);
@@ -386,7 +384,9 @@ describe('splitBellowsSections', () => {
         // content — the alternative was a maxBuffer failure classifying as infrastructure and
         // burning the job's attempts on a file that cannot change.
         expect(() =>
-            splitBellowsSections('###__bellows:demo\n###__bellows_error:/workspaces/x/demo/.bellows.yaml is larger than 65536 bytes\n'),
+            splitBellowsSections(
+                '###__bellows:demo\n###__bellows_error:/workspaces/x/demo/.bellows.yaml is larger than 65536 bytes\n'
+            )
         ).toThrow(/is larger than 65536 bytes/);
     });
 });
@@ -408,7 +408,7 @@ describe('collectServices', () => {
             collectServices([
                 { repo: 'factory', text: 'services:\n  - name: db\n    image: postgres\n' },
                 { repo: 'web', text: 'services:\n  - name: db\n    image: mysql\n' },
-            ]),
+            ])
         ).toThrow(/"db" is defined in both factory\/ and web\//);
     });
 });
@@ -417,7 +417,7 @@ describe('the bellows readout arguments', () => {
     // The driver has no host path into a named volume — the same fact that gave the opencode
     // session readout its throwaway container. The runner image is used rather than pulling a
     // busybox: every job already needs it present.
-    it('cats every checkout\'s .bellows.yaml over the workspaces volume, marked per checkout', () => {
+    it("cats every checkout's .bellows.yaml over the workspaces volume, marked per checkout", () => {
         const line = readBellowsArgs(loadDriverConfig({}), job);
         expect(line.slice(0, 14)).toEqual([
             'run',
@@ -458,7 +458,7 @@ describe('the bellows readout arguments', () => {
         // process trusts with a fragment of a command, and here it becomes an env value the
         // readout script globs under — a container this process spawns.
         expect(() => readBellowsArgs(loadDriverConfig({}), { ...job, workspacePath: `bellows/../../etc` })).toThrow(
-            /no usable workspace path/,
+            /no usable workspace path/
         );
     });
 });
@@ -472,13 +472,13 @@ describe('the service container arguments', () => {
      */
     it('names the network after the job and the attempt', () => {
         expect(networkName(job)).toBe(
-            'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-services',
+            'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-services'
         );
     });
 
     it('names the service container after the job, the attempt, and the service', () => {
         expect(serviceContainerName(job, 'cache')).toBe(
-            'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-svc-cache',
+            'factory-job-11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222-svc-cache'
         );
     });
 
@@ -525,15 +525,15 @@ describe('the service container arguments', () => {
     it('re-asserts the name, image and env keys before they reach argv', () => {
         // parseBellows enforces all three; this is the same assertion the runner makes about a
         // session id it is about to interpolate — the argv builder does not trust its caller.
+        expect(() => serviceRunArgs(job, { name: 'bad name', image: 'redis', environment: [] })).toThrow(
+            /not a safe service name/
+        );
         expect(() =>
-            serviceRunArgs(job, { name: 'bad name', image: 'redis', environment: [] }),
-        ).toThrow(/not a safe service name/);
-        expect(() =>
-            serviceRunArgs(job, { name: 'db', image: 'redis', environment: [{ key: 'A B', value: '1' }] }),
+            serviceRunArgs(job, { name: 'db', image: 'redis', environment: [{ key: 'A B', value: '1' }] })
         ).toThrow(/not a valid environment variable name/);
-        expect(() =>
-            serviceRunArgs(job, { name: 'db', image: '--privileged', environment: [] }),
-        ).toThrow(/not a safe image reference/);
+        expect(() => serviceRunArgs(job, { name: 'db', image: '--privileged', environment: [] })).toThrow(
+            /not a safe image reference/
+        );
     });
 });
 

@@ -9,13 +9,7 @@ import type { Claim, Job, JobStore } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { MemoryAuthStore } from './helpers.js';
-import {
-    githubAuth,
-    memoryAuthStore,
-    signedIn,
-    stubTelemetryClient,
-    testConfig,
-} from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -288,7 +282,7 @@ describe('the two credentials are disjoint', () => {
                     url: `/api/jobs/${JOB_ID}/thread`,
                     headers: { cookie },
                 })
-            ).statusCode,
+            ).statusCode
         ).toBe(200);
 
         // A worker token on the full thread read would let the driver read commands, output and
@@ -304,11 +298,11 @@ describe('the two credentials are disjoint', () => {
                     url: `/api/jobs/${JOB_ID}/thread`,
                     headers: { authorization: `Bearer ${WORKER_TOKEN}` },
                 })
-            ).statusCode,
+            ).statusCode
         ).toBe(401);
     });
 
-    it('refuses a worker token on the single-job read, which stays a person\'s', async () => {
+    it("refuses a worker token on the single-job read, which stays a person's", async () => {
         const store = memoryAuthStore();
         store.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
         const server = await build(githubAuth(), store);

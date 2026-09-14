@@ -67,50 +67,53 @@ export function useStats(query = 'range=all'): UseStats {
     const [pending, setPending] = useState(true);
     const timer = useRef<number | null>(null);
 
-    const poll = useCallback(async (signal: AbortSignal) => {
-        try {
-            const response = await fetch(`/api/stats?${query}`, { signal });
+    const poll = useCallback(
+        async (signal: AbortSignal) => {
+            try {
+                const response = await fetch(`/api/stats?${query}`, { signal });
 
-            if (response.status === 202) {
-                const body = (await response.json()) as { fetch: FetchState };
-                setProgress(body.fetch);
-                setPending(true);
-                timer.current = window.setTimeout(() => void poll(signal), POLL_MS);
-                return;
-            }
+                if (response.status === 202) {
+                    const body = (await response.json()) as { fetch: FetchState };
+                    setProgress(body.fetch);
+                    setPending(true);
+                    timer.current = window.setTimeout(() => void poll(signal), POLL_MS);
+                    return;
+                }
 
-            // Its own branch, ahead of the generic one below. The poll re-arms every two seconds
-            // while a fetch is in progress, so a session expiring mid-poll is not exceptional —
-            // and in the generic branch it renders a banner that never clears, because every
-            // request that follows 401s too. Handing it to the gate is the only thing that can
-            // actually resolve it.
-            if (response.status === 401) {
-                reportUnauthenticated();
+                // Its own branch, ahead of the generic one below. The poll re-arms every two seconds
+                // while a fetch is in progress, so a session expiring mid-poll is not exceptional —
+                // and in the generic branch it renders a banner that never clears, because every
+                // request that follows 401s too. Handing it to the gate is the only thing that can
+                // actually resolve it.
+                if (response.status === 401) {
+                    reportUnauthenticated();
+                    setPending(false);
+                    return;
+                }
+
+                if (!response.ok) {
+                    const body = (await response.json().catch(() => ({}))) as { error?: string };
+                    // Deliberately does not clear `data`: an outage leaves
+                    // whatever is on screen the most accurate view available.
+                    setError(body.error ?? `Request failed (${response.status})`);
+                    setPending(false);
+                    return;
+                }
+
+                const body = (await response.json()) as StatsPayload;
+                if (!body?.telemetry?.totals || !body?.meta) throw new Error('Malformed /api/stats response');
+                setData(body);
+                setProgress(null);
+                setError(null);
                 setPending(false);
-                return;
-            }
-
-            if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                // Deliberately does not clear `data`: an outage leaves
-                // whatever is on screen the most accurate view available.
-                setError(body.error ?? `Request failed (${response.status})`);
+            } catch (e) {
+                if (signal.aborted) return;
+                setError((e as Error).message);
                 setPending(false);
-                return;
             }
-
-            const body = (await response.json()) as StatsPayload;
-            if (!body?.telemetry?.totals || !body?.meta) throw new Error('Malformed /api/stats response');
-            setData(body);
-            setProgress(null);
-            setError(null);
-            setPending(false);
-        } catch (e) {
-            if (signal.aborted) return;
-            setError((e as Error).message);
-            setPending(false);
-        }
-    }, [query]);
+        },
+        [query]
+    );
 
     useEffect(() => {
         const controller = new AbortController();

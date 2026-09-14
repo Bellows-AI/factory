@@ -115,8 +115,7 @@ export function RepoPickerDialog({ open, selected, onClose, onSave, saving }: Re
         <dialog className="picker" ref={ref} aria-labelledby="picker-title">
             <h2 id="picker-title">Select repositories</h2>
             <p className="muted">
-                Each one is cloned into your workspace. You can change this later from the Workspace
-                page.
+                Each one is cloned into your workspace. You can change this later from the Workspace page.
             </p>
 
             {loading ? <p className="status">Loading repositories…</p> : null}
@@ -128,8 +127,8 @@ export function RepoPickerDialog({ open, selected, onClose, onSave, saving }: Re
                 end. This is also why the dialog is dismissible. */}
             {!loading && !repos.length ? (
                 <p className="status">
-                    This GitHub App is not installed on any repositories yet. Ask an administrator to
-                    install it on the organization you work in.
+                    This GitHub App is not installed on any repositories yet. Ask an administrator to install it on the
+                    organization you work in.
                 </p>
             ) : null}
 

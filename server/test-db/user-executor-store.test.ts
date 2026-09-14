@@ -13,9 +13,7 @@ const url = process.env.DATABASE_URL;
 function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`,
-        );
+        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
     }
 }
 
@@ -63,7 +61,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
             sql`
                 insert into user_executor (org_id, user_id, name, type, config)
                 values (${ORG}, ${ALICE}, 'x', 'codex', '{}'::jsonb)
-            `,
+            `
         ).rejects.toThrow(/user_executor_type_ck/);
     });
 

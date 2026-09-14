@@ -89,11 +89,7 @@ function parseExecutors(raw: unknown): { name: string; type: string; config: Rec
         if (typeof item?.name !== 'string' || typeof item?.type !== 'string') {
             return 'each entry must be { name: string, type: string, config: object }';
         }
-        if (
-            typeof item.config !== 'object' ||
-            item.config === null ||
-            Array.isArray(item.config)
-        ) {
+        if (typeof item.config !== 'object' || item.config === null || Array.isArray(item.config)) {
             return `config for "${item.name}" must be a JSON object`;
         }
         if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
@@ -145,23 +141,27 @@ export const workspaceRoutes =
             // operator chose, and the page renders a sentence about it rather than an error.
             if (!root) return reply.code(200).send({ root: null, repos: [], orphaned: [], executors: [] });
 
-            const loaded = await guard(reply, (e) => request.log.error({ err: e }), async () => {
-                // Idempotent, and not redundant with the call in the sign-in callback: it covers
-                // AUTH_MODE=none, whose caller never passes through that callback, and every
-                // session that predates this deploy.
-                ensureUserWorkspace({
-                    root,
-                    orgId: config.orgId,
-                    userId: caller.user.id,
-                    login: caller.user.login,
-                    githubUserId: caller.user.githubUserId,
-                });
-                return Promise.all([
-                    store.list(caller.user.id),
-                    store.orphaned(caller.user.id),
-                    executors ? executors.list(caller.user.id) : Promise.resolve([]),
-                ]);
-            });
+            const loaded = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                async () => {
+                    // Idempotent, and not redundant with the call in the sign-in callback: it covers
+                    // AUTH_MODE=none, whose caller never passes through that callback, and every
+                    // session that predates this deploy.
+                    ensureUserWorkspace({
+                        root,
+                        orgId: config.orgId,
+                        userId: caller.user.id,
+                        login: caller.user.login,
+                        githubUserId: caller.user.githubUserId,
+                    });
+                    return Promise.all([
+                        store.list(caller.user.id),
+                        store.orphaned(caller.user.id),
+                        executors ? executors.list(caller.user.id) : Promise.resolve([]),
+                    ]);
+                }
+            );
             if (!loaded.ok) return reply;
 
             const [selected, orphaned, executorRows] = loaded.value;
@@ -201,7 +201,7 @@ export const workspaceRoutes =
                     return bad(
                         reply,
                         'BAD_REPO_NAME',
-                        `"${repo.owner}/${repo.name}" cannot become a directory: ${reason}`,
+                        `"${repo.owner}/${repo.name}" cannot become a directory: ${reason}`
                     );
                 }
             }
@@ -216,7 +216,7 @@ export const workspaceRoutes =
                     return bad(
                         reply,
                         'REPO_NAME_CONFLICT',
-                        `"${first}/${repo.name}" and "${repo.owner}/${repo.name}" share the checkout directory "${repo.name}"`,
+                        `"${first}/${repo.name}" and "${repo.owner}/${repo.name}" share the checkout directory "${repo.name}"`
                     );
                 }
                 byName.set(repo.name, repo.owner);
@@ -244,20 +244,24 @@ export const workspaceRoutes =
                 return bad(
                     reply,
                     'UNKNOWN_REPO',
-                    `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
+                    `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`
                 );
             }
 
-            const saved = await guard(reply, (e) => request.log.error({ err: e }), async () => {
-                ensureUserWorkspace({
-                    root,
-                    orgId: config.orgId,
-                    userId: caller.user.id,
-                    login: caller.user.login,
-                    githubUserId: caller.user.githubUserId,
-                });
-                await store.select(caller.user.id, selection);
-            });
+            const saved = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                async () => {
+                    ensureUserWorkspace({
+                        root,
+                        orgId: config.orgId,
+                        userId: caller.user.id,
+                        login: caller.user.login,
+                        githubUserId: caller.user.githubUserId,
+                    });
+                    await store.select(caller.user.id, selection);
+                }
+            );
             if (!saved.ok) return reply;
 
             // 202, and the clones run in the background: a clone is minutes, and a request that
@@ -283,8 +287,10 @@ export const workspaceRoutes =
                 });
             }
 
-            const loaded = await guard(reply, (e) => request.log.error({ err: e }), () =>
-                executors.listWithConfigs(caller.user.id),
+            const loaded = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                () => executors.listWithConfigs(caller.user.id)
             );
             if (!loaded.ok) return reply;
 
@@ -327,7 +333,7 @@ export const workspaceRoutes =
                     return bad(
                         reply,
                         'BAD_EXECUTOR_NAME',
-                        `"${executor.name}" cannot be used as an executor name: ${reason}`,
+                        `"${executor.name}" cannot be used as an executor name: ${reason}`
                     );
                 }
             }
@@ -339,11 +345,15 @@ export const workspaceRoutes =
                 return bad(reply, 'EXECUTOR_NAME_CONFLICT', 'executor names must be unique');
             }
 
-            const saved = await guard(reply, (e) => request.log.error({ err: e }), async () => {
-                await executors.replace(caller.user.id, list);
-                // Answered from the store, not echoed from the body: created_at is the database's.
-                return executors.list(caller.user.id);
-            });
+            const saved = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                async () => {
+                    await executors.replace(caller.user.id, list);
+                    // Answered from the store, not echoed from the body: created_at is the database's.
+                    return executors.list(caller.user.id);
+                }
+            );
             if (!saved.ok) return reply;
 
             // 200, not 202: unlike the repos route nothing runs in the background — the rows are

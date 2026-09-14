@@ -68,10 +68,10 @@ describe('removed settings are fatal, not ignored', () => {
         // It used to decide what the whole page was made of, so an ignored one would boot a
         // dashboard showing something other than what its operator believes.
         expect(() => loadConfig({ DATABASE_URL: DEV, DATA_SOURCE: 'fixture' }, NONE)).toThrow(
-            /DATA_SOURCE is no longer supported/,
+            /DATA_SOURCE is no longer supported/
         );
         expect(() => loadConfig({ DATABASE_URL: DEV, DATA_SOURCE: 'github' }, NONE)).toThrow(
-            /DATA_SOURCE is no longer supported/,
+            /DATA_SOURCE is no longer supported/
         );
     });
 
@@ -79,7 +79,7 @@ describe('removed settings are fatal, not ignored', () => {
         // A deployment that had raised it to protect its quota would otherwise silently drop to
         // the 60s-per-repo sync floor.
         expect(() => loadConfig({ DATABASE_URL: DEV, CACHE_TTL_SECONDS: '1800' }, NONE)).toThrow(
-            /CACHE_TTL_SECONDS is no longer supported/,
+            /CACHE_TTL_SECONDS is no longer supported/
         );
     });
 });
@@ -90,28 +90,24 @@ describe('retired variables are fatal, not ignored', () => {
     // these three parameterised is gone.
     it('refuses SYNC_TTL_SECONDS and names the surviving floor', () => {
         expect(() => loadConfig({ DATABASE_URL: DEV, SYNC_TTL_SECONDS: '900' }, NONE)).toThrow(
-            /SYNC_TTL_SECONDS is no longer supported/,
+            /SYNC_TTL_SECONDS is no longer supported/
         );
-        expect(() => loadConfig({ DATABASE_URL: DEV, SYNC_TTL_SECONDS: '900' }, NONE)).toThrow(
-            /TELEMETRY_TTL_SECONDS/,
-        );
+        expect(() => loadConfig({ DATABASE_URL: DEV, SYNC_TTL_SECONDS: '900' }, NONE)).toThrow(/TELEMETRY_TTL_SECONDS/);
     });
 
     it('refuses BASE_BRANCH', () => {
         expect(() => loadConfig({ DATABASE_URL: DEV, BASE_BRANCH: 'main' }, NONE)).toThrow(
-            /BASE_BRANCH is no longer supported/,
+            /BASE_BRANCH is no longer supported/
         );
     });
 
     it('refuses BOTS', () => {
-        expect(() => loadConfig({ DATABASE_URL: DEV, BOTS: 'claude' }, NONE)).toThrow(
-            /BOTS is no longer supported/,
-        );
+        expect(() => loadConfig({ DATABASE_URL: DEV, BOTS: 'claude' }, NONE)).toThrow(/BOTS is no longer supported/);
     });
 
     it('re-points CACHE_TTL_SECONDS at the telemetry slot', () => {
         expect(() => loadConfig({ DATABASE_URL: DEV, CACHE_TTL_SECONDS: '300' }, NONE)).toThrow(
-            /TELEMETRY_TTL_SECONDS/,
+            /TELEMETRY_TTL_SECONDS/
         );
     });
 });

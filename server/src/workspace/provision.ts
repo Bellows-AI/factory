@@ -61,7 +61,7 @@ export function ensureUserWorkspace(options: ProvisionOptions): string | null {
     if (created !== undefined || options.rewriteBreadcrumb) {
         writeFileSync(
             join(dir, BREADCRUMB),
-            `${JSON.stringify({ userId, githubUserId, login, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+            `${JSON.stringify({ userId, githubUserId, login, updatedAt: new Date().toISOString() }, null, 2)}\n`
         );
         log(`workspace ${dir} (${login})`);
     }

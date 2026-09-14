@@ -3,22 +3,16 @@ import type { TelemetryMeta } from '../api/useStats.js';
 import { BarChart } from '../charts/BarChart.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
 
-export function TokenUsagePanel({
-    telemetry,
-    meta,
-}: {
-    telemetry: TelemetryStats;
-    meta: TelemetryMeta;
-}) {
+export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats; meta: TelemetryMeta }) {
     const weeks = telemetry.weekly;
     return (
         <TelemetryFrame
             title="AI token usage"
             blurb={
                 <>
-                    Input and output tokens per ISO week (stacked bars) against sessions started
-                    (line, right axis). Cache reads are excluded from the bars: they would count the
-                    same context repeatedly. Quiet weeks are kept and the last week is partial.
+                    Input and output tokens per ISO week (stacked bars) against sessions started (line, right axis).
+                    Cache reads are excluded from the bars: they would count the same context repeatedly. Quiet weeks
+                    are kept and the last week is partial.
                 </>
             }
             meta={meta}

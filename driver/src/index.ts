@@ -23,10 +23,7 @@ const board = createBoard({
 // EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
 // the first claim: a driver asked for kubernetes outside a cluster should say so at startup.
 const request = config.executor === 'kubernetes' ? inClusterRequest() : null;
-const runner =
-    config.executor === 'kubernetes'
-        ? createKubernetesRunner(config, request!)
-        : createDockerRunner(config);
+const runner = config.executor === 'kubernetes' ? createKubernetesRunner(config, request!) : createDockerRunner(config);
 
 // The gate machinery exists under both executors: docker keeps a warm environment container per
 // checkout and execs into it, kubernetes runs each gate as a Job in the declared image — the

@@ -24,8 +24,7 @@ function repo(overrides: Partial<WorkspaceRepo> = {}): WorkspaceRepo {
     };
 }
 
-const render = (repos: WorkspaceRepo[]) =>
-    renderToStaticMarkup(<WorkspaceReposPanel repos={repos} />);
+const render = (repos: WorkspaceRepo[]) => renderToStaticMarkup(<WorkspaceReposPanel repos={repos} />);
 
 describe('the workspace panel', () => {
     it('never emits a placeholder value for an absent metric', () => {
@@ -59,7 +58,7 @@ describe('the workspace panel', () => {
 describe('the executors panel', () => {
     it('says "No executors configured" when the list is empty', () => {
         const html = renderToStaticMarkup(
-            <WorkspaceExecutorsPanel executors={[]} onAdd={() => {}} onEdit={() => {}} />,
+            <WorkspaceExecutorsPanel executors={[]} onAdd={() => {}} onEdit={() => {}} />
         );
         expect(html).toContain('No executors configured');
         expect(html).toContain('Add executor');
@@ -71,7 +70,7 @@ describe('the executors panel', () => {
                 executors={[{ name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' }]}
                 onAdd={() => {}}
                 onEdit={() => {}}
-            />,
+            />
         );
         expect(html).toContain('main');
         expect(html).toContain('claude-code');
@@ -88,7 +87,7 @@ describe('the executors panel', () => {
                 ]}
                 onAdd={() => {}}
                 onEdit={() => {}}
-            />,
+            />
         );
         expect(html.match(/>Edit</g)?.length).toBe(2);
     });

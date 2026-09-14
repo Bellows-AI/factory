@@ -122,7 +122,7 @@ function session(
     branch: string,
     createdAt: Date,
     spanHours: number,
-    random: () => number,
+    random: () => number
 ): SyntheticSession {
     const between = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
     const from = new Date(createdAt.getTime() - between(1, 6) * HOUR);

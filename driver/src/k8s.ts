@@ -3,11 +3,38 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimContinuesSession, claimEnv, containerName, envFileBody, GATE_GID, GATE_HOME, GATE_UID, opencodeDbPath, opencodeReadoutScript, OUTPUT_LIMIT, parseOpencodeRunOutcome, reportTail, runWorkingDir, SESSION_ID, workspacePathOf } from './docker.js';
+import {
+    claimCarriesGithubToken,
+    claimContinuesSession,
+    claimEnv,
+    containerName,
+    envFileBody,
+    GATE_GID,
+    GATE_HOME,
+    GATE_UID,
+    opencodeDbPath,
+    opencodeReadoutScript,
+    OUTPUT_LIMIT,
+    parseOpencodeRunOutcome,
+    reportTail,
+    runWorkingDir,
+    SESSION_ID,
+    workspacePathOf,
+} from './docker.js';
 import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
 import { CONTAINER_GONE } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
-import { CREDENTIAL_HELPER, gitWorktreeRemoveScript, gitWorktreeScript, publishCheckout, publishFailed, repoPath, withPublishToken, worktreeBranch, worktreeDir } from './publish.js';
+import {
+    CREDENTIAL_HELPER,
+    gitWorktreeRemoveScript,
+    gitWorktreeScript,
+    publishCheckout,
+    publishFailed,
+    repoPath,
+    withPublishToken,
+    worktreeBranch,
+    worktreeDir,
+} from './publish.js';
 import type { PublishResult, PublishStep, ReclaimResult, SyncResult } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript, collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
@@ -127,7 +154,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     const path = workspacePathOf(job);
     if (!path) {
         throw new Error(
-            `refusing to run job ${job.id}: the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+            `refusing to run job ${job.id}: the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
 
@@ -142,7 +169,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     const worktree = job.repo ? worktreeDir(config, job) : null;
     if (job.repo && !worktree) {
         throw new Error(
-            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`,
+            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`
         );
     }
     const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }];
@@ -217,7 +244,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
         // and idle it to the deadline; the loop refuses that state first, and this is the
         // runner asserting it too, exactly as dockerArgs does.
         if (session && !job.followUp) {
-            throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
+            throw new Error(
+                `refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`
+            );
         }
         args = ['run'];
         if (session) {
@@ -292,9 +321,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
-                    volumes: [
-                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
         },
@@ -417,7 +444,7 @@ export function gateJobSpec(
     command: string,
     run: number,
     envSecretName: string | null,
-    gateTimeoutMs: number,
+    gateTimeoutMs: number
 ): AuxJobSpec {
     if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
         throw new Error(`refusing to run a gate of job ${job.id}: its ids are not the uuids the board claims`);
@@ -469,9 +496,7 @@ export function gateJobSpec(
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
-                    volumes: [
-                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
         },
@@ -511,7 +536,7 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
         throw new Error(
             `refusing to read .bellows.yaml for job ${job.id}: ` +
-                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
     const jobName = bellowsJobName(job);
@@ -541,14 +566,10 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                             // constants shared with the splitter, never a credential (the same
                             // justification the sync's REPO/WORKTREE/BRANCH literals give).
                             env: Object.entries(bellowsReadEnv(config, job)).map(([name, value]) => ({ name, value })),
-                            volumeMounts: [
-                                { name: 'workspaces', mountPath: config.workspaceMount, readOnly: true },
-                            ],
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount, readOnly: true }],
                         },
                     ],
-                    volumes: [
-                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
         },
@@ -580,7 +601,7 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob): Aux
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
         throw new Error(
             `refusing to read the opencode session database for job ${job.id}: ` +
-                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
     const jobName = opencodeReadoutJobName(job);
@@ -618,9 +639,7 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob): Aux
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
-                    volumes: [
-                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
         },
@@ -656,7 +675,9 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
     const clone = repoPath(config, job);
     const worktree = worktreeDir(config, job);
     if (!clone || !worktree) {
-        throw new Error(`refusing to sync job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`);
+        throw new Error(
+            `refusing to sync job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`
+        );
     }
     const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
     return {
@@ -704,9 +725,7 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
-                    volumes: [
-                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
         },
@@ -734,7 +753,9 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
     const clone = repoPath(config, job);
     const worktree = worktreeDir(config, job);
     if (!clone || !worktree) {
-        throw new Error(`refusing to reclaim job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`);
+        throw new Error(
+            `refusing to reclaim job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`
+        );
     }
     const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
     return {
@@ -765,9 +786,7 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
-                    volumes: [
-                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
         },
@@ -805,7 +824,7 @@ export function publishStepJobSpec(
     step: number,
     publish: PublishStep,
     envSecret: string | null,
-    repo: string,
+    repo: string
 ): AuxJobSpec {
     if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
         throw new Error(`refusing to publish job ${job.id}: its ids are not the uuids the board claims`);
@@ -843,9 +862,7 @@ export function publishStepJobSpec(
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
                     ],
-                    volumes: [
-                        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },
         },
@@ -867,14 +884,18 @@ export const servicePodName = (job: BoardJob, name: string): string =>
 
 const SERVICE_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-export function servicePodSpec(config: DriverConfig, job: BoardJob, spec: ServiceSpec): {
+export function servicePodSpec(
+    config: DriverConfig,
+    job: BoardJob,
+    spec: ServiceSpec
+): {
     apiVersion: 'v1';
     kind: 'Pod';
     metadata: { name: string; labels: Record<string, string> };
-                spec: {
-                    restartPolicy: 'Never';
-                    automountServiceAccountToken: false;
-                    containers: {
+    spec: {
+        restartPolicy: 'Never';
+        automountServiceAccountToken: false;
+        containers: {
             name: string;
             image: string;
             imagePullPolicy: string;
@@ -901,7 +922,9 @@ export function servicePodSpec(config: DriverConfig, job: BoardJob, spec: Servic
                     imagePullPolicy: config.imagePullPolicy,
                     env: spec.environment.map(({ key, value }) => {
                         if (!SERVICE_ENV_KEY.test(key)) {
-                            throw new Error(`refusing to run job ${job.id}: "${key}" is not a valid environment variable name`);
+                            throw new Error(
+                                `refusing to run job ${job.id}: "${key}" is not a valid environment variable name`
+                            );
                         }
                         return { name: key, value };
                     }),
@@ -925,7 +948,10 @@ export function servicePodSpec(config: DriverConfig, job: BoardJob, spec: Servic
  * matching pods, which is exactly the "any port, direct to the container" semantics docker's
  * network alias had.
  */
-export function serviceDnsSpec(job: BoardJob, spec: ServiceSpec): {
+export function serviceDnsSpec(
+    job: BoardJob,
+    spec: ServiceSpec
+): {
     apiVersion: 'v1';
     kind: 'Service';
     metadata: { name: string; labels: Record<string, string> };
@@ -957,7 +983,8 @@ export const podsPath = (namespace: string): string => `/api/v1/namespaces/${nam
  * the set-based `,factory.service` at the end — because the runner pod and every gate pod carry
  * the same lease label, and only the service fleet may die at teardown.
  */
-const byJob = (path: string, job: BoardJob): string => `${path}?labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`;
+const byJob = (path: string, job: BoardJob): string =>
+    `${path}?labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`;
 const byLease = (path: string, job: BoardJob): string =>
     `${path}?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)},factory.service`;
 
@@ -1034,8 +1061,7 @@ export const claimName = (job: BoardJob): string => {
 
 export const configmapsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/configmaps`;
 
-export const claimPath = (namespace: string, job: BoardJob): string =>
-    `${configmapsPath(namespace)}/${claimName(job)}`;
+export const claimPath = (namespace: string, job: BoardJob): string => `${configmapsPath(namespace)}/${claimName(job)}`;
 
 /** The claim object this attempt POSTs. `data` values are strings — the apiserver rejects numbers. */
 const claimBody = (job: BoardJob) => ({
@@ -1091,7 +1117,7 @@ export function inClusterRequest(): K8sRequest {
     if (!host) {
         throw new Error(
             'KUBERNETES_SERVICE_HOST is not set: this driver is not running in a cluster. ' +
-                'EXECUTOR=kubernetes needs an in-cluster driver — run it in the cluster it serves.',
+                'EXECUTOR=kubernetes needs an in-cluster driver — run it in the cluster it serves.'
         );
     }
     // Read once: the CA does not rotate, and reading it here is what makes a pod without its
@@ -1125,7 +1151,7 @@ export function inClusterRequest(): K8sRequest {
                         if (text.length > 4 * OUTPUT_LIMIT) text = text.slice(-2 * OUTPUT_LIMIT);
                     });
                     res.on('end', () => resolve({ status: res.statusCode ?? 0, body: text }));
-                },
+                }
             );
             // A half-open connection would otherwise hold the run forever — and the loop would
             // renew the lease around a runner nobody can observe or finish.
@@ -1271,7 +1297,7 @@ interface RunCleanup {
 export function createKubernetesRunner(
     config: DriverConfig,
     request: K8sRequest,
-    sleep: (ms: number) => Promise<void> = wait,
+    sleep: (ms: number) => Promise<void> = wait
 ): Runner {
     const name = (job: BoardJob): string => {
         // The board is not something this process trusts with a fragment of a path — and job.id
@@ -1287,7 +1313,10 @@ export function createKubernetesRunner(
 
     /** Best-effort: a 404 is the ordinary end of a reaped Secret, and any other failure is the fence's business. */
     const forgetSecret = (job: BoardJob): Promise<void> =>
-        request('DELETE', `${secretsPath}/${secretName(job)}`).then(() => undefined, () => undefined);
+        request('DELETE', `${secretsPath}/${secretName(job)}`).then(
+            () => undefined,
+            () => undefined
+        );
 
     /**
      * The Secret's contents: the claim env, the loop's minted gate credentials, and the
@@ -1349,7 +1378,9 @@ export function createKubernetesRunner(
         try {
             const created = await request('POST', jobsPath(config.k8sNamespace), spec);
             if (created.status >= 300) {
-                throw new Error(`creating the .bellows.yaml readout answered ${created.status}: ${created.body.slice(0, 200)}`);
+                throw new Error(
+                    `creating the .bellows.yaml readout answered ${created.status}: ${created.body.slice(0, 200)}`
+                );
             }
             let failures = 0;
             for (;;) {
@@ -1368,7 +1399,7 @@ export function createKubernetesRunner(
                     if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
                         throw new Error(
                             `reading the .bellows.yaml readout answered ${response.status} ` +
-                                `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                                `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`
                         );
                     }
                     await sleep(POLL_MS);
@@ -1389,17 +1420,15 @@ export function createKubernetesRunner(
             }
             const podsResponse = await readVerdict(
                 `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
-                'listing the readout pods',
+                'listing the readout pods'
             );
-            const pod = parse<K8sPodList>(podsResponse.body).items?.find(
-                (item) => !item.metadata?.deletionTimestamp,
-            );
+            const pod = parse<K8sPodList>(podsResponse.body).items?.find((item) => !item.metadata?.deletionTimestamp);
             if (!pod?.metadata?.name) {
                 throw new Error('the .bellows.yaml readout left no pod to read its output from');
             }
             const log = await readVerdict(
                 `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log`,
-                'reading the readout log',
+                'reading the readout log'
             );
             if (log.status >= 300) {
                 throw new Error(`reading the .bellows.yaml readout's log answered ${log.status}`);
@@ -1408,7 +1437,7 @@ export function createKubernetesRunner(
         } finally {
             void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
                 () => undefined,
-                () => undefined,
+                () => undefined
             );
         }
     };
@@ -1457,7 +1486,7 @@ export function createKubernetesRunner(
                     if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
                         return fail(
                             `reading the session readout answered ${response.status} ` +
-                                `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                                `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`
                         );
                     }
                     await sleep(POLL_MS);
@@ -1479,18 +1508,16 @@ export function createKubernetesRunner(
             try {
                 pods = await readVerdict(
                     `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
-                    'listing the session readout pods',
+                    'listing the session readout pods'
                 );
                 if (pods.status >= 300) {
                     return fail(`listing the session readout pods answered ${pods.status}`);
                 }
-                const pod = parse<K8sPodList>(pods.body).items?.find(
-                    (item) => !item.metadata?.deletionTimestamp,
-                );
+                const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
                 if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
                 log = await readVerdict(
                     `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log`,
-                    'reading the session readout log',
+                    'reading the session readout log'
                 );
                 if (log.status >= 300) return fail(`reading the session readout's log answered ${log.status}`);
             } catch (e) {
@@ -1500,7 +1527,7 @@ export function createKubernetesRunner(
         } finally {
             void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
                 () => undefined,
-                () => undefined,
+                () => undefined
             );
         }
     };
@@ -1520,7 +1547,7 @@ export function createKubernetesRunner(
     const deleteOwnJob = (job: BoardJob): Promise<boolean> =>
         request('DELETE', `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Foreground`).then(
             (response) => response.status < 300 || response.status === 404,
-            () => false,
+            () => false
         );
 
     /**
@@ -1558,7 +1585,7 @@ export function createKubernetesRunner(
             if (Number.isFinite(attempt) && attempt >= job.attempts) {
                 throw new Error(
                     `job ${job.id} stands down: the checkout claim is held by a newer attempt ` +
-                        `(${claim.data?.attempt} >= ${job.attempts})`,
+                        `(${claim.data?.attempt} >= ${job.attempts})`
                 );
             }
             const uid = claim.metadata?.uid;
@@ -1577,7 +1604,9 @@ export function createKubernetesRunner(
             // 404: the holder released it first. 409: the claim we read was replaced in the
             // meantime — the next round's GET reads the new holder and orders us against it.
             if (release.status >= 300 && release.status !== 404 && release.status !== 409) {
-                throw new Error(`releasing the checkout claim answered ${release.status}: ${release.body.slice(0, 200)}`);
+                throw new Error(
+                    `releasing the checkout claim answered ${release.status}: ${release.body.slice(0, 200)}`
+                );
             }
         }
     };
@@ -1693,7 +1722,7 @@ export function createKubernetesRunner(
                 // alongside what may still be there.
                 if (++waits > REPLACE_MAX_POLLS) {
                     throw new Error(
-                        `the fence of job ${job.id} could not confirm the checkout empty (${REPLACE_MAX_POLLS} polls)`,
+                        `the fence of job ${job.id} could not confirm the checkout empty (${REPLACE_MAX_POLLS} polls)`
                     );
                 }
                 await sleep(POLL_MS);
@@ -1717,14 +1746,14 @@ export function createKubernetesRunner(
             }
             if (verified === 'lost') {
                 throw new Error(
-                    `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`,
+                    `job ${job.id} stands down: the checkout claim was taken over while the job label still answered`
                 );
             }
             if (verified === 'unknown') {
                 if (++waits > REPLACE_MAX_POLLS) {
                     throw new Error(
                         `the checkout claim of job ${job.id} could not be confirmed before fencing ` +
-                            `(${REPLACE_MAX_POLLS} polls)`,
+                            `(${REPLACE_MAX_POLLS} polls)`
                     );
                 }
                 await sleep(POLL_MS);
@@ -1735,7 +1764,7 @@ export function createKubernetesRunner(
                 for (const leftover of fleet.names) {
                     const response = await request(
                         'DELETE',
-                        `${fleet.basePath}/${leftover}?propagationPolicy=Foreground`,
+                        `${fleet.basePath}/${leftover}?propagationPolicy=Foreground`
                     );
                     // A 404 is the ordinary end of an object another fence got to first; a 409
                     // is a concurrent replacement's fence deleting the same object. Both mean
@@ -1743,7 +1772,7 @@ export function createKubernetesRunner(
                     if (response.status >= 300 && response.status !== 404 && response.status !== 409) {
                         throw new Error(
                             `deleting the leftover ${fleet.kind}s answered ${response.status}: ` +
-                                `${response.body.slice(0, 200)}`,
+                                `${response.body.slice(0, 200)}`
                         );
                     }
                     if (response.status < 300) deleted += 1;
@@ -1754,7 +1783,7 @@ export function createKubernetesRunner(
             if (++waits > REPLACE_MAX_POLLS) {
                 throw new Error(
                     `the leftover objects of job ${job.id} never disappeared after their delete ` +
-                        `(${REPLACE_MAX_POLLS} polls)`,
+                        `(${REPLACE_MAX_POLLS} polls)`
                 );
             }
             await sleep(POLL_MS);
@@ -1772,7 +1801,7 @@ export function createKubernetesRunner(
             const secretResponse = await request('POST', secretsPath, secretBody(job, env));
             if (secretResponse.status >= 300) {
                 throw new Error(
-                    `creating the runner secret answered ${secretResponse.status}: ${secretResponse.body.slice(0, 200)}`,
+                    `creating the runner secret answered ${secretResponse.status}: ${secretResponse.body.slice(0, 200)}`
                 );
             }
         }
@@ -1795,13 +1824,13 @@ export function createKubernetesRunner(
             (preReadOurs && preClaim.data?.holder !== undefined && preClaim.data.holder !== job.leaseToken)
         ) {
             throw new Error(
-                `job ${job.id} stands down: the checkout claim was taken over before the runner job was created`,
+                `job ${job.id} stands down: the checkout claim was taken over before the runner job was created`
             );
         }
         if (!preReadOurs || preClaim.data?.holder !== job.leaseToken) {
             throw new Error(
                 `the checkout claim of job ${job.id} could not be confirmed before creating the runner job ` +
-                    `(answered ${pre.status})`,
+                    `(answered ${pre.status})`
             );
         }
     };
@@ -1810,9 +1839,7 @@ export function createKubernetesRunner(
     const launch = async (job: BoardJob, spec: RunnerJobSpec, cleanup: RunCleanup): Promise<void> => {
         const response = await request('POST', jobsPath(config.k8sNamespace), spec);
         if (response.status >= 300) {
-            throw new Error(
-                `creating the runner job answered ${response.status}: ${response.body.slice(0, 200)}`,
-            );
+            throw new Error(`creating the runner job answered ${response.status}: ${response.body.slice(0, 200)}`);
         }
 
         /*
@@ -1854,7 +1881,7 @@ export function createKubernetesRunner(
             // checkout is never handed over while this attempt's runner may still be on it.
             if (!deleted) cleanup.holdClaim = true;
             throw new Error(
-                `job ${job.id} stands down: the checkout claim was taken over before the runner could start`,
+                `job ${job.id} stands down: the checkout claim was taken over before the runner could start`
             );
         }
         if (!readOurs || claim.data?.holder !== job.leaseToken) {
@@ -1869,7 +1896,7 @@ export function createKubernetesRunner(
             if (!deleted) cleanup.holdClaim = true;
             throw new Error(
                 `the checkout claim of job ${job.id} could not be confirmed after creating the runner job ` +
-                    `(answered ${held.status})`,
+                    `(answered ${held.status})`
             );
         }
     };
@@ -1893,9 +1920,7 @@ export function createKubernetesRunner(
             }
             if (response.status !== 429 && response.status < 500) return response;
             if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
-                throw new Error(
-                    `${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
-                );
+                throw new Error(`${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`);
             }
             await sleep(POLL_MS);
         }
@@ -1927,14 +1952,16 @@ export function createKubernetesRunner(
                 if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
                     throw new Error(
                         `reading the job ${jobName} answered ${response.status} ` +
-                            `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                            `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`
                     );
                 }
                 await sleep(POLL_MS);
                 continue;
             }
             if (response.status >= 300) {
-                throw new Error(`reading the job ${jobName} answered ${response.status}: ${response.body.slice(0, 200)}`);
+                throw new Error(
+                    `reading the job ${jobName} answered ${response.status}: ${response.body.slice(0, 200)}`
+                );
             }
             failures = 0;
             const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
@@ -1942,21 +1969,19 @@ export function createKubernetesRunner(
                 const succeeded = (status.succeeded ?? 0) >= 1;
                 const pods = await readVerdict(
                     `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
-                    `listing the pods of ${jobName}`,
+                    `listing the pods of ${jobName}`
                 );
                 if (pods.status >= 300) {
                     throw new Error(`listing the pods of ${jobName} answered ${pods.status}`);
                 }
-                const pod = parse<K8sPodList>(pods.body).items?.find(
-                    (item) => !item.metadata?.deletionTimestamp,
-                );
+                const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
                 const exitCode =
                     pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
                 let output = '';
                 if (pod?.metadata?.name) {
                     const log = await request(
                         'GET',
-                        `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`,
+                        `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`
                     ).catch(() => ({ status: 0, body: '' }));
                     if (log.status < 300) output = log.body;
                 }
@@ -1983,21 +2008,20 @@ export function createKubernetesRunner(
             try {
                 pods = await request(
                     'GET',
-                    `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${name(job)}`)}`,
+                    `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${name(job)}`)}`
                 );
             } catch {
                 return null;
             }
             if (pods.status >= 300) return null;
-            const runnerPod = parse<K8sPodList>(pods.body).items?.find(
-                (item) => !item.metadata?.deletionTimestamp,
-            )?.metadata?.name;
+            const runnerPod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp)
+                ?.metadata?.name;
             if (!runnerPod) return null;
             let metrics: K8sResponse;
             try {
                 metrics = await request(
                     'GET',
-                    `/apis/metrics.k8s.io/v1beta1/namespaces/${config.k8sNamespace}/pods/${runnerPod}`,
+                    `/apis/metrics.k8s.io/v1beta1/namespaces/${config.k8sNamespace}/pods/${runnerPod}`
                 );
             } catch {
                 return null;
@@ -2020,10 +2044,9 @@ export function createKubernetesRunner(
         // natural end with its env intact and its report refused by the board — the same semantics
         // the runner had before env injection.
         async kill(job: BoardJob) {
-            await request(
-                'DELETE',
-                `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Background`,
-            ).catch(() => undefined);
+            await request('DELETE', `${jobPath(config.k8sNamespace, name(job))}?propagationPolicy=Background`).catch(
+                () => undefined
+            );
             // The declared services go with the runner — docker.ts's kill tears its fleet down
             // the same way. A killed job's database has no reason to outlive the runner that
             // talked to it.
@@ -2075,7 +2098,7 @@ export function createKubernetesRunner(
             job: BoardJob,
             session: RunSession,
             onOutput: ((tail: string) => void) | undefined,
-            cleanup: RunCleanup,
+            cleanup: RunCleanup
         ): Promise<RunOutcome> {
             // A null session is an opencode job under this executor — a fresh headless run, the
             // same shape the docker runner carries (dockerArgs). Under claude-code every job is
@@ -2123,11 +2146,21 @@ export function createKubernetesRunner(
                 if (!refusal) {
                     for (const spec of specs) {
                         try {
-                            const pod = await request('POST', podsPath(config.k8sNamespace), servicePodSpec(config, job, spec));
+                            const pod = await request(
+                                'POST',
+                                podsPath(config.k8sNamespace),
+                                servicePodSpec(config, job, spec)
+                            );
                             if (pod.status >= 300) {
-                                throw new Error(`creating the service pod answered ${pod.status}: ${pod.body.slice(0, 200)}`);
+                                throw new Error(
+                                    `creating the service pod answered ${pod.status}: ${pod.body.slice(0, 200)}`
+                                );
                             }
-                            const dns = await request('POST', servicesPath(config.k8sNamespace), serviceDnsSpec(job, spec));
+                            const dns = await request(
+                                'POST',
+                                servicesPath(config.k8sNamespace),
+                                serviceDnsSpec(job, spec)
+                            );
                             if (dns.status === 409) {
                                 refusal =
                                     `.bellows.yaml: service "${spec.name}" is already running for another job in ` +
@@ -2137,7 +2170,9 @@ export function createKubernetesRunner(
                                 break;
                             }
                             if (dns.status >= 300) {
-                                throw new Error(`creating the service DNS name answered ${dns.status}: ${dns.body.slice(0, 200)}`);
+                                throw new Error(
+                                    `creating the service DNS name answered ${dns.status}: ${dns.body.slice(0, 200)}`
+                                );
                             }
                         } catch (e) {
                             // A partial fleet is torn down on the way out, exactly as docker's is.
@@ -2194,21 +2229,23 @@ export function createKubernetesRunner(
                 if (response.status === 429 || response.status >= 500) {
                     if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
                         throw new Error(
-                            `reading the runner job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                            `reading the runner job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`
                         );
                     }
                     await sleep(POLL_MS);
                     continue;
                 }
                 if (response.status >= 300) {
-                    throw new Error(`reading the runner job answered ${response.status}: ${response.body.slice(0, 200)}`);
+                    throw new Error(
+                        `reading the runner job answered ${response.status}: ${response.body.slice(0, 200)}`
+                    );
                 }
                 failures = 0;
                 const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
                 if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) {
                     jobSucceeded = (status.succeeded ?? 0) >= 1;
                     timedOut = (status.conditions ?? []).some(
-                        (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded',
+                        (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded'
                     );
                     break;
                 }
@@ -2218,16 +2255,15 @@ export function createKubernetesRunner(
                             const pods = await request(
                                 'GET',
                                 `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
-                                    `job-name=${name(job)}`,
-                                )}`,
+                                    `job-name=${name(job)}`
+                                )}`
                             );
                             // Skipping terminating pods for the same reason the final read does:
                             // a replaced attempt's pod carries the same label, and its log is not
                             // this run's output.
                             podName =
-                                parse<K8sPodList>(pods.body).items?.find(
-                                    (item) => !item.metadata?.deletionTimestamp,
-                                )?.metadata?.name ?? null;
+                                parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp)
+                                    ?.metadata?.name ?? null;
                         } catch {
                             // Not scheduled yet, or the API server blinked. The next poll looks again.
                         }
@@ -2236,7 +2272,7 @@ export function createKubernetesRunner(
                         try {
                             const log = await request(
                                 'GET',
-                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${podName}/log?tailLines=${LOG_TAIL_LINES}`,
+                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${podName}/log?tailLines=${LOG_TAIL_LINES}`
                             );
                             if (log.status < 300) onOutput(reportTail(log.body));
                         } catch {
@@ -2252,21 +2288,19 @@ export function createKubernetesRunner(
             // controller stamps on every pod it owns, not by guessing the generated name.
             const podsResponse = await readVerdict(
                 `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
-                    `job-name=${name(job)}`,
+                    `job-name=${name(job)}`
                 )}`,
-                'listing the runner pods',
+                'listing the runner pods'
             );
             if (podsResponse.status >= 300) {
                 throw new Error(
-                    `listing the runner pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, 200)}`,
+                    `listing the runner pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, 200)}`
                 );
             }
             // A re-claim replaced the previous attempt's Job, and its pod can still be listed
             // while it terminates — carrying the same job-name label. Skip terminating pods, so
             // the exit code and the log are always this run's.
-            const pod = parse<K8sPodList>(podsResponse.body).items?.find(
-                (item) => !item.metadata?.deletionTimestamp,
-            );
+            const pod = parse<K8sPodList>(podsResponse.body).items?.find((item) => !item.metadata?.deletionTimestamp);
             /*
              * When the Job succeeded but its pod is already gone — garbage-collected before the
              * list above — the Job status IS the exit code: this Job runs one pod
@@ -2275,8 +2309,7 @@ export function createKubernetesRunner(
              * `failed` in the loop and record finished work as failed.
              */
             const exitCode =
-                pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ??
-                (jobSucceeded ? 0 : null);
+                pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (jobSucceeded ? 0 : null);
 
             let output = '';
             if (pod?.metadata?.name) {
@@ -2291,7 +2324,7 @@ export function createKubernetesRunner(
                 try {
                     log = await request(
                         'GET',
-                        `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`,
+                        `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`
                     );
                 } catch {
                     log = { status: 0, body: '' };
@@ -2341,8 +2374,7 @@ export function createKubernetesRunner(
                     // the cause of a premature stop, exactly as the docker runner does.
                     if (scraped.error) outcome.providerError = scraped.error;
                 } else {
-                    outcome.readoutError =
-                        reason ?? 'the readout answered nothing (no session in the database)';
+                    outcome.readoutError = reason ?? 'the readout answered nothing (no session in the database)';
                 }
             }
             return outcome;
@@ -2376,7 +2408,7 @@ export function createKubernetesRunner(
                 });
                 if (response.status >= 300) {
                     return publishFailed(
-                        `creating the publish secret answered ${response.status}: ${response.body.slice(0, 200)}`,
+                        `creating the publish secret answered ${response.status}: ${response.body.slice(0, 200)}`
                     );
                 }
             }
@@ -2389,11 +2421,11 @@ export function createKubernetesRunner(
                         const created = await request(
                             'POST',
                             jobsPath(config.k8sNamespace),
-                            publishStepJobSpec(config, job, stepNumber, publish, secret, repo),
+                            publishStepJobSpec(config, job, stepNumber, publish, secret, repo)
                         );
                         if (created.status >= 300) {
                             throw new Error(
-                                `creating the publish job answered ${created.status}: ${created.body.slice(0, 200)}`,
+                                `creating the publish job answered ${created.status}: ${created.body.slice(0, 200)}`
                             );
                         }
                         const verdict = await auxVerdict(jobName);
@@ -2403,7 +2435,7 @@ export function createKubernetesRunner(
                         if (verdict.exitCode !== 0) {
                             throw new Error(
                                 verdict.output.trim() ||
-                                    `the step exited ${verdict.exitCode ?? 'without a readable code'}`,
+                                    `the step exited ${verdict.exitCode ?? 'without a readable code'}`
                             );
                         }
                         return { stdout: verdict.output };
@@ -2413,13 +2445,19 @@ export function createKubernetesRunner(
                         // next attempt's fence anyway.
                         void request(
                             'DELETE',
-                            `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`,
-                        ).then(() => undefined, () => undefined);
+                            `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`
+                        ).then(
+                            () => undefined,
+                            () => undefined
+                        );
                     }
                 });
             } finally {
                 if (secret) {
-                    void request('DELETE', `${secretsPath}/${secret}`).then(() => undefined, () => undefined);
+                    void request('DELETE', `${secretsPath}/${secret}`).then(
+                        () => undefined,
+                        () => undefined
+                    );
                 }
             }
         },
@@ -2463,10 +2501,10 @@ export function createKubernetesRunner(
             const takeSyncJobDown = async (): Promise<void> => {
                 await request(
                     'DELETE',
-                    `${jobPath(config.k8sNamespace, syncJobName(job))}?propagationPolicy=Foreground`,
+                    `${jobPath(config.k8sNamespace, syncJobName(job))}?propagationPolicy=Foreground`
                 ).then(
                     () => undefined,
-                    () => undefined,
+                    () => undefined
                 );
             };
 
@@ -2488,7 +2526,10 @@ export function createKubernetesRunner(
                             apiVersion: 'v1',
                             kind: 'Secret',
                             type: 'Opaque',
-                            metadata: { name: syncEnvSecretName(job), labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken } },
+                            metadata: {
+                                name: syncEnvSecretName(job),
+                                labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+                            },
                             stringData: env,
                         });
                         if (response.status >= 300) {
@@ -2499,7 +2540,11 @@ export function createKubernetesRunner(
                         }
                         secret = syncEnvSecretName(job);
                     }
-                    const create = await request('POST', jobsPath(config.k8sNamespace), syncJobSpec(config, job, secret));
+                    const create = await request(
+                        'POST',
+                        jobsPath(config.k8sNamespace),
+                        syncJobSpec(config, job, secret)
+                    );
                     if (create.status >= 300) {
                         return {
                             ok: false,
@@ -2522,7 +2567,10 @@ export function createKubernetesRunner(
                             response = await request('GET', jobPath(config.k8sNamespace, syncJobName(job)));
                         } catch (e) {
                             if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
-                                return { ok: false, reason: `the worktree sync job could not be read: ${(e as Error).message}` };
+                                return {
+                                    ok: false,
+                                    reason: `the worktree sync job could not be read: ${(e as Error).message}`,
+                                };
                             }
                             await sleep(POLL_MS);
                             continue;
@@ -2538,7 +2586,10 @@ export function createKubernetesRunner(
                             continue;
                         }
                         if (response.status >= 300) {
-                            return { ok: false, reason: `reading the worktree sync job answered ${response.status}: ${response.body.slice(0, 200)}` };
+                            return {
+                                ok: false,
+                                reason: `reading the worktree sync job answered ${response.status}: ${response.body.slice(0, 200)}`,
+                            };
                         }
                         failures = 0;
                         const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
@@ -2554,16 +2605,16 @@ export function createKubernetesRunner(
                         const pods = await request(
                             'GET',
                             `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
-                                `job-name=${syncJobName(job)}`,
-                            )}`,
+                                `job-name=${syncJobName(job)}`
+                            )}`
                         );
                         const pod = parse<K8sPodList>(pods.body).items?.find(
-                            (item) => !item.metadata?.deletionTimestamp,
+                            (item) => !item.metadata?.deletionTimestamp
                         );
                         if (pod?.metadata?.name) {
                             const log = await request(
                                 'GET',
-                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`,
+                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`
                             );
                             if (log.status < 300) body = log.body;
                         }
@@ -2611,10 +2662,16 @@ export function createKubernetesRunner(
                  */
                 void request(
                     'DELETE',
-                    `${jobPath(config.k8sNamespace, syncJobName(job))}?propagationPolicy=Background`,
-                ).then(() => undefined, () => undefined);
+                    `${jobPath(config.k8sNamespace, syncJobName(job))}?propagationPolicy=Background`
+                ).then(
+                    () => undefined,
+                    () => undefined
+                );
                 if (secret) {
-                    void request('DELETE', `${secretsPath}/${secret}`).then(() => undefined, () => undefined);
+                    void request('DELETE', `${secretsPath}/${secret}`).then(
+                        () => undefined,
+                        () => undefined
+                    );
                 }
             }
         },
@@ -2663,14 +2720,21 @@ export function createKubernetesRunner(
             const takeReclaimJobDown = async (): Promise<void> => {
                 await request(
                     'DELETE',
-                    `${jobPath(config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Foreground`,
-                ).then(() => undefined, () => undefined);
+                    `${jobPath(config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Foreground`
+                ).then(
+                    () => undefined,
+                    () => undefined
+                );
             };
             try {
                 const result = await (async (): Promise<ReclaimResult> => {
                     const create = await request('POST', jobsPath(config.k8sNamespace), reclaimJobSpec(config, job));
                     if (create.status >= 300) {
-                        return { ok: false, removed: false, reason: `creating the worktree reclaim job answered ${create.status}: ${create.body.slice(0, 200)}` };
+                        return {
+                            ok: false,
+                            removed: false,
+                            reason: `creating the worktree reclaim job answered ${create.status}: ${create.body.slice(0, 200)}`,
+                        };
                     }
                     let failures = 0;
                     for (;;) {
@@ -2679,7 +2743,11 @@ export function createKubernetesRunner(
                             response = await request('GET', jobPath(config.k8sNamespace, reclaimJobName(job)));
                         } catch (e) {
                             if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
-                                return { ok: false, removed: false, reason: `the worktree reclaim job could not be read: ${(e as Error).message}` };
+                                return {
+                                    ok: false,
+                                    removed: false,
+                                    reason: `the worktree reclaim job could not be read: ${(e as Error).message}`,
+                                };
                             }
                             await sleep(POLL_MS);
                             continue;
@@ -2696,7 +2764,11 @@ export function createKubernetesRunner(
                             continue;
                         }
                         if (response.status >= 300) {
-                            return { ok: false, removed: false, reason: `reading the worktree reclaim job answered ${response.status}: ${response.body.slice(0, 200)}` };
+                            return {
+                                ok: false,
+                                removed: false,
+                                reason: `reading the worktree reclaim job answered ${response.status}: ${response.body.slice(0, 200)}`,
+                            };
                         }
                         failures = 0;
                         const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
@@ -2708,14 +2780,16 @@ export function createKubernetesRunner(
                         const pods = await request(
                             'GET',
                             `/api/v1/namespaces/${config.k8sNamespace}/pods?labelSelector=${encodeURIComponent(
-                                `job-name=${reclaimJobName(job)}`,
-                            )}`,
+                                `job-name=${reclaimJobName(job)}`
+                            )}`
                         );
-                        const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+                        const pod = parse<K8sPodList>(pods.body).items?.find(
+                            (item) => !item.metadata?.deletionTimestamp
+                        );
                         if (pod?.metadata?.name) {
                             const log = await request(
                                 'GET',
-                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`,
+                                `/api/v1/namespaces/${config.k8sNamespace}/pods/${pod.metadata.name}/log`
                             );
                             if (log.status < 300) body = log.body;
                         }
@@ -2746,8 +2820,11 @@ export function createKubernetesRunner(
                 // checkout is only handed over once nothing of this reclaim can still write it.
                 void request(
                     'DELETE',
-                    `${jobPath(config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Background`,
-                ).then(() => undefined, () => undefined);
+                    `${jobPath(config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Background`
+                ).then(
+                    () => undefined,
+                    () => undefined
+                );
                 await releaseClaim(job);
             }
         },
@@ -2811,7 +2888,7 @@ export function createKubernetesGateManager({
     const reap = (jobName: string): void => {
         void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
             () => undefined,
-            () => undefined,
+            () => undefined
         );
     };
 
@@ -2830,7 +2907,9 @@ export function createKubernetesGateManager({
                 throw harness('the kubernetes gate manager files gate runs under their job, and no job was given');
             }
             if (!GATE_KEY.test(key)) {
-                throw harness(`refusing to run a gate in a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`);
+                throw harness(
+                    `refusing to run a gate in a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`
+                );
             }
             if (!GATE_IMAGE.test(image)) {
                 throw harness(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
@@ -2849,7 +2928,7 @@ export function createKubernetesGateManager({
                 });
                 if (response.status >= 300 && response.status !== 409) {
                     throw harness(
-                        `creating the gate env secret answered ${response.status}: ${response.body.slice(0, 200)}`,
+                        `creating the gate env secret answered ${response.status}: ${response.body.slice(0, 200)}`
                     );
                 }
             }
@@ -2875,11 +2954,11 @@ export function createKubernetesGateManager({
                     const created = await request(
                         'POST',
                         jobsPath(config.k8sNamespace),
-                        gateJobSpec(config, job, key, image, name, command, run, secretName, gateTimeoutMs),
+                        gateJobSpec(config, job, key, image, name, command, run, secretName, gateTimeoutMs)
                     );
                     if (created.status >= 300) {
                         throw harness(
-                            `creating the gate job answered ${created.status}: ${created.body.slice(0, 200)}`,
+                            `creating the gate job answered ${created.status}: ${created.body.slice(0, 200)}`
                         );
                     }
 
@@ -2908,7 +2987,7 @@ export function createKubernetesGateManager({
                             if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
                                 throw harness(
                                     `reading the gate job answered ${response.status} ` +
-                                        `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
+                                        `${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`
                                 );
                             }
                             await sleep(POLL_MS);
@@ -2916,7 +2995,7 @@ export function createKubernetesGateManager({
                         }
                         if (response.status >= 300) {
                             throw harness(
-                                `reading the gate job answered ${response.status}: ${response.body.slice(0, 200)}`,
+                                `reading the gate job answered ${response.status}: ${response.body.slice(0, 200)}`
                             );
                         }
                         failures = 0;
@@ -2924,7 +3003,7 @@ export function createKubernetesGateManager({
                         if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) {
                             succeeded = (status.succeeded ?? 0) >= 1;
                             timedOut = (status.conditions ?? []).some(
-                                (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded',
+                                (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded'
                             );
                             break;
                         }
@@ -2939,17 +3018,17 @@ export function createKubernetesGateManager({
                         if (!imageCleared) {
                             const pods = await request(
                                 'GET',
-                                `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+                                `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`
                             ).catch(() => ({ status: 0, body: '' }));
                             const pod = parse<K8sPodList>(pods.body).items?.find(
-                                (item) => !item.metadata?.deletionTimestamp,
+                                (item) => !item.metadata?.deletionTimestamp
                             );
                             const container = pod?.status?.containerStatuses?.[0];
                             const waiting = container?.state?.waiting;
                             if (waiting?.reason === 'ImagePullBackOff' || waiting?.reason === 'ErrImagePull') {
                                 throw harness(
                                     `the gate image "${image}" cannot be pulled: ${waiting.reason}` +
-                                        (waiting.message ? ` — ${waiting.message.slice(0, 200)}` : ''),
+                                        (waiting.message ? ` — ${waiting.message.slice(0, 200)}` : '')
                                 );
                             }
                             // A pod with no container status yet has not reported anything — the
@@ -2968,15 +3047,15 @@ export function createKubernetesGateManager({
                         request,
                         sleep,
                         `${podsPath(config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
-                        'listing the gate pods',
+                        'listing the gate pods'
                     );
                     if (podsResponse.status >= 300) {
                         throw harness(
-                            `listing the gate pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, 200)}`,
+                            `listing the gate pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, 200)}`
                         );
                     }
                     const pod = parse<K8sPodList>(podsResponse.body).items?.find(
-                        (item) => !item.metadata?.deletionTimestamp,
+                        (item) => !item.metadata?.deletionTimestamp
                     );
                     const exitCode =
                         pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : 1);
@@ -2985,7 +3064,7 @@ export function createKubernetesGateManager({
                     if (pod?.metadata?.name) {
                         const log = await request(
                             'GET',
-                            `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`,
+                            `${podsPath(config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`
                         ).catch(() => ({ status: 0, body: '' }));
                         // Trimmed like the docker manager's exec stdout: a trailing newline is
                         // the command's, not the gate's message.
@@ -3010,7 +3089,7 @@ export function createKubernetesGateManager({
             entries.delete(key);
             void request('DELETE', `/api/v1/namespaces/${config.k8sNamespace}/secrets/${entry.secretName}`).then(
                 () => undefined,
-                () => undefined,
+                () => undefined
             );
         },
 
@@ -3030,7 +3109,7 @@ async function readGateVerdict(
     request: K8sRequest,
     sleep: (ms: number) => Promise<void>,
     path: string,
-    what: string,
+    what: string
 ): Promise<K8sResponse> {
     let failures = 0;
     for (;;) {

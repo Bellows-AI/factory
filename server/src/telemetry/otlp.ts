@@ -116,8 +116,7 @@ export function flattenMetrics(body: unknown): FlattenResult {
         // Resource attributes are promoted onto every datapoint, because that is where
         // OTEL_RESOURCE_ATTRIBUTES keys arrive and datapoint attributes are what we query.
         const resourceAttrs = attributes(
-            (resource['resource'] as { attributes?: { key: string; value: AnyValue }[] } | undefined)
-                ?.attributes,
+            (resource['resource'] as { attributes?: { key: string; value: AnyValue }[] } | undefined)?.attributes
         );
 
         for (const scope of (resource['scopeMetrics'] as unknown as Record<string, never>[] | undefined) ?? []) {
@@ -133,9 +132,7 @@ export function flattenMetrics(body: unknown): FlattenResult {
                     continue;
                 }
 
-                const sum = metric['sum'] as
-                    | { dataPoints?: unknown[]; aggregationTemporality?: unknown }
-                    | undefined;
+                const sum = metric['sum'] as { dataPoints?: unknown[]; aggregationTemporality?: unknown } | undefined;
                 const gauge = metric['gauge'] as { dataPoints?: unknown[] } | undefined;
                 const container = sum ?? gauge;
                 if (!container) continue;

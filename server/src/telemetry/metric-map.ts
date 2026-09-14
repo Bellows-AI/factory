@@ -76,9 +76,6 @@ export function agentOf(metric: string): string {
     return 'unknown';
 }
 
-export function canonicalField(
-    metric: string,
-    attrs: Record<string, string>,
-): CanonicalField | null {
+export function canonicalField(metric: string, attrs: Record<string, string>): CanonicalField | null {
     return RULES[metric]?.field(attrs) ?? null;
 }

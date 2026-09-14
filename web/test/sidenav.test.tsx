@@ -23,11 +23,15 @@ function tabsFixture(groups: TaskGroup[], activeId = groups[0]!.id): TaskTabs {
     };
 }
 
-const render = (path: string, tasks: readonly Job[] | null = null, tabs: TaskTabs = tabsFixture([{ id: '1', tabs: [] }])) =>
+const render = (
+    path: string,
+    tasks: readonly Job[] | null = null,
+    tabs: TaskTabs = tabsFixture([{ id: '1', tabs: [] }])
+) =>
     renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
             <SideNav tasks={tasks} tabs={tabs} />
-        </MemoryRouter>,
+        </MemoryRouter>
     );
 
 function job(overrides: Partial<Job> = {}): Job {
@@ -75,7 +79,6 @@ describe('SideNav', () => {
         const active = html.match(/is-active/g) ?? [];
         expect(active).toHaveLength(1);
     });
-
 });
 
 describe('SideNav task tree', () => {
@@ -95,8 +98,15 @@ describe('SideNav task tree', () => {
         expect(html.indexOf('newer task')).toBeLessThan(html.indexOf('older task'));
     });
 
-    it('renders the task groups as the tree\'s top level, labelled by number', () => {
-        const html = render('/tasks', [job()], tabsFixture([{ id: '1', tabs: [] }, { id: '2', tabs: [] }]));
+    it("renders the task groups as the tree's top level, labelled by number", () => {
+        const html = render(
+            '/tasks',
+            [job()],
+            tabsFixture([
+                { id: '1', tabs: [] },
+                { id: '2', tabs: [] },
+            ])
+        );
         expect(html).toContain('Group 1');
         expect(html).toContain('Group 2');
         // A group is a heading the member clicks to focus it, not a link the router follows, so
@@ -106,18 +116,21 @@ describe('SideNav task tree', () => {
     });
 
     it('opens a way to create the next group, numbered automatically', () => {
-        const html = render('/tasks', [job()], tabsFixture([{ id: '1', tabs: [] }, { id: '2', tabs: [] }]));
+        const html = render(
+            '/tasks',
+            [job()],
+            tabsFixture([
+                { id: '1', tabs: [] },
+                { id: '2', tabs: [] },
+            ])
+        );
         expect(html).toContain('+ Group');
         expect(html).toContain('sidenav-add-group');
     });
 
-    it('nests a group\'s tabs under it and marks the selected group', () => {
+    it("nests a group's tabs under it and marks the selected group", () => {
         const task = job();
-        const html = render(
-            `/tasks/${task.id}`,
-            [task],
-            tabsFixture([{ id: '1', tabs: [task.id] }], '1'),
-        );
+        const html = render(`/tasks/${task.id}`, [task], tabsFixture([{ id: '1', tabs: [task.id] }], '1'));
         // The section, the group heading and the group's tab carry the current marker, in that
         // order — the group's class reads like the section's so the tree's selection is uniform.
         const active = html.match(/is-active/g) ?? [];
@@ -177,17 +190,34 @@ describe('SideNav task tree', () => {
 
 describe('SideNav status dots', () => {
     it('blinks a green dot beside a run that is going', () => {
-        const html = render('/tasks', [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null })], tabsFixture([{ id: '1', tabs: [job().id] }]));
+        const html = render(
+            '/tasks',
+            [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null })],
+            tabsFixture([{ id: '1', tabs: [job().id] }])
+        );
         expect(html).toContain('sidenav-dot sidenav-dot-running');
     });
 
     it('holds grey for a parked run, and the same grey while a stop request is in flight', () => {
-        const parked = render('/tasks', [job({ status: 'standby', exitCode: null, finishedAt: null, startedAt: null, output: null })], tabsFixture([{ id: '1', tabs: [job().id] }]));
+        const parked = render(
+            '/tasks',
+            [job({ status: 'standby', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+            tabsFixture([{ id: '1', tabs: [job().id] }])
+        );
         expect(parked).toContain('sidenav-dot sidenav-dot-paused');
         const stopping = render(
             '/tasks',
-            [job({ status: 'running', cancelRequestedAt: '2026-09-02T12:01:00.000Z', exitCode: null, finishedAt: null, startedAt: null, output: null })],
-            tabsFixture([{ id: '1', tabs: [job().id] }]),
+            [
+                job({
+                    status: 'running',
+                    cancelRequestedAt: '2026-09-02T12:01:00.000Z',
+                    exitCode: null,
+                    finishedAt: null,
+                    startedAt: null,
+                    output: null,
+                }),
+            ],
+            tabsFixture([{ id: '1', tabs: [job().id] }])
         );
         expect(stopping).toContain('sidenav-dot sidenav-dot-stopping');
     });
@@ -205,14 +235,19 @@ describe('SideNav status dots', () => {
         const done = render(
             '/tasks',
             [job({ doneAt: '2026-09-02T13:00:00.000Z', exitCode: 1, status: 'failed' })],
-            tabsFixture([{ id: '1', tabs: [job().id] }]),
+            tabsFixture([{ id: '1', tabs: [job().id] }])
         );
         expect(done).toContain('sidenav-dot sidenav-dot-done');
     });
 
-    it('answers for the whole thread, not the row under the cursor: a follow-up\'s state is the task\'s', () => {
+    it("answers for the whole thread, not the row under the cursor: a follow-up's state is the task's", () => {
         const root = job();
-        const child = { ...job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null }), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id, rootJobId: root.id };
+        const child = {
+            ...job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null }),
+            id: '33333333-3333-4333-8333-333333333333',
+            followUpTo: root.id,
+            rootJobId: root.id,
+        };
         const html = render('/tasks', [root, child]);
         // The root stays in Recent (its tab is not open), and its dot wears the child's live state.
         const rootEntry = html.slice(html.indexOf('newer task'), html.indexOf('</a>', html.indexOf('newer task')));
@@ -230,7 +265,7 @@ describe('SideNav task summary', () => {
         runtime: { cpuPercent: 42, memUsedMb: 200, memPercent: null, activity, sampledAt: '2026-09-02T12:00:01.000Z' },
     });
 
-    it('shows the running task\'s summary under its name in the group tree', () => {
+    it("shows the running task's summary under its name in the group tree", () => {
         const task = job(running('→ Read src/x.ts'));
         const html = render(`/tasks/${task.id}`, [task], tabsFixture([{ id: '1', tabs: [task.id] }]));
         expect(html).toContain('sidenav-task-summary');
@@ -246,7 +281,12 @@ describe('SideNav task summary', () => {
 
     it('answers for the whole thread, not the row under the cursor', () => {
         const root = job();
-        const child = { ...job(running('→ Bash npm test')), id: '33333333-3333-4333-8333-333333333333', followUpTo: root.id, rootJobId: root.id };
+        const child = {
+            ...job(running('→ Bash npm test')),
+            id: '33333333-3333-4333-8333-333333333333',
+            followUpTo: root.id,
+            rootJobId: root.id,
+        };
         const html = render('/tasks', [root, child]);
         const rootEntry = html.slice(html.indexOf('newer task'), html.indexOf('</a>', html.indexOf('newer task')));
         expect(rootEntry).toContain('sidenav-task-summary');
@@ -263,13 +303,7 @@ describe('RepoPickerDialog', () => {
      */
     const render = (open: boolean) =>
         renderToStaticMarkup(
-            <RepoPickerDialog
-                open={open}
-                selected={[]}
-                onClose={() => {}}
-                onSave={async () => null}
-                saving={false}
-            />,
+            <RepoPickerDialog open={open} selected={[]} onClose={() => {}} onSave={async () => null} saving={false} />
         );
 
     it('disables Save until the installation list has actually loaded', () => {
@@ -295,7 +329,7 @@ describe('RepoPickerDialog', () => {
         expect(html).not.toMatch(/<dialog[^>]*\sopen/);
     });
 
-    it('uses no form, because the CSP sends form-action \'none\'', () => {
+    it("uses no form, because the CSP sends form-action 'none'", () => {
         // The same trap that makes LoginGate an anchor rather than a form. A `method="dialog"` form
         // would look correct and be blocked by the header set in server/src/app.ts.
         const html = render(true);

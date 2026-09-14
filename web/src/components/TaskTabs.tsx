@@ -48,12 +48,7 @@ function TaskTab({ id, tasks, onClose }: { id: string; tasks: readonly Job[] | n
                 <span className="task-tab-title">{title}</span>
                 {summary !== null ? <span className="task-tab-summary">{summary}</span> : null}
             </NavLink>
-            <button
-                type="button"
-                className="task-tab-close"
-                aria-label={`Close ${title}`}
-                onClick={() => onClose(id)}
-            >
+            <button type="button" className="task-tab-close" aria-label={`Close ${title}`} onClick={() => onClose(id)}>
                 ×
             </button>
         </div>

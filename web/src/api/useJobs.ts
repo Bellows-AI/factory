@@ -230,7 +230,7 @@ export function useJobs(enabled: boolean): UseJobs {
                 return { id: null, error: (e as Error).message };
             }
         },
-        [start],
+        [start]
     );
 
     // Both of these are a person's verdict on a finished task — an adjustment to ask for, or the
@@ -261,7 +261,7 @@ export function useJobs(enabled: boolean): UseJobs {
                 return { id: null, error: (e as Error).message };
             }
         },
-        [start],
+        [start]
     );
 
     const markDone = useCallback(
@@ -282,7 +282,7 @@ export function useJobs(enabled: boolean): UseJobs {
                 return (e as Error).message;
             }
         },
-        [start],
+        [start]
     );
 
     // The two thread actions stop and remove, both POSTed like done, both re-arming the
@@ -308,7 +308,7 @@ export function useJobs(enabled: boolean): UseJobs {
                 return (e as Error).message;
             }
         },
-        [start],
+        [start]
     );
 
     const remove = useCallback(
@@ -329,7 +329,7 @@ export function useJobs(enabled: boolean): UseJobs {
                 return (e as Error).message;
             }
         },
-        [start],
+        [start]
     );
 
     return { jobs, error, queue, followUp, markDone, stop, remove };

@@ -41,7 +41,7 @@ function Probe() {
 }
 
 describe('tasks area wiring', () => {
-    it('publishes the shell context AND the workspace to the area\'s pages', () => {
+    it("publishes the shell context AND the workspace to the area's pages", () => {
         seen = { shellTasks: undefined, workspace: undefined };
         renderToStaticMarkup(
             <MemoryRouter initialEntries={['/tasks']}>
@@ -52,7 +52,7 @@ describe('tasks area wiring', () => {
                         </Route>
                     </Route>
                 </Routes>
-            </MemoryRouter>,
+            </MemoryRouter>
         );
         // Identity, not a lookalike: the page must see the very poll instance the shell owns.
         expect(seen.shellTasks).toBe(fakeTasks);

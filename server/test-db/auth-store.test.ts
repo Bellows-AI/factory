@@ -16,7 +16,7 @@ function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
         throw new Error(
-            `Refusing to run: this suite deletes from the account tables, and "${name}" is not a test database.`,
+            `Refusing to run: this suite deletes from the account tables, and "${name}" is not a test database.`
         );
     }
 }
@@ -79,9 +79,7 @@ describe.skipIf(!enabled)('invite and claim', () => {
     it('creates an invite for a login that has no account yet', async () => {
         // The whole reason the primary key is the login: at invite time there is nobody to point at.
         expect(await store.invite(ORG, 'octocat', 'member')).toBe('created');
-        expect(await store.listMembers(ORG)).toEqual([
-            { login: 'octocat', role: 'member', claimed: false },
-        ]);
+        expect(await store.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'member', claimed: false }]);
     });
 
     it('normalises the login, because GitHub is case-insensitive about them', async () => {
@@ -193,9 +191,7 @@ describe.skipIf(!enabled)('auto-join', () => {
         expect(caller?.user.login).toBe('stranger');
         // `member`, never `admin`: being let in is not the same as being trusted to let others in.
         expect(caller?.role).toBe('member');
-        expect(await store.listMembers(ORG)).toEqual([
-            { login: 'stranger', role: 'member', claimed: true },
-        ]);
+        expect(await store.listMembers(ORG)).toEqual([{ login: 'stranger', role: 'member', claimed: true }]);
     });
 
     it('does nothing when the account is already a member, keeping its role', async () => {
@@ -377,9 +373,7 @@ describe.skipIf(!enabled)('boot-time seeding', () => {
         const orgId = freshOrg();
         await migrate(sql, { orgId, attempts: 1, bootstrapAdmin: 'FirstAdmin' });
 
-        expect(await store.listMembers(orgId)).toEqual([
-            { login: 'firstadmin', role: 'admin', claimed: false },
-        ]);
+        expect(await store.listMembers(orgId)).toEqual([{ login: 'firstadmin', role: 'admin', claimed: false }]);
     });
 
     it('does not reinstate an admin who removed themselves', async () => {

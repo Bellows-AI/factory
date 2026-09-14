@@ -29,9 +29,7 @@ export function TaskDetailPage() {
     }, [id]);
 
     const latest =
-        detail.jobs !== null && detail.jobs.length > 0
-            ? (detail.jobs[detail.jobs.length - 1] ?? null)
-            : null;
+        detail.jobs !== null && detail.jobs.length > 0 ? (detail.jobs[detail.jobs.length - 1] ?? null) : null;
 
     const followUp = async (command: string): Promise<string | null> => {
         if (latest === null) return 'No task to follow up on';

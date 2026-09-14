@@ -142,11 +142,15 @@ export const envRoutes =
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
 
-            const loaded = await guard(reply, (e) => request.log.error({ err: e }), async () => {
-                // Secret values are nulled in the SELECT — for admins too. The page renders "set"
-                // from isSecret; no caller ever reads one back.
-                return Promise.all([store.listOrg(), store.listWorkspace(caller.user.id), store.listRepos()]);
-            });
+            const loaded = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                async () => {
+                    // Secret values are nulled in the SELECT — for admins too. The page renders "set"
+                    // from isSecret; no caller ever reads one back.
+                    return Promise.all([store.listOrg(), store.listWorkspace(caller.user.id), store.listRepos()]);
+                }
+            );
             if (!loaded.ok) return reply;
 
             return reply.code(200).send({
@@ -169,10 +173,14 @@ export const envRoutes =
                 return bad(reply, varsCode(vars), vars);
             }
 
-            const saved = await guard(reply, (e) => request.log.error({ err: e }), async () => {
-                await store.replaceOrg(vars);
-                return store.listOrg();
-            });
+            const saved = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                async () => {
+                    await store.replaceOrg(vars);
+                    return store.listOrg();
+                }
+            );
             if (!saved.ok) return reply;
             return reply.code(200).send({ vars: saved.value });
         });
@@ -187,10 +195,14 @@ export const envRoutes =
                 return bad(reply, varsCode(vars), vars);
             }
 
-            const saved = await guard(reply, (e) => request.log.error({ err: e }), async () => {
-                await store.replaceWorkspace(caller.user.id, vars);
-                return store.listWorkspace(caller.user.id);
-            });
+            const saved = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                async () => {
+                    await store.replaceWorkspace(caller.user.id, vars);
+                    return store.listWorkspace(caller.user.id);
+                }
+            );
             if (!saved.ok) return reply;
             return reply.code(200).send({ vars: saved.value });
         });
@@ -238,14 +250,18 @@ export const envRoutes =
                 return bad(
                     reply,
                     'UNKNOWN_REPO',
-                    `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
+                    `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`
                 );
             }
 
-            const saved = await guard(reply, (e) => request.log.error({ err: e }), async () => {
-                await store.replaceRepo(repo.owner, repo.name, vars);
-                return store.listRepo(repo.owner, repo.name);
-            });
+            const saved = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                async () => {
+                    await store.replaceRepo(repo.owner, repo.name, vars);
+                    return store.listRepo(repo.owner, repo.name);
+                }
+            );
             if (!saved.ok) return reply;
             return reply.code(200).send({ vars: saved.value });
         });

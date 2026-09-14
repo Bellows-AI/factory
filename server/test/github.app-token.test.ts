@@ -49,7 +49,7 @@ function stubFetch(options: { expiresAt?: () => string; token?: () => string; in
                     token: options.token?.() ?? 'ghs_installation_token',
                     expires_at: options.expiresAt?.() ?? new Date(Date.now() + 3600_000).toISOString(),
                 }),
-                { status: 201 },
+                { status: 201 }
             );
         }
         if (url.includes('/app/installations')) {
@@ -87,7 +87,10 @@ describe('the App JWT', () => {
         const verified = createVerify('RSA-SHA256')
             .update(`${h}.${p}`)
             .end()
-            .verify(createPublicKey(publicKey.export({ type: 'spki', format: 'pem' }) as string), Buffer.from(signature as string, 'base64url'));
+            .verify(
+                createPublicKey(publicKey.export({ type: 'spki', format: 'pem' }) as string),
+                Buffer.from(signature as string, 'base64url')
+            );
         expect(verified).toBe(true);
     });
 
@@ -115,9 +118,11 @@ describe('the App JWT', () => {
         // nothing would otherwise fail at the first fetch, minutes later.
         expect(() =>
             installationTokenProvider({
-                github: appConfig({ privateKeyPem: '-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----' }),
+                github: appConfig({
+                    privateKeyPem: '-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----',
+                }),
                 fetchFn: stubFetch().fetchFn,
-            }),
+            })
         ).toThrow(/not a usable private key/);
     });
 });
@@ -185,7 +190,7 @@ describe('the installation token', () => {
         expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(1);
     });
 
-    it('trusts GitHub\'s expires_at rather than assuming an hour', async () => {
+    it("trusts GitHub's expires_at rather than assuming an hour", async () => {
         let now = Date.parse('2026-08-21T12:00:00.000Z');
         // A ten-minute token: entirely inside what an assumed hour would consider fresh.
         const { calls, fetchFn } = stubFetch({ expiresAt: () => new Date(now + 10 * 60 * 1000).toISOString() });
@@ -249,7 +254,7 @@ describe('discovering the installation', () => {
         // presenting as an empty dashboard.
         const { fetchFn } = stubFetch({ installations: [] });
         await expect(
-            installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get(),
+            installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get()
         ).rejects.toThrow(/not installed anywhere/);
     });
 
@@ -262,7 +267,7 @@ describe('discovering the installation', () => {
             ],
         });
         await expect(
-            installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get(),
+            installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get()
         ).rejects.toThrow(/installed on 2 accounts \(acme, other\)[\s\S]*GITHUB_APP_INSTALLATION_ID/);
     });
 
@@ -277,7 +282,11 @@ describe('discovering the installation', () => {
             new Promise<Response>((_resolve, reject) => {
                 init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason));
             })) as typeof fetch;
-        const tokens = installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn, mintTimeoutMs: 10 });
+        const tokens = installationTokenProvider({
+            github: appConfig({ installationId: null }),
+            fetchFn,
+            mintTimeoutMs: 10,
+        });
 
         await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
     });

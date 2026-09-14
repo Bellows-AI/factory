@@ -2,7 +2,19 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
-import type { Claim, FollowUpRefusal, GateReport, Job, JobStatus, JobStore, LeaseResult, ReclaimClaim, RemoveResult, RuntimeVitals, StopResult } from '../src/db/job-store.js';
+import type {
+    Claim,
+    FollowUpRefusal,
+    GateReport,
+    Job,
+    JobStatus,
+    JobStore,
+    LeaseResult,
+    ReclaimClaim,
+    RemoveResult,
+    RuntimeVitals,
+    StopResult,
+} from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import { stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -60,7 +72,7 @@ function stubStore(
         reclaimClaim?: ReclaimClaim | null;
         ackReclaim?: 'ok' | 'lost' | 'missing';
         heartbeatCancelRequested?: boolean;
-    } = {},
+    } = {}
 ): StoreStub {
     const boom = () => {
         if (options.fail) throw new Error('database is down');
@@ -154,11 +166,14 @@ function stubStore(
         },
         async complete(id: string, _token: string, { output, contextTokens, contextCostUsd }) {
             boom();
-            stub.completed.push({ id, output, contextTokens: contextTokens ?? null, contextCostUsd: contextCostUsd ?? null });
+            stub.completed.push({
+                id,
+                output,
+                contextTokens: contextTokens ?? null,
+                contextCostUsd: contextCostUsd ?? null,
+            });
             const verdict = options.verdict ?? 'ok';
-            return verdict === 'ok'
-                ? { result: 'ok', threadDone: options.threadDone ?? false }
-                : { result: verdict };
+            return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
         },
         async gates(id, _token, results) {
             boom();
@@ -520,7 +535,13 @@ describe('POST /api/jobs/:id/session', () => {
 });
 
 describe('POST /api/jobs/:id/output', () => {
-    const VITALS = { cpuPercent: 93, memUsedMb: 544, memPercent: 7, activity: '→ Read x.ts', sampledAt: '2026-09-09T10:00:00.000Z' };
+    const VITALS = {
+        cpuPercent: 93,
+        memUsedMb: 544,
+        memPercent: 7,
+        activity: '→ Read x.ts',
+        sampledAt: '2026-09-09T10:00:00.000Z',
+    };
 
     it('streams a rolling tail of the running attempt', async () => {
         const store = stubStore({ verdict: 'ok' });
@@ -600,7 +621,10 @@ describe('POST /api/jobs/:id/output', () => {
         ['a string memory', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, memUsedMb: '544MiB' } }],
         ['a memPercent past 100', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, memPercent: 101 } }],
         ['an empty activity line', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, activity: '  ' } }],
-        ['an unparseable sample time', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, sampledAt: 'noonish' } }],
+        [
+            'an unparseable sample time',
+            { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, sampledAt: 'noonish' } },
+        ],
         ['a runtime with no sample time', { leaseToken: TOKEN, output: 'x', runtime: { cpuPercent: 1, memUsedMb: 1 } }],
     ])('refuses %s with BAD_RUNTIME', async (_label, payload) => {
         const instance = await harnessWith(stubStore());
@@ -658,10 +682,26 @@ describe('POST /api/jobs/:id/gates', () => {
         ['a malformed lease token', { leaseToken: 'nope', gates: results }, 'BAD_TOKEN'],
         ['a missing gate list', { leaseToken: TOKEN }, 'BAD_GATES'],
         ['a non-array gate list', { leaseToken: TOKEN, gates: 'test' }, 'BAD_GATES'],
-        ['an unknown status', { leaseToken: TOKEN, gates: [{ name: 'test', status: 'queued', exitCode: null, output: '' }] }, 'BAD_GATES'],
-        ['a gate without a name', { leaseToken: TOKEN, gates: [{ status: 'passed', exitCode: 0, output: '' }] }, 'BAD_GATES'],
-        ['a non-integer exit code', { leaseToken: TOKEN, gates: [{ name: 'test', status: 'passed', exitCode: 1.5, output: '' }] }, 'BAD_GATES'],
-        ['a non-string output', { leaseToken: TOKEN, gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 7 }] }, 'BAD_GATES'],
+        [
+            'an unknown status',
+            { leaseToken: TOKEN, gates: [{ name: 'test', status: 'queued', exitCode: null, output: '' }] },
+            'BAD_GATES',
+        ],
+        [
+            'a gate without a name',
+            { leaseToken: TOKEN, gates: [{ status: 'passed', exitCode: 0, output: '' }] },
+            'BAD_GATES',
+        ],
+        [
+            'a non-integer exit code',
+            { leaseToken: TOKEN, gates: [{ name: 'test', status: 'passed', exitCode: 1.5, output: '' }] },
+            'BAD_GATES',
+        ],
+        [
+            'a non-string output',
+            { leaseToken: TOKEN, gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 7 }] },
+            'BAD_GATES',
+        ],
     ])('refuses %s', async (_label, payload, code) => {
         const instance = await harnessWith(stubStore());
         const response = await post(instance, `/api/jobs/${ID}/gates`, payload);
@@ -686,7 +726,7 @@ describe('POST /api/jobs/:id/gates', () => {
 });
 
 describe('POST /api/jobs/:id/suspend', () => {
-    it('ends a running job\'s attempt, echoing where the board landed it', async () => {
+    it("ends a running job's attempt, echoing where the board landed it", async () => {
         const store = stubStore({ verdict: 'ok', suspendStatus: 'stopped' });
         const instance = await harnessWith(store);
 
@@ -745,9 +785,9 @@ describe('POST /api/jobs/:id/stop', () => {
 
     // A running task keeps running until the worker parks it — the request RIDES the heartbeat —
     // and the 202 says so with the request's timestamp.
-    it('asks a running task\'s worker to stop, answering 202 with the request', async () => {
+    it("asks a running task's worker to stop, answering 202 with the request", async () => {
         const instance = await harnessWith(
-            stubStore({ stop: { result: 'requested', cancelRequestedAt: '2026-08-21T12:05:00.000Z' } }),
+            stubStore({ stop: { result: 'requested', cancelRequestedAt: '2026-08-21T12:05:00.000Z' } })
         );
         const response = await post(instance, `/api/jobs/${ID}/stop`, {});
         expect(response.statusCode).toBe(202);
@@ -786,7 +826,9 @@ describe('POST /api/jobs/:id/stop', () => {
 
 describe('POST /api/jobs/:id/remove', () => {
     it('removes the thread', async () => {
-        const store = stubStore({ remove: { result: 'ok', rootJobId: ID, repo: 'acme/web', workspacePath: 'test-org/user-7' } });
+        const store = stubStore({
+            remove: { result: 'ok', rootJobId: ID, repo: 'acme/web', workspacePath: 'test-org/user-7' },
+        });
         const instance = await harnessWith(store);
 
         const response = await post(instance, `/api/jobs/${ID}/remove`, {});
@@ -863,7 +905,7 @@ describe('POST /api/reclaims/claim', () => {
 describe('POST /api/reclaims/:id/ack', () => {
     const RECLAIM_ID = '55555555-5555-4555-8555-555555555555';
 
-    it('acks the reclaim in the driver\'s name', async () => {
+    it("acks the reclaim in the driver's name", async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
@@ -1066,7 +1108,11 @@ describe('POST /api/jobs/:id/complete', () => {
     it('records the context stats beside the verdict', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
-        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, contextTokens: 90433, contextCostUsd: 0.31 });
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            contextTokens: 90433,
+            contextCostUsd: 0.31,
+        });
         expect(response.statusCode).toBe(200);
         expect(store.completed[0]).toMatchObject({ contextTokens: 90433, contextCostUsd: 0.31 });
     });
@@ -1233,7 +1279,9 @@ describe('POST /api/jobs/:id/gates-reread', () => {
     });
 
     it('carries a broken gates file as gateError, not as an error status', async () => {
-        const store = stubStore({ reread: { result: 'ok', gates: null, gateError: '.bellows.yaml line 3: unknown key' } });
+        const store = stubStore({
+            reread: { result: 'ok', gates: null, gateError: '.bellows.yaml line 3: unknown key' },
+        });
         const instance = await harnessWith(store);
 
         const response = await post(instance, `/api/jobs/${ID}/gates-reread`, { leaseToken: TOKEN });

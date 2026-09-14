@@ -50,7 +50,7 @@ const render = (path: string, strip: TaskTabsApi, tasks: readonly Job[] | null =
     renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
             <TaskTabs tabs={strip} tasks={tasks} />
-        </MemoryRouter>,
+        </MemoryRouter>
     );
 
 describe('TaskTabs', () => {
@@ -91,20 +91,37 @@ describe('TaskTabs', () => {
         expect(html).toContain(ID.slice(0, 8));
     });
 
-    it('shows a running task\'s summary under its title, and none once it is not going', () => {
+    it("shows a running task's summary under its title, and none once it is not going", () => {
         const live = job({
             status: 'running',
             exitCode: null,
             finishedAt: null,
             startedAt: null,
             output: null,
-            runtime: { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity: '→ Read src/x.ts', sampledAt: '2026-09-02T12:00:01.000Z' },
+            runtime: {
+                cpuPercent: 12,
+                memUsedMb: 300,
+                memPercent: null,
+                activity: '→ Read src/x.ts',
+                sampledAt: '2026-09-02T12:00:01.000Z',
+            },
         });
         const html = render(`/tasks/${ID}`, oneTab, [live]);
         expect(html).toContain('task-tab-summary');
         expect(html).toContain('→ Read src/x.ts');
 
-        const parked = render('/tasks', oneTab, [job({ status: 'standby', runtime: { cpuPercent: 12, memUsedMb: 300, memPercent: null, activity: '→ stale', sampledAt: '2026-09-02T12:00:01.000Z' } })]);
+        const parked = render('/tasks', oneTab, [
+            job({
+                status: 'standby',
+                runtime: {
+                    cpuPercent: 12,
+                    memUsedMb: 300,
+                    memPercent: null,
+                    activity: '→ stale',
+                    sampledAt: '2026-09-02T12:00:01.000Z',
+                },
+            }),
+        ]);
         expect(parked).not.toContain('task-tab-summary');
     });
 });

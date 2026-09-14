@@ -22,8 +22,7 @@ const DIRECTORY: OrganizationMeta = {
     ],
 };
 
-const render = (organization: OrganizationMeta) =>
-    renderToStaticMarkup(<OrgSelector organization={organization} />);
+const render = (organization: OrganizationMeta) => renderToStaticMarkup(<OrgSelector organization={organization} />);
 
 describe('OrgSelector', () => {
     it('renders the single organization as a disabled native select', () => {

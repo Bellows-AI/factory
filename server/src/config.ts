@@ -265,7 +265,7 @@ function workspaceRootOf(env: NodeJS.ProcessEnv): string | null {
 
     if (!isAbsolute(path)) {
         throw new Error(
-            `ORG_WORKSPACE_ROOT must be an absolute path (or start with "~/"), got "${raw}" — a relative one would mean a different directory when run from the repo root, from server/, and in the container`,
+            `ORG_WORKSPACE_ROOT must be an absolute path (or start with "~/"), got "${raw}" — a relative one would mean a different directory when run from the repo root, from server/, and in the container`
         );
     }
     return path;
@@ -290,7 +290,7 @@ function loadGitHub(env: NodeJS.ProcessEnv): Extract<GitHubConfig, { mode: 'app'
     ] as const) {
         if (!value) {
             throw new Error(
-                `${label} is not set. Every deployment fetches through the GitHub App, so the id and the private key are required — a process without them would render an empty dashboard that reads as data loss rather than as a missing credential. See docs/configuration.md.`,
+                `${label} is not set. Every deployment fetches through the GitHub App, so the id and the private key are required — a process without them would render an empty dashboard that reads as data loss rather than as a missing credential. See docs/configuration.md.`
             );
         }
     }
@@ -304,7 +304,7 @@ function loadGitHub(env: NodeJS.ProcessEnv): Extract<GitHubConfig, { mode: 'app'
     }
     if (!pem.startsWith('-----BEGIN') || !pem.includes('PRIVATE KEY-----')) {
         throw new Error(
-            'GITHUB_APP_PRIVATE_KEY is not a PEM private key. Paste the contents of the .pem GitHub gave you when you generated the key, or its base64, or point GITHUB_APP_PRIVATE_KEY_FILE at the file.',
+            'GITHUB_APP_PRIVATE_KEY is not a PEM private key. Paste the contents of the .pem GitHub gave you when you generated the key, or its base64, or point GITHUB_APP_PRIVATE_KEY_FILE at the file.'
         );
     }
 
@@ -373,7 +373,7 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
          */
         if (!LOOPBACK_HOSTS.has(host) && !bool(env.AUTH_ALLOW_PUBLIC_BIND, false, 'AUTH_ALLOW_PUBLIC_BIND')) {
             throw new Error(
-                `AUTH_MODE is "none" but HOST is "${host}", which is reachable from off this machine. With no auth every route is open to anyone who can reach the port, including POST /api/jobs, which runs shell commands. Set AUTH_MODE=github, or bind to 127.0.0.1, or set AUTH_ALLOW_PUBLIC_BIND=1 if something else in front of this port is doing the authenticating.`,
+                `AUTH_MODE is "none" but HOST is "${host}", which is reachable from off this machine. With no auth every route is open to anyone who can reach the port, including POST /api/jobs, which runs shell commands. Set AUTH_MODE=github, or bind to 127.0.0.1, or set AUTH_ALLOW_PUBLIC_BIND=1 if something else in front of this port is doing the authenticating.`
             );
         }
         return Object.freeze({ mode, ingestToken });
@@ -391,13 +391,13 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
     ] as const) {
         if (!value) {
             throw new Error(
-                `AUTH_MODE is "github" but ${label} is not set. Half-configured auth is fatal rather than falling back to an open deployment, which would be the one failure nobody notices.`,
+                `AUTH_MODE is "github" but ${label} is not set. Half-configured auth is fatal rather than falling back to an open deployment, which would be the one failure nobody notices.`
             );
         }
     }
     if (sessionSecret!.length < MIN_SESSION_SECRET_LENGTH) {
         throw new Error(
-            `SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${sessionSecret!.length}`,
+            `SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${sessionSecret!.length}`
         );
     }
 
@@ -407,7 +407,7 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
     const publicUrl = env.PUBLIC_URL?.trim() || (LOOPBACK_HOSTS.has(host) ? `http://${host}:${port}` : '');
     if (!publicUrl) {
         throw new Error(
-            `AUTH_MODE is "github" and HOST is "${host}", so PUBLIC_URL must be set: it is the origin GitHub redirects back to, and it cannot be derived from the request's Host header without letting the caller choose the redirect target.`,
+            `AUTH_MODE is "github" and HOST is "${host}", so PUBLIC_URL must be set: it is the origin GitHub redirects back to, and it cannot be derived from the request's Host header without letting the caller choose the redirect target.`
         );
     }
     let origin: URL;
@@ -456,7 +456,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     // (`npm run seed`), where it is at least visible as rows somebody chose to write.
     if (env.DATA_SOURCE) {
         throw new Error(
-            `DATA_SOURCE is no longer supported (got "${env.DATA_SOURCE}"). The database is the only source the dashboard reads. For data without a GitHub token, seed a disposable database: npm run seed.`,
+            `DATA_SOURCE is no longer supported (got "${env.DATA_SOURCE}"). The database is the only source the dashboard reads. For data without a GitHub token, seed a disposable database: npm run seed.`
         );
     }
 
@@ -471,39 +471,39 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
      */
     if (env.GITHUB_TOKEN) {
         throw new Error(
-            'GITHUB_TOKEN is no longer supported: the repo-read credential is a GitHub App installation now, which also reports which repositories it can see. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_FILE). See docs/configuration.md.',
+            'GITHUB_TOKEN is no longer supported: the repo-read credential is a GitHub App installation now, which also reports which repositories it can see. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_FILE). See docs/configuration.md.'
         );
     }
     if (env.GITHUB_REPOS || env.ORG_REPOS) {
         throw new Error(
-            `${env.ORG_REPOS ? 'ORG_REPOS' : 'GITHUB_REPOS'} is no longer supported: the repo list is whatever the GitHub App installation reports, and each member chooses which of those to check out from the dashboard. Remove the line; install the App on the repositories you want measured instead. See GET /api/repos.`,
+            `${env.ORG_REPOS ? 'ORG_REPOS' : 'GITHUB_REPOS'} is no longer supported: the repo list is whatever the GitHub App installation reports, and each member chooses which of those to check out from the dashboard. Remove the line; install the App on the repositories you want measured instead. See GET /api/repos.`
         );
     }
     if (env.GITHUB_OWNER) {
         throw new Error(
-            'GITHUB_OWNER is no longer supported: the installation reports each repository with its own owner, so there is no default owner for a bare name to take. Remove the line. Use ORG_NAME to change what the page calls this organization.',
+            'GITHUB_OWNER is no longer supported: the installation reports each repository with its own owner, so there is no default owner for a bare name to take. Remove the line. Use ORG_NAME to change what the page calls this organization.'
         );
     }
     if (env.SYNC_TTL_SECONDS) {
         throw new Error(
-            'SYNC_TTL_SECONDS is no longer supported: the pull-request sync it throttled is gone, and the only cache floor left is TELEMETRY_TTL_SECONDS. Remove the line; rename to TELEMETRY_TTL_SECONDS if you meant the telemetry slot.',
+            'SYNC_TTL_SECONDS is no longer supported: the pull-request sync it throttled is gone, and the only cache floor left is TELEMETRY_TTL_SECONDS. Remove the line; rename to TELEMETRY_TTL_SECONDS if you meant the telemetry slot.'
         );
     }
     if (env.BASE_BRANCH) {
         throw new Error(
-            'BASE_BRANCH is no longer supported: it parameterised the pull-request statistics, which are removed. Remove the line.',
+            'BASE_BRANCH is no longer supported: it parameterised the pull-request statistics, which are removed. Remove the line.'
         );
     }
     if (env.BOTS) {
         throw new Error(
-            'BOTS is no longer supported: it classified pull-request authors, which are removed. Remove the line.',
+            'BOTS is no longer supported: it classified pull-request authors, which are removed. Remove the line.'
         );
     }
 
     const orgId = env.ORG_ID?.trim() || DEFAULT_ORG_ID;
     if (!ORG_ID_PATTERN.test(orgId) || orgId.startsWith(RESERVED_ORG_PREFIX)) {
         throw new Error(
-            `ORG_ID must be 1-39 characters of lowercase letters, digits, "-" or "_", starting with a letter or digit, and may not begin with "__" — it is a database key and a URL parameter, so it is rejected rather than normalised — got "${orgId}"`,
+            `ORG_ID must be 1-39 characters of lowercase letters, digits, "-" or "_", starting with a letter or digit, and may not begin with "__" — it is a database key and a URL parameter, so it is rejected rather than normalised — got "${orgId}"`
         );
     }
     // Falls back to the id, where it used to fall back to GITHUB_OWNER. There is no owner to fall
@@ -520,15 +520,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     // 5s telemetry floor.
     if (env.CACHE_TTL_SECONDS) {
         throw new Error(
-            'CACHE_TTL_SECONDS is no longer supported: the pull-request sync it throttled is gone. Rename it to TELEMETRY_TTL_SECONDS if you meant the telemetry slot.',
+            'CACHE_TTL_SECONDS is no longer supported: the pull-request sync it throttled is gone. Rename it to TELEMETRY_TTL_SECONDS if you meant the telemetry slot.'
         );
     }
 
     const telemetrySource = (env.TELEMETRY_SOURCE ?? 'postgres') as TelemetrySource;
     if (!['postgres', 'fixture', 'off'].includes(telemetrySource)) {
-        throw new Error(
-            `TELEMETRY_SOURCE must be "postgres", "fixture", or "off", got "${env.TELEMETRY_SOURCE}"`,
-        );
+        throw new Error(`TELEMETRY_SOURCE must be "postgres", "fixture", or "off", got "${env.TELEMETRY_SOURCE}"`);
     }
 
     const telemetryTtlSeconds = int(env.TELEMETRY_TTL_SECONDS, 30, 'TELEMETRY_TTL_SECONDS');
@@ -539,7 +537,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const databaseUrl = env.DATABASE_URL;
     if (!databaseUrl) {
         throw new Error(
-            'DATABASE_URL is required: the database is the only source the dashboard reads. Start one with `docker compose up -d timescale`, then let it sync from GitHub, or fill a disposable one with `npm run seed`.',
+            'DATABASE_URL is required: the database is the only source the dashboard reads. Start one with `docker compose up -d timescale`, then let it sync from GitHub, or fill a disposable one with `npm run seed`.'
         );
     }
 
@@ -560,7 +558,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const name = databaseName(databaseUrl) ?? '';
     if (github.mode === 'app' && DISPOSABLE_DATABASE.test(name)) {
         throw new Error(
-            `DATABASE_URL points at "${name}", which is disposable: the db suite truncates it and \`npm run seed\` writes synthetic sessions into it. Refusing to persist real fetched history there. Use a database without a _test/_seed/_synthetic/_demo/_e2e suffix.`,
+            `DATABASE_URL points at "${name}", which is disposable: the db suite truncates it and \`npm run seed\` writes synthetic sessions into it. Refusing to persist real fetched history there. Use a database without a _test/_seed/_synthetic/_demo/_e2e suffix.`
         );
     }
 
@@ -610,7 +608,7 @@ export function resolveConfig(options: { env?: NodeJS.ProcessEnv; github?: GitHu
     } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         throw new Error(
-            `GITHUB_APP_PRIVATE_KEY_FILE points at ${path}, which could not be read (${code ?? 'unknown error'})`,
+            `GITHUB_APP_PRIVATE_KEY_FILE points at ${path}, which could not be read (${code ?? 'unknown error'})`
         );
     }
 }

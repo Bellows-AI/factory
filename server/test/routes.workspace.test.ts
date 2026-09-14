@@ -266,9 +266,7 @@ describe('executors', () => {
     it('replaces the whole list, so replaying the same body changes nothing', async () => {
         const { app, cookie, executors } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE]);
-        await putExecutors(app, cookie, [
-            { name: 'second', type: 'claude-code', config: {} },
-        ]);
+        await putExecutors(app, cookie, [{ name: 'second', type: 'claude-code', config: {} }]);
 
         expect(executors.rows().map((row) => row.name)).toEqual(['second']);
     });
@@ -297,9 +295,7 @@ describe('executors', () => {
 
     it('refuses an unknown type', async () => {
         const { app, cookie } = await boot();
-        const response = await putExecutors(app, cookie, [
-            { name: 'x', type: 'codex', config: {} },
-        ]);
+        const response = await putExecutors(app, cookie, [{ name: 'x', type: 'codex', config: {} }]);
 
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_EXECUTOR_TYPE');
@@ -307,9 +303,7 @@ describe('executors', () => {
 
     it('accepts an opencode executor', async () => {
         const { app, cookie, executors } = await boot();
-        const response = await putExecutors(app, cookie, [
-            { name: 'oc', type: 'opencode', config: {} },
-        ]);
+        const response = await putExecutors(app, cookie, [{ name: 'oc', type: 'opencode', config: {} }]);
 
         expect(response.statusCode).toBe(200);
         expect(executors.rows()).toEqual([expect.objectContaining({ name: 'oc', type: 'opencode' })]);
@@ -318,9 +312,7 @@ describe('executors', () => {
     it('refuses a config that is not a JSON object', async () => {
         const { app, cookie } = await boot();
         for (const config of [[], 'text', 7, null]) {
-            const response = await putExecutors(app, cookie, [
-                { name: 'x', type: 'claude-code', config },
-            ]);
+            const response = await putExecutors(app, cookie, [{ name: 'x', type: 'claude-code', config }]);
             expect(response.statusCode, String(config)).toBe(400);
         }
     });
@@ -339,9 +331,7 @@ describe('executors', () => {
     it('refuses a name that cannot become a directory, by name', async () => {
         const { app, cookie } = await boot();
         for (const name of ['-x', '.', '..', 'a/b', '']) {
-            const response = await putExecutors(app, cookie, [
-                { name, type: 'claude-code', config: {} },
-            ]);
+            const response = await putExecutors(app, cookie, [{ name, type: 'claude-code', config: {} }]);
             expect(response.statusCode, name).toBe(400);
             expect(response.json().code, name).toBe('BAD_EXECUTOR_NAME');
         }

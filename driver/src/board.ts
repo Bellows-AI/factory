@@ -157,7 +157,12 @@ export interface Board {
      */
     gates(
         job: BoardJob,
-        results: readonly { name: string; status: 'running' | 'passed' | 'failed'; exitCode: number | null; output: string | null }[],
+        results: readonly {
+            name: string;
+            status: 'running' | 'passed' | 'failed';
+            exitCode: number | null;
+            output: string | null;
+        }[]
     ): Promise<LeaseState>;
     /**
      * Tells the board which agent session this attempt runs as. Called twice under Remote Control:
@@ -204,7 +209,7 @@ export interface Board {
             output: string;
             contextTokens?: number | null;
             contextCostUsd?: number | null;
-        },
+        }
     ): Promise<{ state: LeaseState; threadDone: boolean }>;
 }
 
@@ -274,7 +279,7 @@ export function createBoard({
                     leaseToken: job.leaseToken,
                     leaseSeconds,
                 },
-                true,
+                true
             );
             // The 404 only a Remove can have produced: the thread's rows are gone, so the answer
             // is "die and report nothing" — there is nothing left to park against or hand a

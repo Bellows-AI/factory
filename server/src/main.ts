@@ -50,7 +50,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         tokens = provider;
         appClient = createGitHubAppClient(config.github, provider);
         console.log(
-            `[fetch] GitHub App ${config.github.appId}, installation ${config.github.installationId ?? 'discovered at first use'}`,
+            `[fetch] GitHub App ${config.github.appId}, installation ${config.github.installationId ?? 'discovered at first use'}`
         );
         // Loud, for the reason the OAuth authorize URL is: an API host that could be redirected in a
         // file shipping with a deployment is somewhere to send a private key, so the only defence is
@@ -174,7 +174,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         }
         if (config.auth.autoJoinGithubOrg) {
             console.log(
-                `[auth] members of the GitHub organization "${config.auth.autoJoinGithubOrg}" join on first sign-in; read:org is requested`,
+                `[auth] members of the GitHub organization "${config.auth.autoJoinGithubOrg}" join on first sign-in; read:org is requested`
             );
         }
         // The upgrade lockout, caught before somebody spends an afternoon on it: after 010 an existing
@@ -187,7 +187,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
                 .then((members) => {
                     if (members.length) return;
                     console.warn(
-                        `[auth] "${config.orgId}" has no members, so nobody can sign in. Set auth.bootstrap_admin, or run: npm run invite -- --org ${config.orgId} --login <github-login> --role admin`,
+                        `[auth] "${config.orgId}" has no members, so nobody can sign in. Set auth.bootstrap_admin, or run: npm run invite -- --org ${config.orgId} --login <github-login> --role admin`
                     );
                 })
                 .catch(() => {});
@@ -197,7 +197,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         // the whole point of AUTH_MODE being an explicit enum is that nobody arrives here by accident,
         // and the line is what makes staying here a choice too.
         console.log(
-            '[auth] AUTH_MODE=none: every route is open to anyone who can reach this port, including POST /api/jobs, which runs shell commands',
+            '[auth] AUTH_MODE=none: every route is open to anyone who can reach this port, including POST /api/jobs, which runs shell commands'
         );
     }
 
@@ -229,4 +229,4 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
 
     await app.listen({ port: config.port, host: config.host });
-    }
+}

@@ -109,7 +109,7 @@ interface BranchSpan {
 
 export async function backfillTranscripts(
     sql: Sql,
-    options: { orgId: string; root?: string; log?: (message: string) => void },
+    options: { orgId: string; root?: string; log?: (message: string) => void }
 ): Promise<BackfillSummary> {
     const { orgId, root = TRANSCRIPTS, log = () => {} } = options;
     const files = transcriptFiles(root);
@@ -160,8 +160,7 @@ export async function backfillTranscripts(
                 } else {
                     // The literal 'HEAD' is not a branch name and would join to nothing while
                     // looking like one.
-                    const branch =
-                        record.gitBranch && record.gitBranch !== 'HEAD' ? record.gitBranch : null;
+                    const branch = record.gitBranch && record.gitBranch !== 'HEAD' ? record.gitBranch : null;
                     const key = `${sessionId}\u0000${repo}\u0000${branch ?? ''}`;
                     const span = spans.get(key);
                     if (!span) {

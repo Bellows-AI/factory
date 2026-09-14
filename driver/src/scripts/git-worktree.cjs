@@ -94,7 +94,7 @@ try {
                         found +
                         ', but the task tree must belong to ' +
                         ours +
-                        ' — remove it by hand if it is truly stale',
+                        ' — remove it by hand if it is truly stale'
                 );
                 process.exit(0);
             }
@@ -105,7 +105,7 @@ try {
                         (on ? 'branch ' + on : 'a detached HEAD') +
                         ' instead of the task branch ' +
                         branch +
-                        ' — a resumed job must never run in the wrong checkout',
+                        ' — a resumed job must never run in the wrong checkout'
                 );
                 process.exit(0);
             }
@@ -113,7 +113,10 @@ try {
             process.exit(0);
         }
         if (fs.existsSync(wt + '/.git')) {
-            fail('the worktree path exists and holds a git tree this sync did not create; remove it by hand if it is truly stale: ' + wt);
+            fail(
+                'the worktree path exists and holds a git tree this sync did not create; remove it by hand if it is truly stale: ' +
+                    wt
+            );
             process.exit(0);
         }
         fs.rmSync(wt, { recursive: true, force: true });
@@ -122,10 +125,12 @@ try {
             git('worktree', 'add', wt, branch);
         } catch (e) {
             fail(
-                'the task branch ' + branch + ' could not be restored — if it is gone from the clone there is ' +
+                'the task branch ' +
+                    branch +
+                    ' could not be restored — if it is gone from the clone there is ' +
                     'nothing to continue, and a follow-up is never restarted fresh off the remote default ' +
                     '(re-queue the task to start it over): ' +
-                    String((e && e.stderr) || (e && e.message) || e).slice(0, 200),
+                    String((e && e.stderr) || (e && e.message) || e).slice(0, 200)
             );
             process.exit(0);
         }
@@ -136,13 +141,23 @@ try {
         const origin = git('remote', 'get-url', 'origin');
         if (!origin.startsWith('https://')) {
             fail(
-                'the credentialed fetch refuses origin ' + origin + ': the credential helper answers the token to ' +
+                'the credentialed fetch refuses origin ' +
+                    origin +
+                    ': the credential helper answers the token to ' +
                     'whatever asks, so only an https origin may fetch with it — re-point origin at the https URL ' +
-                    'the clone was made from and re-run',
+                    'the clone was made from and re-run'
             );
             process.exit(0);
         }
-        git('-c', 'credential.helper=' + process.env.CRED_HELPER, '-c', 'http.followRedirects=initial', 'fetch', 'origin', '--prune');
+        git(
+            '-c',
+            'credential.helper=' + process.env.CRED_HELPER,
+            '-c',
+            'http.followRedirects=initial',
+            'fetch',
+            'origin',
+            '--prune'
+        );
     } else git('fetch', 'origin', '--prune');
     let def = 'main';
     try {
@@ -158,22 +173,29 @@ try {
             inw('rebase', '--autostash', 'origin/' + def);
         } catch (e) {
             fail(
-                'the task worktree could not be rebased onto origin/' + def + ': ' +
-                    String((e && e.stderr) || (e && e.message) || e).slice(0, 200),
+                'the task worktree could not be rebased onto origin/' +
+                    def +
+                    ': ' +
+                    String((e && e.stderr) || (e && e.message) || e).slice(0, 200)
             );
             process.exit(0);
         }
         if (inw('diff', '--name-only', '--diff-filter=U').length) {
             fail(
-                'the task worktree was rebased onto origin/' + def + ', but its uncommitted edits conflict ' +
+                'the task worktree was rebased onto origin/' +
+                    def +
+                    ', but its uncommitted edits conflict ' +
                     'with the new base and are left as conflict markers in the tree (the autostash is kept ' +
-                    'for recovery); resolve them before re-running',
+                    'for recovery); resolve them before re-running'
             );
             process.exit(0);
         }
     } else {
         if (fs.existsSync(wt + '/.git')) {
-            fail('the worktree path exists and holds a git tree this sync did not create; remove it by hand if it is truly stale: ' + wt);
+            fail(
+                'the worktree path exists and holds a git tree this sync did not create; remove it by hand if it is truly stale: ' +
+                    wt
+            );
             process.exit(0);
         }
         fs.rmSync(wt, { recursive: true, force: true });

@@ -19,7 +19,7 @@ function assertTestDatabase(raw: string): void {
             `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.\n` +
                 `Create one and point DATABASE_URL at it:\n` +
                 `  docker compose exec timescale psql -U factory -d postgres -c 'create database factory_test'\n` +
-                `  DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db`,
+                `  DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db`
         );
     }
 }
@@ -129,7 +129,7 @@ describe.skipIf(!enabled)('migrations', () => {
         // a doubled token count.
         await point({ session: 's1', field: 'tokens_input', value: 100, time: '2026-08-01T10:00:00Z' });
         await expect(
-            point({ session: 's1', field: 'tokens_input', value: 100, time: '2026-08-01T10:00:00Z' }),
+            point({ session: 's1', field: 'tokens_input', value: 100, time: '2026-08-01T10:00:00Z' })
         ).rejects.toThrow(/duplicate key/);
         const [row] = await sql<{ n: number }[]>`select count(*)::int as n from metric_point`;
         expect(row?.n).toBe(1);
@@ -152,9 +152,12 @@ describe.skipIf(!enabled)('temporality reduction', () => {
         // anywhere. This is the assertion that stops a "simplify to SUM" refactor.
         for (const [i, v] of [10, 20, 40, 50, 60].entries()) {
             await point({
-                session: 's1', field: 'tokens_input', value: v,
+                session: 's1',
+                field: 'tokens_input',
+                value: v,
                 time: `2026-08-01T10:0${i}:00Z`,
-                temporality: 'cumulative', startTime: '2026-08-01T10:00:00Z',
+                temporality: 'cumulative',
+                startTime: '2026-08-01T10:00:00Z',
             });
         }
         const [row] = await sql<{ value: number }[]>`
@@ -167,14 +170,22 @@ describe.skipIf(!enabled)('temporality reduction', () => {
         // A new start_time is a new counter, so the totals add rather than replace.
         for (const [i, v] of [10, 30].entries()) {
             await point({
-                session: 's1', field: 'tokens_input', value: v, time: `2026-08-01T10:0${i}:00Z`,
-                temporality: 'cumulative', startTime: '2026-08-01T10:00:00Z',
+                session: 's1',
+                field: 'tokens_input',
+                value: v,
+                time: `2026-08-01T10:0${i}:00Z`,
+                temporality: 'cumulative',
+                startTime: '2026-08-01T10:00:00Z',
             });
         }
         for (const [i, v] of [5, 12].entries()) {
             await point({
-                session: 's1', field: 'tokens_input', value: v, time: `2026-08-01T11:0${i}:00Z`,
-                temporality: 'cumulative', startTime: '2026-08-01T11:00:00Z',
+                session: 's1',
+                field: 'tokens_input',
+                value: v,
+                time: `2026-08-01T11:0${i}:00Z`,
+                temporality: 'cumulative',
+                startTime: '2026-08-01T11:00:00Z',
             });
         }
         const [row] = await sql<{ value: number }[]>`
@@ -252,8 +263,12 @@ describe.skipIf(!enabled)('the postgres client', () => {
         await branch({ session: 's1', branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T10:30:00Z' });
         await branch({ session: 's1', branch: 'feat/b', from: '2026-08-01T10:30:00Z', to: '2026-08-01T11:00:00Z' });
         await point({
-            session: 's1', field: 'tokens_input', value: 100, time: '2026-08-01T10:59:00Z',
-            temporality: 'cumulative', startTime: '2026-08-01T10:00:00Z',
+            session: 's1',
+            field: 'tokens_input',
+            value: 100,
+            time: '2026-08-01T10:59:00Z',
+            temporality: 'cumulative',
+            startTime: '2026-08-01T10:00:00Z',
         });
 
         const client = createPostgresTelemetryClient({ sql, orgId: ORG });
@@ -271,8 +286,12 @@ describe.skipIf(!enabled)('the postgres client', () => {
     it('attributes a single-branch cumulative session in full', async () => {
         await branch({ session: 's1', branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
         await point({
-            session: 's1', field: 'tokens_input', value: 100, time: '2026-08-01T10:59:00Z',
-            temporality: 'cumulative', startTime: '2026-08-01T10:00:00Z',
+            session: 's1',
+            field: 'tokens_input',
+            value: 100,
+            time: '2026-08-01T10:59:00Z',
+            temporality: 'cumulative',
+            startTime: '2026-08-01T10:00:00Z',
         });
 
         const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
@@ -292,12 +311,17 @@ describe.skipIf(!enabled)('the postgres client', () => {
         // without org_id, the slice from one organization would claim the other's datapoints, and
         // the number rendered would be plausible and wrong.
         await branch({
-            session: 's1', branch: 'feat/a',
-            from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z',
+            session: 's1',
+            branch: 'feat/a',
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
         });
         await branch({
-            session: 's1', branch: 'feat/a', org: OTHER_ORG,
-            from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z',
+            session: 's1',
+            branch: 'feat/a',
+            org: OTHER_ORG,
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
         });
         await point({ session: 's1', field: 'tokens_input', value: 100, time: '2026-08-01T10:30:00Z' });
 
@@ -337,8 +361,15 @@ describe.skipIf(!enabled)('the postgres client', () => {
     it('stores an unmapped metric rather than rejecting it', async () => {
         // A future tool's data must accumulate before support for it is written.
         await sql`insert into metric_point ${sql({
-            agent: 'unknown', metric: 'opencode.tokens.total', field: null, session_id: 's9',
-            value: 5, temporality: 'delta', start_time: null, time: T('2026-08-01T10:00:00Z'), attrs: {},
+            agent: 'unknown',
+            metric: 'opencode.tokens.total',
+            field: null,
+            session_id: 's9',
+            value: 5,
+            temporality: 'delta',
+            start_time: null,
+            time: T('2026-08-01T10:00:00Z'),
+            attrs: {},
         })}`;
         const [row] = await sql<{ n: number }[]>`
             select count(*)::int as n from metric_point where field is null
@@ -353,9 +384,15 @@ describe.skipIf(!enabled)('the postgres client', () => {
         // The opencode-executor emits `opencode.*` metrics; they must price as their own agent,
         // not vanish into the null-field filter or mislabel as claude-code.
         await sql`insert into metric_point ${sql({
-            agent: 'opencode', metric: 'opencode.active_time.total', field: 'active_seconds',
-            session_id: 's10', value: 12, temporality: 'delta', start_time: null,
-            time: T('2026-08-01T10:00:00Z'), attrs: {},
+            agent: 'opencode',
+            metric: 'opencode.active_time.total',
+            field: 'active_seconds',
+            session_id: 's10',
+            value: 12,
+            temporality: 'delta',
+            start_time: null,
+            time: T('2026-08-01T10:00:00Z'),
+            attrs: {},
         })}`;
         const [row] = await sql<{ agent: string; value: number }[]>`
             select agent, value from session_field_total where session_id = 's10'

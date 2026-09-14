@@ -237,15 +237,7 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
  */
 export function remoteSessionArgs(job: BoardJob, sessionId: string): string[] {
     if (!UUID.test(sessionId)) throw new Error(`refusing to read a session id that is not a uuid: ${sessionId}`);
-    return [
-        'exec',
-        containerName(job),
-        'sh',
-        '-c',
-        remoteSessionScript,
-        'sh',
-        sessionId,
-    ];
+    return ['exec', containerName(job), 'sh', '-c', remoteSessionScript, 'sh', sessionId];
 }
 
 /** Pulls `bridgeSessionId` out of the transcript line, tolerating anything that is not one. */
@@ -465,10 +457,14 @@ export function gateEnvContainerName(key: string): string {
  */
 export function gateEnvArgs(config: DriverConfig, key: string, image: string, envFile?: string): string[] {
     if (!GATE_KEY.test(key)) {
-        throw new Error(`refusing to run a gate environment from a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`);
+        throw new Error(
+            `refusing to run a gate environment from a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`
+        );
     }
     if (!GATE_IMAGE.test(image)) {
-        throw new Error(`refusing to run a gate environment from an image that is not a plain docker reference: "${image}"`);
+        throw new Error(
+            `refusing to run a gate environment from an image that is not a plain docker reference: "${image}"`
+        );
     }
     const args = [
         'run',
@@ -595,8 +591,7 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
             cost?: unknown;
             error?: unknown;
         };
-        const sessionId =
-            typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
+        const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
         const finishReason = typeof parsed.finish === 'string' && parsed.finish ? parsed.finish : null;
         const contextTokens =
             typeof parsed.tokens === 'number' && Number.isFinite(parsed.tokens) && parsed.tokens >= 0
@@ -647,18 +642,16 @@ export const CACHE_WATCH_MIN_TURN_MS = 60_000;
 export function cacheCollapse(turns: OpencodeCacheTurn[]): string | null {
     if (turns.length < CACHE_WATCH_TURNS) return null;
     const dead = turns.every(
-        (t) => t.cacheRead === 0 && t.input >= CACHE_WATCH_MIN_INPUT_TOKENS && t.ms >= CACHE_WATCH_MIN_TURN_MS,
+        (t) => t.cacheRead === 0 && t.input >= CACHE_WATCH_MIN_INPUT_TOKENS && t.ms >= CACHE_WATCH_MIN_TURN_MS
     );
     if (!dead) return null;
     const inputs = turns.map((t) => `${Math.round(t.input / 1000)}k`).join('/');
     const seconds = turns.map((t) => Math.round(t.ms / 1000));
-    const span = Math.min(...seconds) === Math.max(...seconds)
-        ? `${Math.min(...seconds)}s`
-        : `${Math.min(...seconds)}-${Math.max(...seconds)}s`;
-    return (
-        `${turns.length} consecutive turns with no prompt-cache reads ` +
-        `(input ${inputs} tokens, ${span} each)`
-    );
+    const span =
+        Math.min(...seconds) === Math.max(...seconds)
+            ? `${Math.min(...seconds)}s`
+            : `${Math.min(...seconds)}-${Math.max(...seconds)}s`;
+    return `${turns.length} consecutive turns with no prompt-cache reads ` + `(input ${inputs} tokens, ${span} each)`;
 }
 
 /** What the probe answers: the session it found, its newest completed turns, and any failure. */
@@ -711,8 +704,7 @@ export function parseOpencodeCacheProbe(stdout: string): OpencodeCacheProbe {
     const nothing = { sessionId: null, turns: [], error: null };
     try {
         const parsed = JSON.parse(line) as { id?: unknown; turns?: unknown; error?: unknown };
-        const sessionId =
-            typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
+        const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
         const turns = Array.isArray(parsed.turns) ? parsed.turns.filter(isTurn).slice(0, CACHE_WATCH_TURNS) : [];
         const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
         return { sessionId, turns, error };
@@ -748,7 +740,7 @@ function workspacePath(job: BoardJob): string {
     const path = workspacePathOf(job);
     if (!path) {
         throw new Error(
-            `refusing to run job ${job.id}: the board reported no usable workspace path (${job.workspacePath ?? 'null'})`,
+            `refusing to run job ${job.id}: the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
     return path;
@@ -833,7 +825,7 @@ const envLine = (job: BoardJob, name: string, value: string): string => {
     if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) {
         const part = /[\r\n]/.test(name) ? 'name' : 'value';
         throw new Error(
-            `refusing to write env file for job ${job.id}: the ${part} of "${name}" contains a newline, which an env file cannot carry`,
+            `refusing to write env file for job ${job.id}: the ${part} of "${name}" contains a newline, which an env file cannot carry`
         );
     }
     return `${name}=${value}`;
@@ -881,7 +873,13 @@ const envFilePath = (job: BoardJob): string => {
     return join(tmpdir(), `factory-env-${job.id}${token}.env`);
 };
 
-export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSession | null, servicesNetwork: string | null = null, envFile?: string): string[] {
+export function dockerArgs(
+    config: DriverConfig,
+    job: BoardJob,
+    session: RunSession | null,
+    servicesNetwork: string | null = null,
+    envFile?: string
+): string[] {
     /*
      * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
      * the remote default — when the job names a repository, and at the member root when it does
@@ -891,7 +889,7 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
     const worktree = job.repo ? worktreeDir(config, job) : null;
     if (job.repo && !worktree) {
         throw new Error(
-            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`,
+            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`
         );
     }
     const args = [
@@ -967,7 +965,8 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
         // the claim's lines — and so does the reporter's ingest token, so a job whose claim
         // resolves to nothing still needs one: without it the runner has neither its gate
         // credentials nor the credential its attribution reports authenticate with.
-        const needsFile = claimNames.length > 0 || Object.keys(job.gateEnv ?? {}).length > 0 || Boolean(config.ingestToken);
+        const needsFile =
+            claimNames.length > 0 || Object.keys(job.gateEnv ?? {}).length > 0 || Boolean(config.ingestToken);
         if (needsFile && !envFile) {
             throw new Error(`refusing to run job ${job.id}: claim or gate env exists but no env file was given`);
         }
@@ -1018,7 +1017,9 @@ export function dockerArgs(config: DriverConfig, job: BoardJob, session: RunSess
             // Unreachable through the loop, which refuses this state first — this is the runner
             // asserting it too, because `run --session <id>` with nothing to deliver would idle a
             // headless run to its deadline. Standby is a Remote Control feature; opencode has none.
-            throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
+            throw new Error(
+                `refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`
+            );
         }
         // The session database has to outlive the container or there is nothing to resume into:
         // a fresh container starts with an empty one. Pointing XDG_DATA_HOME at the member's own
@@ -1077,7 +1078,11 @@ type Spawn = typeof spawn;
  */
 type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
 
-export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn, execDocker: ExecDocker = (args) => run('docker', args)): Runner {
+export function createDockerRunner(
+    config: DriverConfig,
+    spawnFn: Spawn = spawn,
+    execDocker: ExecDocker = (args) => run('docker', args)
+): Runner {
     /*
      * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
      * services setup. Keyed by LEASE TOKEN, not job id: the token is the per-attempt identity —
@@ -1123,7 +1128,10 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             '--filter',
             'label=factory.service',
         ]).catch(() => ({ stdout: '' }));
-        const ids = found.stdout.split('\n').map((id) => id.trim()).filter(Boolean);
+        const ids = found.stdout
+            .split('\n')
+            .map((id) => id.trim())
+            .filter(Boolean);
         for (const id of ids) {
             await execDocker(['rm', '-f', id]).catch(() => undefined);
         }
@@ -1152,7 +1160,10 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             '--filter',
             `label=factory.lease=${job.leaseToken}`,
         ]).catch(() => ({ stdout: '' }));
-        for (const id of found.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
+        for (const id of found.stdout
+            .split('\n')
+            .map((id) => id.trim())
+            .filter(Boolean)) {
             await execDocker(['kill', id]).catch(() => undefined);
         }
         // The declared services go with the runner: a killed job's database has no reason to
@@ -1199,7 +1210,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
      */
     const alreadyGone = (e: unknown): boolean => {
         const err = e as { stderr?: string | Buffer; message?: string };
-        const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+        const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
         return /no such (container|network)|not found/i.test(`${stderr} ${err.message ?? ''}`);
     };
 
@@ -1209,16 +1220,19 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]);
         } catch (e) {
             throw new Error(
-                `the re-claim fence could not list the leftover containers of job ${job.id}: ${(e as Error).message}`,
+                `the re-claim fence could not list the leftover containers of job ${job.id}: ${(e as Error).message}`
             );
         }
-        for (const id of leftovers.stdout.split('\n').map((id) => id.trim()).filter(Boolean)) {
+        for (const id of leftovers.stdout
+            .split('\n')
+            .map((id) => id.trim())
+            .filter(Boolean)) {
             try {
                 await execDocker(['rm', '-f', id]);
             } catch (e) {
                 if (alreadyGone(e)) continue;
                 throw new Error(
-                    `the re-claim fence could not remove the leftover container ${id} of job ${job.id}: ${(e as Error).message}`,
+                    `the re-claim fence could not remove the leftover container ${id} of job ${job.id}: ${(e as Error).message}`
                 );
             }
         }
@@ -1234,16 +1248,19 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
             ]);
         } catch (e) {
             throw new Error(
-                `the re-claim fence could not list the leftover networks of job ${job.id}: ${(e as Error).message}`,
+                `the re-claim fence could not list the leftover networks of job ${job.id}: ${(e as Error).message}`
             );
         }
-        for (const name of staleNetworks.stdout.split('\n').map((name) => name.trim()).filter(Boolean)) {
+        for (const name of staleNetworks.stdout
+            .split('\n')
+            .map((name) => name.trim())
+            .filter(Boolean)) {
             try {
                 await execDocker(['network', 'rm', name]);
             } catch (e) {
                 if (alreadyGone(e)) continue;
                 throw new Error(
-                    `the re-claim fence could not remove the leftover network ${name} of job ${job.id}: ${(e as Error).message}`,
+                    `the re-claim fence could not remove the leftover network ${name} of job ${job.id}: ${(e as Error).message}`
                 );
             }
         }
@@ -1332,7 +1349,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 }
             } catch (e) {
                 const err = e as { stderr?: string | Buffer; message?: string };
-                const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+                const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
                 const detail =
                     stderr.trim() ||
                     (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
@@ -1378,12 +1395,16 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                 }
             } catch (e) {
                 const err = e as { stderr?: string | Buffer; message?: string };
-                const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+                const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
                 const detail =
                     stderr.trim() ||
                     (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
                     (err.message ?? 'failed');
-                return { ok: false, removed: false, reason: `the worktree reclaim container failed: ${detail.slice(0, 300)}` };
+                return {
+                    ok: false,
+                    removed: false,
+                    reason: `the worktree reclaim container failed: ${detail.slice(0, 300)}`,
+                };
             }
         },
 
@@ -1432,7 +1453,8 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                          * The step's name is added by the workflow; this is the detail under it.
                          */
                         const err = e as { stderr?: string | Buffer; message?: string };
-                        const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString('utf8') ?? '';
+                        const stderr =
+                            typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
                         const detail =
                             stderr.trim() ||
                             (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
@@ -1458,7 +1480,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
         // the daemon is busy) answers null, which the loop reads as "report no vitals this round".
         async sampleRuntime(job) {
             const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
-                () => null,
+                () => null
             );
             return read ? parseDockerStats(read.stdout) : null;
         },
@@ -1613,7 +1635,8 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     if (code === 125) {
                         try {
                             const state = JSON.parse(
-                                (await execDocker(['inspect', '--format', '{{json .State}}', containerName(job)])).stdout,
+                                (await execDocker(['inspect', '--format', '{{json .State}}', containerName(job)]))
+                                    .stdout
                             ) as { Status?: string };
                             started = state.Status === 'exited';
                         } catch {
@@ -1736,7 +1759,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                     // cannot reach the replacement's fleet.
                     serviceTeardown(job).then(
                         () => reject(error),
-                        () => reject(error),
+                        () => reject(error)
                     );
                 });
                 child.on('close', (code) => {
@@ -1792,7 +1815,7 @@ export function createDockerRunner(config: DriverConfig, spawnFn: Spawn = spawn,
                                             contextTokens: null,
                                             costUsd: null,
                                             error: `the readout container failed: ${err.message}`,
-                                        }),
+                                        })
                                     );
                                     reason = scraped.error ?? reason;
                                 }

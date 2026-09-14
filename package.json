@@ -24,12 +24,16 @@
         "test:k8s": "bash scripts/test-k8s.sh",
         "verify:ui": "playwright test",
         "typecheck": "tsc -b",
+        "lint": "biome check .",
+        "format": "biome format --write .",
+        "lint:fix": "biome check --write .",
         "backfill": "npm run build -w core && npm run build -w server && node server/dist/backfill/cli.js",
         "seed": "npm run build -w core && npm run build -w server && node server/dist/seed/cli.js",
         "invite": "npm run build -w core && npm run build -w server && node --env-file-if-exists=.env server/dist/admin/invite.js",
         "worker-token": "npm run build -w core && npm run build -w server && node --env-file-if-exists=.env server/dist/admin/worker-token.js"
     },
     "devDependencies": {
+        "@biomejs/biome": "2.5.13",
         "@playwright/test": "1.62.1",
         "@types/node": "^24.0.0",
         "@vitest/coverage-v8": "^3.2.7",

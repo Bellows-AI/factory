@@ -31,9 +31,7 @@ export function WorkspaceReposPanel({ repos }: { repos: readonly WorkspaceRepo[]
                                 <RepoStatus status={repo.status} error={repo.error} />
                             </td>
                             <td>{repo.branch ?? '—'}</td>
-                            <td title={repo.lastCommit?.headline ?? ''}>
-                                {commitDate(repo.lastCommit?.at)}
-                            </td>
+                            <td title={repo.lastCommit?.headline ?? ''}>{commitDate(repo.lastCommit?.at)}</td>
                             <td className="right">{bytes(repo.sizeBytes)}</td>
                         </tr>
                     ))}

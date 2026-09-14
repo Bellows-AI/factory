@@ -14,9 +14,7 @@ const url = process.env.DATABASE_URL;
 function assertTestDatabase(raw: string): void {
     const name = new URL(raw).pathname.replace(/^\//, '');
     if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`,
-        );
+        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
     }
 }
 
@@ -192,7 +190,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
                 (error) => {
                     settled = true;
                     throw error;
-                },
+                }
             );
 
             // The claim needs a few round trips to reach the lock, and the wait must be

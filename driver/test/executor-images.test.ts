@@ -39,7 +39,7 @@ describe('the executor branch reporter', () => {
         for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
             const dockerfile = read(`${dir}/Dockerfile`);
             expect(dockerfile).toMatch(
-                new RegExp(`COPY[^\\n]*branch-reporter\\.cjs /usr/local/bin/branch-reporter\\.cjs`),
+                new RegExp(`COPY[^\\n]*branch-reporter\\.cjs /usr/local/bin/branch-reporter\\.cjs`)
             );
             expect(dockerfile).not.toMatch(/home\/COPY[^\n]*branch-reporter/);
             expect(dockerfile).not.toMatch(/branch-reporter[^\n]*-home\//);
@@ -60,7 +60,7 @@ describe('the executor branch reporter', () => {
         // --disable-warning: node:sqlite still emits an ExperimentalWarning on stderr, and the
         // reporter's contract is that IT never speaks — node's own warning must not either.
         expect(entry).toMatch(
-            /node --disable-warning=ExperimentalWarning \/usr\/local\/bin\/branch-reporter\.cjs >\/dev\/null 2>&1 &\n/,
+            /node --disable-warning=ExperimentalWarning \/usr\/local\/bin\/branch-reporter\.cjs >\/dev\/null 2>&1 &\n/
         );
         // Both children tracked: the reporter and the CLI each hand their PID back to the shell.
         expect(entry).toMatch(/^REPORTER_PID=\$!$/m);
@@ -77,7 +77,9 @@ describe('the executor branch reporter', () => {
         // that died to that signal — so the CLI is waited on in a loop until it is really gone
         // (the kill -0 probe), and the reporter is terminated and reaped before the close-time
         // sample so nothing outlives the run.
-        expect(entry).toMatch(/while :; do\n    wait "\$CLI_PID"\n    STATUS=\$\?\n    kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/);
+        expect(entry).toMatch(
+            /while :; do\n    wait "\$CLI_PID"\n    STATUS=\$\?\n    kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/
+        );
         if (cli === 'opencode') {
             expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID" "\$WATCHER_PID"/);
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
@@ -98,7 +100,8 @@ describe('the executor branch reporter', () => {
     // otherwise cross-report two concurrent fresh runs), and the two readers must never
     // disagree about which row that is.
     it('discovers the opencode session with the shipped readout’s exact query', () => {
-        const query = 'select id from session where parent_id is null and directory = ? order by time_created desc limit 1';
+        const query =
+            'select id from session where parent_id is null and directory = ? order by time_created desc limit 1';
         expect(read(OPENCODE_REPORTER)).toContain(query);
         expect(read('driver/src/scripts/opencode-readout.cjs')).toContain(query);
     });

@@ -60,7 +60,8 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
     const dotClass = (id: string): string => {
         const status = taskStatus(id, tasks);
         if (status.doneAt !== null || status.status === 'succeeded') return 'sidenav-dot-done';
-        if (status.status === 'running') return status.cancelRequestedAt !== null ? 'sidenav-dot-stopping' : 'sidenav-dot-running';
+        if (status.status === 'running')
+            return status.cancelRequestedAt !== null ? 'sidenav-dot-stopping' : 'sidenav-dot-running';
         if (status.status === 'standby' || status.status === 'queued') return 'sidenav-dot-paused';
         if (status.status === 'failed' || status.status === 'dead') return 'sidenav-dot-failed';
         return '';
@@ -108,12 +109,22 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                                                     to={`/tasks/${id}`}
                                                                     title={task?.command ?? id}
                                                                     className={({ isActive }) =>
-                                                                        isActive ? 'sidenav-task is-active' : 'sidenav-task'
+                                                                        isActive
+                                                                            ? 'sidenav-task is-active'
+                                                                            : 'sidenav-task'
                                                                     }
                                                                 >
-                                                                    {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
-                                                                    <span className="sidenav-task-title">{taskTitle(id, tasks)}</span>
-                                                                    {summary !== null ? <span className="sidenav-task-summary">{summary}</span> : null}
+                                                                    {dot !== '' ? (
+                                                                        <span className={`sidenav-dot ${dot}`} />
+                                                                    ) : null}
+                                                                    <span className="sidenav-task-title">
+                                                                        {taskTitle(id, tasks)}
+                                                                    </span>
+                                                                    {summary !== null ? (
+                                                                        <span className="sidenav-task-summary">
+                                                                            {summary}
+                                                                        </span>
+                                                                    ) : null}
                                                                 </NavLink>
                                                             </li>
                                                         );
@@ -150,9 +161,13 @@ export function SideNav({ tasks, tabs }: { tasks: readonly Job[] | null; tabs: T
                                                                 isActive ? 'sidenav-task is-active' : 'sidenav-task'
                                                             }
                                                         >
-                                                            {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
+                                                            {dot !== '' ? (
+                                                                <span className={`sidenav-dot ${dot}`} />
+                                                            ) : null}
                                                             <span className="sidenav-task-title">{task.command}</span>
-                                                            {summary !== null ? <span className="sidenav-task-summary">{summary}</span> : null}
+                                                            {summary !== null ? (
+                                                                <span className="sidenav-task-summary">{summary}</span>
+                                                            ) : null}
                                                         </NavLink>
                                                     </li>
                                                 );

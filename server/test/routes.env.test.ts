@@ -63,9 +63,7 @@ describe('GET /api/env', () => {
     it('answers the three scopes, with every secret value nulled', async () => {
         const { app, admin, adminCookie, envVars } = await boot();
         await envVars.replaceOrg([{ name: 'CORE_SECRET', value: 's3cr3t', isSecret: true }]);
-        await envVars.replaceWorkspace(admin.user.id, [
-            { name: 'MINE', value: 'visible', isSecret: false },
-        ]);
+        await envVars.replaceWorkspace(admin.user.id, [{ name: 'MINE', value: 'visible', isSecret: false }]);
         await envVars.replaceRepo('acme', 'web', [{ name: 'REPO_SECRET', value: 'r', isSecret: true }]);
 
         const response = await app.inject({ method: 'GET', url: '/api/env', headers: { cookie: adminCookie } });
@@ -96,7 +94,8 @@ describe('PUT /api/env/workspace', () => {
         const { app, member, memberCookie } = await boot();
         const payload = { vars: [{ name: 'FIRST', value: '1', isSecret: false }] };
         expect(
-            (await app.inject({ method: 'PUT', url: '/api/env/workspace', headers: { cookie: memberCookie }, payload })).statusCode,
+            (await app.inject({ method: 'PUT', url: '/api/env/workspace', headers: { cookie: memberCookie }, payload }))
+                .statusCode
         ).toBe(200);
         await app.inject({
             method: 'PUT',
@@ -141,9 +140,9 @@ describe('PUT /api/env/workspace', () => {
 
     it('needs a session', async () => {
         const { app } = await boot();
-        expect(
-            (await app.inject({ method: 'PUT', url: '/api/env/workspace', payload: { vars: [] } })).statusCode,
-        ).toBe(401);
+        expect((await app.inject({ method: 'PUT', url: '/api/env/workspace', payload: { vars: [] } })).statusCode).toBe(
+            401
+        );
     });
 });
 
@@ -240,11 +239,7 @@ describe('PUT /api/env/org and /api/env/repo', () => {
 describe('env var validation', () => {
     it.each([
         ['a bad name', { vars: [{ name: 'not a name', value: '1', isSecret: false }] }, 'BAD_ENV_NAME'],
-        [
-            'a reserved name',
-            { vars: [{ name: 'WORKDIR', value: '/etc', isSecret: false }] },
-            'RESERVED_ENV_NAME',
-        ],
+        ['a reserved name', { vars: [{ name: 'WORKDIR', value: '/etc', isSecret: false }] }, 'RESERVED_ENV_NAME'],
         [
             'the gate credential the driver mints per run',
             { vars: [{ name: 'BELLOWS_GATE_TOKEN', value: 'spoof', isSecret: true }] },
@@ -285,21 +280,13 @@ describe('env var validation', () => {
             { vars: [{ name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"x"}', isSecret: false }] },
             'RESERVED_ENV_NAME',
         ],
-        [
-            'a null value on a non-secret',
-            { vars: [{ name: 'PLAIN', value: null, isSecret: false }] },
-            'BAD_VALUE',
-        ],
+        ['a null value on a non-secret', { vars: [{ name: 'PLAIN', value: null, isSecret: false }] }, 'BAD_VALUE'],
         [
             'a value with a newline',
             { vars: [{ name: 'MULTI', value: 'line1\nline2', isSecret: false }] },
             'BAD_ENV_VALUE',
         ],
-        [
-            'an oversized name',
-            { vars: [{ name: 'X'.repeat(256), value: '1', isSecret: false }] },
-            'BAD_ENV_NAME',
-        ],
+        ['an oversized name', { vars: [{ name: 'X'.repeat(256), value: '1', isSecret: false }] }, 'BAD_ENV_NAME'],
         [
             'a duplicated name',
             {

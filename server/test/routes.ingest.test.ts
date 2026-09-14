@@ -82,7 +82,10 @@ describe('POST /api/otlp/v1/metrics', () => {
         const instance = await harnessWith(store);
 
         const res = await instance.inject({
-            method: 'POST', url: '/api/otlp/v1/metrics', headers: json, payload: otlpBody,
+            method: 'POST',
+            url: '/api/otlp/v1/metrics',
+            headers: json,
+            payload: otlpBody,
         });
         expect(res.statusCode).toBe(200);
         expect(res.json()).toEqual({ partialSuccess: {} });
@@ -95,7 +98,10 @@ describe('POST /api/otlp/v1/metrics', () => {
         const store = stubStore();
         const instance = await harnessWith(store);
         const res = await instance.inject({
-            method: 'POST', url: '/api/otlp/v1/metrics', headers: json, payload: { resourceMetrics: [] },
+            method: 'POST',
+            url: '/api/otlp/v1/metrics',
+            headers: json,
+            payload: { resourceMetrics: [] },
         });
         expect(res.statusCode).toBe(200);
         expect(store.metrics).toEqual([]);
@@ -104,8 +110,10 @@ describe('POST /api/otlp/v1/metrics', () => {
     it('rejects a non-JSON content type', async () => {
         const instance = await harnessWith(stubStore());
         const res = await instance.inject({
-            method: 'POST', url: '/api/otlp/v1/metrics',
-            headers: { 'content-type': 'application/x-protobuf' }, payload: 'binary',
+            method: 'POST',
+            url: '/api/otlp/v1/metrics',
+            headers: { 'content-type': 'application/x-protobuf' },
+            payload: 'binary',
         });
         expect(res.statusCode).toBe(415);
     });
@@ -113,7 +121,9 @@ describe('POST /api/otlp/v1/metrics', () => {
     it('rejects a body over the limit', async () => {
         const instance = await harnessWith(stubStore());
         const res = await instance.inject({
-            method: 'POST', url: '/api/otlp/v1/metrics', headers: json,
+            method: 'POST',
+            url: '/api/otlp/v1/metrics',
+            headers: json,
             payload: { blob: 'x'.repeat(1_100_000) },
         });
         expect(res.statusCode).toBe(413);
@@ -124,7 +134,10 @@ describe('POST /api/otlp/v1/metrics', () => {
         // can actually fix. A body the parser cannot read must never get one.
         const instance = await harnessWith(stubStore({ fail: true }));
         const res = await instance.inject({
-            method: 'POST', url: '/api/otlp/v1/metrics', headers: json, payload: otlpBody,
+            method: 'POST',
+            url: '/api/otlp/v1/metrics',
+            headers: json,
+            payload: otlpBody,
         });
         expect(res.statusCode).toBe(503);
     });
@@ -135,7 +148,10 @@ describe('POST /api/otlp/v1/metrics', () => {
         const instance = await harnessWith(store);
         for (const payload of [{}, { resourceMetrics: 'nonsense' }, { resourceMetrics: [{}] }]) {
             const res = await instance.inject({
-                method: 'POST', url: '/api/otlp/v1/metrics', headers: json, payload,
+                method: 'POST',
+                url: '/api/otlp/v1/metrics',
+                headers: json,
+                payload,
             });
             expect(res.statusCode).toBe(200);
         }
@@ -146,7 +162,10 @@ describe('POST /api/otlp/v1/metrics', () => {
         // A route that accepts data and then drops it is worse than no route.
         const instance = await harnessWith(undefined);
         const res = await instance.inject({
-            method: 'POST', url: '/api/otlp/v1/metrics', headers: json, payload: otlpBody,
+            method: 'POST',
+            url: '/api/otlp/v1/metrics',
+            headers: json,
+            payload: otlpBody,
         });
         expect(res.statusCode).toBe(404);
     });
@@ -166,7 +185,10 @@ describe('POST /api/sessions/branch', () => {
         const store = stubStore();
         const instance = await harnessWith(store);
         const res = await instance.inject({
-            method: 'POST', url: '/api/sessions/branch', headers: json, payload: report,
+            method: 'POST',
+            url: '/api/sessions/branch',
+            headers: json,
+            payload: report,
         });
         expect(res.statusCode).toBe(202);
         expect(store.branches[0]).toEqual(report);
@@ -176,7 +198,9 @@ describe('POST /api/sessions/branch', () => {
         const store = stubStore();
         const instance = await harnessWith(store);
         const res = await instance.inject({
-            method: 'POST', url: '/api/sessions/branch', headers: json,
+            method: 'POST',
+            url: '/api/sessions/branch',
+            headers: json,
             payload: { ...report, branch: null, headSha: null },
         });
         expect(res.statusCode).toBe(202);
@@ -187,7 +211,9 @@ describe('POST /api/sessions/branch', () => {
         // It would join to nothing while looking like a real branch.
         const instance = await harnessWith(stubStore());
         const res = await instance.inject({
-            method: 'POST', url: '/api/sessions/branch', headers: json,
+            method: 'POST',
+            url: '/api/sessions/branch',
+            headers: json,
             payload: { ...report, branch: 'HEAD' },
         });
         expect(res.statusCode).toBe(400);
@@ -206,7 +232,10 @@ describe('POST /api/sessions/branch', () => {
         ];
         for (const payload of bad) {
             const res = await instance.inject({
-                method: 'POST', url: '/api/sessions/branch', headers: json, payload,
+                method: 'POST',
+                url: '/api/sessions/branch',
+                headers: json,
+                payload,
             });
             expect(res.statusCode).toBe(400);
         }
@@ -217,7 +246,10 @@ describe('POST /api/sessions/branch', () => {
         const instance = await harnessWith(store);
         const { agent: _agent, ...withoutAgent } = report;
         await instance.inject({
-            method: 'POST', url: '/api/sessions/branch', headers: json, payload: withoutAgent,
+            method: 'POST',
+            url: '/api/sessions/branch',
+            headers: json,
+            payload: withoutAgent,
         });
         expect(store.branches[0]?.agent).toBe('claude-code');
     });
@@ -227,7 +259,10 @@ describe('POST /api/otlp/v1/logs', () => {
     it('accepts and drops log records, so a configured exporter does not retry forever', async () => {
         const instance = await harnessWith(stubStore());
         const res = await instance.inject({
-            method: 'POST', url: '/api/otlp/v1/logs', headers: json, payload: { resourceLogs: [] },
+            method: 'POST',
+            url: '/api/otlp/v1/logs',
+            headers: json,
+            payload: { resourceLogs: [] },
         });
         expect(res.statusCode).toBe(200);
     });

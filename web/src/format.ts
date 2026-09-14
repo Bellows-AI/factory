@@ -65,7 +65,7 @@ export function taskTime(iso: string | null | undefined): string {
 export function runDuration(
     startedAt: string | null | undefined,
     endedAt: string | null | undefined,
-    now: Date = new Date(),
+    now: Date = new Date()
 ): string {
     if (!startedAt) return '—';
     const from = new Date(startedAt);

@@ -121,7 +121,10 @@ export function createGateManager({
 
     const serialize = <T>(key: string, work: () => Promise<T>): Promise<T> => {
         const chained = (queues.get(key) ?? Promise.resolve()).then(work, work);
-        queues.set(key, chained.catch(() => undefined));
+        queues.set(
+            key,
+            chained.catch(() => undefined)
+        );
         return chained;
     };
 
@@ -156,7 +159,7 @@ export function createGateManager({
             const entry = entries.get(key);
             if (!entry) {
                 return Promise.reject(
-                    Object.assign(new Error(`no gate environment for ${key}`), { code: CONTAINER_GONE }),
+                    Object.assign(new Error(`no gate environment for ${key}`), { code: CONTAINER_GONE })
                 );
             }
             // A gate run is activity: it cancels any pending teardown, and re-arms the cooldown
@@ -249,7 +252,7 @@ export interface GateServer {
      */
     register(
         token: string,
-        claim: { key: string; image: string; envBody?: string; gates: readonly { name: string; command: string }[] },
+        claim: { key: string; image: string; envBody?: string; gates: readonly { name: string; command: string }[] }
     ): void;
     unregister(token: string): void;
     /** Idempotent. Resolves with the bound port, which is what the advertised URL is built from. */
@@ -264,7 +267,10 @@ export function createGateServer({
     host: string;
     manager: Pick<GateManager, 'acquire' | 'runGate'>;
 }): GateServer {
-    const claims = new Map<string, { key: string; image: string; envBody: string; gates: readonly { name: string; command: string }[] }>();
+    const claims = new Map<
+        string,
+        { key: string; image: string; envBody: string; gates: readonly { name: string; command: string }[] }
+    >();
     let server: Server | null = null;
     let listening: Promise<number> | null = null;
 
