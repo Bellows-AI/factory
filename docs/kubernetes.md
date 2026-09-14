@@ -37,7 +37,8 @@ argv that every `ps` on the host can read; `valueFrom.secretKeyRef` keeps it out
 everyone who can `get pods` can read. Same threat, same answer, different syntax. A literal
 `value:` on a credential env is the one thing `runnerJobSpec` must never grow — the test suite
 pins that the only literal values in the runner env are paths and URLs — `WORKDIR`, the OTLP
-endpoint, the board URL — never a credential.
+endpoint, the board URL, the transcript store (`FACTORY_TRANSCRIPT_DIR`, the same name the docker
+argv passes for the same claim) — never a credential.
 
 **The claim env's per-attempt Secret is the third Secret object in the story, and it is reaped as
 carefully as it is created.** The board resolves the stacked environment onto the claim

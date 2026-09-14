@@ -19,6 +19,7 @@ import {
     reportTail,
     runWorkingDir,
     SESSION_ID,
+    transcriptDir,
     workspacePathOf,
 } from './docker.js';
 import { composeRuntimeSample } from './docker.js';
@@ -231,6 +232,14 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // does (docker.ts). A path literal like WORKDIR, never a credential.
     if (config.cli === 'opencode') {
         env.push({ name: 'XDG_DATA_HOME', value: `${config.workspaceMount}/${path}/.opencode` });
+    } else {
+        // The transcript store for headless claude-code (opencode persists through its own
+        // database; Remote Control has no counterpart here and is the docker runner's only
+        // excluded path). The same name the docker argv carries for the same claim, so
+        // transcript persistence does not depend on which executor ran the job — the entrypoint
+        // redirects CLAUDE_CONFIG_DIR onto the workspaces PVC. A path literal like WORKDIR,
+        // never a credential.
+        env.push({ name: 'FACTORY_TRANSCRIPT_DIR', value: transcriptDir(config, job) });
     }
 
     // The argv each CLI speaks. The docker runner composes the same two shapes in dockerArgs —

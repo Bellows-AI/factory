@@ -382,6 +382,45 @@ opencode's database is impossible (`Session not found`, loudly, if it were tried
 whose parent ran under a DIFFERENT CLI than the driver now serving the queue fails at run time
 the same loud way — the operator keeps one CLI per queue.
 
+### The executor transcript store (issue #55)
+
+**Headless claude-code transcripts now survive the container.** The runner images used to be the
+one path that lost them: the CLI writes `projects/<path>/<session-id>.jsonl` under
+`CLAUDE_CONFIG_DIR`, which lived on the container filesystem, and the container is removed at
+every run's end. The driver now composes a per-thread directory from the claim's own fields —
+`<mount>/<workspacePath>/.factory/transcripts/<rootJobId>/`, the same `<org>/<uuid>` workspace
+path `WORKDIR` uses and the same root id the task worktree is keyed by — and passes it to the
+runner as `FACTORY_TRANSCRIPT_DIR`. The entrypoint makes it `CLAUDE_CONFIG_DIR` before anything
+else runs, so transcripts land on the workspaces volume the moment the CLI writes them — no
+post-run copy, no loss window, on both executors (docker and kubernetes run the same images and
+the driver passes the same env on both). The leading-dot `.factory/` namespace is never mistaken
+for a checkout by the workspace reconcile.
+
+**The redirect is guarded, and the baked configuration rides along.** The entrypoint refuses
+`FACTORY_TRANSCRIPT_DIR` together with `TRUST_WORKDIR` (exit 2) — Remote Control's config
+directory must stay the auth volume, see below — and the `/opt/claude-home` seed is keyed on
+`settings.json` being absent, so the first attempt of a thread seeds the baked git guard and
+settings into the thread directory and every later attempt of the same thread finds them.
+
+**Resume is the side effect the design leans on.** `--resume` resolves the session inside
+`CLAUDE_CONFIG_DIR`, and the root id is stable across every attempt and follow-up of a thread —
+so a follow-up is pointed at the same directory its parent wrote and can actually find the
+session it names. Before this store, a headless follow-up resumed against an ephemeral config
+directory, where the session did not exist.
+
+**What persists, per path.** Headless claude-code: the thread directory on the workspaces volume
+(this store). Opencode: its own per-member sqlite database under `XDG_DATA_HOME` (above) —
+already persistent, deliberately not duplicated. Remote Control: the auth volume over
+`CLAUDE_CONFIG_DIR` — untouched, because standby/park depends on the transcript surviving its
+container there.
+
+**Out of scope, deliberately:** reading or analyzing transcripts (the factory-stats dashboard's
+eventual use — it needs the bytes to exist first), board ingestion, retention policy (unbounded
+for now; the `.factory/` namespace makes a future sweep easy to aim), re-homing opencode's
+database, and organizing the Remote Control auth-volume pile. `FACTORY_TRANSCRIPT_DIR` is
+reserved from member configuration on both the driver and the board (see
+[env.md](env.md)) — the value the runner receives is always the driver-composed one.
+
 ## Auxiliary services (`.bellows.yaml`)
 
 **A checkout can ask for the containers its tests need.** A `services:` list in a `.bellows.yaml`
