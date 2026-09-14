@@ -112,3 +112,18 @@ expectation — ask first.**
 GitHub and Jira are covered by the `github` and `jira` skills, which load on demand. Reach for
 them rather than improvising: `gh` for pull requests, reviews and checks; `acli` for work items.
 Do not use an Atlassian MCP server.
+
+## Infrastructure access
+
+The environment and the job network carry the infrastructure — `127.0.0.1` carries nothing. Before
+connecting to a database or any other backing service:
+
+- **Look up the injected env variables first** (`printenv`). The board resolves the author's
+  scoped variables at claim time and injects them into this container; a `DATABASE_URL` names the
+  host to connect to. A refused connection on `127.0.0.1` means "probed the wrong address", not
+  "nothing is running" — there is no host port publishing here.
+- **Declared services are DNS names.** A `services:` list in the checkout's `.bellows.yaml` starts
+  one container per entry on this job's network for as long as the job runs, and the service
+  `name` is the hostname — `db` resolves, `localhost` does not. Services start with no health
+  wait: a refused first connect may be a service still booting, so retry briefly before declaring
+  it down.

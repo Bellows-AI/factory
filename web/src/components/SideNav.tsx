@@ -18,6 +18,9 @@ import type { TaskTreeEntry } from '../task-tree.js';
  * a poll: AppShell owns the one `/api/jobs` request and gates it to `/tasks*` (see its comment), so
  * this component stays a pure function of what it is handed — plus one session-only bit of state,
  * whether the history in Past tasks is expanded.
+ *
+ * The one non-tree row is the New task link pinned above the Running rows: it opens the composer
+ * (`/tasks`) and is not a task, so the activity ordering can never slide a fresh task above it.
  */
 
 interface Item {
@@ -104,6 +107,15 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
                             ) : (
                                 <>
                                     <p className="sidenav-section">Running ({sections.running.length})</p>
+                                    <NavLink
+                                        to="/tasks"
+                                        end
+                                        className={({ isActive }) =>
+                                            isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'
+                                        }
+                                    >
+                                        + New task
+                                    </NavLink>
                                     <SectionRows entries={sections.running} empty="Nothing running" />
                                     <p className="sidenav-section">Need review ({sections.review.length})</p>
                                     <SectionRows entries={sections.review} empty="Nothing to review" />
