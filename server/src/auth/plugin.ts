@@ -2,8 +2,9 @@ import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AppConfig } from '../config.js';
+import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
-import type { AuthStore, Caller, WorkerIdentity } from './store.js';
+import type { AuthStore, Caller, OrgTokenIdentity, WorkerIdentity } from './store.js';
 
 /**
  * Who is making a request.
@@ -15,8 +16,15 @@ import type { AuthStore, Caller, WorkerIdentity } from './store.js';
  * route accepts both: an earlier exception for the thread read let a worker token read the audit
  * and session data of jobs it never held a lease on, so it is gone — the driver's one need from
  * that read rides the lease-guarded complete response instead.
+ *
+ * The third kind is an organization access token (`oat_`): it names the org but no person, so it
+ * is not a Caller — `callerOf` keeps returning null for it and every person-gated route refuses it
+ * without knowing access tokens exist.
  */
-export type Principal = { kind: 'user'; caller: Caller } | { kind: 'worker'; worker: WorkerIdentity };
+export type Principal =
+    | { kind: 'user'; caller: Caller }
+    | { kind: 'worker'; worker: WorkerIdentity }
+    | { kind: 'org'; token: OrgTokenIdentity };
 
 declare module 'fastify' {
     interface FastifyRequest {
@@ -37,6 +45,22 @@ const WORKER_ROUTES: readonly RegExp[] = [
 
 /** Machine-to-machine telemetry, from the collector and from developer laptops. */
 const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//, /^\/api\/sessions\/branch$/];
+
+/**
+ * What an organization token may reach, and nothing else — an allowlist, because a refusal list
+ * would silently admit every route added after it. Each entry names no person: board and repo
+ * reads, and the cache poke. Everything a route needs a `callerOf` for — queueing a job above all,
+ * whose `created_by` must stay a person — is outside it, and gets a 403 rather than a 401: the
+ * token did authenticate, the route just needs a human behind it.
+ */
+const ORG_TOKEN_ROUTES: readonly (readonly [string, RegExp])[] = [
+    ['GET', /^\/api\/stats$/],
+    ['POST', /^\/api\/refresh$/],
+    ['GET', /^\/api\/repos$/],
+    ['GET', /^\/api\/jobs$/],
+    ['GET', /^\/api\/jobs\/[^/]+$/],
+    ['GET', /^\/api\/jobs\/[^/]+\/thread$/],
+];
 
 /**
  * Routes that answer without a credential, and why each one has to.
@@ -164,6 +188,40 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
             }
             request.auth = { kind: 'worker', worker };
             return;
+        }
+
+        // An access token in the Authorization header — the credential for callers that cannot hold
+        // a cookie. `none` ignores it like every credential in that mode. The bearer is THE
+        // credential when present: a CLI never sends a cookie and a browser never sends a bearer,
+        // so both at once means something between them is rewriting, and the cookie behind a failed
+        // or foreign bearer must not be consulted — that would let a rewritten header ride
+        // somebody's session in.
+        if (auth.mode !== 'none') {
+            const accessToken = bearer(request);
+            if (accessToken) {
+                if (!isAccessToken(accessToken)) {
+                    return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+                }
+                const tokenHash = hashToken(accessToken);
+                if (accessToken.startsWith(ORG_TOKEN_PREFIX)) {
+                    const orgToken = await store.findOrgToken(tokenHash, config.orgId);
+                    if (!orgToken) {
+                        return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+                    }
+                    const path = pathOf(request.url);
+                    if (!ORG_TOKEN_ROUTES.some(([method, route]) => request.method === method && route.test(path))) {
+                        return reply.code(403).send({ error: 'Organization tokens can only read', code: 'FORBIDDEN' });
+                    }
+                    request.auth = { kind: 'org', token: orgToken };
+                    return;
+                }
+                const tokenCaller = await store.findPersonalToken(tokenHash, config.orgId);
+                if (!tokenCaller) {
+                    return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+                }
+                request.auth = { kind: 'user', caller: tokenCaller };
+                return;
+            }
         }
 
         const caller = await resolveUser(request);

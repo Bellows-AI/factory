@@ -57,6 +57,7 @@ beforeEach(async () => {
     if (!enabled) return;
     await sql`delete from org_membership where org_id in (${ORG}, ${OTHER_ORG})`;
     await sql`delete from worker_token where org_id in (${ORG}, ${OTHER_ORG})`;
+    await sql`delete from access_token where org_id in (${ORG}, ${OTHER_ORG})`;
     // Sessions go with their account, through `on delete cascade`.
     await sql`delete from app_user where github_user_id >= ${ID_BASE}`;
 });
@@ -360,6 +361,192 @@ describe.skipIf(!enabled)('worker tokens', () => {
             { name: 'driver-1', revoked: false },
             { name: 'driver-2', revoked: true },
         ]);
+    });
+});
+
+describe.skipIf(!enabled)('access tokens', () => {
+    /** Invites, signs in, and returns the claimed caller — the person a personal token acts as. */
+    const member = async (n: number, login: string) => {
+        await store.invite(ORG, login, 'member');
+        const caller = await store.signIn(identity(n, login), ORG);
+        expect(caller).not.toBeNull();
+        return caller!;
+    };
+
+    const createPersonal = async (caller: Awaited<ReturnType<typeof member>>, token: string, label: string) =>
+        store.createAccessToken({
+            kind: 'personal',
+            orgId: ORG,
+            userId: caller.user.id,
+            createdBy: caller.user.id,
+            label,
+            tokenHash: hashToken(token),
+        });
+
+    it('resolves a personal token to its caller through the membership join', async () => {
+        const caller = await member(1, 'token-user');
+        await createPersonal(caller, 'fat_a', 'laptop');
+
+        expect(await store.findPersonalToken(hashToken('fat_a'), ORG)).toMatchObject({
+            user: { id: caller.user.id, login: 'token-user' },
+            role: 'member',
+        });
+    });
+
+    it('refuses a personal token whose membership is gone', async () => {
+        const caller = await member(2, 'leaver');
+        await createPersonal(caller, 'fat_b', 'laptop');
+
+        await store.removeMember(ORG, 'leaver');
+
+        expect(await store.findPersonalToken(hashToken('fat_b'), ORG)).toBeNull();
+    });
+
+    it('refuses a revoked token, of either kind', async () => {
+        const caller = await member(3, 'revoker');
+        const personal = await createPersonal(caller, 'fat_c', 'laptop');
+        const org = await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: caller.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_c'),
+        });
+
+        expect(await store.revokePersonalToken(ORG, caller.user.id, personal.id)).toBe('revoked');
+        expect(await store.revokeOrgToken(ORG, org.id)).toBe('revoked');
+        expect(await store.findPersonalToken(hashToken('fat_c'), ORG)).toBeNull();
+        expect(await store.findOrgToken(hashToken('oat_c'), ORG)).toBeNull();
+        // Revoking again changes nothing.
+        expect(await store.revokePersonalToken(ORG, caller.user.id, personal.id)).toBe('missing');
+        expect(await store.revokeOrgToken(ORG, org.id)).toBe('missing');
+    });
+
+    it('refuses a token minted for another organization', async () => {
+        const caller = await member(4, 'elsewhere');
+        await store.createAccessToken({
+            kind: 'personal',
+            orgId: OTHER_ORG,
+            userId: caller.user.id,
+            createdBy: caller.user.id,
+            label: 'laptop',
+            tokenHash: hashToken('fat_d'),
+        });
+        await store.createAccessToken({
+            kind: 'org',
+            orgId: OTHER_ORG,
+            userId: null,
+            createdBy: caller.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_d'),
+        });
+
+        expect(await store.findPersonalToken(hashToken('fat_d'), ORG)).toBeNull();
+        expect(await store.findOrgToken(hashToken('oat_d'), ORG)).toBeNull();
+    });
+
+    it('stamps last_used_at, then holds it within the throttle window', async () => {
+        // The dashboard polls every two seconds, so the touch is throttled to one rewrite a
+        // minute — minute-granular "last used" in exchange for a read path that is not a write.
+        const caller = await member(5, 'throttle');
+        await createPersonal(caller, 'fat_e', 'laptop');
+
+        await store.findPersonalToken(hashToken('fat_e'), ORG);
+        const [first] = await sql<{ last_used_at: Date }[]>`
+            select last_used_at from access_token where org_id = ${ORG} and label = 'laptop'
+        `;
+        expect(first?.last_used_at).not.toBeNull();
+
+        await store.findPersonalToken(hashToken('fat_e'), ORG);
+        const [second] = await sql<{ last_used_at: Date }[]>`
+            select last_used_at from access_token where org_id = ${ORG} and label = 'laptop'
+        `;
+        expect(second?.last_used_at?.getTime()).toBe(first?.last_used_at?.getTime());
+    });
+
+    it('marks a removed member’s personal tokens revoked, keeping the rows', async () => {
+        const caller = await member(6, 'removed');
+        await createPersonal(caller, 'fat_f', 'laptop');
+        await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: caller.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_f'),
+        });
+
+        await store.removeMember(ORG, 'removed');
+
+        const rows = await sql<{ kind: string; label: string; revoked_at: Date | null }[]>`
+            select kind, label, revoked_at from access_token where org_id = ${ORG} order by label
+        `;
+        expect(rows).toMatchObject([
+            { label: 'ci', revoked_at: null },
+            { label: 'laptop', revoked_at: expect.any(Date) },
+        ]);
+    });
+
+    it('stores the hash of the token, never the token', async () => {
+        const caller = await member(7, 'at-rest');
+        const token = 'fat_secret-value-shown-once';
+        await createPersonal(caller, token, 'laptop');
+
+        const [row] = await sql<{ token_hash: Buffer }[]>`
+            select token_hash from access_token where org_id = ${ORG} and label = 'laptop'
+        `;
+        expect(row!.token_hash.equals(hashToken(token))).toBe(true);
+        expect(row!.token_hash.toString('utf8')).not.toContain(token);
+    });
+
+    it('rejects a personal row with no user, at the row', async () => {
+        // access_token_owner_ck says what the hook assumes: a personal token has an owner.
+        await expect(
+            store.createAccessToken({
+                kind: 'personal',
+                orgId: ORG,
+                userId: null,
+                createdBy: null,
+                label: 'ownerless',
+                tokenHash: hashToken('fat_ownerless'),
+            })
+        ).rejects.toThrow();
+    });
+
+    it('lists each scope without ever selecting a hash', async () => {
+        const caller = await member(8, 'lister');
+        await createPersonal(caller, 'fat_g', 'laptop');
+        await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: caller.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_g'),
+        });
+
+        const personal = await store.listPersonalTokens(ORG, caller.user.id);
+        expect(personal).toMatchObject([{ label: 'laptop', revokedAt: null }]);
+        const org = await store.listOrgTokens(ORG);
+        expect(org).toMatchObject([{ label: 'ci' }]);
+        for (const view of [...personal, ...org]) {
+            expect(JSON.stringify(view)).not.toContain('hash');
+        }
+    });
+
+    it('resolves an org token to its identity', async () => {
+        const caller = await member(9, 'org-minter');
+        const org = await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: caller.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_h'),
+        });
+
+        expect(await store.findOrgToken(hashToken('oat_h'), ORG)).toEqual({ id: org.id, label: 'ci' });
     });
 });
 

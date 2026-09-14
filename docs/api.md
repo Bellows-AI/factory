@@ -5,7 +5,9 @@ Read before: adding or changing a route, a status code, or a query parameter.
 Every `/api/*` route needs a credential under `AUTH_MODE=github`, and none under `AUTH_MODE=none`.
 Which one each takes is in the table in [auth.md](auth.md); the exemptions worth knowing here are
 `GET /api/health` and `/api/auth/*`, and the fact that the SPA's own document is never gated. An
-unauthenticated `/api/*` request is `401 UNAUTHENTICATED`.
+unauthenticated `/api/*` request is `401 UNAUTHENTICATED`. On the session routes a `Bearer fat_…`
+/ `oat_…` access token is an alternative to the cookie — and when both arrive the bearer wins
+([auth.md](auth.md)).
 
 | Route | Behaviour |
 | --- | --- |
@@ -13,6 +15,12 @@ unauthenticated `/api/*` request is `401 UNAUTHENTICATED`.
 | `GET /api/auth/github/callback` | `302` on every outcome, never JSON — it is reached by a top-level navigation, and an error body is a dead end for the human in front of it. Failures carry `?auth_error=denied\|state\|github\|no_membership`. |
 | `POST /api/auth/logout` | `204`, including for a caller who was never signed in. POST because a GET logout is CSRF-able and gets fired by link prefetchers. |
 | `GET /api/auth/me` | `200 { user, role, membership, account, organization, workspacePath, mode }` or `401 UNAUTHENTICATED`. `user` carries `id`, `login`, `name`, `githubUserId`, `avatarUrl`; `membership` carries `invitedAt`/`claimedAt` and `account` carries `createdAt`/`lastLoginAt`, all ISO 8601 or null. `workspacePath` is the member's checkout root, null when no workspace root is configured; computing it provisions nothing. Under `AUTH_MODE=none` the caller is the stand-in account (`login` `__local__`, `githubUserId` 0, `avatarUrl` null) — facts, not display hints. Deliberately exempt from the wall: being what *tells* the SPA it is unauthenticated is its whole purpose. |
+| `POST /api/tokens` | `201 { id, token }` — `token` is the plaintext `fat_…`, in this one response only; the row holds its sha-256 and nothing can read it back. `400 BAD_LABEL` on a missing, blank, or over-128-character label. |
+| `GET /api/tokens` | `200 { tokens }` — the caller's own personal tokens as `{ id, label, createdAt, lastUsedAt, revokedAt }`. Never a token or a hash: the list answers "what tokens exist", not "who can use them". |
+| `POST /api/tokens/:id/revoke` | `200 { id, revoked: true }`. `404 NOT_FOUND` when the id is unknown, somebody else's, or already revoked — a revoke that changed nothing has no row to name. `400 BAD_ID` on a non-uuid. |
+| `POST /api/tokens/org` | `201 { id, token }` with an `oat_…` organization token. Admin only (`403 FORBIDDEN`), like every org-wide write. The token acts for the organization on read-only routes and has no user; same `BAD_LABEL` rules. |
+| `GET /api/tokens/org` | `200 { tokens }` — the org-wide list, same shape. Admin only (`403 FORBIDDEN`). |
+| `POST /api/tokens/org/:id/revoke` | `200 { id, revoked: true }`. Admin only. `404 NOT_FOUND` / `400 BAD_ID` exactly as the personal revoke. |
 | `GET /api/health` | Never calls GitHub or the database. A container whose migrations are still retrying is up and answering, so probing either here would fail the compose healthcheck and restart the container that was about to succeed. |
 | `GET /api/stats` | `200` with `{ telemetry, meta }`, where `telemetry` is `TelemetryStats \| null` and `meta` is `{ fetchedAt, ageSeconds, stale, organization, repos, range, telemetry }` — the inner `meta.telemetry` carries the read's own state (`ok`/`empty` — `disabled` and a failed first read answer `503` instead — plus `source`, `repoFilter`, `otherRepoSessions`, `sessionsWithoutHook`). `202` with progress while the first read runs (SPA polls every 2s); `503` with `TELEMETRY_DISABLED` when `TELEMETRY_SOURCE=off` — with nothing else in the payload, because telemetry is the whole payload — or with the failure when the first read failed cold. A stale cache is still a 200: a failed read must keep the last good render on screen and explain itself, not blank the dashboard. `?range=day\|week\|2w\|month\|all\|custom` (default `all`), plus `?from=&to=` for `custom`; `400 BAD_RANGE` on anything unparseable, never a silent fallback to all time. `?org=` is accepted and `400 UNKNOWN_ORG` on a mismatch — see below. |
 | `POST /api/refresh` | `202`. Single-flight. Bypasses the post-failure cooldown. |

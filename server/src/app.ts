@@ -19,6 +19,7 @@ import { ingestRoutes } from './routes/ingest.js';
 import { jobRoutes } from './routes/jobs.js';
 import { repoRoutes } from './routes/repos.js';
 import { statsRoutes } from './routes/stats.js';
+import { tokenRoutes } from './routes/tokens.js';
 import type { StatsService } from './stats-service.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
@@ -122,7 +123,10 @@ export async function buildApp({
     else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(config));
-    if (auth) await app.register(authRoutes({ config, store: auth, identity }));
+    if (auth) {
+        await app.register(authRoutes({ config, store: auth, identity }));
+        await app.register(tokenRoutes({ store: auth, orgId: config.orgId }));
+    }
     await app.register(statsRoutes(config, service, now));
     await app.register(repoRoutes(repos));
     if (store) await app.register(ingestRoutes(store));

@@ -4,7 +4,8 @@ Read before: changing a bind address, a header, a GitHub App permission, or any 
 setting.
 
 **There are two postures, and `AUTH_MODE` picks between them explicitly.** With `AUTH_MODE=github`
-every `/api/*` route requires a credential — a session cookie for people, a `Bearer fwt_…` worker
+every `/api/*` route requires a credential — a session cookie, or an access token (`fat_`/`oat_`,
+hash-stored like the session) for a caller that cannot hold a cookie, and a `Bearer fwt_…` worker
 token for the driver. With `AUTH_MODE=none`, the default, there is no application-level auth at all
 and the `127.0.0.1` bind is the access control, exactly as it always was; `loadConfig` refuses that
 mode on a non-loopback `HOST` unless `AUTH_ALLOW_PUBLIC_BIND=1` says something else is doing the
