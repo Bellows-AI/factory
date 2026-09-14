@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { taskTime } from '../format.js';
-import { taskSummary } from '../tabs.js';
+import { taskSummary } from '../task-tree.js';
 import { TaskSide } from './TaskSide.js';
 
 /**
@@ -49,8 +49,8 @@ const tokenCount = new Intl.NumberFormat('en-US');
  * while the run is going only. A finished run's last sample is a post-mortem detail; the verdict
  * and the exit code are what the reader wants there, and a stale "cpu 167%" beside them lies about
  * a run that is no longer going. (The agent's current activity line lives in the status sidebar,
- * the task summary at the top of this view, and the nav and tab-strip summaries — "currently
- * running task", wherever the task is met.)
+ * the task summary at the top of this view, and the nav's task-tree summary — "currently running
+ * task", wherever the task is met.)
  */
 function Runtime({ runtime }: { runtime: RuntimeVitals }) {
     return (
@@ -147,7 +147,7 @@ export function TaskDetail({
     const canFollowUp = open && latestTask.sessionId !== null;
     const sessionless = open && latestTask.sessionId === null;
     // The task's live summary — the newest run's activity line, while there is one — at the top of
-    // the view, the same line the sidebar's "Task" row and the sidenav and tab strips read.
+    // the view, the same line the sidebar's "Task" row and the sidenav read.
     const summary = taskSummary(latestTask.id, jobs);
 
     const send = async () => {

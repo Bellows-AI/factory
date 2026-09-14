@@ -3,7 +3,6 @@ import { useWorkspace } from '../api/useWorkspace.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import { useShell } from '../components/AppShell.js';
 import type { ShellContext } from '../components/AppShell.js';
-import { TaskTabs } from '../components/TaskTabs.js';
 
 /**
  * The layout route of the tasks area: `/tasks` and everything under it.
@@ -12,9 +11,6 @@ import { TaskTabs } from '../components/TaskTabs.js';
  * render — so navigating between the composer and a task's detail view does not refetch it, and
  * leaving the area for the dashboard unmounts it entirely. The task LIST lives one level up, in the
  * shell (see its comment); what is shared down here is only the workspace configuration.
- *
- * It also renders the active group's tab strip above every page of the area — the composer and the
- * detail view share it, so switching tabs is one click wherever the area has you.
  *
  * `useOutletContext` returns the NEAREST provider, so an Outlet context of just `{ workspace }`
  * would shadow the shell's and strip the shared task poll off every page below. This route is a
@@ -34,10 +30,5 @@ export function TasksLayout() {
     const shell = useShell();
     const workspace = useWorkspace();
     const context: TasksPageContext = { ...shell, workspace };
-    return (
-        <>
-            <TaskTabs tabs={shell.tabs} tasks={shell.tasks.jobs} />
-            <Outlet context={context} />
-        </>
-    );
+    return <Outlet context={context} />;
 }

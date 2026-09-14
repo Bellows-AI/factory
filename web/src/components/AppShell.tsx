@@ -8,8 +8,6 @@ import { useSession } from '../api/useSession.js';
 import { DEFAULT_RANGE, rangeQuery } from './RangeSelector.js';
 import type { RangeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
-import { useTaskTabs } from '../tabs.js';
-import type { TaskTabs } from '../tabs.js';
 import { TopBar } from './TopBar.js';
 
 /**
@@ -29,8 +27,6 @@ export interface ShellContext {
     refresh: () => void;
     /** The one task-list poll, shared by the tasks pages the way the stats poll is. */
     tasks: UseJobs;
-    /** Task groups and their tabs — shared by the sidenav tree and the tasks-area strip. */
-    tabs: TaskTabs;
 }
 
 /** Typed access to what the layout route publishes. */
@@ -69,20 +65,16 @@ export function AppShell() {
     const onTasks = pathname === '/tasks' || pathname.startsWith('/tasks/');
     const tasks = useJobs(onTasks);
 
-    // The task tabs persist in localStorage and are needed by both the sidenav (the group tree)
-    // and the tasks strip, so they live here, beside the task poll they refer to.
-    const tabs = useTaskTabs();
-
     // The session for the topbar's user menu. A second `useSession` instance next to the gate's —
     // the environment and settings pages already do the same; the module-level listener they
     // register is a Set for exactly this reason.
     const { session } = useSession();
 
-    const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh, tasks, tabs };
+    const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh, tasks };
 
     return (
         <div className="shell">
-            <SideNav tasks={onTasks ? tasks.jobs : null} tabs={tabs} />
+            <SideNav tasks={onTasks ? tasks.jobs : null} />
             <div className="shell-main">
                 <TopBar data={data} refreshing={refreshing} onRefresh={refresh} session={session} />
                 <Outlet context={context} />

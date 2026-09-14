@@ -469,7 +469,7 @@ describe('TaskDetail', () => {
     /**
      * The task's live summary — what the agent is doing right now — at the top of the view while
      * the newest run is going. Fed by the same `runtime.activity` the sidebar's "Task" row reads,
-     * so the three places a task is met (left nav, tab strip, view top) say the same thing.
+     * so the two places a task is met (left nav, view top) say the same thing.
      */
     describe('summary', () => {
         const activity = '→ Bash npm test';
