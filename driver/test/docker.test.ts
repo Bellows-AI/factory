@@ -18,6 +18,7 @@ import {
     gateExecArgs,
     opencodeCacheProbeArgs,
     opencodeSessionReadoutArgs,
+    parseDockerServicePs,
     parseDockerStats,
     parseOpencodeCacheProbe,
     parseOpencodeRunOutcome,
@@ -77,6 +78,19 @@ const job: BoardJob = {
 };
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
+
+/** One `docker ps --format '{{json .}}'` line for a service container, the fields the parse reads. */
+const psLine = (service: { name: string; image: string; state: string }): string =>
+    `${JSON.stringify({
+        Command: '"sleep"',
+        CreatedAt: '2026-09-14T10:00:00.000Z',
+        ID: `id-${service.name}`,
+        Image: service.image,
+        Labels: `factory.job=${job.id},factory.lease=${job.leaseToken},factory.service=${service.name}`,
+        Names: `factory-job-${job.id}-${job.leaseToken}-svc-${service.name}`,
+        State: service.state,
+        Status: `${service.state} (a minute ago)`,
+    })}\n`;
 
 const args = (
     env: NodeJS.ProcessEnv = {},
@@ -1393,12 +1407,16 @@ describe('the docker runner', () => {
      */
     it('samples the runner container vitals through the daemon seam', async () => {
         const exec = vitest.fn((args: string[]) => {
-            expect(args[0]).toBe('stats');
-            expect(args.slice(1, 4)).toEqual(['--no-stream', '--format', '{{json .}}']);
-            expect(args[4]).toBe(containerName(job));
-            return Promise.resolve({
-                stdout: '{"CPUPerc":"93.00%","MemPerc":"7.02%","MemUsage":"544MiB / 7.754GiB","Name":"x"}\n',
-            });
+            if (args[0] === 'stats') {
+                expect(args.slice(1, 4)).toEqual(['--no-stream', '--format', '{{json .}}']);
+                expect(args[4]).toBe(containerName(job));
+                return Promise.resolve({
+                    stdout: '{"CPUPerc":"93.00%","MemPerc":"7.02%","MemUsage":"544MiB / 7.754GiB","Name":"x"}\n',
+                });
+            }
+            // The fleet read answers nothing here: the pin is the vitals shape alone.
+            expect(args[0]).toBe('ps');
+            return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
 
@@ -1407,6 +1425,97 @@ describe('the docker runner', () => {
             memUsedMb: 544,
             memPercent: 7.02,
         });
+    });
+
+    /**
+     * The attempt's service fleet rides the same sample (issue #60): the dashboard can answer
+     * "did db come up" while the run is going. The read is scoped by the job AND lease label —
+     * the attempt-scoping every other per-attempt call leans on — and requires the
+     * `factory.service` key, so the runner and gate containers never answer it. `-a` so exited
+     * containers report: "did it come up and die" is exactly the honest answer wanted here.
+     */
+    it('samples the service fleet beside the vitals', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn((args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'stats') {
+                return Promise.resolve({
+                    stdout: '{"CPUPerc":"93.00%","MemPerc":"7.02%","MemUsage":"544MiB / 7.754GiB","Name":"x"}\n',
+                });
+            }
+            expect(args[0]).toBe('ps');
+            return Promise.resolve({
+                stdout:
+                    psLine({ name: 'db', image: 'postgres:16', state: 'running' }) +
+                    psLine({ name: 'cache', image: 'redis:7', state: 'exited' }),
+            });
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+
+        await expect(runner.sampleRuntime(job)).resolves.toEqual({
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7.02,
+            services: [
+                { name: 'cache', image: 'redis:7', state: 'exited' },
+                { name: 'db', image: 'postgres:16', state: 'running' },
+            ],
+        });
+        const ps = calls.find((args) => args[0] === 'ps')!;
+        expect(ps).toContain('-a');
+        expect(ps).toContain(`label=factory.job=${job.id}`);
+        expect(ps).toContain(`label=factory.lease=${job.leaseToken}`);
+        expect(ps).toContain('label=factory.service');
+    });
+
+    /** A fleet read that fails costs the fleet, not the vitals — and never the sample. */
+    it('keeps the vitals when the service read fails', async () => {
+        const exec = vitest.fn((args: string[]) =>
+            args[0] === 'stats'
+                ? Promise.resolve({ stdout: '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}' })
+                : Promise.reject(new Error('daemon refused'))
+        ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+
+        await expect(runner.sampleRuntime(job)).resolves.toEqual({
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7.02,
+        });
+    });
+
+    /** And the reverse: unreadable vitals must not silence the fleet — null numbers, real states. */
+    it('reports the service fleet even when the vitals read fails', async () => {
+        const exec = vitest.fn((args: string[]) =>
+            args[0] === 'stats'
+                ? Promise.reject(new Error('daemon refused'))
+                : Promise.resolve({ stdout: psLine({ name: 'db', image: 'postgres:16', state: 'running' }) })
+        ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+
+        await expect(runner.sampleRuntime(job)).resolves.toEqual({
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+        });
+    });
+
+    /** Services off: the sample is exactly what it was before services were sampled. */
+    it('does not ask the daemon about services when they are off', async () => {
+        const commands: string[] = [];
+        const exec = vitest.fn((args: string[]) => {
+            commands.push(args[0]!);
+            return Promise.resolve({ stdout: '{"CPUPerc":"93.00%","MemUsage":"544MiB / 7.754GiB","MemPerc":"7.02%"}' });
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('done\n', '', 0), exec);
+
+        await expect(runner.sampleRuntime(job)).resolves.toEqual({
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7.02,
+        });
+        expect(commands).toEqual(['stats']);
     });
 
     it('answers null when the vitals sample cannot be taken', async () => {
@@ -1448,6 +1557,41 @@ describe('the docker runner', () => {
             expect(parseDockerStats('not json')).toBeNull();
             expect(parseDockerStats('{"MemUsage":"544MiB / 7.754GiB"}')).toBeNull();
             expect(parseDockerStats('{"CPUPerc":"93.00%","MemUsage":"? / 8GiB"}')).toBeNull();
+        });
+    });
+
+    describe('parseDockerServicePs', () => {
+        it('reads name, image and state off one ps line', () => {
+            expect(parseDockerServicePs(psLine({ name: 'db', image: 'postgres:16', state: 'running' }))).toEqual([
+                { name: 'db', image: 'postgres:16', state: 'running' },
+            ]);
+        });
+
+        it('reads every line, sorted by name', () => {
+            const out = parseDockerServicePs(
+                `${psLine({ name: 'db', image: 'postgres:16', state: 'running' })}${psLine({ name: 'cache', image: 'redis:7', state: 'exited' })}`
+            );
+            expect(out).toEqual([
+                { name: 'cache', image: 'redis:7', state: 'exited' },
+                { name: 'db', image: 'postgres:16', state: 'running' },
+            ]);
+        });
+
+        it('skips rows without the service label, an image or a state, and garbage lines', () => {
+            const unlabeled = psLine({ name: 'db', image: 'postgres:16', state: 'running' }).replace(
+                /factory\.service=db,?/,
+                ''
+            );
+            expect(
+                parseDockerServicePs(
+                    `${unlabeled}not json\n${psLine({ name: 'ok', image: '', state: 'running' })}${psLine({ name: 'ok2', image: 'redis:7', state: '' })}`
+                )
+            ).toEqual([]);
+        });
+
+        it('answers empty for empty output', () => {
+            expect(parseDockerServicePs('')).toEqual([]);
+            expect(parseDockerServicePs('\n\n')).toEqual([]);
         });
     });
 

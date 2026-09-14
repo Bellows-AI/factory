@@ -290,17 +290,34 @@ export function reportTail(logText: string): string {
 }
 
 /**
+ * One declared service of the attempt's `.bellows.yaml`, as the platform reports it right now:
+ * the declared name (the DNS name inside the job), the image, and a lowercase state word —
+ * docker's container State, or the pod phase under kubernetes. Platform-native on purpose:
+ * `restarting` and `pending` carry real, platform-specific meaning the panel renders verbatim.
+ */
+export interface ServiceStatus {
+    name: string;
+    image: string;
+    state: string;
+}
+
+/**
  * The runner container's vitals at one sample: the "is it actually doing anything" answer the
  * dashboard renders beside the output tail. Taken with `docker stats --no-stream` — the same
  * daemon access every other per-attempt operation here uses.
  */
 export interface RuntimeSample {
     /** Whole-container CPU, percent of one host core; can exceed 100 on multi-core hosts. */
-    cpuPercent: number;
+    cpuPercent: number | null;
     /** Resident memory, in MiB. */
-    memUsedMb: number;
+    memUsedMb: number | null;
     /** Resident memory against the container's limit, percent; null when the daemon reports none. */
     memPercent: number | null;
+    /**
+     * The attempt's declared services and their current states — present only when the attempt
+     * declared any and their states could be read.
+     */
+    services?: ServiceStatus[];
     /** When the sample was taken, stamped by the sampler. A reader sees staleness from this. */
     sampledAt: string;
 }
@@ -380,6 +397,59 @@ export function parseDockerStats(stdout: string): Omit<RuntimeSample, 'sampledAt
     const memUsedMb = memMbOf(usage[0]);
     if (cpuPercent === null || memUsedMb === null) return null;
     return { cpuPercent, memUsedMb, memPercent: percentOf(fields.MemPerc) };
+}
+
+/**
+ * Joins the two reads a vitals sample is made of — the runner's CPU/memory and the attempt's
+ * service fleet — under the rule that a failed read costs its half, never the sample. An empty
+ * or failed fleet is NO KEY at all, so a job whose attempt declared no services puts exactly the
+ * pre-services wire shape out; unreadable vitals are null numbers beside real service states,
+ * because the fleet must not depend on the metrics API (a kind cluster runs none). Both halves
+ * gone → null, "no fresh sample", exactly the answer a failed read has always answered.
+ */
+export function composeRuntimeSample(
+    vitals: Pick<RuntimeSample, 'cpuPercent' | 'memUsedMb' | 'memPercent'> | null,
+    services: ServiceStatus[] | null | undefined
+): Omit<RuntimeSample, 'sampledAt'> | null {
+    const fleet = services && services.length > 0 ? services : undefined;
+    if (!vitals && !fleet) return null;
+    return {
+        cpuPercent: vitals?.cpuPercent ?? null,
+        memUsedMb: vitals?.memUsedMb ?? null,
+        memPercent: vitals?.memPercent ?? null,
+        ...(fleet ? { services: fleet } : {}),
+    };
+}
+
+/**
+ * Pulls the service fleet out of `docker ps -a --format '{{json .}}'` over this attempt's label
+ * pair. Pure and exported for the pinning. Rows without the `factory.service` label, an image or
+ * a state are skipped — never a row the panel could not name — and garbage lines are skipped for
+ * the same reason a stats parse skips them. `-a` is what lets an exited service answer honestly:
+ * "came up and died" is a state, not an absence.
+ */
+export function parseDockerServicePs(stdout: string): ServiceStatus[] {
+    const out: ServiceStatus[] = [];
+    for (const line of stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let fields: { Labels?: unknown; Image?: unknown; State?: unknown };
+        try {
+            fields = JSON.parse(trimmed) as { Labels?: unknown; Image?: unknown; State?: unknown };
+        } catch {
+            continue;
+        }
+        const labels = typeof fields.Labels === 'string' ? fields.Labels : '';
+        const name = labels
+            .split(',')
+            .find((pair) => pair.startsWith('factory.service='))
+            ?.slice('factory.service='.length);
+        const image = typeof fields.Image === 'string' ? fields.Image : null;
+        const state = typeof fields.State === 'string' ? fields.State.toLowerCase() : null;
+        if (!name || !image || !state) continue;
+        out.push({ name, image, state });
+    }
+    return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 /**
@@ -1478,11 +1548,31 @@ export function createDockerRunner(
         // its own attempt's runner — the same attempt-scoping every per-attempt operation here
         // leans on. A refused read (the container exited between the ask and the stats round-trip,
         // the daemon is busy) answers null, which the loop reads as "report no vitals this round".
+        // The service fleet is read in the same sampling round, scoped by the same label pair the
+        // teardown tears down with and requiring the `factory.service` key, so the runner and
+        // gate containers never answer it; a failed read costs the fleet, not the sample.
         async sampleRuntime(job) {
             const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
                 () => null
             );
-            return read ? parseDockerStats(read.stdout) : null;
+            const vitals = read ? parseDockerStats(read.stdout) : null;
+            const services = config.servicesEnabled
+                ? await execDocker([
+                      'ps',
+                      '-a',
+                      '--filter',
+                      `label=factory.job=${job.id}`,
+                      '--filter',
+                      `label=factory.lease=${job.leaseToken}`,
+                      '--filter',
+                      'label=factory.service',
+                      '--format',
+                      '{{json .}}',
+                  ])
+                      .then((found) => parseDockerServicePs(found.stdout))
+                      .catch(() => null)
+                : undefined;
+            return composeRuntimeSample(vitals, services);
         },
 
         async run(job, session, onOutput) {

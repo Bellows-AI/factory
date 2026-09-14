@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
-import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals } from '../db/job-store.js';
+import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals, ServiceStatus } from '../db/job-store.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
 /**
@@ -53,7 +53,10 @@ const OUTPUT_LIMIT = 64 * 1024;
  * The runtime vitals a worker may report beside the tail. Numbers are bounded past anything a
  * real container reaches (a busy multi-core container exceeds 100% CPU; ten petabytes of RAM does
  * not exist), the activity line is capped because it is one CLI line and not a log, and the
- * timestamp must parse — the UI reads its staleness off it.
+ * timestamp must parse — the UI reads its staleness off it. The numbers may be null: "not read
+ * this round" is honest data beside a service fleet that was read (a cluster with no
+ * metrics-server reports exactly that). The attempt's `.bellows.yaml` services ride the same
+ * object under the same grammar the driver's own parser enforces — copied, not imported.
  *
  * Returns the validated value, null for "no sample this round", or the reason the object is bad.
  */
@@ -65,21 +68,47 @@ const RUNTIME_ACTIVITY_LIMIT = 512;
 const CONTEXT_TOKENS_MAX = 100_000_000;
 const CONTEXT_COST_MAX = 1_000_000;
 
+/** The workspace's ten-service cap, and the name/state shapes the driver's parser enforces. */
+const SERVICES_MAX = 10;
+const SERVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/;
+const SERVICE_STATE = /^[a-z][a-z-]{0,31}$/;
+/** Past any legal registry path — an image that long must not bounce every flush of a live run. */
+const SERVICE_IMAGE_LIMIT = 2048;
+
+function serviceStatus(raw: unknown, at: string): ServiceStatus | string {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return `${at} must be an object`;
+    const { name, image, state } = raw as Record<string, unknown>;
+    if (typeof name !== 'string' || !SERVICE_NAME.test(name)) {
+        return `${at}.name must be a lowercase DNS label`;
+    }
+    if (typeof image !== 'string' || !image.trim() || image.length > SERVICE_IMAGE_LIMIT) {
+        return `${at}.image must be a non-empty string of at most ${SERVICE_IMAGE_LIMIT} characters`;
+    }
+    if (typeof state !== 'string' || !SERVICE_STATE.test(state)) {
+        return `${at}.state must be a lowercase word`;
+    }
+    return { name, image, state };
+}
+
 function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
     if (raw === undefined || raw === null) return null;
     if (typeof raw !== 'object' || Array.isArray(raw)) return 'runtime must be an object';
     const fields = raw as Record<string, unknown>;
-    const { cpuPercent, memUsedMb, memPercent, activity, sampledAt } = fields;
+    const { cpuPercent, memUsedMb, memPercent, activity, sampledAt, services } = fields;
     if (
-        typeof cpuPercent !== 'number' ||
-        !Number.isFinite(cpuPercent) ||
-        cpuPercent < 0 ||
-        cpuPercent > CPU_PERCENT_MAX
+        cpuPercent !== null &&
+        (typeof cpuPercent !== 'number' ||
+            !Number.isFinite(cpuPercent) ||
+            cpuPercent < 0 ||
+            cpuPercent > CPU_PERCENT_MAX)
     ) {
-        return `runtime.cpuPercent must be a number 0..${CPU_PERCENT_MAX}`;
+        return `runtime.cpuPercent must be a number 0..${CPU_PERCENT_MAX} or null`;
     }
-    if (typeof memUsedMb !== 'number' || !Number.isFinite(memUsedMb) || memUsedMb < 0 || memUsedMb > MEM_MB_MAX) {
-        return `runtime.memUsedMb must be a number 0..${MEM_MB_MAX}`;
+    if (
+        memUsedMb !== null &&
+        (typeof memUsedMb !== 'number' || !Number.isFinite(memUsedMb) || memUsedMb < 0 || memUsedMb > MEM_MB_MAX)
+    ) {
+        return `runtime.memUsedMb must be a number 0..${MEM_MB_MAX} or null`;
     }
     if (
         memPercent !== undefined &&
@@ -94,12 +123,27 @@ function runtimeVitals(raw: unknown): RuntimeVitals | null | string {
     if (typeof sampledAt !== 'string' || !sampledAt.trim() || Number.isNaN(Date.parse(sampledAt))) {
         return 'runtime.sampledAt must be a parseable timestamp';
     }
+    let fleet: ServiceStatus[] | undefined;
+    if (services !== undefined) {
+        if (!Array.isArray(services) || services.length > SERVICES_MAX) {
+            return `runtime.services must be an array of at most ${SERVICES_MAX} items`;
+        }
+        fleet = [];
+        for (const [i, item] of services.entries()) {
+            const one = serviceStatus(item, `runtime.services[${i}]`);
+            if (typeof one === 'string') return one;
+            fleet.push(one);
+        }
+        // An empty list is "no fleet", the shape the driver actually reports: no key at all.
+        if (fleet.length === 0) fleet = undefined;
+    }
     return {
-        cpuPercent,
-        memUsedMb,
+        cpuPercent: cpuPercent as number | null,
+        memUsedMb: memUsedMb as number | null,
         memPercent: (memPercent as number | null | undefined) ?? null,
         activity: typeof activity === 'string' ? activity.trim().slice(0, RUNTIME_ACTIVITY_LIMIT) : null,
         sampledAt: sampledAt.slice(0, 64),
+        ...(fleet ? { services: fleet } : {}),
     };
 }
 

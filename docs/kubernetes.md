@@ -253,7 +253,11 @@ attempt's pod — no port list needed, which the strict parser's refusal of `por
 The name is namespace-global, so a collision with a concurrent job's service answers 409 and
 fails the job terminally, naming the conflict — the "wrong database came up" rule, one platform
 later. The fleet is attempt-scoped by lease label, swept by the fence, and torn down when the
-run ends, the same three moments docker's is.
+run ends, the same three moments docker's is. Its states ride the vitals flush
+(`runtime.services`), read off the lease-scoped pod list — pod phases lowercased, `unknown`
+before the API has phased a pod. The CPU/mem numbers need the metrics API; the fleet does not,
+so a cluster with no metrics-server still reports its services — the sample carries null numbers
+beside real states rather than going silent.
 
 **Publishing runs here too — one aux Job per step.** The decisions live in `publishCheckout`
 (`driver/src/publish.ts`), shared with the docker runner so the two executors cannot drift on

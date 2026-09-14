@@ -18,13 +18,26 @@ export interface GateCheck {
 }
 
 /**
+ * One declared service of the attempt's `.bellows.yaml`, as the driver's platform reports it:
+ * the declared name (the DNS name inside the job), the image, and a lowercase state word —
+ * docker's container State, or the pod phase under kubernetes.
+ */
+export interface ServiceStatus {
+    name: string;
+    image: string;
+    state: string;
+}
+
+/**
  * The running attempt's last sampled vitals, from the driver: whether the container is doing work
  * and what the agent says it is doing. The board keeps current/last only — `sampledAt` is how a
- * reader tells a live sample from a stopped run's.
+ * reader tells a live sample from a stopped run's. Null CPU/memory numbers mean the sample could
+ * not read them this round (a cluster with no metrics-server, for one) — honest nulls beside a
+ * service fleet that was read, never fabricated zeros.
  */
 export interface RuntimeVitals {
-    cpuPercent: number;
-    memUsedMb: number;
+    cpuPercent: number | null;
+    memUsedMb: number | null;
     memPercent: number | null;
     activity: string | null;
     sampledAt: string;
@@ -35,6 +48,12 @@ export interface RuntimeVitals {
      */
     contextTokens?: number | null;
     costUsd?: number | null;
+    /**
+     * The attempt's declared `.bellows.yaml` services and their current states — present only
+     * when the attempt declared any and the driver could read them. Cleared with the numbers on
+     * the next claim.
+     */
+    services?: ServiceStatus[] | null;
 }
 
 export interface Job {

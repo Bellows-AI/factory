@@ -252,6 +252,10 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                           cpuPercent: sample.value.cpuPercent,
                           memUsedMb: sample.value.memUsedMb,
                           memPercent: sample.value.memPercent,
+                          // The attempt's service fleet, when the attempt declared any — absent
+                          // (never an empty array) otherwise, so the wire shape of a service-less
+                          // job is byte-identical to what it always was.
+                          ...(sample.value.services ? { services: sample.value.services } : {}),
                           // Derived at flush, from the tail being flushed — the activity line and
                           // the numbers must describe the same moment.
                           activity: currentActivity(latest),

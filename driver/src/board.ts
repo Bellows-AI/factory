@@ -1,3 +1,5 @@
+import type { ServiceStatus } from './docker.js';
+
 export interface BoardJob {
     id: string;
     command: string;
@@ -115,14 +117,18 @@ export type ReclaimAck = 'ok' | 'lost' | 'missing';
 /**
  * The runner container's vitals at one sample, plus the agent's current activity line — what the
  * board stores beside the output tail and the task view renders as the "is it working" answer.
- * Shapes the board's own validation; the driver sends only samples it took.
+ * Shapes the board's own validation; the driver sends only samples it took. The numbers are null
+ * when they could not be read this round (a cluster with no metrics-server, for one) — a sample
+ * may carry service states with no numbers beside them, never the reverse.
  */
 export interface RuntimeReport {
-    cpuPercent: number;
-    memUsedMb: number;
+    cpuPercent: number | null;
+    memUsedMb: number | null;
     memPercent: number | null;
     activity: string | null;
     sampledAt: string;
+    /** The attempt's declared `.bellows.yaml` services and their current states, when it declared any. */
+    services?: ServiceStatus[];
 }
 
 export interface Board {

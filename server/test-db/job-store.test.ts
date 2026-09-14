@@ -241,10 +241,63 @@ describe.skipIf(!enabled)('job store', () => {
             contextCostUsd: 0.31,
         });
         // The context stats MERGE into the sampled vitals — the row keeps its last sample and
-        // gains the context the run reached beside it.
+        // gains the context the run reached beside it. The wire field is `contextCostUsd`; the
+        // stored key is the cost's own name, `costUsd` — the one the task view reads.
         expect(await store.get(id)).toMatchObject({
-            runtime: { ...vitals, contextTokens: 90433, contextCostUsd: 0.31 },
+            runtime: { ...vitals, contextTokens: 90433, costUsd: 0.31 },
         });
+    });
+
+    /**
+     * The attempt's service fleet rides the same runtime object (issue #60), and the object
+     * merges KEY-WISE: a report without services keeps the fleet a previous one carried, a
+     * report whose numbers could not be read keeps the last good numbers, and the claim clears
+     * the whole column — the fleet describes the attempt that took the lease, exactly like the
+     * numbers do.
+     */
+    it('merges service states key-wise into the runtime, and clears them with it on a new attempt', async () => {
+        const { id } = await queue('echo hi');
+        const first = await store.claim('w1', 300);
+        const vitals = {
+            cpuPercent: 93,
+            memUsedMb: 544,
+            memPercent: 7,
+            activity: '→ Read src/x.ts',
+            sampledAt: '2026-09-09T10:00:00.000Z',
+        };
+        const services = [{ name: 'db', image: 'postgres:16', state: 'running' }];
+
+        await store.progress(id, first!.leaseToken, 'working', { ...vitals, services });
+        expect(await store.get(id)).toMatchObject({ runtime: { ...vitals, services } });
+
+        // A vitals-only report keeps the fleet: the services half did not change this round.
+        await store.progress(id, first!.leaseToken, 'still working', vitals);
+        expect(await store.get(id)).toMatchObject({ runtime: { ...vitals, services } });
+
+        // A services-only report (the vitals read failed this round) keeps the last good numbers.
+        await store.progress(id, first!.leaseToken, 'still working', {
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            activity: null,
+            sampledAt: '2026-09-09T10:01:00.000Z',
+            services: [{ name: 'db', image: 'postgres:16', state: 'exited' }],
+        });
+        expect(await store.get(id)).toMatchObject({
+            runtime: {
+                cpuPercent: 93,
+                memUsedMb: 544,
+                services: [{ name: 'db', image: 'postgres:16', state: 'exited' }],
+            },
+        });
+
+        // The next attempt's claim clears the whole column, fleet included — and the fresh
+        // attempt's sample is exactly what it reports, nothing of the previous fleet left.
+        await expireLease(id);
+        const second = await store.claim('w2', 300);
+        expect(await store.get(id)).toMatchObject({ runtime: null });
+        await store.progress(id, second!.leaseToken, 'again', vitals);
+        expect((await store.get(id)).runtime).toEqual(vitals);
     });
 
     // The list feeds the task tree, whose task rows render the newest run's `activity` — so the
@@ -281,7 +334,7 @@ describe.skipIf(!enabled)('job store', () => {
         });
 
         expect(await store.get(id)).toMatchObject({
-            runtime: { contextTokens: 1200, contextCostUsd: 0 },
+            runtime: { contextTokens: 1200, costUsd: 0 },
         });
         expect(await store.get(id)).toMatchObject({ output: 'done' });
     });

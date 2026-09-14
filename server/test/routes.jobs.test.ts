@@ -592,7 +592,9 @@ describe('POST /api/jobs/:id/output', () => {
     /**
      * The attempt's vitals ride beside the tail: the "is it stuck or working" answer. A full object
      * is validated and passed through; its absence (or an explicit null) means "no sample this
-     * round", which the store reads as leave-the-last-one-alone — never as a clearance.
+     * round", which the store reads as leave-the-last-one-alone — never as a clearance. The
+     * attempt's `.bellows.yaml` services (issue #60) ride the same object, and null numbers are
+     * honest data beside them — a cluster with no metrics-server still reports its fleet.
      */
     it('passes the runtime vitals beside the tail, and nothing when there is no sample', async () => {
         const store = stubStore({ verdict: 'ok' });
@@ -612,6 +614,36 @@ describe('POST /api/jobs/:id/output', () => {
         expect(store.progressed[0]?.runtime).toEqual(runtime);
         expect(store.progressed[1]?.runtime).toBeNull();
         expect(store.progressed[2]?.runtime).toBeNull();
+
+        const withFleet = {
+            ...runtime,
+            services: [
+                { name: 'db', image: 'postgres:16', state: 'running' },
+                { name: 'cache', image: 'redis:7', state: 'exited' },
+            ],
+        };
+        await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step', runtime: withFleet });
+        expect(store.progressed[3]?.runtime).toEqual(withFleet);
+
+        // Null numbers with a fleet: the vitals read failed, the fleet read did not.
+        const fleetOnly = {
+            ...runtime,
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            activity: null,
+            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+        };
+        await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'step', runtime: fleetOnly });
+        expect(store.progressed[4]?.runtime).toEqual(fleetOnly);
+
+        // An empty list is "no fleet" — the key the driver never sends is the key not stored.
+        await post(instance, `/api/jobs/${ID}/output`, {
+            leaseToken: TOKEN,
+            output: 'step',
+            runtime: { ...runtime, services: [] },
+        });
+        expect('services' in (store.progressed[5]?.runtime ?? {})).toBe(false);
     });
 
     it.each([
@@ -626,6 +658,49 @@ describe('POST /api/jobs/:id/output', () => {
             { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, sampledAt: 'noonish' } },
         ],
         ['a runtime with no sample time', { leaseToken: TOKEN, output: 'x', runtime: { cpuPercent: 1, memUsedMb: 1 } }],
+        [
+            'a service list that is not a list',
+            { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, services: 'db' } },
+        ],
+        [
+            'more services than a workspace may declare',
+            {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: {
+                    ...VITALS,
+                    services: Array.from({ length: 11 }, () => ({
+                        name: 'db',
+                        image: 'postgres:16',
+                        state: 'running',
+                    })),
+                },
+            },
+        ],
+        [
+            'a service name that is not a DNS label',
+            {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: { ...VITALS, services: [{ name: 'My DB', image: 'postgres:16', state: 'running' }] },
+            },
+        ],
+        [
+            'a service with no image',
+            {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: { ...VITALS, services: [{ name: 'db', image: '', state: 'running' }] },
+            },
+        ],
+        [
+            'a service state that is not a lowercase word',
+            {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: { ...VITALS, services: [{ name: 'db', image: 'postgres:16', state: 'Running!' }] },
+            },
+        ],
     ])('refuses %s with BAD_RUNTIME', async (_label, payload) => {
         const instance = await harnessWith(stubStore());
         const response = await post(instance, `/api/jobs/${ID}/output`, payload);

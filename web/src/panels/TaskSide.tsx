@@ -55,18 +55,38 @@ const isHttpUrl = (url: string): boolean => url.startsWith('https://') || url.st
 /** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
 const tokenCount = new Intl.NumberFormat('en-US');
 
-/** How a context stat renders, or the honest dash when the runner scraped none. */
-const context = (runtime: RuntimeVitals | null): ReactNode =>
-    runtime?.contextTokens != null ? `${tokenCount.format(runtime.contextTokens)} tok` : '—';
-
-/** Cost renders only once it is money — a zero-dollar run is not billed, and $0.0000 is noise. */
-const cost = (runtime: RuntimeVitals | null): ReactNode =>
-    runtime?.costUsd != null && runtime.costUsd > 0 ? `$${runtime.costUsd.toFixed(4)}` : '—';
+/**
+ * The thread's context: the newest CLOSED turn's scrape — a follow-up resumes the same session,
+ * so the last closed turn's count IS the conversation's final context, and summing per-turn
+ * counts would double-count the shared prefix. A running turn carries no scrape, so scanning
+ * newest-first for the first non-null is exactly "the newest terminal turn's".
+ */
+const threadContext = (jobs: Job[]): ReactNode => {
+    for (let i = jobs.length - 1; i >= 0; i--) {
+        const tokens = jobs[i]!.runtime?.contextTokens;
+        if (tokens != null) return `${tokenCount.format(tokens)} tok`;
+    }
+    return '—';
+};
 
 /**
- * The task page's right column: one status surface for the whole view, fed by the NEWEST run —
- * the same run the composer and the Done verdict belong to. Older runs are history, and their
- * verdicts stay inline on their own messages.
+ * The thread's cost: every turn's scraped cost summed. Zero-dollar turns contribute nothing (a
+ * zero-dollar run is not billed, and $0.0000 is noise), and a chain where nothing scraped a cost
+ * stays silent — the honest dash, a claude-code thread's ordinary answer today.
+ */
+const threadCost = (jobs: Job[]): ReactNode => {
+    let sum = 0;
+    for (const job of jobs) {
+        const cost = job.runtime?.costUsd;
+        if (cost != null && cost > 0) sum += cost;
+    }
+    return sum > 0 ? `$${sum.toFixed(4)}` : '—';
+};
+
+/**
+ * The task page's right column: one status surface for the whole THREAD — thread-level context
+ * and cost, the newest run's activity and services — while per-turn numbers stay on the turns
+ * they describe. Older runs are history, and their verdicts stay inline on their own messages.
  *
  * Everything here is either what the board reports or an explicit dash. The two honest gaps are
  * deliberate: the PR is read off the publish line the driver appends to the output (the only
@@ -96,14 +116,28 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
             <KeyValues
                 pairs={[
                     ['Workspace', latest.workspacePath ?? '—'],
-                    ['Context', context(runtime)],
-                    ['Cost', cost(runtime)],
+                    ['Context', threadContext(jobs)],
+                    ['Cost', threadCost(jobs)],
                     // The agent's current activity line, while there is one: a stale line beside a
                     // finished verdict lies about a run that is no longer going.
                     ['Task', latest.status === 'running' && runtime?.activity != null ? runtime.activity : '—'],
                     ['Running time', parked ? '—' : runDuration(latest.startedAt, latest.finishedAt)],
                 ]}
             />
+            {latest.runtime?.services?.length ? (
+                <>
+                    <div className="panel-head">
+                        <h2>Services</h2>
+                    </div>
+                    {/* The newest attempt's last observed states — the fleet is torn down when the
+                    attempt ends, so these are its record of it, not a claim about now. */}
+                    <KeyValues
+                        pairs={latest.runtime.services.map(
+                            (service) => [service.name, service.state] as [string, ReactNode]
+                        )}
+                    />
+                </>
+            ) : null}
             <div className="panel-head">
                 <h2>Connections</h2>
             </div>

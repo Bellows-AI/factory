@@ -18,6 +18,7 @@ import {
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
+    parseServicePods,
     parsePodMetrics,
     publishEnvSecretName,
     publishStepJobName,
@@ -472,9 +473,9 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     return { request, calls };
 };
 
-const runner = (request: K8sRequest) =>
+const runner = (request: K8sRequest, env: Record<string, string> = {}) =>
     createKubernetesRunner(
-        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
+        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0', ...env }),
         request,
         async () => {}
     );
@@ -1495,6 +1496,113 @@ describe('the runner vitals', () => {
             return base.request(method, path, body);
         };
         expect(await runner(noMetricsServer).sampleRuntime(job)).toBeNull();
+    });
+
+    /**
+     * The attempt's service fleet rides the same sample (issue #60), read off the lease-scoped
+     * pod list — the same selector the teardown uses, so the runner and gate pods never answer.
+     * THE kubernetes regression this exists for: a cluster with no metrics-server (kind, for one)
+     * must not silence the fleet — the sample carries null vitals beside real service states
+     * rather than skipping the flush. An empty fleet is no key at all, so a job that declared
+     * nothing reports exactly what it reported before.
+     */
+    it('reports the service fleet beside the vitals, with or without them', async () => {
+        const base = fakeRequest();
+        const fleetBody = JSON.stringify({
+            items: [
+                {
+                    metadata: { labels: { 'factory.service': 'db' } },
+                    spec: { containers: [{ image: 'postgres:16' }] },
+                    status: { phase: 'Running' },
+                },
+            ],
+        });
+        const emptyBody = '{"items":[]}';
+        const metricsBody = {
+            status: 200,
+            body: JSON.stringify({ containers: [{ usage: { cpu: '310m', memory: '96Mi' } }] }),
+        };
+        const wrap =
+            (fleet: string | null, metrics: { status: number; body: string } | null): K8sRequest =>
+            (method, path, body) => {
+                if (
+                    fleet !== null &&
+                    path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                    decodeURIComponent(path).includes(`factory.lease=${job.leaseToken}`)
+                ) {
+                    return Promise.resolve({ status: 200, body: fleet });
+                }
+                if (metrics !== null && path.startsWith('/apis/metrics.k8s.io/')) {
+                    return Promise.resolve(metrics as K8sResponse);
+                }
+                return base.request(method, path, body);
+            };
+
+        // Both reads land: numbers and fleet.
+        expect(await runner(wrap(fleetBody, metricsBody), { RUNNER_SERVICES: '1' }).sampleRuntime(job)).toEqual({
+            cpuPercent: 31,
+            memUsedMb: 96,
+            memPercent: null,
+            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+        });
+
+        // No metrics-server: the fleet still reports, the numbers go honestly null.
+        expect(
+            await runner(wrap(fleetBody, { status: 404, body: 'no metrics-server' }), {
+                RUNNER_SERVICES: '1',
+            }).sampleRuntime(job)
+        ).toEqual({
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+        });
+
+        // Nothing declared: no key, and without metrics nothing to report at all.
+        expect(
+            await runner(wrap(emptyBody, { status: 404, body: 'x' }), { RUNNER_SERVICES: '1' }).sampleRuntime(job)
+        ).toBeNull();
+
+        // Services off: exactly the vitals-only sample, and no fleet request is even issued.
+        const off = fakeRequest();
+        expect(
+            await runner((method, path, body) => {
+                if (path.startsWith('/apis/metrics.k8s.io/')) return Promise.resolve(metricsBody as K8sResponse);
+                return off.request(method, path, body);
+            }).sampleRuntime(job)
+        ).toEqual({ cpuPercent: 31, memUsedMb: 96, memPercent: null });
+        expect(off.calls.some((call) => decodeURIComponent(call.path).includes('factory.lease'))).toBe(false);
+    });
+
+    describe('parseServicePods', () => {
+        const pod = (name: string, phase: string | undefined, image = 'postgres:16'): unknown => ({
+            metadata: { labels: { 'factory.service': name } },
+            spec: { containers: [{ image }] },
+            status: phase === undefined ? {} : { phase },
+        });
+
+        it('reads name, image and phase off each pod, lowercased and sorted by name', () => {
+            expect(
+                parseServicePods(JSON.stringify({ items: [pod('db', 'Running'), pod('cache', 'Pending', 'redis:7')] }))
+            ).toEqual([
+                { name: 'cache', image: 'redis:7', state: 'pending' },
+                { name: 'db', image: 'postgres:16', state: 'running' },
+            ]);
+        });
+
+        it('answers unknown for a pod with no phase yet', () => {
+            expect(parseServicePods(JSON.stringify({ items: [pod('db', undefined)] }))).toEqual([
+                { name: 'db', image: 'postgres:16', state: 'unknown' },
+            ]);
+        });
+
+        it('skips pods without the service label or an image, and garbage', () => {
+            expect(parseServicePods(JSON.stringify({ items: [{ metadata: {}, spec: { containers: [] } }] }))).toEqual(
+                []
+            );
+            expect(parseServicePods('not json')).toEqual([]);
+            expect(parseServicePods('{"items":[]}')).toEqual([]);
+        });
     });
 });
 
