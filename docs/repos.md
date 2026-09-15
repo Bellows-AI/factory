@@ -44,10 +44,6 @@ their GitHub account can reach — computed only where scoping is active (a GitH
 plus `auth.auto_join_github_org`; any deployment short of both is unscoped, and `AUTH_MODE=none` is
 unscoped by construction because there is no client to enumerate with).
 
-  sign-in, which recomputes their set. (The roster
-  sweep maintains membership rows only — it never recomputes repo sets.) A GitHub failure during a
-  recompute logs and leaves the last computed set standing — the store is only ever written on a
-  successful enumeration, so the set is last-known-truth, never half of one.
 - **The computation uses the credential the server already holds, not the member's token.** At
   sign-in the server asks, with the installation token: the org's teams (cached org-wide, 10-minute
   TTL — same figure and same reasoning as the installation list), each team's repos (cached the
