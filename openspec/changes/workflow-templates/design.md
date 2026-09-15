@@ -155,7 +155,7 @@ definition change needs no image rebuild and reaches opencode and claude-code ru
 
 ## Migration Plan
 
-One migration (`026_workflows.sql`): the `workflow` table plus nullable job columns
+One migration (`027_workflows.sql`): the `workflow` table plus nullable job columns
 (`workflow_id`, `workflow_node`, definition snapshot on the root). All nullable → existing rows
 and in-flight tasks are untouched and behave as today. Deploy order is the ordinary single-binary
 order (migration runs at boot; driver ships the flag read in the same release — a driver older

@@ -65,7 +65,7 @@ removed.
 
 ## Impact
 
-- **Migration** `server/migrations/026_workflows.sql`: a `workflow` table (org-scoped, name,
+- **Migration** `server/migrations/027_workflows.sql`: a `workflow` table (org-scoped, name,
   scope fields, `definition` jsonb, `created_by`) plus `job.workflow_id`, `job.workflow_node`, and
   the definition snapshot on the root row.
 - **Server**: `server/src/db/workflow-store.ts` (new), `job-store.ts` (transition hook inside

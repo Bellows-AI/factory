@@ -1,10 +1,10 @@
 ## 1. Schema: migration and stores
 
-- [ ] 1.1 Write `server/migrations/026_workflows.sql`: a `workflow` table (org_id, id, name, scope
+- [ ] 1.1 Write `server/migrations/027_workflows.sql`: a `workflow` table (org_id, id, name, scope
       fields, nullable user/repo owner labels, `definition` jsonb, created_by, timestamps, unique
       name per scope) plus nullable `job.workflow_id`, `job.workflow_node`, and the definition
       snapshot column on the root; verify `npm run test:db` migrations boot cleanly against
-      `factory_test` and pre-026 rows are untouched
+      `factory_test` and pre-027 rows are untouched
 - [ ] 1.2 Add `server/src/db/workflow-store.ts`: create/list/get/delete with the strict definition
       validator (known node kinds, resolvable edges, bounded edge rules, size cap) returning named
       errors; verify with db-suite tests covering accept, unknown-key refusal, unknown-node
