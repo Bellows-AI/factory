@@ -36,6 +36,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `driver/src/k8s.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
 | `server/src/routes/jobs.ts`, `db/job-store.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
+| `workflow`, `027_workflows.sql`, `db/workflow-*.ts`, `routes/workflows.ts`, the claim's `publish` flag | [docs/workflows.md](docs/workflows.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, the driver's env forwarding, the `/env` page | [docs/env.md](docs/env.md) |
 | `filterTelemetryInput()`, `parseRange`, the range selector, charts | [docs/date-range.md](docs/date-range.md) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |

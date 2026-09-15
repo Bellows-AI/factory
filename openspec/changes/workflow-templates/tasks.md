@@ -85,10 +85,10 @@
 
 ## 7. Docs
 
-- [ ] 7.1 Write `docs/workflows.md`: the schema, the edge vocabulary and marker contracts, the
+- [x] 7.1 Write `docs/workflows.md`: the schema, the edge vocabulary and marker contracts, the
       scoping/resolution order, the snapshot rule, halt semantics, and the blocks' templates with
       their output contracts
-- [ ] 7.2 Update AGENTS.md's read-before-you-touch table and docs/jobs.md with pointers; verify
+- [x] 7.2 Update AGENTS.md's read-before-you-touch table and docs/jobs.md with pointers; verify
       `npx vitest run core/test/biome.test.ts` still passes and links resolve
 
 ## 8. Verification
