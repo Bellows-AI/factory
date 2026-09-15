@@ -710,7 +710,9 @@ heartbeat — the `cancelRequested` flag — exactly the way a lost lease is del
 kill; the `suspend` that honours it lands `stopped` under the stamp. The loading of the `running`
 answer makes a stop idempotent: asking twice before the worker settles answers the same instant. A
 row that already ended answers `409 NOT_STOPPABLE` — there is no turn left to stop, and the task's
-own verdicts are the ones that outlived the run.
+own verdicts are the ones that outlived the run. The verdict has an actor now (025): `stopped_by`
+is stamped from the session at the request — the person who asked, even though a running row
+settles later — with the same first-writer coalesce as the flag, and the UI names it on the turn.
 
 **The stop lands when the parking (or the finishing) lands, never when the request does.**
 `cancel_requested_at` is cleared by `suspend` and by `complete` — parking a run IS the stop
@@ -727,7 +729,10 @@ above). The transaction takes the same advisory lock the claim takes, so a claim
 `running` row between the check and the delete; Remove is refused with `409 TASK_RUNNING` while any
 thread member is running, because a live run's worktree is exactly what must not come down under it
 — stop first, then remove. Nothing on the row survives: the thread's nav entry, its tabs, its
-Reclaim-eligible tree.
+Reclaim-eligible tree. The remover's actor rides the `task_reclaim` row as `removed_by` — the
+thread rows are deleted in the very same transaction, so the reclaim row is the removal's only
+surviving artifact, and that is the honest bound of what "who removed this" can mean once nothing
+of the task remains. `done_by` (a done is also a person's verdict) is stamped beside `done_at`.
 
 **The reclaim is its own queue, not a verdict signal.** A removed thread has no attempt to
 complete, so the board hands the
@@ -1025,6 +1030,30 @@ a refusal there would fail every claimed job. Under
 with the daemon's authentication error — the work stays local, loudly.
 
 ## Decisions
+
+**Attribution is a read-time join, never a denormalised label (issue #67).** `author`,
+`stoppedBy` and `doneBy` on the job payloads are `app_user` rows joined at read time off the
+`created_by` / `stopped_by` / `done_by` uuids — logins, display names and avatars go stale, joins
+do not, and a login captured at action time is a lie the moment GitHub's rename lands. Null is a
+fact, not a gap to paper over: a pre-accounts row has no author and renders "unknown". For agent
+sessions the same rule one level out: the telemetry tables (`metric_point`, `session_branch`)
+carry **no identity — the collector strips it on purpose** (`docs/organizations.md`) — and the
+per-user rollup joins `session_branch` to `job` on `(org_id, session_id)` and `job` to `app_user`
+at read time instead. Follow-ups share the parent's session AND, by the follow-up author guard,
+its author, so that join is deterministic. Sessions with no matching task — local dev runs,
+backfilled transcripts — stay unattributed and are counted (`unattributedSessions`), never
+guessed. No identity travels through the runner, so the driver, the executor images and the chart
+are untouched by attribution.
+
+**Lifecycle actors are columns, not a job_event table.** The display path ("who stopped/closed
+this") is served by the same app_user joins the authorship already pays for; a table would add a
+second write per action and a second store surface for nothing that renders it. Stop stamps
+`stopped_by` at REQUEST time with the first-writer coalesce the flag beside it follows; done
+stamps `done_by` beside `done_at`; remove rides `removed_by` on the reclaim row, because the
+thread rows are deleted in the same transaction and a column on job would be written and
+immediately deleted. All three are `on delete set null` like `created_by`: removing a member must
+not delete the record of what they did. If a durable removal audit is ever wanted, that is a
+`job_event` table — a decision for the day something renders one.
 
 **Leases, not a status flag.** A worker that dies mid-job cannot tell anyone, so a claim expires.
 `lease_expires_at` is `not null` from insert, set to `now()` — already expired. That makes

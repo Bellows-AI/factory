@@ -3,6 +3,7 @@ import { Limitations } from '../components/Limitations.js';
 import { RangeSelector } from '../components/RangeSelector.js';
 import { StatusBanner } from '../components/StatusBanner.js';
 import { AiUsagePanel } from '../panels/AiUsagePanel.js';
+import { ByUserPanel } from '../panels/ByUserPanel.js';
 import { DataQualityPanel } from '../panels/DataQualityPanel.js';
 import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
 
@@ -23,6 +24,7 @@ export function DashboardPage() {
                             <>
                                 <AiUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                                 <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                                <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                             </>
                         ) : null}
                         <DataQualityPanel meta={data.meta} />

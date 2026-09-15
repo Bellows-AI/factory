@@ -87,6 +87,8 @@ export interface TaskTreeEntry {
     readonly title: string;
     readonly summary: string | null;
     readonly status: TaskStatus;
+    /** Who queued the task — the ROOT row's author, the person the conversation belongs to. */
+    readonly author: string | null;
 }
 
 export interface TaskSections {
@@ -137,6 +139,7 @@ export function taskSections(jobs: readonly Job[] | null): TaskSections {
                     title: taskTitle(root.id, jobs),
                     summary: taskSummary(root.id, jobs),
                     status,
+                    author: root.author?.login ?? null,
                 },
                 key: activityKey(head),
                 section: isTerminal(head.status) ? (head.doneAt === null ? 'review' : 'past') : 'running',

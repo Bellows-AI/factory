@@ -27,6 +27,9 @@ function job(overrides: Partial<Job> = {}): Job {
         command: 'newer task',
         status: 'succeeded',
         attempts: 1,
+        author: null,
+        stoppedBy: null,
+        doneBy: null,
         exitCode: 0,
         output: null,
         repo: null,
@@ -346,5 +349,20 @@ describe('RepoPickerDialog', () => {
         // If the App is installed nowhere, a non-dismissible dialog is a bricked application with
         // no route to the docs — and the dashboard's figures are readable without a selection.
         expect(render(true)).toContain('Not now');
+    });
+});
+
+describe('task authorship', () => {
+    // The author line is WHO queued the task, resolved server-side. 'unknown' is the honest
+    // rendering of a pre-accounts row — a fact, not a name invented for display.
+    it('renders the author after the title, and unknown when there is none', () => {
+        const author = { id: 'a', login: 'octocat', name: 'The Octocat', avatarUrl: null };
+        const html = render('/tasks', [job({ author })]);
+        expect(html).toContain('sidenav-task-author');
+        expect(html).toContain('octocat');
+        expect(html).not.toContain('The Octocat');
+
+        const anonymous = render('/tasks', [job()]);
+        expect(anonymous).toContain('unknown');
     });
 });

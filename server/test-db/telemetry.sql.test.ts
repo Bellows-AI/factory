@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
@@ -399,5 +400,146 @@ describe.skipIf(!enabled)('the postgres client', () => {
         `;
         expect(row?.agent).toBe('opencode');
         expect(row?.value).toBe(12);
+    });
+});
+
+describe.skipIf(!enabled)('session attribution', () => {
+    // WHO queued the board task a session belongs to, resolved by joining the telemetry rows to
+    // the job audit rows on session id at read time. The telemetry tables stay identity-free —
+    // the collector strips identity on purpose — so a session with no matching job row (a local
+    // dev run, a backfilled transcript) reads user null, never a guess.
+
+    /** Unique per run — a shared factory_test database must not let accounts collide with
+     * another suite's, or with rows a failed run left behind. */
+    let userSeq = 0;
+    const githubUserId = () => (Date.now() % 1_000_000_000) * 1000 + ++userSeq;
+    const account = async (login: string): Promise<string> => {
+        const [row] = await sql<{ id: string }[]>`
+            insert into app_user (github_user_id, github_login)
+            values (${githubUserId()}, ${login})
+            returning id
+        `;
+        return row!.id;
+    };
+
+    const job = async (row: { session: string; createdBy: string | null; org?: string }): Promise<string> => {
+        const id = randomUUID();
+        await sql`
+            insert into job (org_id, id, command, status, root_job_id, created_by, session_id, created_at)
+            values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${id}, ${row.createdBy}, ${row.session}, now())
+        `;
+        return id;
+    };
+
+    beforeEach(async () => {
+        if (!enabled) return;
+        // The attribution join reads job, which the outer beforeEach does not clear — and a
+        // stale row from another suite could claim this suite's sessions.
+        await sql`truncate job`;
+    });
+
+    it('resolves the user of the board task a session belongs to', async () => {
+        const userId = await account('attributor');
+        const jobId = await job({ session: 'attr-1', createdBy: userId });
+        await point({ session: 'attr-1', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await branch({
+            session: 'attr-1',
+            branch: 'feat/a',
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
+        });
+
+        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions[0]?.user).toEqual({
+            id: userId,
+            login: 'attributor',
+            name: null,
+            avatarUrl: null,
+        });
+        await sql`delete from job where id = ${jobId}`;
+        await sql`delete from app_user where id = ${userId}`;
+    });
+
+    it('carries the display labels the account has, and null when it has none', async () => {
+        const [userId] = (
+            await sql<{ id: string }[]>`
+                insert into app_user (github_user_id, github_login, display_name, avatar_url)
+                values (${githubUserId()}, 'labeled', 'Ada Lovelace', 'https://example.com/ada.png')
+                returning id
+            `
+        ).map((r) => r.id);
+        const jobId = await job({ session: 'attr-2', createdBy: userId });
+        await point({ session: 'attr-2', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await branch({
+            session: 'attr-2',
+            branch: 'feat/a',
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
+        });
+
+        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions[0]?.user).toEqual({
+            id: userId,
+            login: 'labeled',
+            name: 'Ada Lovelace',
+            avatarUrl: 'https://example.com/ada.png',
+        });
+        await sql`delete from job where id = ${jobId}`;
+        await sql`delete from app_user where id = ${userId}`;
+    });
+
+    it('keeps a session with no matching task unattributed rather than guessed', async () => {
+        await branch({
+            session: 'attr-3',
+            branch: 'feat/a',
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
+        });
+        await point({ session: 'attr-3', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+
+        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions[0]?.user).toBeNull();
+    });
+
+    it('resolves a follow-up chain to its one shared author', async () => {
+        // Every member of a thread shares the parent's session AND, by the follow-up author
+        // guard, the parent's author — so the join is deterministic no matter which member's row
+        // the minimum happens to pick.
+        const userId = await account('thread-author');
+        const rootId = await job({ session: 'attr-4', createdBy: userId });
+        await sql`
+            insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
+            values (${ORG}, ${randomUUID()}, 'attributed', 'succeeded', ${rootId}, ${rootId}, ${userId}, 'attr-4', now())
+        `;
+        await branch({
+            session: 'attr-4',
+            branch: 'feat/a',
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
+        });
+        await point({ session: 'attr-4', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+
+        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions).toHaveLength(1);
+        expect(input.sessions[0]?.user?.login).toBe('thread-author');
+        await sql`delete from job where root_job_id = ${rootId}`;
+        await sql`delete from app_user where id = ${userId}`;
+    });
+
+    it("does not attribute one organization's session through another organization's job", async () => {
+        const userId = await account('other-org-author');
+        const jobId = await job({ session: 'attr-5', createdBy: userId, org: OTHER_ORG });
+        await branch({
+            session: 'attr-5',
+            branch: 'feat/a',
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
+        });
+        await point({ session: 'attr-5', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+
+        const mine = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(mine.sessions[0]?.user).toBeNull();
+        await sql`delete from job where id = ${jobId}`;
+        await sql`delete from app_user where id = ${userId}`;
     });
 });

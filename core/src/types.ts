@@ -48,11 +48,31 @@ export interface TokenTotals {
     cacheCreation: number | null;
 }
 
+/**
+ * A person, resolved at read time from the store's own audit rows (never denormalised:
+ * logins and display names go stale, joins do not). `name` and `avatarUrl` are optional
+ * labels the source may not have; `login` is the display fallback.
+ */
+export interface UserRef {
+    id: string;
+    login: string;
+    name: string | null;
+    avatarUrl: string | null;
+}
+
 export interface SessionRollup {
     sessionId: string;
     agent: string;
     /** Resolved from the hook, not from telemetry. null means the hook never reported. */
     repo: string | null;
+    /**
+     * Who queued the board task this session belongs to, resolved by joining the telemetry
+     * rows to the job audit rows on session id. null means no matching task exists — a local
+     * dev run, a backfilled transcript, a job that died before reporting its session. The
+     * telemetry tables carry no identity themselves (the collector strips it on purpose);
+     * attribution is a read-side join, so this stays null rather than guessed.
+     */
+    user: UserRef | null;
     firstSeen: string;
     lastSeen: string;
     tokens: TokenTotals;
@@ -93,6 +113,13 @@ export interface TelemetryStats {
     otherRepoSessions: number;
     /** Sessions with telemetry but no hook data — the plugin is missing, or failing. */
     sessionsWithoutHook: number;
+    /** Per-user rollup over the in-scope sessions that carry a user. */
+    byUser: readonly { user: UserRef; sessions: number; tokens: TokenTotals }[];
+    /**
+     * In-scope sessions with no user — telemetry exists but no board task matches the session
+     * id. Distinct from `sessionsWithoutHook`, which counts sessions with no repo at all.
+     */
+    unattributedSessions: number;
     weekly: TelemetryWeekPoint[];
     coverage: { from: string | null; to: string | null };
 }

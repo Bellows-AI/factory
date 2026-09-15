@@ -19,6 +19,7 @@ function session(over: Partial<SessionRollup>): SessionRollup {
         editsRejected: 0,
         activeSeconds: 60,
         commits: 0,
+        user: null,
         ...over,
     };
 }

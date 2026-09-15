@@ -568,6 +568,46 @@ footer {
     white-space: nowrap;
 }
 
+/* Who queued the task, inline after the title. 'unknown' is a fact here — a row queued before
+   accounts existed has no author — not a display hint to invent one. */
+.sidenav-task-author {
+    color: var(--muted);
+    display: inline-block;
+    font-size: 10px;
+    margin-left: 6px;
+    max-width: calc(100% - 10px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+/* The queued-by value: avatar and display name, kept on one line in the status sidebar. */
+.task-queued-by {
+    align-items: center;
+    display: inline-flex;
+    gap: 6px;
+}
+
+.task-avatar {
+    border-radius: 50%;
+    height: 18px;
+    width: 18px;
+}
+
+/* The per-user attribution table: left-aligned labels, right-adjacent counts. */
+table.by-user td,
+table.by-user th {
+    padding: 4px 16px 4px 0;
+    text-align: left;
+}
+
+.by-user-user {
+    align-items: center;
+    display: inline-flex;
+    gap: 6px;
+}
+
 .sidenav-task:hover {
     background: var(--panel);
     color: var(--text);

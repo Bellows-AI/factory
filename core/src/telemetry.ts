@@ -1,6 +1,13 @@
 import { HOUR } from './config.js';
 import { isoWeekKey, ratio, weekStart } from './metrics.js';
-import type { SessionRollup, TelemetryInput, TelemetryStats, TelemetryWeekPoint, TokenTotals } from './types.js';
+import type {
+    SessionRollup,
+    TelemetryInput,
+    TelemetryStats,
+    TelemetryWeekPoint,
+    TokenTotals,
+    UserRef,
+} from './types.js';
 
 /**
  * Sums the measured values and returns null only when nothing was measured at all.
@@ -121,6 +128,21 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
     const totalRejected = sum(inScope.map((s) => s.editsRejected));
     const totalActive = sum(inScope.map((s) => s.activeSeconds));
 
+    // Group by the user's id, not the object: two rows resolved from the same app_user must
+    // land in one bucket. Sessions with no user are counted, never dropped — the same honesty
+    // rule as sessionsWithoutHook.
+    const byUser = new Map<string, { user: UserRef; sessions: SessionRollup[] }>();
+    let unattributedSessions = 0;
+    for (const session of inScope) {
+        if (session.user === null) {
+            unattributedSessions += 1;
+            continue;
+        }
+        const bucket = byUser.get(session.user.id);
+        if (bucket) bucket.sessions.push(session);
+        else byUser.set(session.user.id, { user: session.user, sessions: [session] });
+    }
+
     return {
         totals: {
             sessions: inScope.length,
@@ -132,6 +154,10 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
         },
         otherRepoSessions,
         sessionsWithoutHook,
+        byUser: [...byUser.values()]
+            .map(({ user, sessions }) => ({ user, sessions: sessions.length, tokens: sumTokens(sessions) }))
+            .sort((a, b) => a.user.login.localeCompare(b.user.login)),
+        unattributedSessions,
         weekly: weeklySeries(inScope, now),
         coverage: input.coverage,
     };

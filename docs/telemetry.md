@@ -32,6 +32,14 @@ collector config.
   `organization.id` and `workspace.host_paths` all arrive by default and are all dropped. A vendor
   metric with no row in `metric-map.ts` (a `pull_request.*` counter, say) is stored unmapped in
   `metric_point` — raw datapoints survive even where no canonical field exists to roll them into.
+- **Per-user attribution is a read-side join, not a stored identity (issue #67).** The stripping
+  above stays: no user column was added to `metric_point` or `session_branch`, and nothing
+  identity-bearing travels through the runner. The `byUser` rollup joins `session_branch` to the
+  board's own `job` audit rows on `(org_id, session_id)` and those to `app_user` when the read
+  runs; a session with no matching task stays null (`unattributedSessions` counts it). A
+  pseudonymous id threaded through the runner was the rejected alternative — it would write
+  identity into the telemetry store through a third path and drag both executor images and the
+  chart into lockstep for nothing the join does not already answer.
 - **There is no monetary field anywhere, on purpose.** Prices and cache discounts change, and a
   dollar figure implies precision a ~20s branch sample cannot support.
   `claude_code.cost.usage` and `opencode.cost.usage` are refused, at the collector and again at the

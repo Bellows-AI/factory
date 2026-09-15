@@ -64,6 +64,7 @@ function TaskRow({ entry }: { entry: TaskTreeEntry }) {
             >
                 {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
                 <span className="sidenav-task-title">{entry.title}</span>
+                <span className="sidenav-task-author">{entry.author ?? 'unknown'}</span>
                 {entry.summary !== null ? <span className="sidenav-task-summary">{entry.summary}</span> : null}
             </NavLink>
         </li>
