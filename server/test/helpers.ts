@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { TelemetryInput } from '@factory-ai/core';
+import type { JobRun, TelemetryInput } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { GitHubIdentity, GitHubIdentityClient } from '../src/auth/github.js';
 import { SESSION_COOKIE, hashToken, mintToken, sign } from '../src/auth/session.js';
@@ -928,6 +928,8 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
 
 export interface TelemetryStubOptions {
     rollups?: () => Promise<TelemetryInput>;
+    /** The run rows one fetch returns beside the rollups; empty unless a test feeds some. */
+    runs?: () => JobRun[];
     health?: () => Promise<TelemetryHealth>;
 }
 
@@ -942,8 +944,12 @@ export function stubTelemetryClient(options: TelemetryStubOptions = {}): Telemet
         healthCalls: 0,
         async fetchRollups() {
             stub.rollupCalls += 1;
-            if (options.rollups) return options.rollups();
-            return structuredClone(sampleTelemetry());
+            // The stub mirrors the real shape: ONE fetch returns both lists, and every range
+            // and scope is served from re-aggregating them.
+            return {
+                input: options.rollups ? await options.rollups() : structuredClone(sampleTelemetry()),
+                runs: options.runs ? options.runs() : [],
+            };
         },
         async health() {
             stub.healthCalls += 1;

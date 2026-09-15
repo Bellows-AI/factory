@@ -1,5 +1,5 @@
 import { ALL_TIME, filterTelemetryInput, telemetryStats } from '@factory-ai/core';
-import type { DateRange, OrganizationMeta, TelemetryInput, TelemetryStats } from '@factory-ai/core';
+import type { DateRange, JobRun, OrganizationMeta, TelemetryInput, TelemetryStats } from '@factory-ai/core';
 import { createCache } from './cache.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
@@ -22,6 +22,8 @@ export interface TelemetryMeta {
 
 export interface TelemetrySnapshot {
     input: TelemetryInput;
+    /** The organization's run rows, fetched beside the rollups for the per-task statistics. */
+    runs: JobRun[];
 }
 
 export interface FetchState {
@@ -119,14 +121,14 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             // Refreshes the repo snapshot the scoping filter reads. The call is cached, so this
             // is usually free.
             await repos.list();
-            const input = await telemetry.fetchRollups({ repos: repoNames() });
+            const fetch = await telemetry.fetchRollups({ repos: repoNames() });
             telemetryFailure = null;
             fetchState = {
                 ...fetchState,
                 state: 'idle',
                 finishedAt: new Date(now()).toISOString(),
             };
-            return { input };
+            return fetch;
         } catch (e) {
             telemetryFailure = {
                 at: now(),

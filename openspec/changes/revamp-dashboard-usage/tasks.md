@@ -1,43 +1,43 @@
 ## 1. Core: task attribution type and scope filter
 
-- [ ] 1.1 Add `taskKey` to `SessionRollup` (nullable; `user` landed with #102 and stays as shaped)
+- [x] 1.1 Add `taskKey` to `SessionRollup` (nullable; `user` landed with #102 and stays as shaped)
       and re-export from `core/src/index.ts`; verify `npm run build -w core` and that a rollup
       without a task typechecks through the existing suites
-- [ ] 1.2 Add `user` option to `telemetryStats`: sessions whose landed `user` matches the caller
+- [x] 1.2 Add `user` option to `telemetryStats`: sessions whose landed `user` matches the caller
       count toward totals, the rest fall out of scope (the landed `unattributedSessions` figure
       keeps naming them); verify with a core test pinning that a user-scoped run counts only that
       user's sessions and that coverage is untouched
-- [ ] 1.3 Add the independent recomputation test (no helpers imported from `telemetry.ts`, the
+- [x] 1.3 Add the independent recomputation test (no helpers imported from `telemetry.ts`, the
       `telemetry.independent.test.ts` pattern) covering scope exclusion and the unattributed count;
       verify `npx vitest run core/test/telemetry.independent.test.ts` passes
 
 ## 2. Core: task usage distributions (tokens, job turns, agent turns)
 
-- [ ] 2.1 Add `taskUsageStats(sessions, runs, { user? })` in core: per-task tokens as input+output
+- [x] 2.1 Add `taskUsageStats(sessions, runs, { user? })` in core: per-task tokens as input+output
       over attributed sessions, job turns per task from job rows, agent turns per task as the sum
       of stored counts — avg/nearest-rank p50/p95 per figure, null-token tasks excluded not
       zeroed, per-figure task counts surfaced; verify with unit tests including the 1k/2k/3k token
       distribution scenario and the null-exclusion scenario from specs/task-usage-stats/spec.md
-- [ ] 2.2 Pin the per-figure exclusion rule: a task with any in-range unmeasured (null) agent-turn
+- [x] 2.2 Pin the per-figure exclusion rule: a task with any in-range unmeasured (null) agent-turn
       run is excluded from the agent-turn distribution only, while still counting in the token and
       job-turn distributions; verify with a core test holding one measured and one unmeasured run
-- [ ] 2.3 Pin range interaction: tasks enter on session overlap or run queued-in-range (the
+- [x] 2.3 Pin range interaction: tasks enter on session overlap or run queued-in-range (the
       boundary-straddling scenario); verify with a frozen-`now` core test
-- [ ] 2.4 Verify no monetary field enters any new payload type (`rg 'cost|usd|price'` over the new
+- [x] 2.4 Verify no monetary field enters any new payload type (`rg 'cost|usd|price'` over the new
       types comes back empty, per docs/metrics.md)
 
 ## 3. Core: generalized daily series
 
-- [ ] 3.1 Add `dayStart`/`dayKey` to `core/src/metrics.ts` beside the week helpers; verify unit
+- [x] 3.1 Add `dayStart`/`dayKey` to `core/src/metrics.ts` beside the week helpers; verify unit
       tests pin UTC day boundaries (23:30 vs 00:15 scenario)
-- [ ] 3.2 Generalize `weeklySeries` into `bucketSeries(sessions, granularity, now)`: day buckets
+- [x] 3.2 Generalize `weeklySeries` into `bucketSeries(sessions, granularity, now)`: day buckets
       seed every day in the window including quiet ones, `partial` = current day (or week);
       verify tests carry the existing weekly invariants over to daily (gap seeding, quiet day kept,
       today partial)
-- [ ] 3.3 Replace `TelemetryStats.weekly` with `series: { granularity, points }` and update every
+- [x] 3.3 Replace `TelemetryStats.weekly` with `series: { granularity, points }` and update every
       caller in the same change (no compatibility shape); verify `npm run build` and
       `npx vitest run core/test` pass with no reference to `weekly` left
-- [ ] 3.4 Implement the granularity rule — day when window (or coverage span, for all-time) is
+- [x] 3.4 Implement the granularity rule — day when window (or coverage span, for all-time) is
       ≤ 92 days, week beyond — and carry `granularity` in the payload; verify with frozen-`now`
       tests at 92 and 93 days
 
