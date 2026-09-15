@@ -8,6 +8,7 @@ import type {
     TelemetryStats,
 } from '@factory-ai/core';
 import { createCache } from './cache.js';
+import { fullName } from './config.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
 import type { TelemetryClient } from './telemetry/client.js';
@@ -85,8 +86,14 @@ export interface StatsPayload {
 }
 
 export interface StatsService {
-    /** Cached payload for a range and scope, or null if nothing has ever been fetched. */
-    current(range?: DateRange, scope?: StatsScope): StatsPayload | null;
+    /**
+     * Cached payload for a range and scope, or null if nothing has ever been fetched.
+     *
+     * `repoFilter` narrows the answer to a subset of the installation — the per-user repo scope.
+     * Absent, the full list is answered; the filter is a read-time intersection, so it never
+     * touches the shared cache, which stays org-wide.
+     */
+    current(range?: DateRange, scope?: StatsScope, repoFilter?: readonly string[]): StatsPayload | null;
     /** Kicks off a refresh if one is warranted. Single-flight. */
     ensureFresh(): void;
     refresh(): void;
@@ -189,12 +196,13 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
 
     function telemetryMeta(
         entry: { value: TelemetrySnapshot; fetchedAt: number } | null,
-        stats: TelemetryStats | null
+        stats: TelemetryStats | null,
+        scopedNames: readonly string[]
     ): TelemetryMeta {
         const source = config.telemetrySource === 'postgres' ? 'postgres' : 'fixture';
         const base = {
             source,
-            repoFilter: repoNames(),
+            repoFilter: scopedNames,
             otherRepoSessions: stats?.otherRepoSessions ?? 0,
             sessionsWithoutHook: stats?.sessionsWithoutHook ?? 0,
             unattributedSessions: stats?.unattributedSessions ?? 0,
@@ -216,8 +224,11 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
         return {
             ...base,
             // Reachable but silent is its own state: it lets the panels render their structure,
-            // which is how you see the pipeline is wired and just has nothing to say yet.
-            status: entry.value.input.sessions.length === 0 ? 'empty' : 'ok',
+            // which is how you see the pipeline is wired and just has nothing to say yet. Judged
+            // from the SCOPED stats — the status describes what THIS caller is looking at, so a
+            // member whose subset holds no sessions sees "empty" even when the org-wide cache
+            // does not.
+            status: (stats?.totals.sessions ?? 0) === 0 ? 'empty' : 'ok',
             reason: telemetryFailure?.reason ?? null,
             fetchedAt: new Date(entry.fetchedAt).toISOString(),
             ageSeconds: Math.floor((now() - entry.fetchedAt) / 1000),
@@ -226,9 +237,17 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
     }
 
     return {
-        current(range = ALL_TIME, scope: StatsScope = 'org') {
+        current(range = ALL_TIME, scope: StatsScope = 'org', repoFilter?: readonly string[]) {
             const entry = cache.peek();
             if (!entry) return null;
+
+            // The scope narrows the read before anything aggregates: telemetryStats() counts a
+            // session only when its repo is in `repos`, so a filtered set is a different answer,
+            // not the same answer with rows hidden. Read-time, from the one shared fetch — the
+            // cache stays org-wide, exactly like the range.
+            const all = repoNames();
+            const wanted = repoFilter ? new Set(repoFilter) : null;
+            const scoped = wanted ? all.filter((name) => wanted.has(name)) : all;
 
             // Aggregated at read time, not at fetch time: telemetryStats() is pure over the
             // session list, so every range — and now every scope — is served from the one read
@@ -238,16 +257,17 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             const user = scope === 'org' ? undefined : { id: scope.id };
             const input = filterTelemetryInput(entry.value.input, range);
             const telemetry = telemetryStats(input, {
-                repos: repoNames(),
+                repos: scoped,
                 now: new Date(now()),
                 range,
                 ...(user ? { user } : {}),
             });
             // The same repo scope the totals above apply, on BOTH task inputs: the run rows are
             // read org-wide, so without it a task attributed to another repo's sessions would
-            // appear here while its sessions were excluded up page.
+            // appear here while its sessions were excluded up page. `scoped` carries the
+            // per-user repo subset when one is active, and the org list when not.
             const tasks = taskUsageStats(input.sessions, filterJobRuns(entry.value.runs, range), {
-                repos: repoNames(),
+                repos: scoped,
                 ...(user ? { user } : {}),
             });
 
@@ -265,11 +285,14 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
                         current: organization,
                         available: [organization],
                     },
-                    repos: repos.snapshot().map((repo) => ({ owner: repo.owner, name: repo.name })),
+                    repos: repos
+                        .snapshot()
+                        .filter((repo) => !wanted || wanted.has(fullName(repo)))
+                        .map((repo) => ({ owner: repo.owner, name: repo.name })),
                     range,
                     scope: scope === 'org' ? 'org' : 'mine',
                     scopeLogin: scope === 'org' ? null : scope.login,
-                    telemetry: telemetryMeta(entry, telemetry),
+                    telemetry: telemetryMeta(entry, telemetry, scoped),
                 },
             };
         },

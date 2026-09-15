@@ -1,8 +1,9 @@
 import { isRangePreset, resolveRange } from '@factory-ai/core';
 import type { DateRange, Organization } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
-import type { AppConfig } from '../config.js';
 import { callerOf } from '../auth/plugin.js';
+import type { RepoAccessScope } from '../github/access-scope.js';
+import type { AppConfig } from '../config.js';
 import type { StatsScope, StatsService } from '../stats-service.js';
 
 interface StatsQuery {
@@ -96,7 +97,12 @@ function resolveScope(
 }
 
 export const statsRoutes =
-    (config: AppConfig, service: StatsService, now: () => number = Date.now): FastifyPluginAsync =>
+    (
+        config: AppConfig,
+        service: StatsService,
+        now: () => number = Date.now,
+        scope?: RepoAccessScope | undefined
+    ): FastifyPluginAsync =>
     async (app) => {
         app.get('/api/stats', async (request, reply) => {
             const query = request.query as StatsQuery;
@@ -120,9 +126,11 @@ export const statsRoutes =
             // Beside the organization: the org decides WHICH data set, the scope decides WHOSE
             // figures within it, and both must be settled before any range is parsed or the
             // cache is touched — a bad scope is a bad request whatever the cache is doing.
-            const scope = resolveScope(config, request, query.scope);
-            if ('error' in scope) {
-                return reply.code(400).send({ error: scope.error, code: scope.code });
+            // `callerScope`, not `scope`: the plugin argument named `scope` is the per-user REPO
+            // access scope, a different dimension entirely.
+            const callerScope = resolveScope(config, request, query.scope);
+            if ('error' in callerScope) {
+                return reply.code(400).send({ error: callerScope.error, code: callerScope.code });
             }
             const range = parseRange(query, new Date(now()));
             if ('error' in range) {
@@ -131,8 +139,17 @@ export const statsRoutes =
 
             // `org` goes no further on purpose. The service already knows the only organization
             // there is, and a parameter it ignores is worse than no parameter.
+            //
+            // The per-user repo scope narrows WHAT is measured, not which range is measured — so
+            // it rides into `current()` beside the range, and the same read answers every caller.
+            // Null means no scope, or this caller's has never been computed: the full list then.
+            const caller = callerOf(request);
+            const repoFilter = scope && caller ? await scope.scopedNames(caller.user.id) : null;
+
             service.ensureFresh();
-            const payload = service.current(range, scope.value);
+            // Both dimensions ride into `current()`: whose figures (caller scope), and — where
+            // per-user repo scoping is active — the caller's subset of the installation.
+            const payload = service.current(range, callerScope.value, repoFilter ?? undefined);
 
             // A stale cache is still served with 200. A failed read must keep the last
             // good render on screen and explain itself, not blank the dashboard.

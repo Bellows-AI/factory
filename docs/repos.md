@@ -36,3 +36,44 @@ each session rather than refetching.
 - **`meta.repos` travels in the payload, not behind a second request.** A page that cannot name the
   repos the figures were scoped to cannot be read honestly, and the DataQuality panel needs the
   filter (`meta.telemetry.repoFilter`) to say what `otherRepoSessions` was excluded *by*.
+
+## Per-user scoping
+
+The list above is the installation's. What a MEMBER sees is the intersection of that list with what
+their GitHub account can reach — computed only where scoping is active (a GitHub App installation
+plus `auth.auto_join_github_org`; any deployment short of both is unscoped, and `AUTH_MODE=none` is
+unscoped by construction because there is no client to enumerate with).
+
+- **The computation uses the credential the server already holds, not the member's token.** At
+  sign-in the server asks, with the installation token: the org's teams (cached org-wide, 10-minute
+  TTL — same figure and same reasoning as the installation list), each team's repos (cached the
+  same way), whether the member belongs to each team, and a DIRECT collaborator probe per
+  not-yet-reachable repo (`?affiliation=direct` — team-reached repos are not re-probed). The union,
+  intersected with the installation list, is stored per member (`user_repo_access`, one row, one
+  `text[]`). No new OAuth scope, no user-access token, no consent screen change; the cost is a
+  handful of rate-limit points per login against the installation's own quota — a minimum of
+  5,000 requests/hour, scaling with the org's size (15,000 on Enterprise Cloud).
+- **An empty set is a real answer; a missing row is no answer at all.** `user_repo_access` has no
+  row for an account that has never been computed — that account is unscoped until their next
+  sign-in, which is what keeps accounts that pre-date scoping working. An EMPTY array means GitHub
+  grants this account nothing, and the dashboard shows exactly that. Consequence: an invited person
+  who signs in before GitHub grants them anything sees an empty dashboard — fail-closed, because
+  the alternative (empty ⇒ everything) would make the two states indistinguishable.
+- **The stored set is intersected with the installation on every read.** A repo pulled from the App
+  stops matching immediately, without waiting for the member's next sign-in; a repo granted to the
+  member's team in GitHub appears at their next sign-in, which recomputes their set. (The roster
+  sweep maintains membership rows only — it never recomputes repo sets.) A GitHub failure during a
+  recompute logs and leaves the last computed set standing — the store is only ever written on a
+  successful enumeration, so the set is last-known-truth, never half of one.
+- **Every consumer of the repo list scopes.** `/api/repos` (the picker), `/api/stats` (`meta.repos`
+  and `repoFilter` reflect the caller's subset, and the figures are recomputed for it — the shared
+  cache stays org-wide, exactly like the date range), `POST /api/jobs` (`403 REPO_NOT_ACCESSIBLE`
+  outside the set — hiding the picker while the API accepted the name would make honesty depend on
+  the SPA's politeness), `PUT /api/workspace/repos` (the clone must not widen what the stats
+  scoped), and `GET /api/env` (the repo-scope env list is filtered to the caller's set — the names
+  alone reveal that a repo exists and is configured). Board reads stay open: the jobs list is the
+  org's audit trail. An organization token names no person and is never scoped.
+- **`otherRepoSessions` reads differently under scoping.** Sessions on repos the CALLER cannot
+  reach land there, beside the sessions on repos outside the installation. That is the honest
+  description of what was excluded and why — fixing it would mean per-user telemetry reads and a
+  lost shared cache.

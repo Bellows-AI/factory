@@ -77,8 +77,10 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
  *
  * - `/api/health` must answer while the migrations are still retrying, and the compose healthcheck
  *   carries no credential. Authenticating it would restart the container that was about to succeed.
- * - `/api/auth/*` is how a caller obtains a credential in the first place. `/api/auth/me` 401s on
- *   its own — being the thing that *tells* the SPA it is unauthenticated is its whole purpose.
+ * - `/api/auth/*` is how a caller obtains a credential in the first place. `/api/auth/me` answers
+ *   `200 {authenticated: false}` for nobody — being the thing that *tells* the SPA it is
+ *   unauthenticated is its whole purpose, and a 401 there would be logged as a console error by
+ *   the browser of everybody who has not signed in yet.
  *
  * Everything outside `/api/` — the SPA's HTML, its bundle, the not-found handler that serves
  * index.html — is open too, and that is not an omission. **If index.html 401s there is nothing left

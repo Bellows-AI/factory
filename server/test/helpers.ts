@@ -9,6 +9,9 @@ import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { CloneStatus, UserRepo, UserRepoStore } from '../src/db/user-repo-store.js';
+import type { UserRepoAccessStore } from '../src/db/user-repo-access-store.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
+import type { RepoAccessScope } from '../src/github/access-scope.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryClient, TelemetryHealth } from '../src/telemetry/client.js';
@@ -459,7 +462,7 @@ export interface MemoryAuthStore extends AuthStore {
      * Creates a claimed membership and returns the account, so a test can hold a session without
      * driving the whole OAuth round trip to get one.
      */
-    seedMember(orgId: string, login: string, role?: Role): Caller;
+    seedMember(orgId: string, login: string, role?: Role, autoJoined?: boolean): Caller;
     /**
      * The stand-in account AUTH_MODE=none resolves, exactly as migrate()'s ensureLocalUser writes
      * it: github_user_id 0, a value GitHub never issues, and the reserved `__local__` login, which
@@ -511,6 +514,7 @@ export function memoryAuthStore(): MemoryAuthStore {
         userId: string | null;
         role: Role;
         claimed: boolean;
+        autoJoined: boolean;
         invitedAt: string;
         claimedAt: string | null;
     }
@@ -561,6 +565,7 @@ export function memoryAuthStore(): MemoryAuthStore {
         },
         membership: { invitedAt: member.invitedAt, claimedAt: member.claimedAt },
         role: member.role,
+        autoJoined: member.autoJoined,
     });
     const memberOf = (userId: string, orgId: string): Caller | null => {
         const member = members.find((m) => m.orgId === orgId && m.userId === userId);
@@ -588,7 +593,7 @@ export function memoryAuthStore(): MemoryAuthStore {
     const now = () => new Date().toISOString();
 
     const store: MemoryAuthStore = {
-        seedMember(orgId, login, role = 'member') {
+        seedMember(orgId, login, role = 'member', autoJoined = false) {
             const user: User = {
                 id: userId(nextId),
                 githubUserId: nextId,
@@ -606,6 +611,7 @@ export function memoryAuthStore(): MemoryAuthStore {
                 userId: user.id,
                 role,
                 claimed: true,
+                autoJoined,
                 invitedAt: STAMP,
                 claimedAt: STAMP,
             };
@@ -630,6 +636,7 @@ export function memoryAuthStore(): MemoryAuthStore {
                 userId: user.id,
                 role: 'admin',
                 claimed: true,
+                autoJoined: false,
                 invitedAt: STAMP,
                 claimedAt: STAMP,
             };
@@ -719,8 +726,9 @@ export function memoryAuthStore(): MemoryAuthStore {
                     orgId,
                     login,
                     userId: user.id,
-                    role: 'member',
+                    role: options.role ?? 'member',
                     claimed: true,
+                    autoJoined: true,
                     invitedAt: now,
                     claimedAt: now,
                 });
@@ -829,6 +837,7 @@ export function memoryAuthStore(): MemoryAuthStore {
                 userId: null,
                 role,
                 claimed: false,
+                autoJoined: false,
                 invitedAt: new Date().toISOString(),
                 claimedAt: null,
             });
@@ -857,6 +866,37 @@ export function memoryAuthStore(): MemoryAuthStore {
             return members
                 .filter((m) => m.orgId === orgId)
                 .map((m) => ({ login: m.login, role: m.role, claimed: m.claimed }));
+        },
+
+        async listAutoJoined(orgId) {
+            return members
+                .filter((m) => m.orgId === orgId && m.autoJoined && m.userId !== null)
+                .map((m) => {
+                    const user = users.find((u) => u.id === m.userId)!;
+                    return { login: m.login, role: m.role, userId: m.userId!, githubUserId: user.githubUserId };
+                });
+        },
+
+        async removeMemberById(orgId, userId) {
+            const index = members.findIndex((m) => m.orgId === orgId && m.userId === userId && m.autoJoined);
+            if (index === -1) return 'missing';
+            const [removed] = members.splice(index, 1);
+            for (const [hash, session] of sessions) {
+                if (session.userId === removed!.userId) sessions.delete(hash);
+            }
+            for (const row of accessTokenRows) {
+                if (row.orgId === orgId && row.userId === removed!.userId && row.revokedAt === null) {
+                    row.revokedAt = now();
+                }
+            }
+            return 'removed';
+        },
+
+        async updateMemberRole(orgId, userId, role) {
+            const member = members.find((m) => m.orgId === orgId && m.userId === userId && m.autoJoined);
+            if (!member) return false;
+            member.role = role;
+            return true;
         },
 
         async createWorkerToken(orgId, name, tokenHash) {
@@ -894,6 +934,8 @@ export interface IdentityStub extends GitHubIdentityClient {
     exchanges: string[];
     /** What GitHub says about the auto-join organization. Set per test. */
     orgState: 'active' | 'pending' | 'none';
+    /** The org role GitHub reports for the signing-in account. */
+    orgRole: 'admin' | 'member';
     /** Every org the callback asked about, so a test can assert it did not ask at all. */
     orgLookups: string[];
 }
@@ -909,6 +951,7 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
         },
         exchanges: [],
         orgState: 'none',
+        orgRole: 'member',
         orgLookups: [],
         authorizeUrl: (state) => `https://github.test/login/oauth/authorize?state=${state}`,
         async exchange(code) {
@@ -920,10 +963,96 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
         },
         async orgMembership(_accessToken, org) {
             stub.orgLookups.push(org);
-            return stub.orgState;
+            return { state: stub.orgState, role: stub.orgRole };
         },
     };
     return stub;
+}
+
+/** What a GitHub App client needs beyond the repo list, for the access-scope tests. */
+export interface AppClientStub extends GitHubAppClient {
+    /** `orgMembers` members, as login → numeric GitHub id. */
+    members: Map<string, number>;
+    /** Numeric ids `orgMembers` reports as org admins. */
+    admins: Set<number>;
+    /** slug → repos, what the `teamRepos` method answers. */
+    teamRepoLists: Map<string, readonly { owner: string; name: string }[]>;
+    /** (slug, login) pairs `teamMembership` answers yes to. */
+    teamMembers: Set<string>;
+    /** "owner/name" repos `collaborator` answers yes to (keyed with the login). */
+    collaborations: Set<string>;
+    calls: {
+        teams: number;
+        teamRepos: Map<string, number>;
+        memberships: number;
+        collaborators: number;
+        members: number;
+    };
+    /** When set, every call throws — the failure path. */
+    fail?: Error;
+}
+
+export function stubAppClient(base: GitHubAppClient): AppClientStub {
+    const stub: AppClientStub = {
+        ...base,
+        members: new Map(),
+        admins: new Set(),
+        teamRepoLists: new Map(),
+        teamMembers: new Set(),
+        collaborations: new Set(),
+        calls: { teams: 0, teamRepos: new Map(), memberships: 0, collaborators: 0, members: 0 },
+        async orgTeams() {
+            stub.calls.teams += 1;
+            if (stub.fail) throw stub.fail;
+            return [...stub.teamRepoLists.keys()].map((slug) => ({ slug, name: slug }));
+        },
+        async teamRepos(_org, slug) {
+            stub.calls.teamRepos.set(slug, (stub.calls.teamRepos.get(slug) ?? 0) + 1);
+            if (stub.fail) throw stub.fail;
+            return stub.teamRepoLists.get(slug) ?? [];
+        },
+        async teamMembership(_org, slug, login) {
+            stub.calls.memberships += 1;
+            if (stub.fail) throw stub.fail;
+            return stub.teamMembers.has(`${slug}/${login.toLowerCase()}`);
+        },
+        async collaborator(owner, name, login) {
+            stub.calls.collaborators += 1;
+            if (stub.fail) throw stub.fail;
+            return stub.collaborations.has(`${owner}/${name}/${login.toLowerCase()}`);
+        },
+        async orgMembers() {
+            stub.calls.members += 1;
+            if (stub.fail) throw stub.fail;
+            return {
+                members: [...stub.members].map(([login, id]) => ({ id, login: login.toLowerCase() })),
+                admins: [...stub.admins],
+            };
+        },
+    };
+    return stub;
+}
+
+/**
+ * An in-memory UserRepoAccessStore. `null` before the first computation, exactly like the SQL
+ * store: an empty array is a real answer ("GitHub grants this account nothing"), never the
+ * uncomputed state.
+ */
+export interface MemoryUserRepoAccessStore extends UserRepoAccessStore {
+    rows(): { orgId: string; userId: string; repos: readonly string[] }[];
+}
+
+export function memoryUserRepoAccessStore(orgId = 'test-org'): MemoryUserRepoAccessStore {
+    const stored = new Map<string, readonly string[]>();
+    return {
+        async setRepos(userId, repos) {
+            stored.set(userId, [...repos]);
+        },
+        async repos(userId) {
+            return stored.get(userId) ?? null;
+        },
+        rows: () => [...stored.entries()].map(([userId, repos]) => ({ orgId, userId, repos: [...repos] })),
+    };
 }
 
 export interface TelemetryStubOptions {
@@ -969,6 +1098,7 @@ export async function harness({
     userRepos,
     userExecutors,
     envVars,
+    scope,
 }: {
     config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
@@ -989,6 +1119,8 @@ export async function harness({
     userExecutors?: UserExecutorStore;
     /** Absent by default, which leaves the env routes unregistered. */
     envVars?: EnvVarStore;
+    /** Absent by default, which leaves every route unscoped. */
+    scope?: RepoAccessScope;
 } = {}) {
     const config = testConfig(overrides);
     const telemetry = telemetryOption ?? stubTelemetryClient();
@@ -1010,6 +1142,7 @@ export async function harness({
         envVars,
         auth,
         identity,
+        scope,
         now: () => clock,
     });
     return {
