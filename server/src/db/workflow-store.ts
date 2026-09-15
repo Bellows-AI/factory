@@ -1,5 +1,11 @@
 import type { Sql, TransactionSql } from 'postgres';
-import { type WorkflowDefinition, WORKFLOW_NAME, SCOPE_SEGMENT, validateDefinition } from './workflow-schema.js';
+import {
+    type DefinitionRefusal,
+    type WorkflowDefinition,
+    WORKFLOW_NAME,
+    SCOPE_SEGMENT,
+    validateDefinition,
+} from './workflow-schema.js';
 import { BASE_WORKFLOW } from './workflow-templates.js';
 
 /**
@@ -36,7 +42,7 @@ export interface WorkflowTarget {
 
 /** Why a create was refused. Every code is named — a bad definition is diagnosable from the answer. */
 export interface WorkflowRefusal {
-    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | 'DEFAULT_TAKEN';
+    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | 'DEFAULT_TAKEN' | DefinitionRefusal['code'];
     message: string;
 }
 
@@ -70,15 +76,7 @@ const toRecord = (row: WorkflowRow): WorkflowRecord => ({ ...toSummary(row), def
  * a per-call parameter is one more thing a write path can forget. `ready` gates every query the
  * same way — migrations retry with backoff while the database container starts.
  */
-export function createWorkflowStore({
-    sql,
-    orgId,
-    ready,
-}: {
-    sql: Sql;
-    orgId: string;
-    ready?: Promise<unknown>;
-}): {
+export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: string; ready?: Promise<unknown> }): {
     create(input: {
         name: string;
         scope: WorkflowScope;
@@ -147,7 +145,11 @@ export function createWorkflowStore({
                     ['name', scope.name],
                 ] as const) {
                     if (!SCOPE_SEGMENT.test(part)) {
-                        return { refused: true, code: 'BAD_SCOPE', message: `repo scope ${label} must be a checkout-safe segment` };
+                        return {
+                            refused: true,
+                            code: 'BAD_SCOPE',
+                            message: `repo scope ${label} must be a checkout-safe segment`,
+                        };
                     }
                 }
             }
@@ -177,19 +179,27 @@ export function createWorkflowStore({
                         is_default: isDefault,
                         created_by: createdBy,
                     };
-                    const rows = await tx<{ id: string }[]>`
-                        insert into workflow ${tx(values, 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'is_default', 'created_by')}
+                    const rows = await tx`
+                        insert into workflow ${tx([values], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'is_default', 'created_by')}
                         returning id
                     `;
-                    return { id: rows[0]!.id };
+                    return { id: (rows as unknown as { id: string }[])[0]!.id };
                 });
             } catch (e) {
                 const err = e as { code?: string; constraint_name?: string };
                 if (err.code === '23505' && err.constraint_name === 'workflow_default_uk') {
-                    return { refused: true, code: 'DEFAULT_TAKEN', message: 'this scope already has another default workflow' };
+                    return {
+                        refused: true,
+                        code: 'DEFAULT_TAKEN',
+                        message: 'this scope already has another default workflow',
+                    };
                 }
                 if (err.code === '23505') {
-                    return { refused: true, code: 'NAME_TAKEN', message: `a workflow named "${name.trim()}" already exists in this scope` };
+                    return {
+                        refused: true,
+                        code: 'NAME_TAKEN',
+                        message: `a workflow named "${name.trim()}" already exists in this scope`,
+                    };
                 }
                 throw e;
             }

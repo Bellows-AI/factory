@@ -122,7 +122,10 @@ export interface DefinitionRefusal {
 
 export type DefinitionCheck = { ok: true; definition: WorkflowDefinition } | { ok: false; refusal: DefinitionRefusal };
 
-const refuse = (code: DefinitionRefusal['code'], message: string): DefinitionCheck => ({ ok: false, refusal: { code, message } });
+const refuse = (code: DefinitionRefusal['code'], message: string): DefinitionCheck => ({
+    ok: false,
+    refusal: { code, message },
+});
 
 const KNOWN_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish']);
 const KNOWN_EDGE_KEYS = new Set(['from', 'to', 'when', 'max']);
@@ -131,7 +134,10 @@ const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges']);
 /** Validates the tail-marker contract: the run's final non-empty line must equal the marker. */
 export function tailMatches(output: string | null, marker: string): boolean {
     if (output === null) return false;
-    const lines = output.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    const lines = output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '');
     const last = lines[lines.length - 1];
     return last !== undefined && last === marker.trim();
 }
@@ -221,7 +227,9 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
             rule !== 'succeeded' &&
             rule !== 'failed' &&
             rule !== 'gate-failed' &&
-            (typeof rule !== 'object' || rule === null || Array.isArray(rule) ||
+            (typeof rule !== 'object' ||
+                rule === null ||
+                Array.isArray(rule) ||
                 typeof (rule as { marker?: unknown }).marker !== 'string' ||
                 !(rule as { marker: string }).marker.trim() ||
                 (rule as { marker: string }).marker.trim().length > MARKER_LIMIT)
@@ -258,7 +266,8 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         for (const match of node.prompt.matchAll(/\{\{([^{}]+)\}\}/g)) {
             const spec = match[1]!.trim();
             const nodeRef = /^([a-z0-9-]+)\.output$/.exec(spec);
-            const known = spec === 'gate.name' || spec === 'gate.output' || (nodeRef !== null && names.has(nodeRef[1]!));
+            const known =
+                spec === 'gate.name' || spec === 'gate.output' || (nodeRef !== null && names.has(nodeRef[1]!));
             if (!known) {
                 return refuse(
                     'UNKNOWN_PLACEHOLDER',

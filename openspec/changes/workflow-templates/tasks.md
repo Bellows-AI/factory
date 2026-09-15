@@ -9,7 +9,7 @@
       validator (known node kinds, resolvable edges, bounded edge rules, size cap) returning named
       errors; verify with db-suite tests covering accept, unknown-key refusal, unknown-node
       refusal, and name uniqueness per scope
-- [ ] 1.3 Extend `job-store.ts` create paths: `workflow_id`/`workflow_node`/snapshot land on the
+- [x] 1.3 Extend `job-store.ts` create paths: `workflow_id`/`workflow_node`/snapshot land on the
       row at insert, and a follow-up insert copies the thread's PRIMARY session for `resume` nodes
       (not the last row's); verify with db tests pinning primary-session copy across a
       fresh-session branch (implement → review(fresh) → fix(resume) carries the implement session)
@@ -30,23 +30,23 @@
 
 ## 3. Server: the transition engine
 
-- [ ] 3.1 Implement the engine as a pure module: (thread rows, snapshot, completed row's verdict +
+- [x] 3.1 Implement the engine as a pure module: (thread rows, snapshot, completed row's verdict +
       gates + output tail) → next node with interpolated command, or rest; edge vocabulary =
       verdict / gate-failed (from stored gates jsonb) / output-tail marker match, evaluated in
       declared order, first match wins; verify with exhaustive unit tests — marker match, marker
       absence resting, gate-failed derivation, first-match order
-- [ ] 3.2 Wire the engine into `complete`'s transaction (beside the `threadDone` aggregate):
+- [x] 3.2 Wire the engine into `complete`'s transaction (beside the `threadDone` aggregate):
       bounded-edge counts from thread row counts, insert the next row (session policy per
       design.md Decision 3, publish flag per node), or rest; verify with db tests — atomicity (no
       read observes verdict without successor-or-rest), the fourth review round never inserting,
       a dead row still counting as a round
-- [ ] 3.3 Implement publish computation: publish-node runs get `publish: true` on the claim, every
+- [x] 3.3 Implement publish computation: publish-node runs get `publish: true` on the claim, every
       other node false, no-workflow tasks true; add `publish` to the claim read; verify with a db
       test per arm
-- [ ] 3.4 Implement the halt rules: `stopped` fires no edge; a user follow-up is an off-graph row
+- [x] 3.4 Implement the halt rules: `stopped` fires no edge; a user follow-up is an off-graph row
       that, on completion, re-fires the halted node's outgoing edges; verify with db tests for
       stop-then-followup-then-continue on the base workflow
-- [ ] 3.5 Bound interpolation: substituted tails hard-truncated to their share of the 16 KiB
+- [x] 3.5 Bound interpolation: substituted tails hard-truncated to their share of the 16 KiB
       command cap, over-cap result refuses the insert with a named error and rests the thread;
       verify with unit + db tests
 

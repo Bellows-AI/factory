@@ -26,7 +26,7 @@ let sql: Sql;
 let store: ReturnType<typeof createWorkflowStore>;
 
 const ORG = 'test-org';
-const ALICE = '00000000-0000-4000-8000-00000000e117';
+const ALICE = '00000000-0000-4000-8000-00000000e118';
 const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
 
 /** The smallest definition that passes the validator: one publish-reachable loop of two nodes. */
@@ -167,8 +167,20 @@ describe.skipIf(!enabled)('the workflow store', () => {
 
     it('moves the default slot within a scope and resolves it repo over user over org', async () => {
         await store.create({ name: 'org-def', scope: { kind: 'org' }, definition, isDefault: true, createdBy: ALICE });
-        await store.create({ name: 'user-def', scope: { kind: 'user', userId: ALICE }, definition, isDefault: true, createdBy: ALICE });
-        await store.create({ name: 'repo-def', scope: { kind: 'repo', ...REPO }, definition, isDefault: true, createdBy: ALICE });
+        await store.create({
+            name: 'user-def',
+            scope: { kind: 'user', userId: ALICE },
+            definition,
+            isDefault: true,
+            createdBy: ALICE,
+        });
+        await store.create({
+            name: 'repo-def',
+            scope: { kind: 'repo', ...REPO },
+            definition,
+            isDefault: true,
+            createdBy: ALICE,
+        });
 
         const target = { userId: ALICE, repo: `${REPO.owner}/${REPO.name}` };
         expect((await store.resolveDefault(target))?.name).toBe('repo-def');
