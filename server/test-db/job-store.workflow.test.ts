@@ -186,15 +186,7 @@ describe.skipIf(!enabled)('workflow execution', () => {
         // fix 3 completes: the fix→review edge (max 3) matches a FOURTH time — three review rows
         // exist — so no fourth review row is inserted and the thread rests with its verdicts.
         await runNext('succeeded', 'fixed 3');
-        expect(await nodesOf(root)).toEqual([
-            'implement',
-            'review',
-            'fix',
-            'review',
-            'fix',
-            'review',
-            'fix',
-        ]);
+        expect(await nodesOf(root)).toEqual(['implement', 'review', 'fix', 'review', 'fix', 'review', 'fix']);
         const rows = await thread(root);
         expect(rows[rows.length - 1]!.status).toBe('succeeded');
     });
@@ -220,7 +212,7 @@ describe.skipIf(!enabled)('workflow execution', () => {
         expect(fix?.sessionId).toBe('sess-implement');
     });
 
-    it('copies the primary session — not the last row\'s — onto a user follow-up', async () => {
+    it("copies the primary session — not the last row's — onto a user follow-up", async () => {
         const root = await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
         await store.session(first.id, first.leaseToken, 'sess-primary', null);
@@ -247,7 +239,11 @@ describe.skipIf(!enabled)('workflow execution', () => {
         await queueWorkflowJob(walk);
         const implementClaim = (await store.claim(WORKER, 60))!;
         expect(implementClaim.publish).toBe(false);
-        await store.complete(implementClaim.id, implementClaim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        await store.complete(implementClaim.id, implementClaim.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'done',
+        });
         const reviewClaim = (await store.claim(WORKER, 60))!;
         expect(reviewClaim.publish).toBe(false);
         await store.complete(reviewClaim.id, reviewClaim.leaseToken, {
@@ -314,7 +310,7 @@ describe.skipIf(!enabled)('workflow execution', () => {
         expect(await nodesOf(root)).toEqual(['implement', 'review', null, 'fix']);
     });
 
-    it('a user follow-up re-fires the halted node\'s edges so the graph continues', async () => {
+    it("a user follow-up re-fires the halted node's edges so the graph continues", async () => {
         const root = await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
         await store.session(first.id, first.leaseToken, 'sess-implement', null);

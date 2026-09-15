@@ -23,6 +23,9 @@ export interface WorkflowSummary {
     id: string;
     name: string;
     scope: 'org' | 'user' | 'repo';
+    /** The scope's own labels — the owning account, or the `owner/name` the repo row names. */
+    userId: string | null;
+    repo: string | null;
     isDefault: boolean;
     createdAt: string;
     updatedAt: string;
@@ -64,6 +67,8 @@ const toSummary = (row: WorkflowRow): WorkflowSummary => ({
     id: row.id,
     name: row.name,
     scope: row.user_id !== null ? 'user' : row.repo_owner !== null ? 'repo' : 'org',
+    userId: row.user_id,
+    repo: row.repo_owner !== null && row.repo_name !== null ? `${row.repo_owner}/${row.repo_name}` : null,
     isDefault: row.is_default,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),

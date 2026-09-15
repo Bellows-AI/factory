@@ -11,6 +11,7 @@ import { createUserRepoStore } from './db/user-repo-store.js';
 import { createUserRepoAccessStore } from './db/user-repo-access-store.js';
 import { createUserExecutorStore } from './db/user-executor-store.js';
 import { createEnvVarStore } from './db/env-var-store.js';
+import { createWorkflowStore } from './db/workflow-store.js';
 import { createCloneQueue } from './workspace/queue.js';
 import { readGatesFile } from './workspace/bellows.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
@@ -126,6 +127,14 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     const envVarStore = createEnvVarStore({ sql, orgId: config.orgId, ready });
     // Built before the job store, which reads it at claim time (executorConfig below).
     const userExecutorStore = createUserExecutorStore({ sql, orgId: config.orgId, ready });
+    // Workflow definitions (027): the process a task walks, stored per scope. Also the seeder of
+    // the base `fix-issue` workflow — org-level and the org's default, idempotent, fired with the
+    // same posture as migrate(): the board answers route queries the moment its tables exist, and
+    // a task queued in the seeding's first seconds simply resolves no default yet.
+    const workflowStore = createWorkflowStore({ sql, orgId: config.orgId, ready });
+    void ready
+        .then(() => workflowStore.seedBase())
+        .catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
     const jobStore = createJobStore({
         sql,
         orgId: config.orgId,
@@ -243,6 +252,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         repos,
         store,
         jobs: jobStore,
+        workflows: workflowStore,
         userRepos: userRepoStore,
         userExecutors: userExecutorStore,
         envVars: envVarStore,

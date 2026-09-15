@@ -16,6 +16,7 @@ import type {
     StopResult,
 } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
+import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
 import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
 
 let app: FastifyInstance | null = null;
@@ -30,6 +31,8 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
+    /** The workflow triple the create was handed, when one resolved — null when none did. */
+    workflowTargets: { id: string; node: string; snapshot: unknown }[];
     listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
     completed: {
         id: string;
@@ -85,6 +88,7 @@ function stubStore(
     };
     const stub: StoreStub = {
         created: [],
+        workflowTargets: [],
         listed: [],
         commands: [],
         completed: [],
@@ -114,6 +118,7 @@ function stubStore(
                 repo: target?.repo ?? null,
                 executor: target?.executor ?? null,
             });
+            if (target?.workflow) stub.workflowTargets.push(target.workflow);
             stub.commands.push(command);
             return { id: ID };
         },
@@ -216,14 +221,14 @@ function stubStore(
     return stub;
 }
 
-async function harnessWith(jobs?: StoreStub) {
+async function harnessWith(jobs?: StoreStub, workflows?: WorkflowStore) {
     const config = testConfig();
     const service = createStatsService({
         config,
         telemetry: stubTelemetryClient(),
         now: () => Date.parse('2026-08-21T12:00:00.000Z'),
     });
-    const instance = await buildApp({ config, service, jobs });
+    const instance = await buildApp({ config, service, jobs, workflows });
     app = instance;
     return instance;
 }
@@ -331,6 +336,112 @@ describe('POST /api/jobs', () => {
         const response = await post(instance, '/api/jobs', { command: 'echo hi' });
         expect(response.statusCode).toBe(503);
         expect(response.json().code).toBe('UNAVAILABLE');
+    });
+});
+
+/**
+ * The in-memory workflow-store double: what the resolution tests need is which methods the route
+ * called with which arguments, and one resolvable record. The store's real rules live in
+ * server/test-db/workflow-store.test.ts.
+ */
+function stubWorkflows(options: { found?: WorkflowRecord | null } = {}) {
+    const definition = {
+        entry: 'implement',
+        nodes: [{ name: 'implement', kind: 'agent', session: 'resume', prompt: 'work', publish: true }],
+        edges: [],
+    };
+    const record: WorkflowRecord = {
+        id: 'wf-1',
+        name: 'fix-issue',
+        scope: 'org',
+        userId: null,
+        repo: null,
+        isDefault: false,
+        createdAt: '2026-09-15T00:00:00.000Z',
+        updatedAt: '2026-09-15T00:00:00.000Z',
+        definition,
+    };
+    const calls = { findByName: [] as string[], resolveDefault: 0 };
+    return {
+        calls,
+        record: options.found === undefined ? record : options.found,
+        async create() {
+            return { id: 'wf-x' };
+        },
+        async listVisible() {
+            return [];
+        },
+        async get() {
+            return null;
+        },
+        async remove() {
+            return true;
+        },
+        async findByName(name: string) {
+            calls.findByName.push(name);
+            return options.found === undefined ? record : options.found;
+        },
+        async resolveDefault() {
+            calls.resolveDefault += 1;
+            return options.found === undefined ? record : options.found;
+        },
+        async seedBase() {},
+    } as unknown as WorkflowStore & typeof calls;
+}
+
+describe('POST /api/jobs workflow resolution', () => {
+    it('freezes the resolved definition onto the create when the body names a workflow', async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows();
+        const instance = await harnessWith(jobs, workflows);
+
+        const response = await post(instance, '/api/jobs', { command: 'fix it', workflow: 'fix-issue' });
+
+        expect(response.statusCode).toBe(201);
+        expect(workflows.calls.findByName).toEqual(['fix-issue']);
+        expect(jobs.workflowTargets).toEqual([
+            { id: 'wf-1', node: 'implement', snapshot: workflows.record.definition },
+        ]);
+    });
+
+    it('refuses an unknown workflow name with a named error and queues nothing', async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows({ found: null });
+        const instance = await harnessWith(jobs, workflows);
+
+        const response = await post(instance, '/api/jobs', { command: 'fix it', workflow: 'ghost' });
+
+        expect(response.statusCode).toBe(404);
+        expect(response.json().code).toBe('UNKNOWN_WORKFLOW');
+        expect(jobs.created).toEqual([]);
+    });
+
+    it('resolves the scope stack default when the body names none', async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows();
+        const instance = await harnessWith(jobs, workflows);
+
+        const response = await post(instance, '/api/jobs', { command: 'fix it', repo: 'acme/web' });
+
+        expect(response.statusCode).toBe(201);
+        expect(workflows.calls.resolveDefault).toBe(1);
+        expect(jobs.workflowTargets).toHaveLength(1);
+    });
+
+    // The no-workflow byte-identity: a body without a workflow field reaches the store exactly as
+    // it did before workflows existed — no triple on the create, no flag the claim would carry.
+    // The claim's own shape is pinned by the db suite, which asserts `publish` is ABSENT on a
+    // workflow-less claim and present (true/false) on a workflow one.
+    it('hands the store no workflow at all when the body names none and no default exists', async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows({ found: null });
+        const instance = await harnessWith(jobs, workflows);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi' });
+
+        expect(response.statusCode).toBe(201);
+        expect(workflows.calls.resolveDefault).toBe(1);
+        expect(jobs.workflowTargets).toEqual([]);
     });
 });
 

@@ -16,15 +16,15 @@
 
 ## 2. Server: workflow routes and task creation
 
-- [ ] 2.1 Add `server/src/routes/workflows.ts`: `GET /api/workflows` (caller-visible list with
+- [x] 2.1 Add `server/src/routes/workflows.ts`: `GET /api/workflows` (caller-visible list with
       scope; worker token refused), create (org-level admin-gated, user/repo for members), delete;
       register in `main.ts`/`buildApp`; verify with route tests including the 403 admin gate and
       the worker-token refusal
-- [ ] 2.2 Extend `POST /api/jobs` with the optional `workflow` field: name resolution (explicit >
+- [x] 2.2 Extend `POST /api/jobs` with the optional `workflow` field: name resolution (explicit >
       repo default > user default > org default), unknown-name refusal with a named error, and the
       snapshot stored on the root row; verify with route tests for each resolution step and the
       refusal
-- [ ] 2.3 Pin the no-workflow byte-identity: a create and claim without a `workflow` field produce
+- [x] 2.3 Pin the no-workflow byte-identity: a create and claim without a `workflow` field produce
       the same shapes as before the change; verify by asserting the claim payload fields in
       `routes.jobs.test.ts` stay exactly as today
 

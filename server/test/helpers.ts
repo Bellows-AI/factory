@@ -8,6 +8,7 @@ import type { AppConfig, AuthConfig } from '../src/config.js';
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
+import type { WorkflowStore } from '../src/db/workflow-store.js';
 import type { CloneStatus, UserRepo, UserRepoStore } from '../src/db/user-repo-store.js';
 import type { UserRepoAccessStore } from '../src/db/user-repo-access-store.js';
 import type { GitHubAppClient } from '../src/github/app-client.js';
@@ -1098,6 +1099,7 @@ export async function harness({
     userRepos,
     userExecutors,
     envVars,
+    workflows,
     scope,
 }: {
     config?: Partial<AppConfig>;
@@ -1119,6 +1121,8 @@ export async function harness({
     userExecutors?: UserExecutorStore;
     /** Absent by default, which leaves the env routes unregistered. */
     envVars?: EnvVarStore;
+    /** Absent by default, which leaves the workflow routes unregistered. */
+    workflows?: WorkflowStore;
     /** Absent by default, which leaves every route unscoped. */
     scope?: RepoAccessScope;
 } = {}) {
@@ -1140,6 +1144,7 @@ export async function harness({
         userRepos,
         userExecutors: executors,
         envVars,
+        workflows,
         auth,
         identity,
         scope,
