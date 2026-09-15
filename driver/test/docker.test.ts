@@ -3456,6 +3456,18 @@ describe('publishing the produced work', () => {
         }
     });
 
+    // Executor parity for the publish flag (docs/workflows.md): the flag is read in exactly ONE
+    // place — the loop, shared by both executors — so this transport must have no opinion of its
+    // own. The loop tests pin that a publish:false claim never reaches publishGit; this pins the
+    // other half, that the docker transport grew no gate of its own to drift against.
+    it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
+        const { calls, runner } = publishRunner(DIRTY_ON_MAIN);
+        const result = await runner.publishGit({ ...ISSUE_JOB, publish: false });
+
+        expect(result.ok).toBe(true);
+        expect(calls.length).toBeGreaterThan(0);
+    });
+
     it('refuses branch names that could read as something else', () => {
         expect(isBranchName('fix/10')).toBe(true);
         expect(isBranchName('task/20260909')).toBe(true);

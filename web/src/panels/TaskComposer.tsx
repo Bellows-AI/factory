@@ -10,21 +10,26 @@ const firstRepo = (repos: readonly { owner: string; name: string }[] | null): st
  * The new-task composer, the default right pane of the tasks area.
  *
  * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`,
- * `useJobs`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
- * effects, the page hands it finished props and the suite asserts markup.
+ * `useJobs`, `useWorkflows`), so this panel is testable in the offline suite:
+ * `renderToStaticMarkup` runs no effects, the page hands it finished props and the suite asserts
+ * markup.
  *
  * The repository is a stamp the member chooses per task — the old repo tabs collapsed into this
  * select, with `none` (null) carrying the same meaning the All tab had. The first selected
- * repository is the default, exactly like the first configured executor.
+ * repository is the default, exactly like the first configured executor. The workflow select sits
+ * beside them: a process the task will walk, offered by name; leaving it unchosen lets the board
+ * resolve its default.
  */
 export function TaskComposer({
     repos,
     workspaceError,
     onRetryWorkspace,
     executors,
+    workflows,
     actionError,
     sending,
     onSend,
+    onRepoChange,
 }: {
     /**
      * The member's selected repositories, one option each. Null while the workspace poll has not
@@ -36,16 +41,36 @@ export function TaskComposer({
     workspaceError: string | null;
     onRetryWorkspace: () => void;
     executors: readonly { name: string; type: string }[];
+    /**
+     * The workflow choices for the selected repository's context, or null when the list has not
+     * answered (or this board serves no workflows at all). Null HIDES the select: a board without
+     * the feature renders exactly the composer that came before it.
+     */
+    workflows: readonly { id: string; name: string; scope: 'org' | 'user' | 'repo' }[] | null;
     /** Why the last Send did not queue anything. Said in place, never silently. */
     actionError: string | null;
     sending: boolean;
-    onSend: (command: string, repo: string | null, executor: string | null) => Promise<string | null>;
+    /** `workflow` is a chosen name, or null for "let the board resolve its default". */
+    onSend: (
+        command: string,
+        repo: string | null,
+        executor: string | null,
+        workflow: string | null
+    ) => Promise<string | null>;
+    /**
+     * Reports the chosen repository upward, so the page can re-fetch the workflow list for that
+     * repository's context. Optional — the panel is testable without it.
+     */
+    onRepoChange?: (repo: string | null) => void;
 }) {
     const [draft, setDraft] = useState('');
     const [executor, setExecutor] = useState(() => executors[0]?.name ?? '');
     const [executorTouched, setExecutorTouched] = useState(false);
     const [repo, setRepo] = useState(() => firstRepo(repos));
     const [repoTouched, setRepoTouched] = useState(false);
+    // The workflow starts UNCHOSEN — null, the board's own default — and, unlike repo and
+    // executor, nothing autoselects one: a process is the member's call, not the first row's.
+    const [workflow, setWorkflow] = useState('');
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
     // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
@@ -91,7 +116,8 @@ export function TaskComposer({
         if (!draft.trim() || sending) return;
         const chosenExecutor = executor === '' ? null : executor;
         const chosenRepo = repo === '' ? null : repo;
-        if ((await onSend(draft, chosenRepo, chosenExecutor)) === null) setDraft('');
+        const chosenWorkflow = workflow === '' ? null : workflow;
+        if ((await onSend(draft, chosenRepo, chosenExecutor, chosenWorkflow)) === null) setDraft('');
     };
 
     if (repos === null) {
@@ -139,6 +165,7 @@ export function TaskComposer({
                             onChange={(e) => {
                                 setRepoTouched(true);
                                 setRepo(e.target.value);
+                                onRepoChange?.(e.target.value === '' ? null : e.target.value);
                             }}
                         >
                             <option value="">none</option>
@@ -170,6 +197,23 @@ export function TaskComposer({
                             ))}
                         </select>
                     </label>
+                    {workflows !== null ? (
+                        <label className="composer-label">
+                            Workflow{' '}
+                            <select
+                                className="composer-select"
+                                value={workflow}
+                                onChange={(e) => setWorkflow(e.target.value)}
+                            >
+                                <option value="">— none —</option>
+                                {workflows.map((choice) => (
+                                    <option key={choice.id} value={choice.name}>
+                                        {choice.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    ) : null}
                     <button
                         type="button"
                         className="primary"

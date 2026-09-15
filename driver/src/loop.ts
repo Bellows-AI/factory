@@ -601,9 +601,23 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                  * what makes it enforcement rather than hope. A publish failure fails the
                  * verdict — a green badge over work that landed nowhere is the exact lie this
                  * exists to prevent — and the reason rides the output the author reads.
+                 *
+                 * The publish flag is the BOARD's decision, not this run's: on a workflow task
+                 * only the graph's publish node may push, so a mid-loop review success never
+                 * does. The flag rides the claim (`publish: false`), and both executors read the
+                 * same claim here — docker and kubernetes gate the same publish sequence on it.
+                 * An ABSENT flag is a board that predates the field, which published every
+                 * succeeded gated run — so absent reads as "publish", byte-identically.
                  */
                 let published: PublishResult | null = null;
-                if (outcome.exitCode === 0 && !outcome.timedOut && !premature && !failure && runner.publishGit) {
+                if (
+                    outcome.exitCode === 0 &&
+                    !outcome.timedOut &&
+                    !premature &&
+                    !failure &&
+                    job.publish !== false &&
+                    runner.publishGit
+                ) {
                     // The claim's GITHUB_TOKEN was minted at claim time, and a run can outlive
                     // its hour — job 43379d3a pushed with a token 34 minutes past expiry and the
                     // publish failed on 401 with the work done and the gates green. Ask the

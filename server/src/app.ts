@@ -8,6 +8,7 @@ import type { EnvVarStore } from './db/env-var-store.js';
 import type { JobStore } from './db/job-store.js';
 import type { UserExecutorStore } from './db/user-executor-store.js';
 import type { UserRepoStore } from './db/user-repo-store.js';
+import type { WorkflowStore } from './db/workflow-store.js';
 import type { RepoAccessScope } from './github/access-scope.js';
 import type { RepoSource } from './github/repo-source.js';
 import { createFactsCache } from './workspace/facts.js';
@@ -21,6 +22,7 @@ import { jobRoutes } from './routes/jobs.js';
 import { repoRoutes } from './routes/repos.js';
 import { statsRoutes } from './routes/stats.js';
 import { tokenRoutes } from './routes/tokens.js';
+import { workflowRoutes } from './routes/workflows.js';
 import type { StatsService } from './stats-service.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
@@ -53,6 +55,11 @@ export interface AppDeps {
      * mandatory — but optional here, so the route tests that predate it stay as they are.
      */
     envVars?: EnvVarStore | undefined;
+    /**
+     * Workflow definitions for the task composer and `POST /api/jobs`' resolution. Same bargain —
+     * no store, no routes — so the route tests that predate workflows stay as they are.
+     */
+    workflows?: WorkflowStore | undefined;
     /** Absent in the route tests, where nothing should start cloning. */
     cloneQueue?: CloneQueue | undefined;
     /**
@@ -108,6 +115,7 @@ export async function buildApp({
     userRepos,
     userExecutors,
     envVars,
+    workflows,
     cloneQueue,
     auth,
     identity,
@@ -144,7 +152,8 @@ export async function buildApp({
     await app.register(statsRoutes(config, service, now, scope));
     await app.register(repoRoutes({ repos, scope }));
     if (store) await app.register(ingestRoutes(store));
-    if (jobs) await app.register(jobRoutes({ store: jobs, scope }));
+    if (jobs) await app.register(jobRoutes({ store: jobs, scope, workflows }));
+    if (workflows) await app.register(workflowRoutes({ store: workflows, scope }));
     if (envVars) await app.register(envRoutes({ store: envVars, repos, scope }));
     if (userRepos) {
         await app.register(

@@ -277,6 +277,9 @@ export function TaskDetail({
                             <p className="msg-user">{task.command}</p>
                             <p className="msg-meta">
                                 {history ? <span className="pill">{task.status}</span> : null}
+                                {history && task.workflowNode !== null ? (
+                                    <span className="pill">{task.workflowNode}</span>
+                                ) : null}
                                 {history && task.executor !== null ? (
                                     <span className="pill">{task.executor}</span>
                                 ) : null}
