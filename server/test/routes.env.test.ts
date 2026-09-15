@@ -280,6 +280,11 @@ describe('env var validation', () => {
             { vars: [{ name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"x"}', isSecret: false }] },
             'RESERVED_ENV_NAME',
         ],
+        [
+            'the transcript store path the driver composes',
+            { vars: [{ name: 'FACTORY_TRANSCRIPT_DIR', value: '/etc', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
         ['a null value on a non-secret', { vars: [{ name: 'PLAIN', value: null, isSecret: false }] }, 'BAD_VALUE'],
         [
             'a value with a newline',

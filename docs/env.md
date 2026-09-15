@@ -45,7 +45,11 @@ real value.
   it names the credential-helper CODE the startup sync's fetch executes (`-c credential.helper=`
   hands the value to git as a program), so a member value there would be member-controlled code
   running in the sync container — reserving the name is what makes the driver's own helper the
-  only possible one. `FACTORY_STATS_URL`, `INGEST_TOKEN` and `BELLOWS_SESSION_ID` are reserved
+  only possible one. `FACTORY_TRANSCRIPT_DIR` is reserved because the driver composes it
+  (`transcriptDir` in driver/src/docker.ts): it is where the headless transcript store lives, and
+  the runner entrypoint redirects `CLAUDE_CONFIG_DIR` onto it — a member value would steer
+  transcripts, and with them the CLI's whole configuration directory, somewhere else
+  ([jobs.md](jobs.md)). `FACTORY_STATS_URL`, `INGEST_TOKEN` and `BELLOWS_SESSION_ID` are reserved
   for the branch reporter (see [jobs.md](jobs.md)): a member value in the first tells the
   runner's attribution reports to post somewhere else, the second forges their credential, and
   the third claims the report is somebody else's session — a cross-tenant write into the

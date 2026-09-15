@@ -108,6 +108,45 @@ describe('the executor branch reporter', () => {
 });
 
 /*
+ * The transcript store redirect (issue #55): when the driver hands the headless run a
+ * FACTORY_TRANSCRIPT_DIR, the entrypoint moves CLAUDE_CONFIG_DIR onto the workspaces volume
+ * BEFORE the seed block — the settings.json-keyed seed then runs against the thread dir, so the
+ * baked git guard and every baked setting ride along (the spec's "baked runner configuration
+ * survives the redirect"). TRUST_WORKDIR is the Remote Control-only env; the combination is a
+ * contract violation the driver must never produce, refused loudly rather than silently
+ * mis-homing the config dir onto the auth volume or vice versa. Pinned against drift like every
+ * baked script: the block's exact shape, and its position before the seed.
+ */
+describe('the claude-executor transcript redirect', () => {
+    const ENTRYPOINT = 'docker/claude-executor/entrypoint.sh';
+
+    it('redirects CLAUDE_CONFIG_DIR only when the driver hands it a transcript dir', () => {
+        const entry = read(ENTRYPOINT);
+        expect(entry).toMatch(/if \[ -n "\$\{FACTORY_TRANSCRIPT_DIR:-\}" \]; then/);
+        expect(entry).toMatch(/\n    mkdir -p "\$FACTORY_TRANSCRIPT_DIR"\n/);
+        expect(entry).toMatch(/\n    export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
+    });
+
+    it('refuses the Remote Control combination loudly', () => {
+        const entry = read(ENTRYPOINT);
+        expect(entry).toMatch(
+            /\n    if \[ -n "\$\{TRUST_WORKDIR:-\}" \]; then\n        echo "claude-executor: refusing FACTORY_TRANSCRIPT_DIR together with TRUST_WORKDIR\." >&2\n        echo "The transcript store is headless-only; Remote Control keeps the auth volume\." >&2\n        exit 2\n    fi\n/
+        );
+    });
+
+    it('redirects before the seed, so the thread dir is seeded from the baked home', () => {
+        const entry = read(ENTRYPOINT);
+        const redirect = entry.indexOf('export CLAUDE_CONFIG_DIR="$FACTORY_TRANSCRIPT_DIR"');
+        const seed = entry.indexOf('/opt/claude-home');
+        expect(redirect).toBeGreaterThan(-1);
+        expect(seed).toBeGreaterThan(redirect);
+    });
+
+    it('is absent from the opencode entrypoint, which the driver never sends the name to', () => {
+        expect(read('docker/opencode-executor/entrypoint.sh')).not.toContain('FACTORY_TRANSCRIPT_DIR');
+    });
+});
+/*
  * The entrypoints are plain POSIX sh, so the signal contract can be run, not just pinned by
  * regex: a stub CLI on PATH proves the TERM was FORWARDED (a marker only the stub writes),
  * that the CLI's exit status — chosen and signal-death alike — is what the shell re-raises,
@@ -469,10 +508,7 @@ describe('the opencode-executor git guard policy', () => {
  * injected env first, treat declared `.bellows.yaml` services as DNS names.
  */
 describe('the executor infrastructure-access guide', () => {
-    const GUIDES = [
-        'docker/claude-executor/claude-home/CLAUDE.md',
-        'docker/opencode-executor/opencode-home/AGENTS.md',
-    ];
+    const GUIDES = ['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'];
 
     it.each(GUIDES)('%s tells the agent to use injected env and declared services', (guide) => {
         const text = read(guide);

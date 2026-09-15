@@ -8,6 +8,23 @@ set -eu
 WORKDIR="${WORKDIR:-/workspace}"
 export WORKDIR
 
+# The headless transcript store (issue #55): when the driver hands us a transcript directory, the
+# CLI's config dir moves to it — on the workspaces volume, so transcripts survive this container
+# and a follow-up's --resume finds the thread's earlier sessions in the same directory. The seed
+# below and both patches read CLAUDE_CONFIG_DIR dynamically, so the baked guard and settings ride
+# along unchanged. Remote Control must never land here — its config dir is the auth volume, which
+# standby/park depends on — and TRUST_WORKDIR is the driver's Remote Control-only env, so the two
+# together are a contract violation: refused loudly, never silently mis-homed.
+if [ -n "${FACTORY_TRANSCRIPT_DIR:-}" ]; then
+    if [ -n "${TRUST_WORKDIR:-}" ]; then
+        echo "claude-executor: refusing FACTORY_TRANSCRIPT_DIR together with TRUST_WORKDIR." >&2
+        echo "The transcript store is headless-only; Remote Control keeps the auth volume." >&2
+        exit 2
+    fi
+    mkdir -p "$FACTORY_TRANSCRIPT_DIR"
+    export CLAUDE_CONFIG_DIR="$FACTORY_TRANSCRIPT_DIR"
+fi
+
 # A volume mounted at CLAUDE_CONFIG_DIR — which is how a full-scope login survives the container,
 # and so the only way Remote Control works — starts empty and hides the baked configuration behind
 # it. Seed it once from the pristine copy. Keyed on settings.json rather than on the directory being

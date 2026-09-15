@@ -170,6 +170,24 @@ It also marks the checkout `safe.directory` when one is mounted. A bind mount ke
 which is rarely the container's 1000, and git otherwise refuses the repository outright with a
 "dubious ownership" error that never mentions uids.
 
+## Transcript store
+
+When the driver starts a headless run it sets `FACTORY_TRANSCRIPT_DIR` to a per-task-thread
+directory on the workspaces volume. The entrypoint then makes that directory `CLAUDE_CONFIG_DIR`
+before anything else runs, so session transcripts land on the volume the moment the CLI writes
+them and survive the container's removal — and a follow-up run, which is pointed at the same
+thread directory, finds the earlier sessions for `--resume`.
+
+The seed and both patches below the redirect read `CLAUDE_CONFIG_DIR` dynamically, so the baked
+git guard and every baked setting are in force exactly as in an unredirected run: the first use
+of a thread directory is seeded from `/opt/claude-home`, and the seeded copy is what later
+attempts of the same thread reuse.
+
+`FACTORY_TRANSCRIPT_DIR` and `TRUST_WORKDIR` are mutually exclusive. `TRUST_WORKDIR` is how a
+Remote Control session accepts its mount, and Remote Control's config directory must stay the
+auth volume — standby/park depends on the transcript surviving there for a later `--resume`. The
+entrypoint refuses the combination with exit `2` rather than silently mis-homing either one.
+
 ## Git guard
 
 `git-guard.cjs` is wired in `settings.json` as a `PreToolUse` hook on the Bash tool (`if:

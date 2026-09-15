@@ -600,6 +600,29 @@ export function runWorkingDir(config: DriverConfig, job: BoardJob): string {
 }
 
 /**
+ * The transcript store a headless claude-code run is pointed at: one directory per THREAD ROOT on
+ * the workspaces volume, passed to the runner as `FACTORY_TRANSCRIPT_DIR`. The entrypoint makes it
+ * `CLAUDE_CONFIG_DIR` (guarded, headless only), so the CLI writes its transcripts onto the volume
+ * the moment it writes them — no post-run copy, nothing dies with the container — and a follow-up's
+ * `--resume` finds the thread's earlier sessions in the same directory it runs in. The root is the
+ * claim's worktree key (`rootJobId ?? id`), which is what makes every attempt and follow-up of one
+ * thread land in one directory.
+ *
+ * Both board-supplied halves are asserted before they join the path, exactly like `runWorkingDir`:
+ * the value becomes a filesystem path inside a container that runs the agent, and neither the
+ * workspace path nor the root id (which a board predating the field omits, making the job its own
+ * root) is something this process trusts unasserted.
+ */
+export function transcriptDir(config: DriverConfig, job: BoardJob): string {
+    const path = workspacePath(job);
+    const root = job.rootJobId ?? job.id;
+    if (!UUID.test(root)) {
+        throw new Error(`refusing to run job ${job.id}: a thread root id that is not a uuid: ${root}`);
+    }
+    return `${config.workspaceMount}/${path}/.factory/transcripts/${root}`;
+}
+
+/**
  * The full `docker run` argv that reads what a finished opencode run left behind — pure, and
  * exported, because it is the part worth pinning: the readout is a throwaway container over the
  * workspaces volume, entrypoint swapped for node, whose only work is one read-only query pair for
@@ -822,7 +845,10 @@ function workspacePath(job: BoardJob): string {
  * ad-hoc gate credentials the loop mints per attempt, CRED_HELPER is the credential-helper CODE
  * the sync fetch runs, RESTORE is the sync's restore-mode switch (a member value there would
  * flip starting claims into restore mode, silently skipping the fetch and rebase issue #58
- * reserves for continuations), and the three reporter names steer the branch reporter — where it
+ * reserves for continuations), FACTORY_TRANSCRIPT_DIR is where the headless transcript store
+ * lives — the driver composes it (transcriptDir), and a member value would steer transcripts,
+ * and through the entrypoint's redirect the CLI's whole config dir, somewhere else — and the
+ * three reporter names steer the branch reporter — where it
  * posts, what authenticates it, and which session it claims. A member value in any of them is a
  * cross-tenant write into the telemetry store; CRED_HELPER above all: a member value there is
  * member-controlled code the sync container's git executes as helper code.
@@ -839,6 +865,7 @@ export const RESERVED_ENV_NAMES = [
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',
     'RESTORE',
+    'FACTORY_TRANSCRIPT_DIR',
     'FACTORY_STATS_URL',
     'INGEST_TOKEN',
     'BELLOWS_SESSION_ID',
@@ -1115,6 +1142,14 @@ export function dockerArgs(
 
     if (!session) {
         throw new Error(`refusing to run job ${job.id}: the claude-code runner runs every job as a session`);
+    }
+    // The transcript store, HEADLESS claude-code only — fresh runs and resumes alike, because the
+    // resume is the run that needs the thread's earlier transcripts sitting in its config dir.
+    // Remote Control is excluded: its CLAUDE_CONFIG_DIR must stay the auth volume (standby/park
+    // depends on the transcript surviving there), which is also why the entrypoint refuses the
+    // combination outright. A path literal like WORKDIR and XDG_DATA_HOME, never a credential.
+    if (!config.remoteControl) {
+        args.push('-e', `FACTORY_TRANSCRIPT_DIR=${transcriptDir(config, job)}`);
     }
     // The session id the reporter claims. It is safe by construction — minted here as a uuid, or
     // arriving on the claim only after the board's own token check — which is the same guarantee

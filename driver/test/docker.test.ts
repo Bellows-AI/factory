@@ -27,6 +27,7 @@ import {
     reportTail,
     stripAnsi,
     tailBytes,
+    transcriptDir,
 } from '../src/docker.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import {
@@ -252,10 +253,53 @@ describe('the docker run arguments', () => {
         expect(followUp.indexOf(`BELLOWS_SESSION_ID=${SESSION}`)).toBeLessThan(followUp.indexOf('opencode-executor'));
     });
 
+    // The transcript store rides headless claude-code only — fresh runs AND resumes, because the
+    // resume is the run that needs the thread's earlier transcripts sitting in its config dir.
+    // The path is the same composition transcriptDir pins below, keyed by the thread root.
+    it('hands a headless claude-code run its per-thread transcript store, fresh and resumed alike', () => {
+        const dir = `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`;
+        expect(args()).toEqual(expect.arrayContaining(['-e', `FACTORY_TRANSCRIPT_DIR=${dir}`]));
+        expect(resumed()).toEqual(expect.arrayContaining(['-e', `FACTORY_TRANSCRIPT_DIR=${dir}`]));
+        // Never on the CLI's argv past the image, and never a credential-shaped value: a path
+        // literal like WORKDIR.
+        expect(args().indexOf(`FACTORY_TRANSCRIPT_DIR=${dir}`)).toBeLessThan(args().indexOf('claude-executor'));
+    });
+
+    it('never hands the transcript store to opencode', () => {
+        // opencode persists through its own per-member session database; a second store buys
+        // nothing (Remote Control's exclusion is pinned in its own describe).
+        expect(args({ RUNNER_CLI: 'opencode' }, null)).not.toContain(expect.stringContaining('FACTORY_TRANSCRIPT_DIR'));
+    });
+
     // --rm is gone deliberately: cleanup is explicit (a `docker rm` after close), so the runner
     // can ask the daemon whether a 125 run left a container behind before removing it.
     it('leaves nothing behind, by explicit cleanup rather than --rm', () => {
         expect(args()).not.toContain('--rm');
+    });
+
+    // Both halves are board-supplied and become one filesystem path inside a container that runs
+    // the agent — asserted exactly like runWorkingDir's halves, with the root id getting the same
+    // uuid assertion envFilePath applies to job.id.
+    describe('transcriptDir', () => {
+        const ROOT = '55555555-5555-4555-8555-555555555555';
+
+        it('composes the per-thread-root store from the claim fields', () => {
+            expect(transcriptDir(loadDriverConfig({}), job)).toBe(
+                `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`
+            );
+            // A follow-up is a NEW job row resuming the parent conversation: its store is the
+            // thread's, keyed by the same root the worktree is keyed by.
+            expect(transcriptDir(loadDriverConfig({}), { ...job, rootJobId: ROOT })).toBe(
+                `/workspaces/bellows/${USER}/.factory/transcripts/${ROOT}`
+            );
+        });
+
+        it('refuses a null workspace and a non-uuid thread root', () => {
+            expect(() => transcriptDir(loadDriverConfig({}), { ...job, workspacePath: null })).toThrow(
+                /no usable workspace path/
+            );
+            expect(() => transcriptDir(loadDriverConfig({}), { ...job, rootJobId: '../../etc' })).toThrow(/not a uuid/);
+        });
     });
 });
 
@@ -379,6 +423,15 @@ describe("the board's environment", () => {
         // mode — no fetch, no rebase, a first attempt dead-ending on "the branch is gone" —
         // so the driver alone chooses it.
         const hijacked = { ...job, env: { RESTORE: '1', OTHER: 'fine' } };
+        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
+        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
+    });
+
+    it('drops a member FACTORY_TRANSCRIPT_DIR from the claim env and the env file', () => {
+        // The transcript store's location is driver-composed (transcriptDir); a member value
+        // would steer where headless transcripts are written — and, through the entrypoint's
+        // redirect, where the CLI's whole config dir lands.
+        const hijacked = { ...job, env: { FACTORY_TRANSCRIPT_DIR: '/somewhere', OTHER: 'fine' } };
         expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
@@ -540,6 +593,12 @@ describe('a Remote Control runner', () => {
     it('accepts the trust dialog for the mount', () => {
         expect(rc()).toEqual(expect.arrayContaining(['-e', 'TRUST_WORKDIR=1']));
         expect(args()).not.toContain('TRUST_WORKDIR=1');
+    });
+
+    // The transcript store is headless-only, and this runner must never receive the name: its
+    // CLAUDE_CONFIG_DIR is the auth volume, which standby/park depends on for a later --resume.
+    it('never hands the transcript store to Remote Control', () => {
+        expect(rc()).not.toContain(expect.stringContaining('FACTORY_TRANSCRIPT_DIR'));
     });
 });
 

@@ -139,6 +139,41 @@ describe('the runner job spec', () => {
         ).toThrow(/worktree/);
     });
 
+    // Executor parity for the transcript store (issue #55): the same name with the same
+    // driver-composed path the docker argv carries for the same claim, so persistence does not
+    // depend on which executor ran the job. Headless claude-code only — Remote Control has no
+    // counterpart on this platform, and opencode is pinned just below.
+    it('carries the transcript store for claude-code, the same path docker composes', () => {
+        const container = spec().spec.template.spec.containers[0];
+        expect(container.env).toContainEqual({
+            name: 'FACTORY_TRANSCRIPT_DIR',
+            value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+        });
+        // A value, not a secretKeyRef — a path like WORKDIR, never a credential.
+        const entry = container.env.find((e) => e.name === 'FACTORY_TRANSCRIPT_DIR');
+        expect(entry?.valueFrom).toBeUndefined();
+    });
+
+    it('never carries the transcript store for opencode', () => {
+        const ocSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode' }), job, null);
+        expect(ocSpec.spec.template.spec.containers[0].env.some((e) => e.name === 'FACTORY_TRANSCRIPT_DIR')).toBe(
+            false
+        );
+    });
+
+    it('refuses a thread root that is not a uuid before it becomes a path', () => {
+        expect(() =>
+            runnerJobSpec(
+                loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+                { ...job, rootJobId: '../../etc' },
+                {
+                    id: SESSION,
+                    resume: false,
+                }
+            )
+        ).toThrow(/not a uuid/);
+    });
+
     it('refuses a workspace path that is not <org>/<uuid>', () => {
         /*
          * The board is not something this process trusts with a fragment of a command line — the
@@ -196,12 +231,17 @@ describe('the runner job spec', () => {
             name: 'ANTHROPIC_API_KEY',
             valueFrom: { secretKeyRef: { name: 'claude-credentials', key: 'ANTHROPIC_API_KEY', optional: true } },
         });
-        // WORKDIR, the OTLP endpoint and the board URL are the only literal values a runner env
-        // carries, and all are paths/URLs, not secrets — the object of the pin above.
+        // WORKDIR, the OTLP endpoint, the board URL and the transcript store are the only literal
+        // values a runner env carries, and all are paths/URLs, not secrets — the object of the
+        // pin above.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
             { name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' },
+            {
+                name: 'FACTORY_TRANSCRIPT_DIR',
+                value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
         ]);
     });
@@ -228,6 +268,10 @@ describe('the runner job spec', () => {
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
             { name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' },
+            {
+                name: 'FACTORY_TRANSCRIPT_DIR',
+                value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
         ]);
     });
@@ -253,13 +297,18 @@ describe('the runner job spec', () => {
     it('carries no claim env entries, and names no Secret, for an env-less claim', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(JSON.stringify(container.env)).not.toContain('factory-job-');
-        // The literal values: WORKDIR, and the two URLs every runner is pointed somewhere by —
+        // The literal values: WORKDIR, the two URLs every runner is pointed somewhere by —
         // the collector for OTLP metrics, the board for the branch reporter's attribution
-        // reports. A URL is a path, not a credential, in a spec anyone with `get pods` can read.
+        // reports — and the transcript store path, all paths/URLs, not credentials, in a spec
+        // anyone with `get pods` can read.
         expect(container.env.filter((entry) => 'value' in entry)).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
             { name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' },
+            {
+                name: 'FACTORY_TRANSCRIPT_DIR',
+                value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
         ]);
     });
