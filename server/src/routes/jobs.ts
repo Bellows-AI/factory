@@ -595,7 +595,8 @@ export const jobRoutes =
             const result = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job done failed'),
-                () => store.markDone(id)
+                // The actor comes from the session, never a body — the same rule as create.
+                () => store.markDone(id, callerOf(request)?.user.id ?? null)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -620,7 +621,8 @@ export const jobRoutes =
             const result = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job stop failed'),
-                () => store.stop(id)
+                // The actor comes from the session, never a body — the same rule as create.
+                () => store.stop(id, callerOf(request)?.user.id ?? null)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {
@@ -651,7 +653,9 @@ export const jobRoutes =
             const result = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job remove failed'),
-                () => store.removeThread(id)
+                // The actor comes from the session, never a body — the same rule as create. It
+                // rides the task_reclaim row: the thread rows are deleted in the same transaction.
+                () => store.removeThread(id, callerOf(request)?.user.id ?? null)
             );
             if (!result.ok) return reply;
             if (result.value === 'missing') {

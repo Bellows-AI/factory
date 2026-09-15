@@ -327,7 +327,9 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   `<root>/<orgId>/<userId>/` in the callback — a `mkdir`, nothing more. It cannot block the sign-in:
   a failure logs, and `GET /api/workspace` calls the same function, so a session that got in without
   one recovers on its first visit to the page. See [workspace.md](workspace.md).
-- **`job.created_by` has one reader now, and one still to come.** `POST /api/jobs/claim` turns it
+- **`job.created_by` has three readers now, and one still to come.** `POST /api/jobs/claim` turns it
   into `workspacePath`, which is how a driver finds the author's checkouts without ever touching the
-  database. The per-user Claude credential is the half that has not arrived, and `userId` is still
-  reported on the claim for it.
+  database. The task UI and the telemetry read resolve it (and the stop/done/removal actors) to
+  `app_user` labels at read time — attribution display is the second reader, the per-session
+  `byUser` join the third. The per-user Claude credential is the half that has not arrived, and
+  `userId` is still reported on the claim for it.
