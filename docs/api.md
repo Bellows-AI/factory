@@ -5,16 +5,17 @@ Read before: adding or changing a route, a status code, or a query parameter.
 Every `/api/*` route needs a credential under `AUTH_MODE=github`, and none under `AUTH_MODE=none`.
 Which one each takes is in the table in [auth.md](auth.md); the exemptions worth knowing here are
 `GET /api/health` and `/api/auth/*`, and the fact that the SPA's own document is never gated. An
-unauthenticated `/api/*` request is `401 UNAUTHENTICATED`. On the session routes a `Bearer fat_…`
-/ `oat_…` access token is an alternative to the cookie — and when both arrive the bearer wins
-([auth.md](auth.md)).
+unauthenticated `/api/*` request is `401 UNAUTHENTICATED` — the one exception is `GET /api/auth/me`,
+whose anonymous answer is `200 {authenticated: false}` (see its row). On the session routes a
+`Bearer fat_…` / `oat_…` access token is an alternative to the cookie — and when both arrive the
+bearer wins ([auth.md](auth.md)).
 
 | Route | Behaviour |
 | --- | --- |
 | `GET /api/auth/github` | `302` to GitHub, setting a signed, single-use state cookie. `?returnTo=` is validated as a same-origin absolute path; anything else becomes `/`. |
 | `GET /api/auth/github/callback` | `302` on every outcome, never JSON — it is reached by a top-level navigation, and an error body is a dead end for the human in front of it. Failures carry `?auth_error=denied\|state\|github\|no_membership`. |
 | `POST /api/auth/logout` | `204`, including for a caller who was never signed in. POST because a GET logout is CSRF-able and gets fired by link prefetchers. |
-| `GET /api/auth/me` | `200 { user, role, membership, account, organization, workspacePath, mode }` or `401 UNAUTHENTICATED`. `user` carries `id`, `login`, `name`, `githubUserId`, `avatarUrl`; `membership` carries `invitedAt`/`claimedAt` and `account` carries `createdAt`/`lastLoginAt`, all ISO 8601 or null. `workspacePath` is the member's checkout root, null when no workspace root is configured; computing it provisions nothing. Under `AUTH_MODE=none` the caller is the stand-in account (`login` `__local__`, `githubUserId` 0, `avatarUrl` null) — facts, not display hints. Deliberately exempt from the wall: being what *tells* the SPA it is unauthenticated is its whole purpose. |
+| `GET /api/auth/me` | `200 { authenticated: false }` for an anonymous caller, else `200 { authenticated: true, user, role, membership, account, organization, workspacePath, mode }`. Never a 401: the browser logs every 4xx as a console error even when the client handles it, and the login screen must open without red devtools rows. `user` carries `id`, `login`, `name`, `githubUserId`, `avatarUrl`; `membership` carries `invitedAt`/`claimedAt` and `account` carries `createdAt`/`lastLoginAt`, all ISO 8601 or null. `workspacePath` is the member's checkout root, null when no workspace root is configured; computing it provisions nothing. Under `AUTH_MODE=none` the caller is the stand-in account (`login` `__local__`, `githubUserId` 0, `avatarUrl` null) — facts, not display hints. Deliberately exempt from the wall: being what *tells* the SPA it is unauthenticated is its whole purpose. |
 | `POST /api/tokens` | `201 { id, token }` — `token` is the plaintext `fat_…`, in this one response only; the row holds its sha-256 and nothing can read it back. `400 BAD_LABEL` on a missing, blank, or over-128-character label. |
 | `GET /api/tokens` | `200 { tokens }` — the caller's own personal tokens as `{ id, label, createdAt, lastUsedAt, revokedAt }`. Never a token or a hash: the list answers "what tokens exist", not "who can use them". |
 | `POST /api/tokens/:id/revoke` | `200 { id, revoked: true }`. `404 NOT_FOUND` when the id is unknown, somebody else's, or already revoked — a revoke that changed nothing has no row to name. `400 BAD_ID` on a non-uuid. |

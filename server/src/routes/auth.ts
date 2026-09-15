@@ -52,9 +52,14 @@ export const authRoutes =
         app.get('/api/auth/me', async (request, reply) => {
             const caller = await resolveUser(request).catch(() => null);
             if (!caller) {
-                return reply.code(401).send({ error: 'Sign in required', code: 'UNAUTHENTICATED' });
+                // 200, not 401. This is the SPA's session probe, and the browser logs every 4xx as
+                // a console error even when the client handles it — the login screen would open
+                // with red rows in the devtools of everybody not signed in. `authenticated: false`
+                // says the same thing without the noise; the data routes keep their real 401s.
+                return reply.code(200).send({ authenticated: false });
             }
             return reply.code(200).send({
+                authenticated: true,
                 user: {
                     id: caller.user.id,
                     login: caller.user.login,

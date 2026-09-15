@@ -452,11 +452,14 @@ describe('sessions end', () => {
 });
 
 describe('/api/auth/me', () => {
-    it('401s for an anonymous caller, which is how the SPA learns to show the gate', async () => {
+    it('answers 200 {authenticated: false} for an anonymous caller, which is how the SPA learns to show the gate', async () => {
+        // 200 rather than 401: the browser logs every 4xx as a console error even when the client
+        // handles it, and the login screen must not open with red rows in the devtools of
+        // everybody who has not signed in yet.
         const { app } = await setup();
         const response = await app.inject({ method: 'GET', url: '/api/auth/me' });
-        expect(response.statusCode).toBe(401);
-        expect(response.json().code).toBe('UNAUTHENTICATED');
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ authenticated: false });
     });
 
     it('reports the caller, their role and the organization', async () => {
