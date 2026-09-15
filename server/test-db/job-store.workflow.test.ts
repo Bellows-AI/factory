@@ -50,12 +50,6 @@ const walk: WorkflowDefinition = {
     ],
 };
 
-/** The loop bounded at ONE, so a single existing fix row (even a dead one) exhausts it. */
-const walkBound1: WorkflowDefinition = {
-    ...walk,
-    edges: walk.edges.map((edge) => (edge.to === 'fix' ? { ...edge, max: 1 } : edge)),
-};
-
 const INTERP_CAP: WorkflowDefinition = {
     entry: 'a',
     nodes: [

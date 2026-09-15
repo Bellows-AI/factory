@@ -93,7 +93,7 @@
 
 ## 8. Verification
 
-- [ ] 8.1 Full gates: `npm test`, `npm run typecheck`, `npm run lint` green; `npm run test:db`
+- [x] 8.1 Full gates: `npm test`, `npm run typecheck`, `npm run lint` green; `npm run test:db`
       against `factory_test` green
 - [ ] 8.2 End-to-end: `npm run test:jobs` green including the new workflow phase; a
       no-workflow task in the same run behaves byte-identically (same claim shape, same publish)
