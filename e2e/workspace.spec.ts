@@ -159,10 +159,9 @@ test('the workspace page renders nothing malformed', async ({ page }) => {
     // em dash and never a placeholder that leaked out of a formatter.
     const errors: string[] = [];
     page.on('console', (message) => {
-        // The 401 from /api/auth/me before signing in is not a fault: being the thing that reports
-        // "nobody is signed in" is that route's whole purpose, and the browser logs every 401 as a
-        // console error regardless. Anything else is a real one.
-        if (message.type() === 'error' && !message.text().includes('401')) errors.push(message.text());
+        // Nothing is exempt, including the pre-sign-in session probe: /api/auth/me answers
+        // 200 {authenticated: false} for nobody precisely so the browser logs no error for it.
+        if (message.type() === 'error') errors.push(message.text());
     });
 
     await signedIn(page);

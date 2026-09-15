@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
 export interface Session {
+    /** The `/api/auth/me` union's signed-in arm; the anonymous answer is `{ authenticated: false }`. */
+    authenticated: true;
     user: {
         id: string;
         login: string;
@@ -55,6 +57,10 @@ export interface UseSession {
     error: string | null;
 }
 
+/** What `/api/auth/me` answers: the session, or an explicit "nobody". Both are 200s — a 401 here
+ * would be logged as a console error by the browser of everybody who has not signed in yet. */
+type MeResponse = Session | { authenticated: false };
+
 export function useSession(): UseSession {
     const [session, setSession] = useState<Session | null>(null);
     const [loading, setLoading] = useState(true);
@@ -65,14 +71,12 @@ export function useSession(): UseSession {
             // No `credentials: 'include'`: the default `same-origin` already sends the cookie, and
             // 'include' would drag CORS into a same-origin app for nothing.
             const response = await fetch('/api/auth/me');
-            if (response.status === 401) {
-                setSession(null);
-                setError(null);
-            } else if (response.ok) {
-                setSession((await response.json()) as Session);
-                setError(null);
-            } else {
+            if (!response.ok) {
                 setError(`Could not check the session (${response.status})`);
+            } else {
+                const payload = (await response.json()) as MeResponse;
+                setSession(payload.authenticated ? payload : null);
+                setError(null);
             }
         } catch (e) {
             setError((e as Error).message);
