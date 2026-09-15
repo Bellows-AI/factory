@@ -22,7 +22,7 @@ const signIn = (page: Page) => page.getByRole('link', { name: 'Sign in with GitH
 async function signedIn(page: Page) {
     await page.goto('/');
     await signIn(page).click();
-    await expect(cards(page)).toHaveCount(6, { timeout: 60_000 });
+    await expect(cards(page)).toHaveCount(5, { timeout: 60_000 });
 }
 
 /**
@@ -56,7 +56,7 @@ test('the left nav is there and moves between sections', async ({ page }) => {
 
     await nav.getByRole('link', { name: 'Dashboard' }).click();
     await expect(page).toHaveURL(/\/$/);
-    await expect(cards(page)).toHaveCount(6);
+    await expect(cards(page)).toHaveCount(5);
 });
 
 test('reloading /workspace directly serves the app rather than a 404', async ({ page }) => {

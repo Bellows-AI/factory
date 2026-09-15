@@ -111,19 +111,19 @@
 
 ## 8. Docs and end-to-end verification
 
-- [ ] 8.1 Add the terminology block to docs/metrics.md — job turn (a run: one job row, one
+- [x] 8.1 Add the terminology block to docs/metrics.md — job turn (a run: one job row, one
       delivered prompt) vs agent turn (one assistant response cycle in the run's root
       conversation), the never-bare-"turns" rule — cross-referenced from docs/jobs.md; verify a
       doc-pinning test (the `core/test/biome.test.ts` pattern for docs, if one exists) or a
       grep check that both docs name both terms
-- [ ] 8.2 Update docs/metrics.md (attribution precedence, scope as a read-time dimension, the
+- [x] 8.2 Update docs/metrics.md (attribution precedence, scope as a read-time dimension, the
       fourth exclusion counter), docs/date-range.md (daily bucketing, 92-day rule, granularity in
       the payload), docs/api.md (`scope` param, `SCOPE_REQUIRES_USER`, task-stats block,
       `agentTurns` on the completion report), docs/jobs.md (the close-time turn read, both
       executors, the null contract); verify `npx vitest run core/test/biome.test.ts` and any
       doc-pinning tests still pass
-- [ ] 8.3 Run the full offline gate: `npm test`, `npm run typecheck`, `npm run lint` — all green
-- [ ] 8.4 Visual check with seeded data: `DATABASE_URL=...factory_seed npm run seed` then
+- [x] 8.3 Run the full offline gate: `npm test`, `npm run typecheck`, `npm run lint` — all green
+- [x] 8.4 Visual check with seeded data: `DATABASE_URL=...factory_seed npm run seed` then
       `npm run verify:ui`, read the artifacts/ui/ screenshots for the daily chart at month range,
       weekly fallback at all-time, both scopes, and the per-task panel with all three figures;
       verify the screenshots show real layouts, not just passing assertions

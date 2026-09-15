@@ -11,8 +11,9 @@ import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
 
 /**
  * The dashboard. The scope toggle sits beside the range selector but renders ONLY when the
- * session reports a signed-in user: under AUTH_MODE=none there is no "me", and a disabled
- * control advertising a filter the server cannot answer is worse than its absence.
+ * session reports a signed-in MEMBER: under AUTH_MODE=none there is no "me" — the session hook
+ * still resolves the deployment's `__local__` stand-in, and a toggle for it would advertise a
+ * filter the server answers with SCOPE_REQUIRES_USER. `session.mode` is the tell.
  */
 export function DashboardPage() {
     const { data, range, setRange, scope, setScope, session, progress, error } = useShell();
@@ -22,7 +23,7 @@ export function DashboardPage() {
             <main>
                 <div className="dashboard-controls">
                     <RangeSelector range={range} onChange={setRange} />
-                    {session ? <ScopeToggle scope={scope} onChange={setScope} /> : null}
+                    {session?.mode === 'github' ? <ScopeToggle scope={scope} onChange={setScope} /> : null}
                 </div>
                 <StatusBanner progress={progress} error={error} hasData={data !== null} />
                 {data ? (

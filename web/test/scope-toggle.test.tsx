@@ -63,17 +63,24 @@ const renderPage = (withSession: Session | null): string =>
     );
 
 describe('dashboard scope toggle', () => {
-    it('renders beside the range selector when the session reports a signed-in user', () => {
+    it('renders beside the range selector when the session reports a signed-in member', () => {
         const html = renderPage(session('github'));
         expect(html).toContain('range-selector');
         expect(html).toContain('Whose usage'); // the fieldset legend
         expect(html).toContain('Me');
     });
 
-    it('does not render at all under AUTH_MODE=none, where there is no me', () => {
-        const html = renderPage(null);
-        expect(html).toContain('range-selector');
-        expect(html).not.toContain('Whose usage');
-        expect(html).not.toContain('Me');
+    it('does not render under AUTH_MODE=none, where the session is the local stand-in, not a me', () => {
+        // The none-mode server still answers /api/auth/me with the __local__ stand-in, so the
+        // mode is the tell: a toggle for the deployment itself would advertise a filter the
+        // server refuses with SCOPE_REQUIRES_USER.
+        const local = renderPage(session('none'));
+        expect(local).toContain('range-selector');
+        expect(local).not.toContain('Whose usage');
+        expect(local).not.toContain('Me');
+
+        // And with no session at all (signed out on a github-mode board): absent the same way.
+        const anonymous = renderPage(null);
+        expect(anonymous).not.toContain('Whose usage');
     });
 });
