@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import type { TelemetryInput, TelemetryStats } from '@factory-ai/core';
 import type { TelemetryMeta, StatsPayload } from '../src/api/useStats.js';
 import { AiUsagePanel } from '../src/panels/AiUsagePanel.js';
+import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { DataQualityPanel } from '../src/panels/DataQualityPanel.js';
 import { tokens } from '../src/format.js';
@@ -53,6 +54,23 @@ describe('telemetry panels render', () => {
         expect(html).not.toContain('NaN');
         expect(html).not.toContain('Infinity');
         expect(html).not.toContain('undefined');
+    });
+
+    it('renders the by-user table with the attributed users and the unattributed line', () => {
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={meta()} />);
+        expect(html).toContain('Usage by user');
+        expect(html).toContain('alice');
+        expect(html).toContain('Alice Doe');
+        expect(html).toContain('bob');
+        // The avatar renders only when the account carries one; bob's has none.
+        expect(html).toContain('https://example.com/alice.png');
+        expect(html).toContain('4 sessions ran with no matching board task');
+        expect(html).not.toContain('NaN');
+    });
+
+    it('says so when nothing can be attributed', () => {
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={empty} meta={meta()} />);
+        expect(html).toContain('No sessions in the coverage window yet.');
     });
 
     it('renders five usage cards', () => {

@@ -284,6 +284,14 @@ export function TaskDetail({
                                 {history && task.exitCode !== null ? (
                                     <span className="chat-exit">exit {task.exitCode}</span>
                                 ) : null}
+                                {/* The verdict's actor, whenever the row carries one — a fact of the
+                                run, not of its liveness, so the newest turn shows it too. */}
+                                {task.stoppedBy !== null ? (
+                                    <span className="pill chat-stop">stopped by {task.stoppedBy.login}</span>
+                                ) : null}
+                                {task.doneBy !== null ? (
+                                    <span className="pill chat-done">done by {task.doneBy.login}</span>
+                                ) : null}
                                 <span className="muted">{taskTime(task.createdAt)}</span>
                                 {task.runtime?.contextTokens != null ? (
                                     <span className="chat-activity">

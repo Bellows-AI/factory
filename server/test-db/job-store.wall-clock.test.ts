@@ -164,7 +164,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
 
     it('stopping a run records its time when the worker parks it stopped', async () => {
         const { id, token } = await claimBackdated(4);
-        expect(await store.stop(id)).toMatchObject({ result: 'requested' });
+        expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
 
         expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
 
@@ -188,7 +188,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         // executed, and a duration there would count time the task never spent.
         const id = await craft({ startedMinutesAgo: 9 });
 
-        expect(await store.stop(id)).toEqual({ result: 'stopped' });
+        expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
         expect(await wallOf(id)).toBeNull();
     });
 

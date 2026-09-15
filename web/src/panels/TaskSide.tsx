@@ -115,6 +115,22 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
             </p>
             <KeyValues
                 pairs={[
+                    // Who queued the task, resolved server-side from the audit rows. 'unknown' is
+                    // the honest answer for a pre-accounts row; the avatar renders only when the
+                    // account carries one, so `__local__` and label-less accounts get text alone.
+                    [
+                        'Queued by',
+                        latest.author !== null ? (
+                            <span className="task-queued-by">
+                                {latest.author.avatarUrl !== null ? (
+                                    <img className="task-avatar" src={latest.author.avatarUrl} alt="" />
+                                ) : null}
+                                {latest.author.name ?? latest.author.login}
+                            </span>
+                        ) : (
+                            'unknown'
+                        ),
+                    ],
                     ['Workspace', latest.workspacePath ?? '—'],
                     ['Context', threadContext(jobs)],
                     ['Cost', threadCost(jobs)],

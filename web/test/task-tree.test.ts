@@ -17,6 +17,9 @@ const job = (id: string, overrides: Partial<Job> = {}): Job => ({
     command: `command ${id}`,
     status: 'succeeded',
     attempts: 1,
+    author: null,
+    stoppedBy: null,
+    doneBy: null,
     exitCode: 0,
     output: null,
     repo: null,
@@ -366,5 +369,17 @@ describe('taskSummary', () => {
         expect(taskSummary('nope', [job('a')])).toBeNull();
         expect(taskSummary('a', null)).toBeNull();
         expect(taskSummary('a', [])).toBeNull();
+    });
+});
+
+describe('task authorship', () => {
+    it('carries the ROOT row author into the entry, and null through', () => {
+        const author = { id: 'a', login: 'octocat', name: null, avatarUrl: null };
+        const root = job('root', { author });
+        const child = followUp('kid', 'root', { author });
+        const sections = taskSections([root, child]);
+        // The author is a fact of the conversation, taken from its root row only.
+        expect(sections.review.map((entry) => entry.author)).toEqual(['octocat']);
+        expect(taskSections([job('anon')]).review.map((entry) => entry.author)).toEqual([null]);
     });
 });

@@ -1,4 +1,5 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
+import type { UserRef } from '@factory-ai/core';
 import type { BellowsConfig } from '../workspace/bellows.js';
 
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
@@ -83,6 +84,25 @@ export interface Job {
      * can resolve them without ever touching the database.
      */
     createdBy: string | null;
+    /**
+     * Who `createdBy` resolves to — the account labels, joined at read time and never stored on
+     * the row: logins and display names go stale, joins do not. Null for a pre-accounts row, and
+     * for a job whose author's account has since been deleted (`on delete set null`) — rendered
+     * as "unknown" rather than papered over with a synthetic author.
+     */
+    author: UserRef | null;
+    /**
+     * Who asked to stop the task — the person's verdict, stamped at REQUEST time (a running row
+     * settles later through suspend; the asker is the actor, not the parking that delivered the
+     * ask). First asker wins, so a retried click cannot rewrite history. Null on every task
+     * nobody has asked to stop.
+     */
+    stoppedBy: UserRef | null;
+    /**
+     * Who marked the task done. First writer wins beside `doneAt`, the same idempotence rule.
+     * Null on every task closed before attribution existed.
+     */
+    doneBy: UserRef | null;
     /** The agent session this attempt runs as, once its driver has reported it. */
     sessionId: string | null;
     /**
@@ -366,8 +386,15 @@ export interface JobStore {
      * closed keeps its tree, and the done on any one member (the UI marks the head) is what
      * makes it the thread's done. A thread still moving is not queued here; its last completing
      * attempt finds the done in place and reclaims at the verdict.
+     *
+     * `doneBy` is the authenticated caller's id, passed by the route like `createdBy` on create —
+     * never read off a body. Stamped beside `doneAt` with the same coalesce: the second "done"
+     * keeps the first writer's actor.
      */
-    markDone(id: string): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
+    markDone(
+        id: string,
+        doneBy: string | null
+    ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
     /**
      * The user's stop. A QUEUED row never started and a STANDBY row's run is long gone — both are
      * settled `stopped` right here: the turn is over. A RUNNING row is stamped
@@ -375,8 +402,11 @@ export interface JobStore {
      * heartbeat it already sends, kills its runner and settles it with the existing suspend route
      * — the flag IS the stop travelling, and the settle clears it. A row that already ended
      * refutes with its status.
+     *
+     * `stoppedBy` is the authenticated caller's id, passed by the route. Stamped at request time
+     * with the same first-writer coalesce as the flag it rides beside.
      */
-    stop(id: string): Promise<StopResult>;
+    stop(id: string, stoppedBy: string | null): Promise<StopResult>;
     /**
      * The user's remove. Deletes the WHOLE thread — the root and every follow-up — in one
      * transaction and queues a task_reclaim row for the worktree, so the driver (which is the only
@@ -384,8 +414,12 @@ export interface JobStore {
      * it without the removed thread having any job left to hang the work on. Refuses while any
      * member of the thread is running, under the same per-thread lock the claim takes, so a claim
      * can never slip a running row between the refusal check and the delete.
+     *
+     * `removedBy` is the authenticated caller's id, passed by the route. It rides the
+     * task_reclaim row, because the thread rows are deleted in the same transaction — a
+     * removed_by on job would be written and immediately deleted.
      */
-    removeThread(id: string): Promise<RemoveResult>;
+    removeThread(id: string, removedBy: string | null): Promise<RemoveResult>;
     /** The driver's poll of the worktree-reclaim queue. The oldest claimable row, or null —
      * claimable by the expiry a previous claim GRANTED it, never by the polling worker's own
      * leaseSeconds. */
@@ -517,6 +551,21 @@ interface JobRow {
     max_attempts: number;
     claimed_by: string | null;
     created_by: string | null;
+    /** The authorship joins (see authorJoin): app_user labels for created_by/stopped_by/done_by. */
+    creator_id: string | null;
+    creator_login: string | null;
+    creator_name: string | null;
+    creator_avatar_url: string | null;
+    stopper_id: string | null;
+    stopper_login: string | null;
+    stopper_name: string | null;
+    stopper_avatar_url: string | null;
+    doner_id: string | null;
+    doner_login: string | null;
+    doner_name: string | null;
+    doner_avatar_url: string | null;
+    stopped_by: string | null;
+    done_by: string | null;
     session_id: string | null;
     remote_session_id: string | null;
     exit_code: number | null;
@@ -666,6 +715,36 @@ export function createJobStore({
 
     // Inside the factory, so the reads' `workspacePath` derivation closes over the org and the
     // has-a-workspace-root decision — the claim's own `claimPath` rule, shared rather than copied.
+
+    // The authorship joins, shared by get/thread/list: created_by, stopped_by and done_by resolve
+    // to app_user labels at read time, never denormalised onto the job row (logins and display
+    // names go stale; the join does not). Left joins on nullable uuids — a pre-accounts row or an
+    // unstamped action joins to nothing and reads as null, never a synthetic author. `job.` is
+    // qualified on the columns app_user also has (id, created_at); every other selected column
+    // exists only on job.
+    const authorJoin = sql`
+        left join app_user cu on cu.id = job.created_by
+        left join app_user su on su.id = job.stopped_by
+        left join app_user du on du.id = job.done_by
+    `;
+    const authorColumns = sql`
+        , cu.id as creator_id, cu.github_login as creator_login, cu.display_name as creator_name
+        , cu.avatar_url as creator_avatar_url
+        , su.id as stopper_id, su.github_login as stopper_login, su.display_name as stopper_name
+        , su.avatar_url as stopper_avatar_url
+        , du.id as doner_id, du.github_login as doner_login, du.display_name as doner_name
+        , du.avatar_url as doner_avatar_url
+    `;
+
+    // A left join answers null columns when the uuid matched nothing; a matched row always has
+    // its login (not null in app_user), so id+login is the honest presence test.
+    const userRef = (
+        id: string | null,
+        login: string | null,
+        name: string | null,
+        avatarUrl: string | null
+    ): UserRef | null => (id === null || login === null ? null : { id, login, name, avatarUrl });
+
     const toJob = (row: JobRow): Job => ({
         id: row.id,
         command: row.command,
@@ -674,6 +753,9 @@ export function createJobStore({
         maxAttempts: row.max_attempts,
         claimedBy: row.claimed_by,
         createdBy: row.created_by,
+        author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
+        stoppedBy: userRef(row.stopper_id, row.stopper_login, row.stopper_name, row.stopper_avatar_url),
+        doneBy: userRef(row.doner_id, row.doner_login, row.doner_name, row.doner_avatar_url),
         sessionId: row.session_id,
         remoteSessionId: row.remote_session_id,
         exitCode: row.exit_code,
@@ -766,7 +848,7 @@ export function createJobStore({
             return 'no_session';
         },
 
-        async markDone(id) {
+        async markDone(id, doneBy) {
             await gate();
             // One transaction, because done is what frees the tree now (issue #47's second half):
             // stamping done_at and queueing the worktree reclaim must be decided together, on the
@@ -777,8 +859,9 @@ export function createJobStore({
             return sql.begin(async (tx) => {
                 // coalesce, not assignment: the second "done" answers the first one's instant,
                 // which is what makes the route idempotent rather than silently rewriting history.
+                // done_by rides the same rule: the first writer's actor survives a retried click.
                 const rows = await tx<{ status: JobStatus; done_at: Date; root_job_id: string }[]>`
-                    update job set done_at = coalesce(done_at, now())
+                    update job set done_at = coalesce(done_at, now()), done_by = coalesce(done_by, ${doneBy})
                     where org_id = ${orgId} and id = ${id}
                       and status in ('succeeded','failed','dead','stopped')
                     returning status, done_at, root_job_id
@@ -821,7 +904,7 @@ export function createJobStore({
             });
         },
 
-        async stop(id) {
+        async stop(id, stoppedBy) {
             await gate();
             // One statement decides the outcome by the status it sees. A QUEUED row never started
             // and a STANDBY row's run is long gone — both are settled `stopped` here: the turn is
@@ -829,7 +912,9 @@ export function createJobStore({
             // is stamped `cancel_requested_at` and left running: the request travels on the
             // heartbeat the worker already sends, and the settle that honours it (suspend under
             // the stamp) clears it. coalesce keeps the FIRST request, which is what makes /stop
-            // idempotent rather than a rewrite of when it was asked.
+            // idempotent rather than a rewrite of when it was asked. stopped_by coalesces beside
+            // it unconditionally — every status this UPDATE touches is a stoppable one, so this
+            // caller acted, and the first asker is the actor that survives.
             const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null }[]>`
                 update job set
                     status = case
@@ -843,7 +928,8 @@ export function createJobStore({
                     cancel_requested_at = case
                         when status = 'running' then coalesce(cancel_requested_at, now())
                         else cancel_requested_at
-                    end
+                    end,
+                    stopped_by = coalesce(stopped_by, ${stoppedBy})
                 where org_id = ${orgId} and id = ${id}
                   and status in ('queued','running','standby')
                 returning status, cancel_requested_at
@@ -1279,7 +1365,7 @@ export function createJobStore({
             return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
         },
 
-        async removeThread(id) {
+        async removeThread(id, removedBy) {
             await gate();
             // Same per-thread advisory lock the claim takes, for the same serialization reason: the
             // refusal check and the delete must see every earlier claim of this thread commit, or a
@@ -1333,8 +1419,8 @@ export function createJobStore({
                 // still gets reclaimed, pointing at nothing additional is fine.
                 const workspacePath = hasWorkspaces && root.created_by ? `${orgId}/${root.created_by}` : null;
                 await tx`
-                    insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
-                    values (${orgId}, ${rootJobId}, ${root.repo}, ${workspacePath})
+                    insert into task_reclaim (org_id, root_job_id, repo, workspace_path, removed_by)
+                    values (${orgId}, ${rootJobId}, ${root.repo}, ${workspacePath}, ${removedBy})
                 `;
 
                 return { result: 'ok', rootJobId, repo: root.repo, workspacePath };
@@ -1476,17 +1562,18 @@ export function createJobStore({
             // order — the conversation still reads top to bottom. An absent id resolves nothing
             // and the read answers null.
             const rows = await sql<JobRow[]>`
-                select id, command, status, attempts, max_attempts, claimed_by, created_by,
+                select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at,
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                        -- The task's overall wall clock, summed over the thread the WHERE already
                        -- scoped: every member carries the total, so the view reads it off any of
                        -- them. A sum over all-null banks is null — nothing measurable, never zero.
                        sum(wall_clock_ms) over () as task_wall_clock_ms
-                from job
+                       ${authorColumns}
+                from job ${authorJoin}
                 where org_id = ${orgId}
                   and root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
-                order by created_at, id
+                order by job.created_at, job.id
             `;
             const [first] = rows;
             return first ? rows.map(toJob) : null;
@@ -1495,10 +1582,12 @@ export function createJobStore({
         async get(id) {
             await gate();
             const rows = await sql<JobRow[]>`
-                select id, command, status, attempts, max_attempts, claimed_by, created_by,
+                select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
-                from job where org_id = ${orgId} and id = ${id}
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at
+                       ${authorColumns}
+                from job ${authorJoin}
+                where org_id = ${orgId} and job.id = ${id}
             `;
             const row = rows[0];
             return row ? toJob(row) : null;
@@ -1507,13 +1596,14 @@ export function createJobStore({
         async list({ status, repo, limit }) {
             await gate();
             const rows = await sql<JobRow[]>`
-                select id, command, status, attempts, max_attempts, claimed_by, created_by,
+                select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, created_at, started_at, finished_at
-                from job
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at
+                       ${authorColumns}
+                from job ${authorJoin}
                 where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}
                   ${repo ? sql`and repo = ${repo}` : sql``}
-                order by created_at desc, id
+                order by job.created_at desc, job.id
                 limit ${limit}
             `;
             return rows.map(toJob);

@@ -14,6 +14,12 @@ import { writeFileSync } from 'node:fs';
 const REPO = 'Bellows-AI/bellows.ai';
 const sessions = [];
 
+// Who queued the board task the session belongs to, resolved server-side by joining
+// session_branch to job on session id. Sessions with no matching job row (local dev runs,
+// backfilled transcripts) carry null — the fixture exercises both.
+const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: 'https://example.com/alice.png' };
+const BOB = { id: 'u-bob', login: 'bob', name: null, avatarUrl: null };
+
 function session(id, opts) {
     const {
         repo = REPO,
@@ -26,6 +32,7 @@ function session(id, opts) {
         editsRejected,
         activeSeconds,
         commits = 0,
+        user = null,
     } = opts;
 
     sessions.push({
@@ -41,6 +48,7 @@ function session(id, opts) {
         editsRejected,
         activeSeconds,
         commits,
+        user,
     });
 }
 
@@ -56,6 +64,7 @@ session('s01-token-heavy', {
     editsRejected: 2,
     activeSeconds: 1320,
     commits: 3,
+    user: ALICE,
 });
 
 session('s02-mid-a', {
@@ -68,6 +77,7 @@ session('s02-mid-a', {
     editsRejected: 1,
     activeSeconds: 1080,
     commits: 2,
+    user: ALICE,
 });
 
 session('s03-mid-b', {
@@ -80,6 +90,7 @@ session('s03-mid-b', {
     editsRejected: 3,
     activeSeconds: 720,
     commits: 1,
+    user: ALICE,
 });
 
 session('s04-april', {
@@ -92,6 +103,7 @@ session('s04-april', {
     editsRejected: 5,
     activeSeconds: 3000,
     commits: 4,
+    user: BOB,
 });
 
 // Stretches the weekly window so the seeded-series assertion has interior gaps to catch.
@@ -105,6 +117,7 @@ session('s05-april-earliest', {
     editsRejected: 2,
     activeSeconds: 2400,
     commits: 2,
+    user: BOB,
 });
 
 session('s06-may', {
@@ -117,6 +130,7 @@ session('s06-may', {
     editsRejected: 1,
     activeSeconds: 3600,
     commits: 2,
+    user: BOB,
 });
 
 session('s07-july-a', {
@@ -143,6 +157,7 @@ session('s08-july-b', {
 
 // Case: another repo -> excluded from totals, counted in otherRepoSessions. Deliberately the
 // largest session in the file, so a broken filter shows up as an obviously inflated total.
+// Carries a user: out-of-repo-scope sessions must stay out of byUser even when attributed.
 session('s09-other-repo', {
     repo: 'Bellows-AI/other-service',
     from: '2026-07-12T09:00:00Z',
@@ -154,6 +169,7 @@ session('s09-other-repo', {
     editsRejected: 5,
     activeSeconds: 3600,
     commits: 6,
+    user: BOB,
 });
 
 // Case: telemetry arrived but the hook never reported -> sessionsWithoutHook.
@@ -191,6 +207,7 @@ session('s12-june', {
     editsAccepted: 2,
     editsRejected: 1,
     activeSeconds: 780,
+    user: ALICE,
 });
 
 session('s13-august', {
@@ -203,6 +220,7 @@ session('s13-august', {
     editsRejected: 2,
     activeSeconds: 2700,
     commits: 2,
+    user: BOB,
 });
 
 session('s14-july-d', {
@@ -227,6 +245,7 @@ session('s15-june-b', {
     editsRejected: 2,
     activeSeconds: 480,
     commits: 2,
+    user: ALICE,
 });
 
 const ordered = [...sessions].sort((a, b) => a.firstSeen.localeCompare(b.firstSeen));

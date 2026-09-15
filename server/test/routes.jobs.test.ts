@@ -16,7 +16,7 @@ import type {
     StopResult,
 } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
-import { stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -36,12 +36,12 @@ interface StoreStub extends JobStore {
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
-    markedDone: string[];
+    markedDone: { id: string; doneBy: string | null }[];
     gatesReported: { id: string; results: GateReport[] }[];
     gatesReread: { id: string }[];
     publishTokens: { id: string }[];
-    stopped: string[];
-    removed: string[];
+    stopped: { id: string; stoppedBy: string | null }[];
+    removed: { id: string; removedBy: string | null }[];
     reclaimClaims: { worker: string; leaseSeconds: number }[];
     reclaimAcks: { id: string; worker: string }[];
 }
@@ -116,9 +116,9 @@ function stubStore(
             stub.followUps.push({ parentId, command, createdBy: createdBy ?? null });
             return options.followUp ?? { id: FOLLOW_UP_ID };
         },
-        async markDone(id) {
+        async markDone(id, doneBy) {
             boom();
-            stub.markedDone.push(id);
+            stub.markedDone.push({ id, doneBy: doneBy ?? null });
             return options.done ?? { status: 'succeeded', doneAt: '2026-08-21T12:10:00.000Z' };
         },
         async claim() {
@@ -134,14 +134,14 @@ function stubStore(
                 cancelRequested: result === 'ok' ? (options.heartbeatCancelRequested ?? false) : false,
             };
         },
-        async stop(id) {
+        async stop(id, stoppedBy) {
             boom();
-            stub.stopped.push(id);
+            stub.stopped.push({ id, stoppedBy: stoppedBy ?? null });
             return options.stop ?? { result: 'stopped' };
         },
-        async removeThread(id) {
+        async removeThread(id, removedBy) {
             boom();
-            stub.removed.push(id);
+            stub.removed.push({ id, removedBy: removedBy ?? null });
             return options.remove ?? { result: 'ok', rootJobId: ID, repo: null, workspacePath: null };
         },
         async claimReclaim(worker, leaseSeconds) {
@@ -842,7 +842,7 @@ describe('POST /api/jobs/:id/stop', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual({ id: ID, status: 'stopped' });
-        expect(store.stopped).toEqual([ID]);
+        expect(store.stopped).toEqual([{ id: ID, stoppedBy: null }]);
     });
 
     // A parked task settles the same way: stopping it is the verdict that ends its stay. The
@@ -855,7 +855,7 @@ describe('POST /api/jobs/:id/stop', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual({ id: ID, status: 'stopped' });
-        expect(store.stopped).toEqual([ID]);
+        expect(store.stopped).toEqual([{ id: ID, stoppedBy: null }]);
     });
 
     // A running task keeps running until the worker parks it — the request RIDES the heartbeat —
@@ -910,7 +910,7 @@ describe('POST /api/jobs/:id/remove', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual({ id: ID, removed: true });
-        expect(store.removed).toEqual([ID]);
+        expect(store.removed).toEqual([{ id: ID, removedBy: null }]);
     });
 
     // The thread's worktree is a live runner's checkout; removal must not tear it out from under
@@ -937,6 +937,54 @@ describe('POST /api/jobs/:id/remove', () => {
     it('refuses a malformed id', async () => {
         const instance = await harnessWith(stubStore());
         expect((await post(instance, '/api/jobs/nope/remove', {})).statusCode).toBe(400);
+    });
+});
+
+describe('lifecycle actor attribution', () => {
+    // Stop, done and remove are a person's verdict (docs/auth.md), and the actor comes off the
+    // session — never a body — on the create route's exact rule. Without an auth store the actor
+    // is null, the state every AUTH_MODE=none deployment is in; the captures above pin that.
+
+    const signedInHarness = async () => {
+        const auth = memoryAuthStore();
+        const config = testConfig({ auth: githubAuth() });
+        const service = createStatsService({ config, telemetry: stubTelemetryClient() });
+        const store = stubStore();
+        const instance = await buildApp({ config, service, jobs: store, auth });
+        app = instance;
+        const caller = auth.seedMember('test-org', 'octocat');
+        const cookie = await signedIn(auth, caller);
+        return { instance, store, caller, cookie };
+    };
+
+    const postAs = (instance: FastifyInstance, url: string, cookie: string) =>
+        instance.inject({ method: 'POST', url, payload: {}, headers: { cookie } });
+
+    it('stop records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/stop`, cookie);
+
+        expect(response.statusCode).toBe(200);
+        expect(store.stopped).toEqual([{ id: ID, stoppedBy: caller.user.id }]);
+    });
+
+    it('done records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/done`, cookie);
+
+        expect(response.statusCode).toBe(200);
+        expect(store.markedDone).toEqual([{ id: ID, doneBy: caller.user.id }]);
+    });
+
+    it('remove records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/remove`, cookie);
+
+        expect(response.statusCode).toBe(200);
+        expect(store.removed).toEqual([{ id: ID, removedBy: caller.user.id }]);
     });
 });
 
@@ -1121,7 +1169,10 @@ describe('POST /api/jobs/:id/done', () => {
         expect(first.statusCode).toBe(200);
         expect(first.json()).toEqual({ id: ID, status: 'succeeded', doneAt: '2026-08-21T12:10:00.000Z' });
         expect(second.statusCode).toBe(200);
-        expect(store.markedDone).toEqual([ID, ID]);
+        expect(store.markedDone).toEqual([
+            { id: ID, doneBy: null },
+            { id: ID, doneBy: null },
+        ]);
     });
 
     it('answers 409 for a task that is still moving', async () => {
@@ -1240,6 +1291,10 @@ describe('GET /api/jobs', () => {
         attempts: 1,
         maxAttempts: 3,
         claimedBy: 'w1',
+        createdBy: null,
+        author: null,
+        stoppedBy: null,
+        doneBy: null,
         sessionId: '33333333-3333-4333-8333-333333333333',
         remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
         exitCode: 0,
@@ -1256,6 +1311,40 @@ describe('GET /api/jobs', () => {
         finishedAt: '2026-08-21T12:00:09.000Z',
         taskWallClockMs: null,
     };
+
+    const author = {
+        id: '3f1c1111-1111-4111-8111-111111111111',
+        login: 'octocat',
+        name: 'The Octocat',
+        avatarUrl: null,
+    };
+    const stopper = { id: '3f1c2222-2222-4222-8222-222222222222', login: 'stopper', name: null, avatarUrl: null };
+
+    it('carries the resolved author and lifecycle actors through verbatim', async () => {
+        // The routes add nothing and drop nothing: authorship is the store's read-time join, and
+        // the payload is exactly what it computed.
+        const attributed = { ...job, createdBy: author.id, author, stoppedBy: stopper, doneBy: author };
+        const instance = await harnessWith(stubStore({ job: attributed, thread: [attributed] }));
+
+        const one = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
+        expect(one.json().author).toEqual(author);
+        expect(one.json().stoppedBy).toEqual(stopper);
+        expect(one.json().doneBy).toEqual(author);
+        expect(one.json().createdBy).toBe(author.id);
+
+        const thread = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/thread` });
+        expect(thread.json().jobs[0].author).toEqual(author);
+
+        const list = await instance.inject({ method: 'GET', url: '/api/jobs' });
+        expect(list.json().jobs[0].author).toEqual(author);
+    });
+
+    it('renders a pre-accounts row as author null, never a synthetic author', async () => {
+        const instance = await harnessWith(stubStore({ job }));
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
+        expect(response.json().author).toBeNull();
+        expect(response.json().createdBy).toBeNull();
+    });
 
     it('reads one job', async () => {
         const instance = await harnessWith(stubStore({ job }));

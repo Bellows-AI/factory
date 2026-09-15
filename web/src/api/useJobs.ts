@@ -56,11 +56,29 @@ export interface RuntimeVitals {
     services?: ServiceStatus[] | null;
 }
 
+/**
+ * A person, resolved server-side from the board's audit rows at read time. `name` and `avatarUrl`
+ * are labels the account may not have; the login is the display fallback. Null means no author is
+ * known — a pre-accounts row — and renders as "unknown", never a synthetic name.
+ */
+export interface AuthorRef {
+    id: string;
+    login: string;
+    name: string | null;
+    avatarUrl: string | null;
+}
+
 export interface Job {
     id: string;
     command: string;
     status: JobStatus;
     attempts: number;
+    /** Who queued the task, resolved to their account labels; null for a pre-accounts row. */
+    author: AuthorRef | null;
+    /** Who asked to stop the task — stamped at request time; null when nobody has. */
+    stoppedBy: AuthorRef | null;
+    /** Who marked the task done; null when nobody has. */
+    doneBy: AuthorRef | null;
     exitCode: number | null;
     output: string | null;
     /**

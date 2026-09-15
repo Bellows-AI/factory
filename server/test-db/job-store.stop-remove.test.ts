@@ -90,7 +90,7 @@ describe.skipIf(!enabled)('stopping a task', () => {
     it('settles a queued job directly — the turn ends before it began', async () => {
         const id = await craft();
 
-        expect(await store.stop(id)).toEqual({ result: 'stopped' });
+        expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
 
         const job = await store.get(id);
         expect(job?.status).toBe('stopped');
@@ -101,14 +101,14 @@ describe.skipIf(!enabled)('stopping a task', () => {
     it('settles an already-parked job directly too', async () => {
         const id = await craft({ status: 'standby' });
 
-        expect(await store.stop(id)).toEqual({ result: 'stopped' });
+        expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
         expect((await store.get(id))?.status).toBe('stopped');
     });
 
     it('stamps a running job as stop-requested and leaves it running until the worker settles it', async () => {
         const id = await craft({ status: 'running', lease: 'live' });
 
-        const result = await store.stop(id);
+        const result = await store.stop(id, null);
         expect(result).toMatchObject({ result: 'requested' });
         expect(result?.cancelRequestedAt).toBeTruthy();
 
@@ -120,8 +120,8 @@ describe.skipIf(!enabled)('stopping a task', () => {
     it('answers the SAME instant on a second stop of a running job — idempotent, not rewriting', async () => {
         const id = await craft({ status: 'running', lease: 'live' });
 
-        const first = await store.stop(id);
-        const second = await store.stop(id);
+        const first = await store.stop(id, null);
+        const second = await store.stop(id, null);
 
         expect(second).toEqual(first);
     });
@@ -129,17 +129,17 @@ describe.skipIf(!enabled)('stopping a task', () => {
     it('refuses a task that already ended', async () => {
         for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
             const id = await craft({ status });
-            expect(await store.stop(id)).toEqual({ result: 'conflict', status });
+            expect(await store.stop(id, null)).toEqual({ result: 'conflict', status });
         }
     });
 
     it('says missing for a job that is not here', async () => {
-        expect(await store.stop(randomUUID())).toBe('missing');
+        expect(await store.stop(randomUUID(), null)).toBe('missing');
     });
 
     it('leaves a queued task out of the claim queue once stopped', async () => {
         const id = await craft();
-        await store.stop(id);
+        await store.stop(id, null);
 
         expect(await store.claim('w1', 300)).toBeNull();
     });
@@ -153,7 +153,7 @@ describe.skipIf(!enabled)('stopping a task', () => {
             cancelRequested: false,
         });
 
-        await store.stop(id);
+        await store.stop(id, null);
         expect(await store.heartbeat(id, token, 300)).toMatchObject({
             result: 'ok',
             cancelRequested: true,
@@ -172,10 +172,13 @@ describe.skipIf(!enabled)('stopping a task', () => {
     // the follow-up composer is what the member sees next.
     it('keeps the session when the stop lands', async () => {
         const id = await craft();
-        await sql`update job set session_id = ${randomUUID()} where id = ${id}`;
         const token = (await store.claim('w1', 300))!.leaseToken;
+        // The worker reports the session mid-run — after the claim, which clears a fresh
+        // attempt's session (only a follow-up keeps a copied one). This is the lease-guarded
+        // route a real run uses, not a direct row write the claim would erase.
+        await store.session(id, token, randomUUID(), null);
 
-        await store.stop(id);
+        await store.stop(id, null);
         await store.suspend(id, token);
 
         const job = await store.get(id);
@@ -189,7 +192,7 @@ describe.skipIf(!enabled)('removing a task', () => {
         const root = await craft();
         const followUp = await craft({ parent: root });
 
-        const result = await store.removeThread(followUp);
+        const result = await store.removeThread(followUp, null);
         expect(result).toEqual({
             result: 'ok',
             rootJobId: root,
@@ -214,7 +217,7 @@ describe.skipIf(!enabled)('removing a task', () => {
         const root = await craft({ status: 'running', lease: 'live' });
         await craft({ parent: root, status: 'running', lease: 'live' });
 
-        expect(await store.removeThread(root)).toBe('conflict');
+        expect(await store.removeThread(root, null)).toBe('conflict');
 
         expect(await store.thread(root)).not.toBeNull();
         expect(await store.claimReclaim('w1', 300)).toBeNull();
@@ -224,17 +227,17 @@ describe.skipIf(!enabled)('removing a task', () => {
         const root = await craft({ status: 'succeeded' });
         await craft({ parent: root, status: 'running', lease: 'live' });
 
-        expect(await store.removeThread(root)).toBe('conflict');
+        expect(await store.removeThread(root, null)).toBe('conflict');
     });
 
     it('says missing when the id is not here', async () => {
-        expect(await store.removeThread(randomUUID())).toBe('missing');
+        expect(await store.removeThread(randomUUID(), null)).toBe('missing');
     });
 
     it('queues no reclaim for a deputy that never queued to a repo or an author', async () => {
         const root = await craft({ createdBy: null, repo: null });
 
-        const result = await store.removeThread(root);
+        const result = await store.removeThread(root, null);
         expect(result).toEqual({ result: 'ok', rootJobId: root, repo: null, workspacePath: null });
 
         const claim = await store.claimReclaim('w1', 300);
@@ -250,8 +253,8 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
     it('hands the oldest row, oldest first, one row per claim', async () => {
         const a = await craft();
         const b = await craft();
-        await store.removeThread(a);
-        await store.removeThread(b);
+        await store.removeThread(a, null);
+        await store.removeThread(b, null);
 
         const first = await store.claimReclaim('w1', 300);
         const second = await store.claimReclaim('w2', 300);
@@ -262,7 +265,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
 
     it("re-leases by the expiry GRANTED to the holder, never by the polling worker's requested lease", async () => {
         const a = await craft();
-        await store.removeThread(a);
+        await store.removeThread(a, null);
 
         const first = await store.claimReclaim('w1', 300);
         expect(first).not.toBeNull();
@@ -284,7 +287,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
 
     it('re-leases a claim whose lease has expired, without touching a live one', async () => {
         const a = await craft();
-        await store.removeThread(a);
+        await store.removeThread(a, null);
 
         const first = await store.claimReclaim('w1', 2);
         expect(first).not.toBeNull();
@@ -300,7 +303,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
 
     it('acks only the worker that holds the claim, deleting the row on success', async () => {
         const a = await craft();
-        await store.removeThread(a);
+        await store.removeThread(a, null);
         const claim = await store.claimReclaim('w1', 300);
 
         expect(await store.ackReclaim(claim!.id, 'w2')).toBe('lost');
@@ -311,7 +314,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
 
     it('says missing on a double ack — the row is already gone', async () => {
         const a = await craft();
-        await store.removeThread(a);
+        await store.removeThread(a, null);
         const claim = await store.claimReclaim('w1', 300);
 
         expect(await store.ackReclaim(claim!.id, 'w1')).toBe('ok');
@@ -320,5 +323,96 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
 
     it('says missing for a reclaim that never existed', async () => {
         expect(await store.ackReclaim(randomUUID(), 'w1')).toBe('missing');
+    });
+});
+
+describe.skipIf(!enabled)('lifecycle actors', () => {
+    // Stop and done are a person's verdict; 025 records which person. The actor comes off the
+    // session at the route, rides beside the idempotence coalesces (first writer wins), and dies
+    // with the member's account (`on delete set null`) — never with the record of the action.
+
+    it('stamps the stopping caller, resolved to their account labels', async () => {
+        const id = await craft();
+        await store.stop(id, AUTHOR);
+
+        const job = await store.get(id);
+        expect(job?.stoppedBy).toMatchObject({ id: AUTHOR, login: 'stop-remove-cat' });
+        expect(job?.doneBy).toBeNull();
+    });
+
+    it('keeps the FIRST stopper when a second caller asks again', async () => {
+        const other = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'second-stopper');
+        const id = await craft({ status: 'running', lease: 'live' });
+
+        await store.stop(id, AUTHOR);
+        await store.stop(id, other);
+
+        expect((await store.get(id))?.stoppedBy?.id).toBe(AUTHOR);
+        await sql`delete from app_user where id = ${other}`;
+    });
+
+    it('keeps the stopper through the suspend landing', async () => {
+        const id = await craft();
+        const token = (await store.claim('w1', 300))!.leaseToken;
+        await store.stop(id, AUTHOR);
+        await store.suspend(id, token);
+
+        expect((await store.get(id))?.stoppedBy?.id).toBe(AUTHOR);
+    });
+
+    it('stamps the done caller once, beside the done_at coalesce', async () => {
+        const other = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'second-doner');
+        const id = await craft({ status: 'succeeded' });
+
+        await store.markDone(id, AUTHOR);
+        await store.markDone(id, other);
+
+        const job = await store.get(id);
+        expect(job?.doneBy?.id).toBe(AUTHOR);
+        expect(job?.stoppedBy).toBeNull();
+        await sql`delete from app_user where id = ${other}`;
+    });
+
+    it('rides the remover onto the task_reclaim row the thread leaves behind', async () => {
+        const id = await craft();
+        await store.removeThread(id, AUTHOR);
+
+        const [row] = await sql<{ removed_by: string | null }[]>`
+            select removed_by from task_reclaim where org_id = ${ORG}
+        `;
+        expect(row?.removed_by).toBe(AUTHOR);
+    });
+
+    it("nulls the actors when their account is deleted, keeping the stamps' columns", async () => {
+        const ephemeral = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'ephemeral');
+        const id = await craft({ createdBy: ephemeral, status: 'succeeded' });
+        await store.stop(id, ephemeral);
+        await store.markDone(id, ephemeral);
+        await sql`delete from app_user where id = ${ephemeral}`;
+
+        const job = await store.get(id);
+        expect(job?.author).toBeNull();
+        expect(job?.stoppedBy).toBeNull();
+        expect(job?.doneBy).toBeNull();
+    });
+
+    it('resolves the author onto every read, and honestly null for a pre-accounts row', async () => {
+        const authored = await craft();
+        const anonymous = await craft({ createdBy: null });
+        await store.stop(authored, AUTHOR);
+        await store.markDone(authored, AUTHOR);
+
+        const got = await store.get(authored);
+        expect(got?.author).toMatchObject({ id: AUTHOR, login: 'stop-remove-cat' });
+        expect(got?.stoppedBy?.login).toBe('stop-remove-cat');
+        expect(got?.doneBy?.login).toBe('stop-remove-cat');
+        expect((await store.get(anonymous))?.author).toBeNull();
+
+        const listed = await store.list({ limit: 100 });
+        expect(listed.find((j) => j.id === authored)?.author?.id).toBe(AUTHOR);
+        expect(listed.find((j) => j.id === anonymous)?.author).toBeNull();
+
+        const thread = await store.thread(authored);
+        expect(thread?.map((j) => j.author?.id)).toEqual([AUTHOR]);
     });
 });

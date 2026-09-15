@@ -22,6 +22,7 @@ const session = (over: Partial<SessionRollup>): SessionRollup => ({
     editsRejected: 0,
     activeSeconds: 60,
     commits: 0,
+    user: null,
     ...over,
 });
 
@@ -162,5 +163,58 @@ describe('coverage and scope edges', () => {
         expect(all.otherRepoSessions).toBe(0);
         expect(all.sessionsWithoutHook).toBe(1);
         expect(all.totals.sessions).toBe(input.sessions.length - 1);
+    });
+});
+
+describe('user attribution', () => {
+    // The fixture carries the user each session's board task was queued by, resolved server-side
+    // from the job audit rows. s07/s08/s11/s14 have no matching task and stay unattributed;
+    // s09 carries a user but sits out of repo scope.
+    const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: 'https://example.com/alice.png' };
+    const BOB = { id: 'u-bob', login: 'bob', name: null, avatarUrl: null };
+
+    it('groups in-scope sessions by user with hand-checked token sums', () => {
+        const byLogin = new Map(stats.byUser.map((row) => [row.user.login, row]));
+        const mine = (login: string) => inScope.filter((s) => s.user?.login === login);
+
+        expect(stats.byUser.map((row) => row.user.login)).toEqual(['alice', 'bob']);
+        for (const login of ['alice', 'bob']) {
+            const row = byLogin.get(login) as (typeof stats.byUser)[number];
+            const sessions = mine(login);
+            expect(row.sessions).toBe(sessions.length);
+            expect(billable(row.tokens)).toBe(sessions.reduce((sum, s) => sum + billable(s.tokens), 0));
+        }
+        expect(byLogin.get('alice')?.user).toEqual(ALICE);
+        expect(byLogin.get('bob')?.user).toEqual(BOB);
+    });
+
+    it('counts in-scope sessions with no user as unattributed, not hidden', () => {
+        expect(stats.unattributedSessions).toBe(inScope.filter((s) => s.user === null).length);
+        expect(stats.unattributedSessions).toBe(4);
+        expect(stats.byUser.reduce((sum, row) => sum + row.sessions, 0) + stats.unattributedSessions).toBe(
+            stats.totals.sessions
+        );
+    });
+
+    it('keeps out-of-repo-scope sessions out of byUser even when attributed', () => {
+        // s09 is bob's and is the other-repo session: a leak would put bob at 5.
+        expect(stats.byUser.find((row) => row.user.login === 'bob')?.sessions).toBe(4);
+    });
+
+    it('sums an all-null token group to null, never zero', () => {
+        const noTokens = { tokens: { input: null, output: null, cacheRead: null, cacheCreation: null } };
+        const quiet = telemetryStats(
+            {
+                sessions: [
+                    session({ sessionId: 'a', user: ALICE, ...noTokens }),
+                    session({ sessionId: 'b', user: ALICE, ...noTokens }),
+                ],
+                coverage: { from: null, to: null },
+            },
+            { now: FIXTURE_NOW }
+        );
+        expect(quiet.byUser).toHaveLength(1);
+        expect(quiet.byUser[0]?.tokens.input).toBeNull();
+        expect(quiet.byUser[0]?.tokens.output).toBeNull();
     });
 });

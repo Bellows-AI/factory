@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import type { SessionRollup, TelemetryInput, TokenTotals } from '@factory-ai/core';
+import type { SessionRollup, TelemetryInput, TokenTotals, UserRef } from '@factory-ai/core';
 import type { TelemetryClient, TelemetryHealth } from './client.js';
 import { TelemetryError } from './errors.js';
 import type { CanonicalField } from './metric-map.js';
@@ -10,6 +10,10 @@ interface SummaryRow {
     repo: string | null;
     first_seen: Date;
     last_seen: Date;
+    user_id: string | null;
+    user_login: string | null;
+    user_name: string | null;
+    user_avatar_url: string | null;
 }
 
 interface FieldRow {
@@ -72,8 +76,30 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                     // those are exactly the rows that feed sessionsWithoutHook, the number that
                     // says the plugin is missing or broken. Filtering them out would make a
                     // broken hook look like an idle week.
+                    //
+                    // The user join resolves WHO queued the board task each session belongs to,
+                    // at read time and from the board's own audit rows: session id → job (follow-ups
+                    // share the parent's session AND, by the follow-up author guard, its author, so
+                    // min(created_by) is that one author, never a coin flip between two) →
+                    // app_user. The telemetry tables carry no identity themselves — the collector
+                    // strips it on purpose (docs/organizations.md) — and they stay that way; this
+                    // read-side join is the whole attribution path, so a session with no matching
+                    // job row (a local dev run, a backfilled transcript) simply stays null.
                     sql<SummaryRow[]>`
-                        select * from session_summary where org_id = ${orgId} or org_id is null
+                        select ss.*, ju.created_by as user_id, au.github_login as user_login,
+                               au.display_name as user_name, au.avatar_url as user_avatar_url
+                        from session_summary ss
+                        left join (
+                            -- min over text: Postgres has no min(uuid) aggregate. Every member of
+                            -- a thread shares one author (the follow-up guard), so the minimum is
+                            -- that author, deterministically.
+                            select org_id, session_id, min(created_by::text)::uuid as created_by
+                            from job
+                            where session_id is not null and created_by is not null
+                            group by org_id, session_id
+                        ) ju on ju.org_id = ss.org_id and ju.session_id = ss.session_id
+                        left join app_user au on au.id = ju.created_by
+                        where ss.org_id = ${orgId} or ss.org_id is null
                     `,
                     // Unfiltered: this view reads metric_point_used, which has no org column by
                     // design. It is a lookup keyed by session id, and only the ids present in the
@@ -87,10 +113,15 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                     const values = new Map<CanonicalField, number>(
                         (byField.get(s.session_id) ?? []).map((r) => [r.field, Number(r.value)])
                     );
+                    const user: UserRef | null =
+                        s.user_id === null || s.user_login === null
+                            ? null
+                            : { id: s.user_id, login: s.user_login, name: s.user_name, avatarUrl: s.user_avatar_url };
                     return {
                         sessionId: s.session_id,
                         agent: s.agent,
                         repo: s.repo,
+                        user,
                         firstSeen: s.first_seen.toISOString(),
                         lastSeen: s.last_seen.toISOString(),
                         commits: values.get('commits') ?? null,
