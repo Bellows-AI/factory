@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { telemetryStats } from '../src/telemetry.js';
+import type { DateRange } from '../src/range.js';
 import type { SessionRollup, TelemetryInput } from '../src/types.js';
 import { FIXTURE_NOW, FIXTURE_REPO, sampleTelemetry } from './fixtures/load.js';
 
@@ -23,6 +24,7 @@ const session = (over: Partial<SessionRollup>): SessionRollup => ({
     activeSeconds: 60,
     commits: 0,
     user: null,
+    taskKey: null,
     ...over,
 });
 
@@ -68,16 +70,18 @@ describe('totals, recomputed by hand', () => {
 
 describe('output invariants', () => {
     it('seeds every week in the window rather than closing the gaps', () => {
-        const gaps = stats.weekly
+        // The unscoped call carries no range, so the coverage span (~4 months) decides: weeks.
+        expect(stats.series.granularity).toBe('week');
+        const gaps = stats.series.points
             .map((w) => new Date(w.start).getTime())
             .map((t, i, all) => (i === 0 ? 7 : (t - (all[i - 1] as number)) / 86_400_000));
         expect(gaps.every((g) => g === 7)).toBe(true);
-        expect(stats.weekly.reduce((s, w) => s + w.sessions, 0)).toBe(inScope.length);
+        expect(stats.series.points.reduce((s, w) => s + w.sessions, 0)).toBe(inScope.length);
     });
 
     it('flags only the current week as partial', () => {
-        expect(stats.weekly.filter((w) => w.partial)).toHaveLength(1);
-        expect(stats.weekly[stats.weekly.length - 1]?.partial).toBe(true);
+        expect(stats.series.points.filter((w) => w.partial)).toHaveLength(1);
+        expect(stats.series.points[stats.series.points.length - 1]?.partial).toBe(true);
     });
 
     it('keeps every ratio null or within [0,1]', () => {
@@ -135,7 +139,7 @@ describe('the null-not-zero contract', () => {
         expect(empty.totals.sessions).toBe(0);
         expect(empty.totals.tokens.input).toBeNull();
         expect(empty.totals.acceptRatio).toBeNull();
-        expect(empty.weekly).toEqual([]);
+        expect(empty.series.points).toEqual([]);
     });
 
     it('returns a null accept ratio when nothing was measured, and 1 when everything was accepted', () => {
@@ -163,6 +167,114 @@ describe('coverage and scope edges', () => {
         expect(all.otherRepoSessions).toBe(0);
         expect(all.sessionsWithoutHook).toBe(1);
         expect(all.totals.sessions).toBe(input.sessions.length - 1);
+    });
+});
+
+describe('caller scope', () => {
+    const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: null };
+    const mine = telemetryStats(input, { repos: [FIXTURE_REPO], now: FIXTURE_NOW, user: { id: ALICE.id } });
+    const aliceSessions = inScope.filter((s) => s.user?.id === ALICE.id);
+
+    it("counts only the caller's sessions, recomputed by hand", () => {
+        expect(mine.totals.sessions).toBe(aliceSessions.length);
+        expect(mine.totals.tokens.input).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0));
+        expect(mine.byUser.map((row) => row.user.login)).toEqual(['alice']);
+        // The other members' sessions are simply out of "mine" — not a new bucket to conflate.
+        expect(mine.byUser.find((row) => row.user.login === 'bob')).toBeUndefined();
+    });
+
+    it('keeps naming the unattributed sessions it scoped out', () => {
+        expect(mine.unattributedSessions).toBe(4);
+        // And they contribute no total: the caller's figures cover only the caller's sessions.
+        expect(mine.totals.sessions).toBe(aliceSessions.length);
+    });
+
+    it('leaves coverage and the setup-failure counters describing the store', () => {
+        expect(mine.coverage).toEqual(input.coverage);
+        expect(mine.otherRepoSessions).toBe(stats.otherRepoSessions);
+        expect(mine.sessionsWithoutHook).toBe(stats.sessionsWithoutHook);
+    });
+
+    it('narrows the series to the caller too', () => {
+        expect(mine.series.points.reduce((s, p) => s + p.sessions, 0)).toBe(aliceSessions.length);
+    });
+});
+
+describe('daily series', () => {
+    const NOW = new Date('2026-08-21T12:00:00.000Z');
+    const range: DateRange = {
+        preset: 'custom',
+        from: '2026-08-19T00:00:00.000Z',
+        to: '2026-08-22T00:00:00.000Z',
+    };
+    const daily = (sessions: SessionRollup[]) =>
+        telemetryStats({ sessions, coverage: { from: null, to: null } }, { repos: [FIXTURE_REPO], now: NOW, range });
+
+    it('seeds every day in the window, keeping the quiet ones as quiet days', () => {
+        // Sessions on the 19th and the 21st; the 20th had none. A gap that closed itself
+        // would read as steady activity.
+        const points = daily([
+            session({ sessionId: 'a', firstSeen: '2026-08-19T10:00:00.000Z', lastSeen: '2026-08-19T11:00:00.000Z' }),
+            session({ sessionId: 'b', firstSeen: '2026-08-21T09:00:00.000Z', lastSeen: '2026-08-21T10:00:00.000Z' }),
+        ]).series.points;
+        expect(points.map((p) => p.start)).toEqual(['2026-08-19', '2026-08-20', '2026-08-21']);
+        expect(points[1]?.sessions).toBe(0);
+        expect(points.reduce((s, p) => s + p.sessions, 0)).toBe(2);
+    });
+
+    it('flags only the current day as partial', () => {
+        const points = daily([
+            session({ sessionId: 'a', firstSeen: '2026-08-20T09:00:00.000Z', lastSeen: '2026-08-20T10:00:00.000Z' }),
+            session({ sessionId: 'b', firstSeen: '2026-08-21T09:00:00.000Z', lastSeen: '2026-08-21T10:00:00.000Z' }),
+        ]).series.points;
+        expect(points.filter((p) => p.partial)).toHaveLength(1);
+        expect(points[points.length - 1]?.partial).toBe(true);
+    });
+
+    it('splits adjacent sessions across the UTC midnight', () => {
+        const points = daily([
+            session({ sessionId: 'late', firstSeen: '2026-08-19T23:30:00.000Z', lastSeen: '2026-08-19T23:55:00.000Z' }),
+            session({
+                sessionId: 'early',
+                firstSeen: '2026-08-20T00:15:00.000Z',
+                lastSeen: '2026-08-20T01:00:00.000Z',
+            }),
+        ]).series.points;
+        expect(points.map((p) => [p.start, p.sessions])).toEqual([
+            ['2026-08-19', 1],
+            ['2026-08-20', 1],
+        ]);
+    });
+});
+
+describe('series granularity', () => {
+    const NOW = new Date('2026-08-21T12:00:00.000Z');
+    const at = (daysBack: number) => new Date(NOW.getTime() - daysBack * 86_400_000).toISOString();
+    const stats = (from: string, to: string) =>
+        telemetryStats(input, { repos: [FIXTURE_REPO], now: NOW, range: { preset: 'custom', from, to } });
+
+    it('buckets by day at exactly 92 days of window', () => {
+        expect(stats(at(92), NOW.toISOString()).series.granularity).toBe('day');
+    });
+
+    it('falls back to weeks beyond it', () => {
+        expect(stats(at(93), NOW.toISOString()).series.granularity).toBe('week');
+    });
+
+    it('lets the coverage span decide for all-time', () => {
+        // The fixture's coverage spans about four months: weekly, though the request was open.
+        expect(telemetryStats(input, { repos: [FIXTURE_REPO], now: NOW }).series.granularity).toBe('week');
+        const young: TelemetryInput = {
+            sessions: [session({ firstSeen: at(10), lastSeen: at(9) })],
+            coverage: { from: at(10), to: NOW.toISOString() },
+        };
+        expect(telemetryStats(young, { now: NOW }).series.granularity).toBe('day');
+    });
+
+    it('names daily for the month preset', () => {
+        // 30 days of window is the case the daily bucketing exists for.
+        expect(stats(at(30), NOW.toISOString()).series.points.length).toBeGreaterThan(28);
+        expect(stats(at(30), NOW.toISOString()).series.granularity).toBe('day');
     });
 });
 

@@ -33,6 +33,7 @@ function session(id, opts) {
         activeSeconds,
         commits = 0,
         user = null,
+        taskKey = null,
     } = opts;
 
     sessions.push({
@@ -49,6 +50,7 @@ function session(id, opts) {
         activeSeconds,
         commits,
         user,
+        taskKey,
     });
 }
 
@@ -65,6 +67,7 @@ session('s01-token-heavy', {
     activeSeconds: 1320,
     commits: 3,
     user: ALICE,
+    taskKey: 't-s01',
 });
 
 session('s02-mid-a', {
@@ -78,6 +81,7 @@ session('s02-mid-a', {
     activeSeconds: 1080,
     commits: 2,
     user: ALICE,
+    taskKey: 't-s02',
 });
 
 session('s03-mid-b', {
@@ -91,6 +95,7 @@ session('s03-mid-b', {
     activeSeconds: 720,
     commits: 1,
     user: ALICE,
+    taskKey: 't-s03',
 });
 
 session('s04-april', {
@@ -104,6 +109,7 @@ session('s04-april', {
     activeSeconds: 3000,
     commits: 4,
     user: BOB,
+    taskKey: 't-s04',
 });
 
 // Stretches the weekly window so the seeded-series assertion has interior gaps to catch.
@@ -118,6 +124,7 @@ session('s05-april-earliest', {
     activeSeconds: 2400,
     commits: 2,
     user: BOB,
+    taskKey: 't-s05',
 });
 
 session('s06-may', {
@@ -131,6 +138,7 @@ session('s06-may', {
     activeSeconds: 3600,
     commits: 2,
     user: BOB,
+    taskKey: 't-s06',
 });
 
 session('s07-july-a', {
@@ -170,6 +178,7 @@ session('s09-other-repo', {
     activeSeconds: 3600,
     commits: 6,
     user: BOB,
+    taskKey: 't-s09',
 });
 
 // Case: telemetry arrived but the hook never reported -> sessionsWithoutHook.
@@ -208,6 +217,7 @@ session('s12-june', {
     editsRejected: 1,
     activeSeconds: 780,
     user: ALICE,
+    taskKey: 't-s12',
 });
 
 session('s13-august', {
@@ -221,6 +231,7 @@ session('s13-august', {
     activeSeconds: 2700,
     commits: 2,
     user: BOB,
+    taskKey: 't-s13',
 });
 
 session('s14-july-d', {
@@ -246,6 +257,7 @@ session('s15-june-b', {
     activeSeconds: 480,
     commits: 2,
     user: ALICE,
+    taskKey: 't-s15',
 });
 
 const ordered = [...sessions].sort((a, b) => a.firstSeen.localeCompare(b.firstSeen));

@@ -73,6 +73,13 @@ export interface SessionRollup {
      * attribution is a read-side join, so this stays null rather than guessed.
      */
     user: UserRef | null;
+    /**
+     * The job thread the session's board task belongs to — the `root_job_id` of the job rows
+     * that resolved `user`, resolved by the same read-side join. null means no matching task
+     * exists, exactly as for `user`: a removed thread, a local dev run, a backfilled
+     * transcript. It is a key into the board's own rows, never a label.
+     */
+    taskKey: string | null;
     firstSeen: string;
     lastSeen: string;
     tokens: TokenTotals;
@@ -90,8 +97,13 @@ export interface TelemetryInput {
     coverage: { from: string | null; to: string | null };
 }
 
-export interface TelemetryWeekPoint {
-    week: string;
+/**
+ * One bucket of the usage series, a day or an ISO week — `series.granularity` names which.
+ * Bucketing happens in core, never in the database (`time_bucket()`), so the seeding and the
+ * partial flag behave identically over every source.
+ */
+export interface TelemetryPoint {
+    /** The bucket's UTC start: midnight of the day, or the ISO week's Monday, as YYYY-MM-DD. */
     start: string;
     sessions: number;
     tokens: TokenTotals;
@@ -120,6 +132,59 @@ export interface TelemetryStats {
      * id. Distinct from `sessionsWithoutHook`, which counts sessions with no repo at all.
      */
     unattributedSessions: number;
-    weekly: TelemetryWeekPoint[];
+    /** The usage series, bucketed by the granularity the window span chose. */
+    series: { granularity: 'day' | 'week'; points: TelemetryPoint[] };
     coverage: { from: string | null; to: string | null };
+}
+
+/**
+ * One run of the board: a job row. "Job turn" in the dashboard's terminology — a task's first
+ * run or a follow-up, the member delivering one prompt. The four fields are exactly what the
+ * task statistics read; anything more belongs to the board's own API, not this payload.
+ */
+export interface JobRun {
+    /** The thread root this run belongs to (`job.root_job_id`) — the task key. */
+    rootJobId: string;
+    /** Who queued the run (`job.created_by`). null on rows that predate attribution. */
+    createdBy: string | null;
+    /** When the run was queued — the instant range selection keys on. */
+    createdAt: string;
+    /**
+     * Assistant response cycles counted in the run's root conversation at close, reported by
+     * the executor's own session records. null is UNMEASURED — the read failed, the run was
+     * killed first, or the mode keeps no record — and never means zero. A genuine
+     * zero-response run reports 0.
+     */
+    agentTurns: number | null;
+}
+
+/** One distribution of per-task figures: the spread of what a task cost, over the tasks measured. */
+export interface TaskUsageDistribution {
+    avg: number | null;
+    /** Nearest-rank median over tasks sorted ascending, so the figures recompute by hand. */
+    p50: number | null;
+    p95: number | null;
+    /**
+     * How many tasks this distribution was computed over. A p95 over five tasks must render
+     * beside its count, never masquerade as a settled statistic.
+     */
+    tasks: number;
+}
+
+/**
+ * What a task costs, as distributions over the job threads in scope. The three figures are
+ * measured differently and never conflated: tokens sum over attributed sessions, job turns
+ * count the board's own run rows, agent turns sum the close-time counts of those runs. Every
+ * figure degrades to null (with `tasks` 0) when nothing was measured — never to zero.
+ */
+export interface TaskUsageStats {
+    /** Input + output per task. Tasks with no measured tokens are excluded, not zeroed. */
+    tokensPerTask: TaskUsageDistribution;
+    /** Runs per task — job rows queued in the range, every run and follow-up counted once. */
+    jobTurnsPerTask: TaskUsageDistribution;
+    /**
+     * Agent turns per task — the sum of the runs' stored counts. A task with any unmeasured
+     * in-range run is excluded from THIS distribution only, never summed partially.
+     */
+    agentTurnsPerTask: TaskUsageDistribution;
 }

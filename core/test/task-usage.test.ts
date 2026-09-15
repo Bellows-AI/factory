@@ -1,0 +1,290 @@
+import { describe, expect, it } from 'vitest';
+import { filterJobRuns, filterTelemetryInput } from '../src/range.js';
+import type { DateRange } from '../src/range.js';
+import { taskUsageStats } from '../src/task-usage.js';
+import type { JobRun, SessionRollup, TokenTotals } from '../src/types.js';
+
+const NOW = new Date('2026-08-21T12:00:00.000Z');
+
+const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice', avatarUrl: null };
+const BOB = { id: 'u-bob', login: 'bob', name: null, avatarUrl: null };
+
+const T = (input: number | null, output: number | null): TokenTotals => ({
+    input,
+    output,
+    cacheRead: null,
+    cacheCreation: null,
+});
+
+function session(over: Partial<SessionRollup>): SessionRollup {
+    return {
+        sessionId: 's',
+        agent: 'claude-code',
+        repo: 'o/r',
+        user: null,
+        taskKey: null,
+        firstSeen: '2026-08-20T00:00:00.000Z',
+        lastSeen: '2026-08-20T01:00:00.000Z',
+        tokens: T(10, 5),
+        linesAdded: 1,
+        linesRemoved: 0,
+        editsAccepted: 1,
+        editsRejected: 0,
+        activeSeconds: 60,
+        commits: 0,
+        ...over,
+    };
+}
+
+function run(over: Partial<JobRun>): JobRun {
+    return {
+        rootJobId: 't1',
+        createdBy: ALICE.id,
+        createdAt: '2026-08-20T00:00:00.000Z',
+        agentTurns: 0,
+        ...over,
+    };
+}
+
+// The spec's 1k/2k/3k scenario: three tasks, three sessions, hand-checkable percentiles.
+const threeTasks = [
+    session({
+        sessionId: 'a',
+        taskKey: 't1',
+        tokens: T(600, 400),
+        firstSeen: '2026-08-20T01:00:00Z',
+        lastSeen: '2026-08-20T01:10:00Z',
+    }),
+    session({
+        sessionId: 'b',
+        taskKey: 't2',
+        tokens: T(1200, 800),
+        firstSeen: '2026-08-20T02:00:00Z',
+        lastSeen: '2026-08-20T02:10:00Z',
+    }),
+    session({
+        sessionId: 'c',
+        taskKey: 't3',
+        tokens: T(2400, 600),
+        firstSeen: '2026-08-20T03:00:00Z',
+        lastSeen: '2026-08-20T03:10:00Z',
+    }),
+];
+
+describe('tokens per task', () => {
+    it('reports avg 2k, p50 2k and p95 3k over the 1k/2k/3k scenario', () => {
+        const stats = taskUsageStats(threeTasks, []);
+        expect(stats.tokensPerTask).toEqual({ avg: 2000, p50: 2000, p95: 3000, tasks: 3 });
+    });
+
+    it('excludes a task with no measured tokens rather than counting it as zero', () => {
+        // t2's sessions are all-null: an unmapped agent, or a session with no token rows.
+        const stats = taskUsageStats(
+            [
+                threeTasks[0] as SessionRollup,
+                threeTasks[2] as SessionRollup,
+                session({ sessionId: 'd', taskKey: 't2', tokens: T(null, null) }),
+            ],
+            []
+        );
+        // Nearest-rank median of two values is the lower one: ceil(0.5·2) = 1st of the sort.
+        expect(stats.tokensPerTask).toEqual({ avg: 2000, p50: 1000, p95: 3000, tasks: 2 });
+    });
+
+    it('sums input and output only, never cache reads', () => {
+        const stats = taskUsageStats(
+            [
+                session({
+                    taskKey: 't1',
+                    tokens: { input: 100, output: 50, cacheRead: 999_999, cacheCreation: 888_888 },
+                }),
+            ],
+            []
+        );
+        expect(stats.tokensPerTask.p50).toBe(150);
+    });
+
+    it('answers null figures, not zeros, when no task carries measured tokens', () => {
+        const stats = taskUsageStats([], []);
+        expect(stats.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(stats.jobTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(stats.agentTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+    });
+});
+
+describe('job turns per task', () => {
+    it('counts every run row once — a first run and two follow-ups are three job turns', () => {
+        const stats = taskUsageStats(
+            [session({ sessionId: 'a', taskKey: 't1' })],
+            [
+                run({ rootJobId: 't1', createdAt: '2026-08-18T00:00:00Z' }),
+                run({ rootJobId: 't1', createdAt: '2026-08-19T00:00:00Z' }),
+                run({ rootJobId: 't1', createdAt: '2026-08-20T00:00:00Z' }),
+            ]
+        );
+        expect(stats.jobTurnsPerTask).toEqual({ avg: 3, p50: 3, p95: 3, tasks: 1 });
+    });
+
+    it('counts a task in scope via session overlap even when all its runs fall outside the range', () => {
+        // The range filter has already run: the session survived, the run did not. The task
+        // still enters — with a real zero (no run of it was queued inside the range).
+        const stats = taskUsageStats([session({ sessionId: 'a', taskKey: 't1' })], []);
+        expect(stats.jobTurnsPerTask).toEqual({ avg: 0, p50: 0, p95: 0, tasks: 1 });
+        expect(stats.tokensPerTask.tasks).toBe(1);
+        expect(stats.agentTurnsPerTask.tasks).toBe(1);
+        expect(stats.agentTurnsPerTask.p50).toBe(0);
+    });
+});
+
+describe('agent turns per task', () => {
+    it('sums the runs stored counts — a first run of 9 and a follow-up of 4 enter as 13', () => {
+        const stats = taskUsageStats(
+            [session({ sessionId: 'a', taskKey: 't1' })],
+            [
+                run({ rootJobId: 't1', createdAt: '2026-08-19T00:00:00Z', agentTurns: 9 }),
+                run({ rootJobId: 't1', createdAt: '2026-08-20T00:00:00Z', agentTurns: 4 }),
+            ]
+        );
+        expect(stats.agentTurnsPerTask).toEqual({ avg: 13, p50: 13, p95: 13, tasks: 1 });
+    });
+
+    it('excludes a task with any unmeasured run from the turn distribution only', () => {
+        // One measured run (7 turns), one unmeasured (null — the close-time read failed). A
+        // partial sum presented as a total is a quiet undercount, so the task drops out of
+        // THIS figure — while its tokens and job turns still count in theirs.
+        const stats = taskUsageStats(
+            [session({ sessionId: 'a', taskKey: 't1', tokens: T(500, 500) })],
+            [
+                run({ rootJobId: 't1', createdAt: '2026-08-19T00:00:00Z', agentTurns: 7 }),
+                run({ rootJobId: 't1', createdAt: '2026-08-20T00:00:00Z', agentTurns: null }),
+            ]
+        );
+        expect(stats.agentTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(stats.tokensPerTask.tasks).toBe(1);
+        expect(stats.jobTurnsPerTask).toEqual({ avg: 2, p50: 2, p95: 2, tasks: 1 });
+    });
+
+    it('stores a genuine zero when the root conversation took no assistant response', () => {
+        const stats = taskUsageStats(
+            [session({ sessionId: 'a', taskKey: 't1' })],
+            [run({ rootJobId: 't1', agentTurns: 0 })]
+        );
+        expect(stats.agentTurnsPerTask).toEqual({ avg: 0, p50: 0, p95: 0, tasks: 1 });
+    });
+});
+
+describe('range interaction', () => {
+    // A two-day range; frozen `now` so the boundary scenarios are deterministic.
+    const range: DateRange = {
+        preset: 'custom',
+        from: '2026-08-19T00:00:00.000Z',
+        to: '2026-08-21T00:00:00.000Z',
+    };
+
+    it('includes a task whose session straddles the range start', () => {
+        // Started before the range, last seen inside it — the session-overlap rule keeps the
+        // session, and with it the task.
+        const input = {
+            sessions: [
+                session({
+                    sessionId: 'straddles',
+                    taskKey: 't1',
+                    firstSeen: '2026-08-18T23:00:00.000Z',
+                    lastSeen: '2026-08-19T02:00:00.000Z',
+                }),
+            ],
+            coverage: { from: null, to: null },
+        };
+        const runs = [run({ rootJobId: 't1', createdAt: '2026-08-18T12:00:00Z', agentTurns: 5 })];
+        const stats = taskUsageStats(filterTelemetryInput(input, range).sessions, filterJobRuns(runs, range));
+        expect(stats.tokensPerTask.tasks).toBe(1);
+        expect(stats.jobTurnsPerTask).toEqual({ avg: 0, p50: 0, p95: 0, tasks: 1 });
+        // The run fell outside the range, so its turns are not in range either.
+        expect(stats.agentTurnsPerTask).toEqual({ avg: 0, p50: 0, p95: 0, tasks: 1 });
+    });
+
+    it('includes a task known only through a run queued in the range', () => {
+        // No telemetry session ever survived for this thread (the plugin was off); the run row
+        // alone puts the task in scope for the turn figures.
+        const stats = taskUsageStats([], [run({ rootJobId: 't9', createdAt: '2026-08-20T08:00:00Z', agentTurns: 11 })]);
+        expect(stats.jobTurnsPerTask).toEqual({ avg: 1, p50: 1, p95: 1, tasks: 1 });
+        expect(stats.agentTurnsPerTask).toEqual({ avg: 11, p50: 11, p95: 11, tasks: 1 });
+        // No attributed session carries measured tokens: excluded, not zeroed.
+        expect(stats.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+    });
+
+    it('keeps out a run queued after the range and a session that ended before it', () => {
+        const input = {
+            sessions: [
+                session({
+                    sessionId: 'old',
+                    taskKey: 't1',
+                    firstSeen: '2026-08-10T00:00:00Z',
+                    lastSeen: '2026-08-10T01:00:00Z',
+                }),
+            ],
+            coverage: { from: null, to: null },
+        };
+        const runs = [run({ rootJobId: 't2', createdAt: '2026-08-21T01:00:00Z' })];
+        const stats = taskUsageStats(filterTelemetryInput(input, range).sessions, filterJobRuns(runs, range));
+        expect(stats.tokensPerTask.tasks).toBe(0);
+        expect(stats.jobTurnsPerTask.tasks).toBe(0);
+    });
+});
+
+describe('caller scope', () => {
+    it("narrowes the task set to the caller's tasks", () => {
+        const stats = taskUsageStats(
+            [
+                session({ sessionId: 'a', taskKey: 't1', user: ALICE }),
+                session({ sessionId: 'b', taskKey: 't2', user: BOB }),
+            ],
+            [
+                run({ rootJobId: 't1', createdBy: ALICE.id, agentTurns: 3 }),
+                run({ rootJobId: 't2', createdBy: BOB.id, agentTurns: 4 }),
+            ],
+            { user: { id: ALICE.id } }
+        );
+        expect(stats.tokensPerTask).toEqual({ avg: 15, p50: 15, p95: 15, tasks: 1 });
+        expect(stats.jobTurnsPerTask.tasks).toBe(1);
+        expect(stats.agentTurnsPerTask.p50).toBe(3);
+    });
+
+    it('leaves sessions without attribution out of every scope', () => {
+        const stats = taskUsageStats(
+            [session({ sessionId: 'anon', taskKey: 't1', tokens: T(1000, 1000) })],
+            [run({ rootJobId: 't1', createdBy: null, agentTurns: 5 })],
+            { user: { id: ALICE.id } }
+        );
+        expect(stats.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(stats.jobTurnsPerTask.tasks).toBe(0);
+        // Org scope keeps the same figures visible.
+        const org = taskUsageStats(
+            [session({ sessionId: 'anon', taskKey: 't1', tokens: T(1000, 1000) })],
+            [run({ rootJobId: 't1', createdBy: null, agentTurns: 5 })]
+        );
+        expect(org.tokensPerTask.p50).toBe(2000);
+    });
+});
+
+describe('payload hygiene', () => {
+    it('exposes no monetary field anywhere', () => {
+        // Cost is deliberately out of scope (docs/metrics.md). This stops it returning via a
+        // "small addition" to the new block.
+        const stats = taskUsageStats(threeTasks, [run({ agentTurns: 3 })]);
+        const keys: string[] = [];
+        const walk = (value: unknown) => {
+            if (Array.isArray(value)) value.forEach(walk);
+            else if (value && typeof value === 'object') {
+                for (const [k, v] of Object.entries(value)) {
+                    keys.push(k.toLowerCase());
+                    walk(v);
+                }
+            }
+        };
+        walk(stats);
+        for (const forbidden of ['cost', 'usd', 'price', 'dollars']) {
+            expect(keys).not.toContain(forbidden);
+        }
+    });
+});

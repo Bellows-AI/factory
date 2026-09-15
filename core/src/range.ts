@@ -1,4 +1,4 @@
-import type { TelemetryInput } from './types.js';
+import type { JobRun, TelemetryInput } from './types.js';
 
 export type RangePreset = 'day' | 'week' | '2w' | 'month' | 'all' | 'custom';
 
@@ -71,4 +71,20 @@ export function filterTelemetryInput(input: TelemetryInput, range: DateRange): T
         sessions: input.sessions.filter((s) => overlaps(s.firstSeen, s.lastSeen, range)),
         coverage: input.coverage,
     };
+}
+
+/**
+ * The run-side of the same selection: a run is a point in time (queued), not an interval, so
+ * it is kept when its `createdAt` falls inside the half-open range. Tasks enter a range's
+ * statistics on session overlap OR run-in-range, which is why this lives beside
+ * `filterTelemetryInput` — the two together are the whole range rule, and a second
+ * implementation of either would let them drift.
+ */
+export function filterJobRuns(runs: readonly JobRun[], range: DateRange): JobRun[] {
+    if (isAllTime(range)) return [...runs];
+    return runs.filter((r) => {
+        if (range.from !== null && r.createdAt < range.from) return false;
+        if (range.to !== null && r.createdAt >= range.to) return false;
+        return true;
+    });
 }
