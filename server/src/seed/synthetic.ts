@@ -33,7 +33,37 @@ export interface SeedOptions {
 
 export interface SyntheticData {
     readonly sessions: SyntheticSession[];
+    /**
+     * The board side of the dataset: job rows that attribute a subset of the sessions to
+     * synthetic members, so the attribution join, the per-task statistics and both scopes all
+     * have something real-shaped to resolve. Sessions with no matching job row stay
+     * unattributed — that state is part of what the seed must represent.
+     */
+    readonly jobs: SyntheticJob[];
 }
+
+export interface SyntheticJob {
+    readonly id: string;
+    /** The thread root. A follow-up carries its parent's root and adds a job turn. */
+    readonly rootJobId: string;
+    readonly parentJobId: string | null;
+    /** The synthetic member who queued the run, by login. */
+    readonly createdBy: string;
+    readonly sessionId: string;
+    readonly createdAt: string;
+    /**
+     * Agent turns counted at close. Null for some runs on purpose: unmeasured is a real state
+     * (a killed run, a failed read), and the task statistics must show a task excluded from the
+     * turn distribution beside tasks that measured.
+     */
+    readonly agentTurns: number | null;
+}
+
+/** The synthetic members the board rows attribute to. Stable ids keep the dataset reproducible. */
+export const SYNTHETIC_MEMBERS = [
+    { githubUserId: 990_001, login: 'seed-alice', displayName: 'Seed Alice' },
+    { githubUserId: 990_002, login: 'seed-bob', displayName: 'Seed Bob' },
+] as const;
 
 /**
  * One agent session, in the shape the two telemetry tables want.
@@ -85,6 +115,7 @@ export function generate(options: SeedOptions): SyntheticData {
 
     const start = new Date(now.getTime() - weeks * 7 * DAY);
     const sessions: SyntheticSession[] = [];
+    const jobs: SyntheticJob[] = [];
     let number = 100;
 
     for (let week = 0; week < weeks; week += 1) {
@@ -103,18 +134,57 @@ export function generate(options: SeedOptions): SyntheticData {
 
             const area = pick(AREAS);
             const branch = `${pick(['feat', 'fix', 'chore'])}/${area}-${number}`;
-            sessions.push(session(repo, branch, createdAt, between(1, 40), random));
+            const s = session(repo, branch, createdAt, between(1, 40), random);
+            sessions.push(s);
+            attribute(jobs, s, random);
         }
     }
 
     // A few sessions on scratch branches — work that reached no shared branch, which is a real
-    // state and reads as a bug when it is always empty.
+    // state and reads as a bug when it is always empty. None of these get board rows: sessions
+    // nobody queued are the unattributed figure the dashboard must keep honest.
     for (let i = 0; i < 6; i += 1) {
         const at = new Date(now.getTime() - between(1, weeks * 7) * DAY);
         sessions.push(session(repo, `spike/${pick(AREAS)}-${i}`, at, between(2, 20), random));
     }
 
-    return { sessions };
+    return { sessions, jobs };
+}
+
+/**
+ * Gives a session a board thread some of the time: a root job row attributed to a synthetic
+ * member, occasionally with a follow-up beside it. Three states land in the dataset on purpose —
+ * attributed sessions, unattributed ones, and threads whose turn count is partly unmeasured.
+ */
+function attribute(jobs: SyntheticJob[], s: SyntheticSession, random: () => number): void {
+    const chance = (p: number) => random() < p;
+    if (!chance(0.75)) return;
+
+    const member = SYNTHETIC_MEMBERS[Math.floor(random() * SYNTHETIC_MEMBERS.length)]!;
+    const rootId = sha(`job:${s.sessionId}`).slice(0, 32);
+    const turns = () => (chance(0.7) ? Math.floor(random() * 60) + 1 : null);
+    jobs.push({
+        id: rootId,
+        rootJobId: rootId,
+        parentJobId: null,
+        createdBy: member.login,
+        sessionId: s.sessionId,
+        createdAt: s.firstSeen,
+        agentTurns: turns(),
+    });
+    // The occasional follow-up: one more job turn on the same thread and session, its own
+    // measurement — sometimes missing where the root's was not.
+    if (chance(0.25)) {
+        jobs.push({
+            id: sha(`job:${s.sessionId}:follow-up`).slice(0, 32),
+            rootJobId: rootId,
+            parentJobId: rootId,
+            createdBy: member.login,
+            sessionId: s.sessionId,
+            createdAt: s.lastSeen,
+            agentTurns: turns(),
+        });
+    }
 }
 
 function session(

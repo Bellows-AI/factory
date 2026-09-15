@@ -1,10 +1,24 @@
-import { ALL_TIME, filterTelemetryInput, telemetryStats } from '@factory-ai/core';
-import type { DateRange, JobRun, OrganizationMeta, TelemetryInput, TelemetryStats } from '@factory-ai/core';
+import { ALL_TIME, filterJobRuns, filterTelemetryInput, taskUsageStats, telemetryStats } from '@factory-ai/core';
+import type {
+    DateRange,
+    JobRun,
+    OrganizationMeta,
+    TaskUsageStats,
+    TelemetryInput,
+    TelemetryStats,
+} from '@factory-ai/core';
 import { createCache } from './cache.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
 import type { TelemetryClient } from './telemetry/client.js';
 import { TelemetryError } from './telemetry/errors.js';
+
+/**
+ * Who the figures are computed for: the whole organization, or one member. The route resolves
+ * the caller to this; `current()` applies it as a read-time filter over the same snapshot the
+ * org scope reads — a scope switch never re-fetches.
+ */
+export type StatsScope = 'org' | { id: string; login: string };
 
 export interface TelemetryMeta {
     status: 'ok' | 'empty' | 'unreachable' | 'disabled';
@@ -35,6 +49,11 @@ export interface FetchState {
 
 export interface StatsPayload {
     telemetry: TelemetryStats | null;
+    /**
+     * What a task costs, over the same range and scope the telemetry block covers. Null exactly
+     * when `telemetry` is — there is no snapshot to distribute over yet.
+     */
+    tasks: TaskUsageStats | null;
     meta: {
         fetchedAt: string;
         ageSeconds: number;
@@ -52,13 +71,20 @@ export interface StatsPayload {
         /** The repos this deployment reports on. */
         repos: { owner: string; name: string }[];
         range: DateRange;
+        /**
+         * The scope the figures were computed under, and — under caller scope — the member they
+         * resolved to. An org payload names 'org' with a null login, so a reader can never
+         * mistake whose numbers are on screen.
+         */
+        scope: 'org' | 'mine';
+        scopeLogin: string | null;
         telemetry: TelemetryMeta;
     };
 }
 
 export interface StatsService {
-    /** Cached payload for a range, or null if nothing has ever been fetched successfully. */
-    current(range?: DateRange): StatsPayload | null;
+    /** Cached payload for a range and scope, or null if nothing has ever been fetched. */
+    current(range?: DateRange, scope?: StatsScope): StatsPayload | null;
     /** Kicks off a refresh if one is warranted. Single-flight. */
     ensureFresh(): void;
     refresh(): void;
@@ -197,20 +223,28 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
     }
 
     return {
-        current(range = ALL_TIME) {
+        current(range = ALL_TIME, scope: StatsScope = 'org') {
             const entry = cache.peek();
             if (!entry) return null;
 
             // Aggregated at read time, not at fetch time: telemetryStats() is pure over the
-            // session list, so every range is served from the one read the database paid for.
+            // session list, so every range — and now every scope — is served from the one read
+            // the database paid for. Caller scope filters the sessions the same way the range
+            // does (and the runs beside them for the task statistics); it never narrows the
+            // snapshot itself, which is what would cost a second fetch.
+            const user = scope === 'org' ? undefined : { id: scope.id };
             const input = filterTelemetryInput(entry.value.input, range);
             const telemetry = telemetryStats(input, {
                 repos: repoNames(),
                 now: new Date(now()),
+                range,
+                ...(user ? { user } : {}),
             });
+            const tasks = taskUsageStats(input.sessions, filterJobRuns(entry.value.runs, range), user ? { user } : {});
 
             return {
                 telemetry,
+                tasks,
                 meta: {
                     fetchedAt: new Date(entry.fetchedAt).toISOString(),
                     ageSeconds: Math.floor((now() - entry.fetchedAt) / 1000),
@@ -224,6 +258,8 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
                     },
                     repos: repos.snapshot().map((repo) => ({ owner: repo.owner, name: repo.name })),
                     range,
+                    scope: scope === 'org' ? 'org' : 'mine',
+                    scopeLogin: scope === 'org' ? null : scope.login,
                     telemetry: telemetryMeta(entry, telemetry),
                 },
             };

@@ -59,21 +59,21 @@
 
 - [x] 5.1 Migration: add nullable `job.agent_turns int` (null = unmeasured, never zero-by-default);
       verify `npm run test:db` applies it cleanly and existing job suites stay green
-- [ ] 5.2 Board: accept optional `agentTurns` on the completion report (`POST /api/jobs/:id/complete`),
+- [x] 5.2 Board: accept optional `agentTurns` on the completion report (`POST /api/jobs/:id/complete`),
       lease-guarded like every field there, stored on the row; verify a route test covering stored,
       absent (null), and negative-rejected cases
-- [ ] 5.3 Driver (opencode): count assistant response cycles in `opencode-readout.cjs`'s existing
+- [x] 5.3 Driver (opencode): count assistant response cycles in `opencode-readout.cjs`'s existing
       root-session message walk and emit `turns` on its JSON line; verify the script suite pins
       the count for a fixture session (including subagent-child exclusion via the root-only scope)
-- [ ] 5.4 Driver (claude-code): new script file under `driver/src/scripts/` (real file, passed by
+- [x] 5.4 Driver (claude-code): new script file under `driver/src/scripts/` (real file, passed by
       content — the `remote-session.sh` precedent) that counts assistant entries for the run's
       session id from the transcript, exec'd once after run exit and before container teardown;
       wire the count into the completion report; verify the script suite pins the parse shape and
       that a missing/gone transcript answers null, never zero
-- [ ] 5.5 Driver (kubernetes twin): the same close-time read as a pod exec against the runner pod
+- [x] 5.5 Driver (kubernetes twin): the same close-time read as a pod exec against the runner pod
       before deletion, same script, same report, null on failure; verify the k8s runner tests pin
       the exec shape and failure path (executor parity, docs/kubernetes.md)
-- [ ] 5.6 State the null posture for Remote Control runs (no count — interactive conversation,
+- [x] 5.6 State the null posture for Remote Control runs (no count — interactive conversation,
       per design) and pin it: verify a test asserts no turn read is attempted under
       `RUNNER_REMOTE_CONTROL`
 

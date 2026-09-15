@@ -18,7 +18,7 @@ import postgres from 'postgres';
 import { createAuthStore } from '../auth/store.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
-import { generate } from './synthetic.js';
+import { generate, SYNTHETIC_MEMBERS } from './synthetic.js';
 
 /**
  * A database whose name ends here is understood to be disposable.
@@ -125,10 +125,46 @@ try {
         await sql`insert into metric_point ${sql(rows)} on conflict do nothing`;
     }
 
+    // Board rows: the synthetic members and the job threads that attribute a subset of the
+    // sessions to them. This is the half that makes the attribution join, the per-task panel
+    // and the org/mine scope show real-shaped data instead of a page of unattributed figures.
+    const memberIds = new Map<string, string>();
+    for (const member of SYNTHETIC_MEMBERS) {
+        const [row] = await sql<{ id: string }[]>`
+            insert into app_user (github_user_id, github_login, display_name)
+            values (${member.githubUserId}, ${member.login}, ${member.displayName})
+            on conflict (github_user_id) do nothing
+            returning id
+        `;
+        if (row) memberIds.set(member.login, row.id);
+    }
+    const missing = SYNTHETIC_MEMBERS.filter((m) => !memberIds.has(m.login));
+    if (missing.length) {
+        for (const m of missing) {
+            const [row] = await sql<{ id: string }[]>`
+                select id from app_user where github_user_id = ${m.githubUserId}
+            `;
+            if (row) memberIds.set(m.login, row.id);
+        }
+    }
+    for (const j of data.jobs) {
+        const createdBy = memberIds.get(j.createdBy);
+        if (!createdBy) continue;
+        await sql`
+            insert into job (org_id, id, root_job_id, parent_job_id, command, status, created_by, session_id,
+                             created_at, started_at, finished_at, agent_turns)
+            values (${config.orgId}, ${j.id}, ${j.rootJobId}, ${j.parentJobId}, 'seed task', 'succeeded',
+                    ${createdBy}, ${j.sessionId}, ${new Date(j.createdAt)}, ${new Date(j.createdAt)},
+                    ${new Date(j.createdAt)}, ${j.agentTurns})
+            on conflict (org_id, id) do nothing
+        `;
+    }
+
     console.log('\nseeded (SYNTHETIC — not measurements):');
     console.log(`  database        ${name}`);
     console.log(`  repo            ${repo}`);
     console.log(`  sessions        ${data.sessions.length}`);
+    console.log(`  board rows      ${data.jobs.length} (${SYNTHETIC_MEMBERS.length} synthetic members)`);
 } finally {
     await sql.end();
 }
