@@ -13,16 +13,19 @@ import {
     currentActivity,
     dockerArgs,
     envFileBody,
+    claudeTurnsArgs,
     gateEnvArgs,
     gateEnvContainerName,
     gateExecArgs,
     opencodeCacheProbeArgs,
     opencodeSessionReadoutArgs,
+    parseClaudeTurns,
     parseDockerServicePs,
     parseDockerStats,
     parseOpencodeCacheProbe,
     parseOpencodeRunOutcome,
     parseRemoteSessionId,
+    readsAgentTurns,
     remoteSessionArgs,
     reportTail,
     stripAnsi,
@@ -539,6 +542,75 @@ describe('reading the remote session id', () => {
     });
 });
 
+describe('the close-time claude-code turn count', () => {
+    /**
+     * The read is the opencode readout's twin: a throwaway container over the workspaces
+     * volume, reading the transcript the CLI wrote onto FACTORY_TRANSCRIPT_DIR while it lived.
+     * Pure and pinned for the same reason opencodeSessionReadoutArgs is — the job container is
+     * already gone, and the volume is the only thing that outlived it.
+     */
+    it('reads the transcript off the workspaces volume, session id by env, never in the script text', () => {
+        const line = claudeTurnsArgs(loadDriverConfig({}), job, SESSION);
+        expect(line.slice(0, 10)).toEqual([
+            'run',
+            '--rm',
+            '-v',
+            'factory-ai_workspaces:/workspaces',
+            '-e',
+            `CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            '-e',
+            `CLAUDE_SESSION_ID=${SESSION}`,
+            '--entrypoint',
+            'node',
+        ]);
+        expect(line.slice(10, 12)).toEqual(['claude-executor', '-e']);
+        const script = line[12] as string;
+        // The script is the static file: the paths and the session id arrive by env, so no
+        // board-derived value is ever part of its text.
+        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
+        expect(script).not.toContain(SESSION);
+        expect(script).toContain('process.env.CLAUDE_TRANSCRIPT_DIR');
+        expect(script).toContain('process.env.CLAUDE_SESSION_ID');
+        expect(script).toContain("entry.type !== 'assistant'");
+        expect(script).toContain('isSidechain');
+    });
+
+    it('refuses a session id that is not a uuid — it names a file the script would read', () => {
+        expect(() => claudeTurnsArgs(loadDriverConfig({}), job, '../../etc/passwd')).toThrow(/not a uuid/);
+    });
+
+    it('parses the count the script answered, and answers null for anything else', () => {
+        expect(parseClaudeTurns('{"turns":11}\n')).toBe(11);
+        // A genuine zero is a measurement — a conversation with no assistant response.
+        expect(parseClaudeTurns('{"turns":0}')).toBe(0);
+        expect(parseClaudeTurns('{"turns":null,"error":"no transcript for session x"}')).toBeNull();
+        // Fractional, negative, or garbage: unmeasured, never a wrong number.
+        expect(parseClaudeTurns('{"turns":2.5}')).toBeNull();
+        expect(parseClaudeTurns('{"turns":-3}')).toBeNull();
+        expect(parseClaudeTurns('')).toBeNull();
+        expect(parseClaudeTurns('node: nothing to run')).toBeNull();
+    });
+});
+
+describe('which runs get a close-time turn read', () => {
+    /**
+     * The null posture for Remote Control (the design's stated exception): its conversation
+     * keeps going after the run parks, so any single read would freeze a mid-conversation
+     * number onto the job row. The read is claude-code-headless-only, and this decision is
+     * pure so the posture stays pinned as the runners evolve.
+     */
+    it('reads for a headless claude-code run with a session, and never under Remote Control', () => {
+        const session = { id: SESSION, resume: false };
+        expect(readsAgentTurns(loadDriverConfig({}), session)).toBe(true);
+        expect(readsAgentTurns(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), session)).toBe(false);
+        // Opencode counts in its own readout; there is no second read for it.
+        expect(readsAgentTurns(loadDriverConfig({ RUNNER_CLI: 'opencode' }), session)).toBe(false);
+        // No session minted — nothing to read a transcript for.
+        expect(readsAgentTurns(loadDriverConfig({}), null)).toBe(false);
+        expect(readsAgentTurns(loadDriverConfig({}), { id: 'not-a-uuid', resume: false })).toBe(false);
+    });
+});
+
 describe('a Remote Control runner', () => {
     const rc = (env: NodeJS.ProcessEnv = {}) => args({ RUNNER_REMOTE_CONTROL: '1', ...env });
 
@@ -709,6 +781,8 @@ describe('an opencode runner', () => {
         );
         // A scraped session means the readout itself worked — the error is the run's, not the read's.
         expect(outcome.readoutError).toBeUndefined();
+        // The readout line carried no turn count: unmeasured, never zero.
+        expect(outcome.agentTurns).toBeUndefined();
     });
 
     /**
@@ -881,22 +955,26 @@ describe('scraping the session opencode used', () => {
             finishReason: 'length',
             contextTokens: 90433,
             costUsd: 0.31,
+            agentTurns: null,
             error: null,
         });
         // A healthy run's closing word, and a free-tier cost of zero.
-        expect(parseOpencodeRunOutcome('{"id":"ses_x1","finish":"stop","tokens":1200,"cost":0}')).toEqual({
+        expect(parseOpencodeRunOutcome('{"id":"ses_x1","finish":"stop","tokens":1200,"cost":0,"turns":7}')).toEqual({
             sessionId: 'ses_x1',
             finishReason: 'stop',
             contextTokens: 1200,
             costUsd: 0,
+            agentTurns: 7,
             error: null,
         });
         // A message that never reported a finish or tokens reads as none, not as a reason.
+        // A line with no turn count reads unmeasured — pre-change readouts, or a parse miss.
         expect(parseOpencodeRunOutcome('{"id":"ses_x1","finish":null,"tokens":null,"cost":null}')).toEqual({
             sessionId: 'ses_x1',
             finishReason: null,
             contextTokens: null,
             costUsd: null,
+            agentTurns: null,
             error: null,
         });
         // The readout's own failure line: carried through as the reason, with no stats.
@@ -905,6 +983,7 @@ describe('scraping the session opencode used', () => {
             finishReason: null,
             contextTokens: null,
             costUsd: null,
+            agentTurns: null,
             error: 'no such column: role',
         });
         expect(parseOpencodeRunOutcome('')).toEqual({
@@ -912,6 +991,7 @@ describe('scraping the session opencode used', () => {
             finishReason: null,
             contextTokens: null,
             costUsd: null,
+            agentTurns: null,
             error: null,
         });
         // Not a session id: a path, an error line, or a uuid that would read as claude's.
@@ -921,11 +1001,13 @@ describe('scraping the session opencode used', () => {
             parseOpencodeRunOutcome('{"id":"33333333-3333-4333-8333-333333333333","finish":"stop"}').sessionId
         ).toBeNull();
         // Negative or non-numeric context stats are not stats.
-        expect(parseOpencodeRunOutcome('{"id":"ses_x1","tokens":-5,"cost":"free"}')).toEqual({
+        // A negative or fractional turn count is not a count — unmeasured, never negative.
+        expect(parseOpencodeRunOutcome('{"id":"ses_x1","tokens":-5,"cost":"free","turns":-1}')).toEqual({
             sessionId: 'ses_x1',
             finishReason: null,
             contextTokens: null,
             costUsd: null,
+            agentTurns: null,
             error: null,
         });
         // A session line that also carries the last provider error: both ride — the session makes
@@ -939,6 +1021,7 @@ describe('scraping the session opencode used', () => {
             finishReason: 'tool-calls',
             contextTokens: 100016,
             costUsd: 0,
+            agentTurns: null,
             error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
         });
     });
@@ -2007,7 +2090,13 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
         const calls = exec.mock.calls.map((call) => call[0]);
         expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
-        expect(calls[calls.length - 1]).toEqual(['network', 'rm', networkName(job)]);
+        const networkRmAt = calls.findIndex((a) => a[0] === 'network' && a[1] === 'rm');
+        expect(networkRmAt).toBeGreaterThanOrEqual(0);
+        // After the teardown, the close-time claude-code turn read runs its own throwaway
+        // container over the workspaces volume — the last thing the runner does.
+        const last = calls[calls.length - 1] as string[];
+        expect(last[0]).toBe('run');
+        expect(last).toContain(`CLAUDE_SESSION_ID=${SESSION}`);
     });
 
     it('fences leftover services before anything is created', async () => {
@@ -2831,10 +2920,17 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.map((call) => call[0]);
         // The fence is the runner's, not the services feature's, so its label and network
         // sweeps still run — but nothing services-specific happens: no readout, no network
-        // create, no service containers, byte-identical runner argv.
+        // create, no service containers, byte-identical runner argv. The one `--entrypoint`
+        // run allowed is the close-time claude-code turn read, which is the runner's own.
         expect(calls.every((a) => !(a[0] === 'network' && a[1] === 'create'))).toBe(true);
         expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
-        expect(calls.every((a) => !(a[0] === 'run' && a.includes('--entrypoint')))).toBe(true);
+        expect(
+            calls.every(
+                (a) =>
+                    !(a[0] === 'run' && a.includes('--entrypoint')) ||
+                    a.some((x) => typeof x === 'string' && x.startsWith('CLAUDE_TRANSCRIPT_DIR='))
+            )
+        ).toBe(true);
         expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }));
     });
 });

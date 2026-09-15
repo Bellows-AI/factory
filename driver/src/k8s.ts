@@ -7,6 +7,7 @@ import {
     claimCarriesGithubToken,
     claimContinuesSession,
     claimEnv,
+    claudeTurnsScript,
     containerName,
     envFileBody,
     GATE_GID,
@@ -15,6 +16,7 @@ import {
     opencodeDbPath,
     opencodeReadoutScript,
     OUTPUT_LIMIT,
+    parseClaudeTurns,
     parseOpencodeRunOutcome,
     reportTail,
     runWorkingDir,
@@ -606,6 +608,60 @@ const OPENCODE_READOUT_DEADLINE_SECONDS = 120;
 
 export const opencodeReadoutJobName = (job: BoardJob): string =>
     `factory-ocread-${hash8(`${job.id}|${job.leaseToken}`)}`;
+
+/**
+ * The close-time claude-code turn count under kubernetes: the same script docker runs
+ * (claude-turns.cjs, passed by content), as one aux Job over the PVC — the twin of the
+ * opencode readout above, reading the transcript the CLI wrote onto the volume under
+ * FACTORY_TRANSCRIPT_DIR while the runner lived. The mount needs no WAL recovery, but it rides
+ * the same read-write shape for one reason: there is exactly one close-time readout shape per
+ * executor, and two variants of it would be two shapes to keep coherent. A Job that fails or
+ * overspends its deadline answers through the caller's null contract — unmeasured, never zero.
+ */
+export const claudeTurnsJobName = (job: BoardJob): string => `factory-cturns-${hash8(`${job.id}|${job.leaseToken}`)}`;
+
+export function claudeTurnsJobSpec(config: DriverConfig, job: BoardJob, sessionId: string): AuxJobSpec {
+    if (!JOB_ID.test(sessionId)) {
+        throw new Error(`refusing to count turns for job ${job.id}: not a session id: ${sessionId}`);
+    }
+    const jobName = claudeTurnsJobName(job);
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: jobName, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            name: 'claude-turns',
+                            image: config.image,
+                            imagePullPolicy: config.imagePullPolicy,
+                            command: ['node', '-e', claudeTurnsScript],
+                            // Both travel as env VALUES — the script is static, so nothing
+                            // board-derived is ever part of its text.
+                            env: [
+                                { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
+                                { name: 'CLAUDE_SESSION_ID', value: sessionId },
+                            ],
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                        },
+                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
+                },
+            },
+        },
+    };
+}
 
 export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
@@ -1498,6 +1554,7 @@ export function createKubernetesRunner(
             finishReason: null,
             contextTokens: null,
             costUsd: null,
+            agentTurns: null,
             error,
         });
         let spec: AuxJobSpec;
@@ -1590,6 +1647,35 @@ export function createKubernetesRunner(
             (response) => response.status < 300 || response.status === 404,
             () => false
         );
+
+    /**
+     * The close-time claude-code turn count: one aux Job over the PVC, its one answer parsed to
+     * a number or null. Every failure on the way — a spec the board's ids do not satisfy, a
+     * create that was refused, a Job that deadlined or failed, an unparseable line — answers
+     * null: unmeasured, never zero, exactly the contract the docker twin's failed exec keeps.
+     */
+    const scrapeClaudeTurns = async (job: BoardJob, sessionId: string): Promise<number | null> => {
+        let spec: AuxJobSpec;
+        try {
+            spec = claudeTurnsJobSpec(config, job, sessionId);
+        } catch {
+            return null;
+        }
+        const jobName = spec.metadata.name;
+        try {
+            const created = await request('POST', jobsPath(config.k8sNamespace), spec);
+            if (created.status >= 300) return null;
+            const verdict = await auxVerdict(jobName);
+            return parseClaudeTurns(verdict.output);
+        } catch {
+            return null;
+        } finally {
+            void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
+                () => undefined,
+                () => undefined
+            );
+        }
+    };
 
     /**
      * Take the checkout claim, atomically. The POST is the whole mutex: the apiserver grants the
@@ -2405,6 +2491,7 @@ export function createKubernetesRunner(
                     finishReason: null,
                     contextTokens: null,
                     costUsd: null,
+                    agentTurns: null,
                     error: null,
                 };
                 let reason: string | null = null;
@@ -2425,6 +2512,18 @@ export function createKubernetesRunner(
                 } else {
                     outcome.readoutError = reason ?? 'the readout answered nothing (no session in the database)';
                 }
+            }
+
+            /*
+             * The claude-code turn count, the twin of docker's: one throwaway Job over the PVC
+             * reading the transcript the CLI wrote onto the volume, after the runner exited. A
+             * failed read — the Job refused, deadlined, or answered nothing parseable — costs
+             * the task its agent-turn figure, never its verdict: null, never zero. Remote
+             * Control is refused at config under this executor, so there is no interactive
+             * conversation to freeze; the guard exists only to say so beside docker's.
+             */
+            if (config.cli === 'claude-code' && session) {
+                outcome.agentTurns = await scrapeClaudeTurns(job, session.id);
             }
             return outcome;
         },

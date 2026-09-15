@@ -695,7 +695,9 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd } = body(request.body);
+            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd, agentTurns } = body(
+                request.body
+            );
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
                 return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
             }
@@ -727,6 +729,16 @@ export const jobRoutes =
             ) {
                 return bad(reply, 'BAD_CONTEXT', `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}`);
             }
+            // The close-time agent-turn count: optional, and absent means unmeasured — the
+            // never-zero contract puts the boundary at the route, so a malformed report cannot
+            // write a plausible-looking zero over a run nobody counted.
+            if (
+                agentTurns !== undefined &&
+                agentTurns !== null &&
+                (!Number.isInteger(agentTurns) || (agentTurns as number) < 0)
+            ) {
+                return bad(reply, 'BAD_AGENT_TURNS', 'agentTurns must be a non-negative integer or null');
+            }
 
             const result = await guard(
                 reply,
@@ -738,6 +750,7 @@ export const jobRoutes =
                         output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
                         contextTokens: (contextTokens as number | undefined) ?? null,
                         contextCostUsd: (contextCostUsd as number | undefined) ?? null,
+                        agentTurns: (agentTurns as number | undefined) ?? null,
                     })
             );
             if (!result.ok) return reply;

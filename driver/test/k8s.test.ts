@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { containerName } from '../src/docker.js';
+import { claudeTurnsScript, containerName } from '../src/docker.js';
 import { CONTAINER_GONE } from '../src/gates.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
 import {
     POLL_MAX_CONSECUTIVE_FAILURES,
     bellowsJobSpec,
     claimName,
+    claudeTurnsJobName,
+    claudeTurnsJobSpec,
     createKubernetesGateManager,
     createKubernetesRunner,
     envBodyToData,
@@ -439,6 +441,20 @@ const ANSWER: Record<string, Route> = {};
 const namespace = 'factory';
 
 const podName = `${containerName(job)}-xxxxx`;
+
+/**
+ * The close-time claude-code turn read, appended to every claude-code run: one aux Job over the
+ * PVC, its verdict poll, the pod log it answers through, and the reaping delete. The fake routes
+ * the Job status and pod routes to the same canned answers the runner Job gets, so the read
+ * "succeeds" with an unparseable log — agentTurns null, the unmeasured answer.
+ */
+const cturnsCalls = (j: BoardJob): string[] => [
+    `POST ${jobsPath(namespace)}`,
+    `GET ${jobPath(namespace, claudeTurnsJobName(j))}`,
+    `GET /api/v1/namespaces/factory/pods`,
+    `GET /api/v1/namespaces/factory/pods/${podName}/log`,
+    `DELETE ${jobPath(namespace, claudeTurnsJobName(j))}`,
+];
 
 const FAKE: Record<string, unknown> = {
     create: { status: 201, body: '{}' },
@@ -1448,7 +1464,15 @@ describe('publishing the produced work', () => {
             prUrl: null,
             reason: 'no uncommitted changes and nothing unpushed',
         });
-        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
+        expect(
+            calls.filter(
+                (call) =>
+                    call.method === 'POST' &&
+                    call.path === jobsPath(namespace) &&
+                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name ===
+                        publishStepJobName(ISSUE_JOB, 1)
+            )
+        ).toHaveLength(1);
     });
 
     it('reuses an existing task branch and an existing PR', async () => {
@@ -1680,6 +1704,8 @@ describe('the kubernetes runner', () => {
             `GET ${jobPath(namespace, containerName(job))}`,
             'GET /api/v1/namespaces/factory/pods',
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            ...cturnsCalls(job),
             `GET ${claimPathFor(job.id)}`,
             `DELETE ${claimPathFor(job.id)}`,
             // The close-time teardown lists this attempt's service fleet by lease; the empty
@@ -1688,6 +1714,8 @@ describe('the kubernetes runner', () => {
             'GET /api/v1/namespaces/factory/services',
         ]);
         expect(outcome).toEqual({
+            // The fake's log parses as no count at all: unmeasured, never zero.
+            agentTurns: null,
             exitCode: 0,
             output: 'did the work\n',
             timedOut: false,
@@ -1860,6 +1888,11 @@ describe('the kubernetes runner', () => {
                     ? Promise.resolve({ status: 200, body: 'partial output\n' })
                     : Promise.resolve(FAKE.log as K8sResponse);
             }
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -1871,6 +1904,8 @@ describe('the kubernetes runner', () => {
 
         expect(tails).toEqual(['partial output\n']);
         expect(outcome).toEqual({
+            // The fake's log parses as no count at all: unmeasured, never zero.
+            agentTurns: null,
             exitCode: 0,
             output: 'did the work\n',
             timedOut: false,
@@ -1910,6 +1945,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve({ status: 500, body: 'unavailable' });
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -1971,6 +2011,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2005,6 +2050,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'GET',
@@ -2037,6 +2088,11 @@ describe('the kubernetes runner', () => {
             }
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
+            }
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
             }
             {
                 const aux = auxRoutes(method, path);
@@ -2102,6 +2158,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2159,6 +2220,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2192,6 +2258,9 @@ describe('the kubernetes runner', () => {
             `GET ${jobPath(namespace, containerName(newerJob))}`,
             'GET /api/v1/namespaces/factory/pods',
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped. It
+            // rides THIS attempt, so its name hashes the token this run holds.
+            ...cturnsCalls(newerJob),
             `GET ${claimPath}`,
             `DELETE ${claimPath}`,
             'GET /api/v1/namespaces/factory/pods',
@@ -2252,6 +2321,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2292,8 +2366,14 @@ describe('the kubernetes runner', () => {
         openOlderList();
         await expect(olderRun).rejects.toThrow(/stands down/);
 
-        // Exactly one runner Job was ever created, and it is the newer attempt's.
-        const jobPosts = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        // Exactly one runner Job was ever created, and it is the newer attempt's. Named by its
+        // body: the close-time turn read posts its own aux Job here too.
+        const jobPosts = calls.filter(
+            (call) =>
+                call.method === 'POST' &&
+                call.path === jobsPath(namespace) &&
+                (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name === newerJobName
+        );
         expect(jobPosts).toHaveLength(1);
         expect((jobPosts[0]?.body as { metadata?: { name?: string } } | undefined)?.metadata?.name).toBe(newerJobName);
         // The superseded attempt never reached the winner's objects.
@@ -2334,6 +2414,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2423,6 +2508,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2467,6 +2557,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'GET',
@@ -2521,6 +2617,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2568,6 +2669,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'GET',
@@ -2600,6 +2707,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2622,6 +2734,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'GET',
@@ -2659,6 +2777,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2685,6 +2808,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'GET',
@@ -2759,6 +2888,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2809,6 +2943,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2895,6 +3034,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -2948,6 +3092,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3008,6 +3157,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3019,7 +3173,14 @@ describe('the kubernetes runner', () => {
         expect(outcome.exitCode).toBe(0);
         // The 503 was retried, not acted on; the run created its Job and released its claim.
         expect(reads).toBeGreaterThanOrEqual(2);
-        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
+        expect(
+            calls.filter(
+                (call) =>
+                    call.method === 'POST' &&
+                    call.path === jobsPath(namespace) &&
+                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name === containerName(job)
+            )
+        ).toHaveLength(1);
     });
 
     /*
@@ -3065,6 +3226,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3128,6 +3294,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3137,7 +3308,14 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
+        expect(
+            calls.filter(
+                (call) =>
+                    call.method === 'POST' &&
+                    call.path === jobsPath(namespace) &&
+                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name === containerName(job)
+            )
+        ).toHaveLength(1);
         const firstClaimRead = calls.findIndex((call) => call.method === 'GET' && call.path === claimPath);
         const jobPost = calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(firstClaimRead).toBeGreaterThanOrEqual(0);
@@ -3196,6 +3374,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3262,6 +3445,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3336,6 +3524,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3396,6 +3589,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3459,6 +3657,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3531,6 +3734,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3602,6 +3810,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3670,6 +3883,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3702,6 +3920,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'GET',
@@ -3765,6 +3989,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3798,6 +4027,11 @@ describe('the kubernetes runner', () => {
             if (path === jobPath(namespace, containerName(job))) {
                 gets += 1;
                 return Promise.resolve({ status: 503, body: 'unavailable' });
+            }
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
             }
             {
                 const aux = auxRoutes(method, path);
@@ -3873,6 +4107,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3988,6 +4227,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(lists <= 2 ? { status: 503, body: 'unavailable' } : (FAKE.pods as K8sResponse));
             }
             if (path.includes('/log')) return Promise.resolve(FAKE.log as K8sResponse);
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -3997,7 +4241,8 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        expect(lists).toBe(3);
+        // The runner's poll plus the close-time turn read's own pod list.
+        expect(lists).toBe(4);
     });
 
     // A log read that fails outright — connection reset, pod gone — must not fail the report: the
@@ -4026,6 +4271,11 @@ describe('the kubernetes runner', () => {
                 return Promise.resolve(FAKE.pods as K8sResponse);
             }
             if (path.includes('/log')) return Promise.reject(new Error('connection reset'));
+            // The close-time claude-code turn read: its Job status poll converges like the
+            // runner's own, so its aux Job is answered here before the fallthrough rejects.
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
+                return Promise.resolve(FAKE.job as K8sResponse);
+            }
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
@@ -4712,6 +4962,55 @@ describe('the opencode session readout job', () => {
 
     it('refuses a job whose workspace path it cannot assert', () => {
         expect(() => opencodeReadoutJobSpec(config, { ...job, workspacePath: null })).toThrow(/workspace path/);
+    });
+});
+
+describe('the close-time claude-code turn read under kubernetes', () => {
+    /**
+     * The twin of docker's close-time read (executor parity): the same script, the same env
+     * VALUES, one aux Job over the PVC instead of one throwaway container. The failure path —
+     * the Job refused, deadlined, or answering nothing parseable — is exercised by every
+     * runner test above, whose scripted logs parse as null: unmeasured, never zero.
+     */
+    const spec = claudeTurnsJobSpec(
+        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+        job,
+        SESSION
+    );
+
+    it('runs the static script as one aux Job, its inputs by env', () => {
+        const container = spec.spec.template.spec.containers[0];
+        expect(spec.metadata.name).toBe(claudeTurnsJobName(job));
+        expect(spec.metadata.name).toMatch(/^factory-cturns-/);
+        expect(container.command).toEqual(['node', '-e', claudeTurnsScript]);
+        // The script is static: the transcript dir and the session id arrive by env, so no
+        // board-derived value is ever part of its text.
+        expect(claudeTurnsScript).not.toContain('/workspaces');
+        expect(claudeTurnsScript).not.toContain(SESSION);
+        expect(container.env).toEqual([
+            {
+                name: 'CLAUDE_TRANSCRIPT_DIR',
+                value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            },
+            { name: 'CLAUDE_SESSION_ID', value: SESSION },
+        ]);
+        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+    });
+
+    it('bounds itself with a deadline of its own and reaps its pod', () => {
+        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+        expect(spec.spec.backoffLimit).toBe(0);
+        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
+    });
+
+    it('refuses a session id that is not a uuid', () => {
+        expect(() =>
+            claudeTurnsJobSpec(
+                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+                job,
+                'not-a-uuid'
+            )
+        ).toThrow(/not a session id/);
     });
 });
 

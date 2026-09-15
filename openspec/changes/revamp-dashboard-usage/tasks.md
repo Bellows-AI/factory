@@ -43,21 +43,21 @@
 
 ## 4. Server: task attribution and snapshot extension
 
-- [ ] 4.1 Extend #102's attribution subquery in `postgres-client.fetchRollups()` with
+- [x] 4.1 Extend #102's attribution subquery in `postgres-client.fetchRollups()` with
       `min(root_job_id::text)::uuid as task_id` (same grouping, follow-ups copy the root so the
       minimum is deterministic) and map it onto `taskKey`; verify with a server db test covering
       executor sessions gaining a task beside their landed member attribution, follow-up chains
       agreeing on one root, and #102's member join untouched by the change
-- [ ] 4.2 Pin the removed-thread scenario: deleting a thread's job rows leaves its sessions with
+- [x] 4.2 Pin the removed-thread scenario: deleting a thread's job rows leaves its sessions with
       neither member nor task, the unattributed count includes them, and org totals keep their
       tokens; verify with a db test that removes the thread and re-reads the rollups
-- [ ] 4.3 Extend the cached snapshot with per-run job rows (`root_job_id, created_by, created_at,
+- [x] 4.3 Extend the cached snapshot with per-run job rows (`root_job_id, created_by, created_at,
       agent_turns`, org-scoped) read in the same fetch; verify the cache test still shows one
       database read serving multiple ranges (and now scopes) without a second fetch
 
 ## 5. Board + driver: agent-turn counting at run close
 
-- [ ] 5.1 Migration: add nullable `job.agent_turns int` (null = unmeasured, never zero-by-default);
+- [x] 5.1 Migration: add nullable `job.agent_turns int` (null = unmeasured, never zero-by-default);
       verify `npm run test:db` applies it cleanly and existing job suites stay green
 - [ ] 5.2 Board: accept optional `agentTurns` on the completion report (`POST /api/jobs/:id/complete`),
       lease-guarded like every field there, stored on the row; verify a route test covering stored,

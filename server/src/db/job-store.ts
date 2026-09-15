@@ -525,6 +525,13 @@ export interface JobStore {
              */
             contextTokens?: number | null;
             contextCostUsd?: number | null;
+            /**
+             * The agent turns the run's root conversation took, counted by the executor from its
+             * own session records at close. Null means UNMEASURED — the read failed, the run was
+             * killed before it, or the mode keeps no record — and never zero; a genuine zero is
+             * reported as 0. The task statistics treat an unmeasured run as excluded, not empty.
+             */
+            agentTurns?: number | null;
         }
     ): Promise<{ result: 'ok'; threadDone: boolean } | { result: 'lost' | 'missing' }>;
     /**
@@ -1491,7 +1498,7 @@ export function createJobStore({
             return present[0] ? 'lost' : 'missing';
         },
 
-        async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd }) {
+        async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd, agentTurns }) {
             await gate();
             // The context stats ride the verdict and merge into the runtime vitals — the row keeps
             // its last CPU sample AND gains the context the run reached. The stats are stored
@@ -1524,6 +1531,10 @@ export function createJobStore({
                         -- A stop request that never landed is settled by the run ending: the task
                         -- finished, there is nothing left to park.
                         cancel_requested_at = null,
+                        -- The close-time turn count: a number lands, and an absent one overwrites
+                        -- to null — the report is the attempt's whole verdict, and a retried
+                        -- report that lost its read must not inherit the killed attempt's count.
+                        agent_turns = ${typeof agentTurns === 'number' ? agentTurns : null},
                         runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
                     where org_id = ${orgId} and id = ${id}
                       and status = 'running' and lease_token = ${leaseToken}

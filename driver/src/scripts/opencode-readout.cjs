@@ -35,9 +35,14 @@ try {
         let tokens = 0;
         let cost = 0;
         let error = null;
+        // The agent-turn count: assistant messages of the ROOT session only. Subagent
+        // conversations are child sessions under a parent_id, and the session selection above
+        // already excluded them — what is left here is exactly the run's own conversation.
+        let turns = 0;
         for (const m of msgs) {
             const d = JSON.parse(m.data);
             if (d.role !== 'assistant') continue;
+            turns += 1;
             if (d.finish) finish = d.finish;
             if (d.tokens && typeof d.tokens.total === 'number') tokens = Math.max(tokens, d.tokens.total);
             if (typeof d.cost === 'number') cost += d.cost;
@@ -47,7 +52,7 @@ try {
             const message = d.error && (d.error.data?.message ?? d.error.message);
             if (typeof message === 'string' && message) error = message;
         }
-        console.log(JSON.stringify({ id: s.id, finish, tokens, cost, error }));
+        console.log(JSON.stringify({ id: s.id, finish, tokens, cost, turns, error }));
     } else {
         console.log(JSON.stringify({ error: `no session ran in ${dir}` }));
     }

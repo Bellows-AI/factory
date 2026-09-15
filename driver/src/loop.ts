@@ -678,6 +678,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     output,
                     contextTokens: outcome.contextTokens ?? null,
                     contextCostUsd: outcome.costUsd ?? null,
+                    // A number only: an unmeasured read stays off the report and the board
+                    // stores null — the driver keeps the never-zero contract on the wire.
+                    ...(typeof outcome.agentTurns === 'number' ? { agentTurns: outcome.agentTurns } : {}),
                 });
                 log(
                     verdict === 'lost'

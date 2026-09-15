@@ -186,6 +186,32 @@ describe.skipIf(!enabled)('job store', () => {
         expect(result).toEqual({ result: 'missing' });
     });
 
+    it('stores the close-time agent-turn count, and unmeasured when the report carries none', async () => {
+        const first = await queue('echo hi');
+        const one = await store.claim('w1', 300);
+        await store.complete(first.id, one!.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'done',
+            agentTurns: 11,
+        });
+        const rows = await sql<{ agent_turns: number | null }[]>`
+            select agent_turns from job where org_id = ${ORG} and id = ${first.id}
+        `;
+        expect(rows[0]?.agent_turns).toBe(11);
+
+        // A report without a count overwrites to null: the verdict is the attempt's whole
+        // write, and a retried report that lost its read must not inherit the killed
+        // attempt's number.
+        const second = await queue('echo hi');
+        const two = await store.claim('w2', 300);
+        await store.complete(second.id, two!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const rows2 = await sql<{ agent_turns: number | null }[]>`
+            select agent_turns from job where org_id = ${ORG} and id = ${second.id}
+        `;
+        expect(rows2[0]?.agent_turns).toBeNull();
+    });
+
     it('streams a rolling output tail while the run is going', async () => {
         const { id } = await queue('echo hi');
         const claim = await store.claim('w1', 300);
