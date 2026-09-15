@@ -70,7 +70,7 @@
 - [x] 5.2 Write the block templates: fetch-issue, execute (`/fix` minus its loop skeleton),
       review, fix, gate-fix; each ends with its deterministic marker where an edge needs one;
       verify template-review against the interpolation tests and the 16 KiB shares
-- [ ] 5.3 Extend `scripts/test-jobs.sh` with a stub workflow walked end-to-end offline (stub
+- [x] 5.3 Extend `scripts/test-jobs.sh` with a stub workflow walked end-to-end offline (stub
       runner emits the markers; the board walks fetch → implement → review(fail-marker) → fix →
       review(clean) → publish-skip → publish), proving transitions, loop limit, session copy and
       the publish flag on a real board; verify the script passes and drops what it creates
