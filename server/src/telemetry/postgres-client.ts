@@ -84,7 +84,10 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                     // app_user. The telemetry tables carry no identity themselves — the collector
                     // strips it on purpose (docs/organizations.md) — and they stay that way; this
                     // read-side join is the whole attribution path, so a session with no matching
-                    // job row (a local dev run, a backfilled transcript) simply stays null.
+                    // job row (a local dev run, a backfilled transcript) simply stays null. The
+                    // subquery groups job on (org_id, session_id) with no index behind it — the
+                    // stats read is cooldown-gated and job tables are small next to metric_point;
+                    // add one only when a real deployment measures this read.
                     sql<SummaryRow[]>`
                         select ss.*, ju.created_by as user_id, au.github_login as user_login,
                                au.display_name as user_name, au.avatar_url as user_avatar_url

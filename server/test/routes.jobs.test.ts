@@ -957,8 +957,26 @@ describe('lifecycle actor attribution', () => {
         return { instance, store, caller, cookie };
     };
 
-    const postAs = (instance: FastifyInstance, url: string, cookie: string) =>
-        instance.inject({ method: 'POST', url, payload: {}, headers: { cookie } });
+    const postAs = (instance: FastifyInstance, url: string, cookie: string, payload: unknown = {}) =>
+        instance.inject({ method: 'POST', url, payload: payload as object, headers: { cookie } });
+
+    it('create records the signed-in caller as the author', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, '/api/jobs', cookie, { command: 'echo hi' });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.created).toEqual([{ command: 'echo hi', createdBy: caller.user.id, repo: null, executor: null }]);
+    });
+
+    it('follow-up records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/follow-up`, cookie, { command: 'again, tighter' });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.followUps).toEqual([{ parentId: ID, command: 'again, tighter', createdBy: caller.user.id }]);
+    });
 
     it('stop records the signed-in caller', async () => {
         const { instance, store, caller, cookie } = await signedInHarness();

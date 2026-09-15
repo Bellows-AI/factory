@@ -68,6 +68,24 @@ describe('telemetry panels render', () => {
         expect(html).not.toContain('NaN');
     });
 
+    it('renders an all-null token group as an em dash, never a fabricated zero', () => {
+        const unmeasured = telemetryStats(
+            {
+                sessions: [
+                    {
+                        ...input.sessions.find((s) => s.sessionId === 's01-token-heavy')!,
+                        tokens: { input: null, output: null, cacheRead: null, cacheCreation: null },
+                    },
+                ],
+                coverage: { from: null, to: null },
+            },
+            { repos: [REPO], now: NOW }
+        );
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={unmeasured} meta={meta()} />);
+        expect(html).toContain('<td>—</td>');
+        expect(html).not.toContain('<td>0</td>');
+    });
+
     it('says so when nothing can be attributed', () => {
         const html = renderToStaticMarkup(<ByUserPanel telemetry={empty} meta={meta()} />);
         expect(html).toContain('No sessions in the coverage window yet.');

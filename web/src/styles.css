@@ -602,9 +602,9 @@ table.by-user th {
     text-align: left;
 }
 
-table.by-user td {
+.by-user-user {
     align-items: center;
-    display: flex;
+    display: inline-flex;
     gap: 6px;
 }
 
