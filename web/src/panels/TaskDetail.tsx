@@ -285,9 +285,16 @@ export function TaskDetail({
                                     <span className="chat-exit">exit {task.exitCode}</span>
                                 ) : null}
                                 {/* The verdict's actor, whenever the row carries one — a fact of the
-                                run, not of its liveness, so the newest turn shows it too. */}
+                                run, not of its liveness, so the newest turn shows it too. The stop
+                                is stamped at REQUEST time and outlives the settle (complete clears
+                                the flag, never the actor), so the status decides whether the ask
+                                landed: "stopped" only on a row that settled stopped, "stop
+                                requested" on one still moving or finished on its own. */}
                                 {task.stoppedBy !== null ? (
-                                    <span className="pill chat-stop">stopped by {task.stoppedBy.login}</span>
+                                    <span className="pill chat-stop">
+                                        {task.status === 'stopped' ? 'stopped by' : 'stop requested by'}{' '}
+                                        {task.stoppedBy.login}
+                                    </span>
                                 ) : null}
                                 {task.doneBy !== null ? (
                                     <span className="pill chat-done">done by {task.doneBy.login}</span>

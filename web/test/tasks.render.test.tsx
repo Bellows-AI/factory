@@ -192,12 +192,22 @@ describe('TaskDetail', () => {
         const author = { id: 'a', login: 'octocat', name: null, avatarUrl: null };
         const stopper = { id: 'b', login: 'stopper', name: null, avatarUrl: null };
         const html = renderDetail({
-            jobs: [job({ author, stoppedBy: stopper, doneBy: author, doneAt: '2026-09-01T13:00:00.000Z' })],
+            jobs: [
+                job({ author, doneBy: author, doneAt: '2026-09-01T13:00:00.000Z' }),
+                job({ id: '22222222-2222-4222-8222-222222222222', stoppedBy: stopper, status: 'stopped' }),
+            ],
         });
+        // The label follows the status: the stamp is the ask, only a row that settled stopped
+        // may claim the stop landed. A run that finished on its own after somebody asked keeps
+        // the ask as a request, never as a verdict.
         expect(html).toContain('stopped by stopper');
         expect(html).toContain('done by octocat');
+        const requested = renderDetail({ jobs: [job({ author, stoppedBy: stopper, doneBy: author })] });
+        expect(requested).toContain('stop requested by stopper');
+        expect(requested).not.toContain('stopped by stopper');
         const plain = renderDetail({ jobs: [job()] });
         expect(plain).not.toContain('stopped by');
+        expect(plain).not.toContain('stop requested by');
         expect(plain).not.toContain('done by');
     });
 
