@@ -585,6 +585,37 @@ Three things it needs that a headless run does not, all decided in `dockerArgs`:
 Off by default, so that turning a worker slot into a long-lived interactive session is something
 somebody typed.
 
+## The close-time agent-turn read
+
+**Every run banks one number at close: its agent turns** — one assistant response cycle in the
+run's ROOT conversation, subagent conversations excluded (the definition of record is the
+terminology block in docs/metrics.md, where "job turn" and "agent turn" are kept apart; no
+figure or label says a bare "turns"). No OTLP metric carries turns — the arriving metric set is
+closed — so the count comes from the session's own records, taken by the driver at run close and
+reported on the completion report as `agentTurns`; the board stores it on the job row
+(`job.agent_turns`, the only migration this feature needed).
+
+- **opencode**: `opencode-readout.cjs` already walked the root session's messages — the count is
+  a counter in that loop, emitted as `turns` on the readout's JSON line. The session selection
+  (`parent_id is null`) is what excludes subagents; there is no second read.
+- **claude-code**: the transcript lands on the workspaces volume under `FACTORY_TRANSCRIPT_DIR`
+  (the runner's `CLAUDE_CONFIG_DIR`), so the driver reads it AFTER the run exits as a throwaway
+  container over the volume — nothing dies with the runner, and there is no teardown to race.
+  `claude-turns.cjs` (a real file under `driver/src/scripts/`, passed by content) finds the run's
+  session transcript by glob and counts `type: "assistant"` entries that are not sidechains.
+- **kubernetes**: the twin of the docker read — the same script as one aux Job over the PVC
+  before the runner pod goes. Both platforms produce the count through their own close-time read
+  (executor parity, docs/kubernetes.md).
+- **Null is the contract for unmeasured**: a read that failed, a run killed before it, a
+  transcript that is gone — all store null, never zero. A genuine zero-response run stores 0.
+  The task statistics exclude a task with any unmeasured in-range run from the agent-turn
+  distribution rather than sum it partially; its tokens and runs still count in theirs.
+- **Remote Control runs stay null on purpose.** The conversation continues after any single
+  read, so freezing a mid-conversation count onto the row would understate it forever; a parked
+  session's turns can be banked at the park later if that turns out to matter. The driver never
+  attempts the read under `RUNNER_REMOTE_CONTROL` — pinned in the runner tests, not left to
+  discipline.
+
 ## Standby: the Remote Control idle park
 
 A session waiting for a human should not hold a container for the hours it may take one to arrive.

@@ -92,20 +92,20 @@
 
 ## 7. Web: dashboard split, per-task panel, daily chart
 
-- [ ] 7.1 Add the `Org | Me` scope toggle beside the RangeSelector, rendered only when the session
+- [x] 7.1 Add the `Org | Me` scope toggle beside the RangeSelector, rendered only when the session
       reports a signed-in user (absent under `AUTH_MODE=none`, not disabled); verify the web render
       smoke covers both auth states
-- [ ] 7.2 Thread `scope` through `useStats`/AppShell state (default org, preserved across range
+- [x] 7.2 Thread `scope` through `useStats`/AppShell state (default org, preserved across range
       changes); verify the hook's test pins that a scope change refetches with `scope=mine` and
       never clears `data` on error
-- [ ] 7.3 Add the per-task stats panel: avg/p50/p95 for tokens per task, runs per task, and agent
+- [x] 7.3 Add the per-task stats panel: avg/p50/p95 for tokens per task, runs per task, and agent
       turns per task — three distinctly-labeled figures (the terminology rule: no bare "turns"),
       each with its task count N, explicit empty state; verify the web render smoke renders
       populated and empty states without NaN (nulls format as unavailable)
-- [ ] 7.4 Switch TokenUsagePanel to `series.points` with labels and blurb driven by
+- [x] 7.4 Switch TokenUsagePanel to `series.points` with labels and blurb driven by
       `series.granularity`; verify the render smoke for daily and weekly fallback and that
       `labelEvery` keeps labels legible at 92 daily points
-- [ ] 7.5 Surface the unattributed-sessions figure in DataQualityPanel as its own line (distinct
+- [x] 7.5 Surface the unattributed-sessions figure in DataQualityPanel as its own line (distinct
       from no-hook and other-repo; `ByUserPanel` already names it — DataQuality lists it beside
       the other setup failures); verify the render smoke shows all the exclusions separately
 
