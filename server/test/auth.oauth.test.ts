@@ -219,6 +219,163 @@ describe('auto-join from a GitHub organization', () => {
     });
 });
 
+describe('sync on sign-in', () => {
+    // Once a row was born from auto-join, the GitHub organization is that row's source of truth:
+    // every sign-in re-checks membership, and the role follows the org. An invited row is
+    // Factory's, and GitHub is never asked about it.
+    const AUTO_JOIN_ORG = 'Bellows-AI';
+
+    async function syncSetup(seed: (store: MemoryAuthStore) => void = () => {}) {
+        const auth = memoryAuthStore();
+        seed(auth);
+        const identity = stubIdentityClient();
+        const { app } = await harness({
+            config: { auth: githubAuth({ autoJoinGithubOrg: AUTO_JOIN_ORG }) },
+            auth,
+            identity,
+        });
+        return { app, auth, identity };
+    }
+
+    const signIn = async (app: FastifyInstance) => {
+        const state = await begin(app);
+        return callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
+    };
+
+    it('admits an uninvited org admin as an admin, not as a plain member', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        identity.orgRole = 'admin';
+
+        const response = await signIn(app);
+
+        expect(response.headers.location).toBe('/');
+        expect(await auth.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'admin', claimed: true }]);
+    });
+
+    it('removes a returning auto-joined member whose GitHub membership is gone', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        await signIn(app);
+        expect(await auth.listMembers(ORG)).toHaveLength(1);
+
+        // They left the GitHub org; their next sign-in learns it.
+        identity.orgState = 'none';
+        const response = await signIn(app);
+
+        expect(errorOf(response.headers.location as string)).toBe('no_membership');
+        expect(await auth.listMembers(ORG)).toEqual([]);
+        // Removal ends the sessions, not just the membership — the same semantics an admin's
+        // `npm run invite -- --remove` has always had.
+        expect(auth.sessions()).toEqual([]);
+    });
+
+    it('refuses a pending org membership for a returning auto-joined member too', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        await signIn(app);
+
+        identity.orgState = 'pending';
+        const response = await signIn(app);
+
+        expect(errorOf(response.headers.location as string)).toBe('no_membership');
+        expect(await auth.listMembers(ORG)).toEqual([]);
+    });
+
+    it('re-derives the role of an auto-joined row on each sign-in', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        await signIn(app);
+        expect(await auth.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'member', claimed: true }]);
+
+        // Promoted in the GitHub org; Factory follows at the next sign-in.
+        identity.orgRole = 'admin';
+        await signIn(app);
+        expect(await auth.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'admin', claimed: true }]);
+    });
+
+    it('never asks GitHub about an invited member, on any sign-in', async () => {
+        const { app, auth, identity } = await syncSetup((store) => {
+            void store.invite(ORG, 'octocat', 'admin');
+        });
+        identity.orgState = 'active';
+        // If the callback did ask, the answer would demote this admin to a plain member —
+        // which is exactly what must not happen to a row an invite owns.
+
+        await signIn(app);
+        await signIn(app);
+
+        expect(identity.orgLookups).toEqual([]);
+        expect(await auth.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'admin', claimed: true }]);
+    });
+
+    it('removes by identity, so a GitHub rename cannot hide a member who left', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        await signIn(app);
+
+        // They left the org AND renamed: the membership row still carries the old login, and the
+        // numeric id is the only thing that still matches.
+        identity.next = { ...identity.next, login: 'octocat-renamed' };
+        identity.orgState = 'none';
+        const response = await signIn(app);
+
+        expect(errorOf(response.headers.location as string)).toBe('no_membership');
+        expect(await auth.listMembers(ORG)).toEqual([]);
+        expect(auth.sessions()).toEqual([]);
+    });
+
+    it('treats a GitHub failure to answer as a failed sign-in, never as a removal', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        await signIn(app);
+
+        // A rate limit or a scope problem answers 403 in the wild; the client turns that into a
+        // throw. The route must land it on the `github` failure, with the row and session intact.
+        identity.orgMembership = async () => {
+            throw new Error('rate limited');
+        };
+        const response = await signIn(app);
+
+        expect(errorOf(response.headers.location as string)).toBe('github');
+        expect(await auth.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'member', claimed: true }]);
+        expect(auth.sessions()).toHaveLength(1);
+    });
+});
+
+describe('the identity client', () => {
+    // The org answer is destructive now — a returning member whose org state is not `active` is
+    // removed outright — so what GitHub could not be ASKED must be a failure, never a `none`.
+    const base = githubAuth({ autoJoinGithubOrg: 'Bellows-AI' }) as Extract<AuthConfig, { mode: 'github' }>;
+
+    const clientFor = (status: number, body: unknown) =>
+        createGitHubIdentityClient(base, (async () => new Response(JSON.stringify(body), { status })) as typeof fetch);
+
+    it('maps the membership payload onto state and org role', async () => {
+        const active = clientFor(200, { state: 'active', role: 'admin' });
+        await expect(active.orgMembership('token', 'Bellows-AI')).resolves.toEqual({
+            state: 'active',
+            role: 'admin',
+        });
+
+        const plain = clientFor(200, { state: 'active', role: 'member' });
+        await expect(plain.orgMembership('token', 'Bellows-AI')).resolves.toEqual({
+            state: 'active',
+            role: 'member',
+        });
+    });
+
+    it('answers 404 with no membership', async () => {
+        const client = clientFor(404, { message: 'not found' });
+        await expect(client.orgMembership('token', 'Bellows-AI')).resolves.toEqual({ state: 'none', role: 'member' });
+    });
+
+    it('refuses to answer a 403 as a membership verdict — a rate limit or scope failure must not remove anyone', async () => {
+        const client = clientFor(403, { message: 'forbidden' });
+        await expect(client.orgMembership('token', 'Bellows-AI')).rejects.toThrow();
+    });
+});
+
 describe('identity is the numeric id, not the login', () => {
     it('follows a rename: the same account keeps its membership under a new login', async () => {
         const { app, auth, identity } = await setup((store) => {

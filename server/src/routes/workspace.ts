@@ -6,6 +6,7 @@ import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import type { UserExecutor, UserExecutorStore } from '../db/user-executor-store.js';
 import { fullName, type AppConfig, type Repo } from '../config.js';
 import type { UserRepo, UserRepoStore } from '../db/user-repo-store.js';
+import type { RepoAccessScope } from '../github/access-scope.js';
 import type { RepoSource } from '../github/repo-source.js';
 import type { FactsCache } from '../workspace/facts.js';
 import type { CloneQueue } from '../workspace/queue.js';
@@ -108,10 +109,12 @@ export interface WorkspaceRoutesDeps {
     readonly repos: RepoSource;
     readonly facts: FactsCache;
     readonly queue: CloneQueue | null;
+    /** The per-user repo scope: a clone must never widen what /api/stats and /api/repos scoped. */
+    readonly scope?: RepoAccessScope | undefined;
 }
 
 export const workspaceRoutes =
-    ({ config, store, executors, repos, facts, queue }: WorkspaceRoutesDeps): FastifyPluginAsync =>
+    ({ config, store, executors, repos, facts, queue, scope }: WorkspaceRoutesDeps): FastifyPluginAsync =>
     async (app) => {
         const root = config.workspaceRoot;
 
@@ -246,6 +249,28 @@ export const workspaceRoutes =
                     'UNKNOWN_REPO',
                     `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`
                 );
+            }
+
+            /*
+             * The installation check bounds what the SERVER can clone; this one bounds what the
+             * CALLER may reach. The clone rides the App's installation token, so without it the
+             * fetch itself would succeed — scoping the picker and the stats while the checkout
+             * route stayed open would hide repos from nobody who mattered.
+             */
+            if (scope) {
+                const allowed = await scope.scopedNames(caller.user.id);
+                if (allowed !== null) {
+                    const reach = new Set(allowed.map((name) => name.toLowerCase()));
+                    for (const repo of selection) {
+                        if (reach.has(`${repo.owner}/${repo.name}`.toLowerCase())) continue;
+                        return bad(
+                            reply,
+                            'REPO_NOT_ACCESSIBLE',
+                            `"${repo.owner}/${repo.name}" is not one of the repositories your GitHub account can access`,
+                            403
+                        );
+                    }
+                }
             }
 
             const saved = await guard(

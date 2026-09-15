@@ -1,6 +1,8 @@
 import { isRangePreset, resolveRange } from '@factory-ai/core';
 import type { DateRange, Organization } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
+import { callerOf } from '../auth/plugin.js';
+import type { RepoAccessScope } from '../github/access-scope.js';
 import type { AppConfig } from '../config.js';
 import type { StatsService } from '../stats-service.js';
 
@@ -64,7 +66,12 @@ function resolveOrg(config: AppConfig, requested: string | undefined): Organizat
 }
 
 export const statsRoutes =
-    (config: AppConfig, service: StatsService, now: () => number = Date.now): FastifyPluginAsync =>
+    (
+        config: AppConfig,
+        service: StatsService,
+        now: () => number = Date.now,
+        scope?: RepoAccessScope | undefined
+    ): FastifyPluginAsync =>
     async (app) => {
         app.get('/api/stats', async (request, reply) => {
             const query = request.query as StatsQuery;
@@ -92,8 +99,15 @@ export const statsRoutes =
 
             // `org` goes no further on purpose. The service already knows the only organization
             // there is, and a parameter it ignores is worse than no parameter.
+            //
+            // The per-user repo scope narrows WHAT is measured, not which range is measured — so
+            // it rides into `current()` beside the range, and the same read answers every caller.
+            // Null means no scope, or this caller's has never been computed: the full list then.
+            const caller = callerOf(request);
+            const repoFilter = scope && caller ? await scope.scopedNames(caller.user.id) : null;
+
             service.ensureFresh();
-            const payload = service.current(range);
+            const payload = service.current(range, repoFilter ?? undefined);
 
             // A stale cache is still served with 200. A failed read must keep the last
             // good render on screen and explain itself, not blank the dashboard.

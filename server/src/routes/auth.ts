@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { createUserResolver } from '../auth/plugin.js';
 import type { GitHubIdentityClient } from '../auth/github.js';
+import type { RepoAccessScope } from '../github/access-scope.js';
 import { ensureUserWorkspace } from '../workspace/provision.js';
 import { workspaceDir } from '../workspace/reconcile.js';
 import {
@@ -25,6 +26,11 @@ export interface AuthRouteDeps {
     store: AuthStore;
     /** Absent under AUTH_MODE=none, where there is no exchange to make. */
     identity?: GitHubIdentityClient | undefined;
+    /**
+     * The per-user repo scope. Absent whenever scoping cannot be computed — no GitHub App, no
+     * auto-join — and every route then serves the full installation list.
+     */
+    scope?: RepoAccessScope | undefined;
 }
 
 /**
@@ -38,7 +44,7 @@ const failure = (returnTo: string, reason: string): string =>
     `${safeReturnPath(returnTo)}?auth_error=${encodeURIComponent(reason)}`;
 
 export const authRoutes =
-    ({ config, store, identity }: AuthRouteDeps): FastifyPluginAsync =>
+    ({ config, store, identity, scope }: AuthRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const { auth } = config;
         const resolveUser = createUserResolver({ config, store });
@@ -121,13 +127,39 @@ export const authRoutes =
                 const accessToken = await identity.exchange(query.code);
                 const who = await identity.identity(accessToken);
                 caller = await store.signIn(who, config.orgId);
-                // Only asked when an invite did not already admit them, so the ordinary member pays
-                // nothing for it, and only ever after GitHub has confirmed the organization — the
-                // store is told to create the membership, it never decides to.
-                if (!caller && auth.autoJoinGithubOrg) {
+                /*
+                 * The GitHub organization is the source of truth for a row auto-join created.
+                 *
+                 * Asked when nobody has a row yet — the original admission path — and again on
+                 * every sign-in of a row that was itself auto-joined, which is how leaving the org
+                 * ends access and how a role change follows the member, without an admin here
+                 * having to mirror GitHub by hand. An invited row is never checked: an admin named
+                 * this person, so GitHub is not consulted, and "the ordinary member pays no extra
+                 * GitHub call" survives for exactly the population it was coined for.
+                 */
+                if (auth.autoJoinGithubOrg && (!caller || caller.autoJoined)) {
                     const membership = await identity.orgMembership(accessToken, auth.autoJoinGithubOrg);
-                    if (membership === 'active') {
-                        caller = await store.signIn(who, config.orgId, { autoJoin: true });
+                    if (membership.state !== 'active') {
+                        // `pending` and `none` both end the row: the store's claim and its role were
+                        // GitHub's to give, and GitHub now says they are gone. Removal is keyed by
+                        // the ACCOUNT, not the login — the row's login is the label GitHub knew at
+                        // claim time, and a member who renamed would otherwise survive their own
+                        // removal. removeMemberById also deletes the sessions, so even the cookie
+                        // this browser is about to receive would not survive the next request.
+                        if (caller) await store.removeMemberById(config.orgId, caller.user.id);
+                        caller = null;
+                    } else if (!caller) {
+                        // GitHub has confirmed the organization — the store is told to create the
+                        // membership, it never decides to.
+                        caller = await store.signIn(who, config.orgId, {
+                            autoJoin: true,
+                            role: membership.role,
+                        });
+                    } else if (caller.role !== membership.role) {
+                        // Only ever reached for an auto_joined row — an invited caller never got
+                        // here — so re-deriving the role cannot stomp what an invite granted.
+                        await store.updateMemberRole(config.orgId, caller.user.id, membership.role);
+                        caller = { ...caller, role: membership.role };
                     }
                 }
             } catch (e) {
@@ -172,6 +204,23 @@ export const authRoutes =
             // no browser is enforcing.
             await store.createSession(hashToken(token), caller.user.id, new Date(Date.now() + auth.sessionTtlMs));
             reply.setCookie(SESSION_COOKIE, sign(token, secret), cookie);
+
+            /*
+             * The per-user repo scope, recomputed while the credential is fresh.
+             *
+             * Runs after the session exists, because the credential decision has already happened:
+             * a GitHub hiccup here must degrade to "the last computed scope still applies", which a
+             * log line says, never to "sign-in failed", which a throw would say. The scope is
+             * derived data — this is the refresh, not the source of truth.
+             */
+            if (scope) {
+                try {
+                    await scope.refreshUser(caller.user.id, caller.user.login);
+                } catch (e) {
+                    request.log.error({ err: e }, 'repo access refresh failed; keeping the last computed scope');
+                }
+            }
+
             return reply.redirect(returnTo, 302);
         });
 
