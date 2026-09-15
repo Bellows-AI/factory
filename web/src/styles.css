@@ -1241,3 +1241,49 @@ button.primary {
     white-space: nowrap;
     border: 0;
 }
+
+/* The environment panel's Variables | Secrets tab strip and the .env paste box. */
+
+.panel-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.env-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.env-tab.active {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.env-paste {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.env-paste textarea {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    min-height: 120px;
+    padding: 8px 10px;
+    resize: vertical;
+    width: 100%;
+}
+
+.env-paste-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.env-paste-errors {
+    white-space: pre-wrap;
+}
