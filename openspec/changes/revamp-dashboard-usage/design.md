@@ -6,17 +6,20 @@ TTL 30s, keyed by nothing) → read-time `filterTelemetryInput(range)` + `teleme
 read; any new dimension must follow that shape. Telemetry sessions today carry no owner and no
 task; the job board already records `job.session_id` (both CLIs — opencode's id is scraped and
 stored), `job.created_by`, `job.root_job_id`, org-scoped, indexed on `(org_id, created_by,
-created_at)`. Issue #67 will add ingest-time attribution on `session_branch`; that work is in
-progress and this change must not duplicate or pre-empt it. Aggregation invariants live in
-docs/metrics.md and docs/date-range.md (null-not-zero, gap seeding, four token types never summed,
-no monetary fields, bucketing in core never `time_bucket()`).
+created_at)`. #102 landed member attribution on exactly this foundation: the postgres client's
+subquery groups `job` on `(org_id, session_id)` with `min(created_by::text)::uuid` (the author
+guard makes the minimum deterministic), joins `app_user` for display fields, leaves unattributed
+sessions null and counted, and its comment names the join "the whole attribution path" — no
+ingest-time identity column is coming, and this change does not add one. Aggregation invariants
+live in docs/metrics.md and docs/date-range.md (null-not-zero, gap seeding, four token types never
+summed, no monetary fields, bucketing in core never `time_bucket()`).
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Attribution resolved at read time, retroactive over existing history, consuming #67's column
-  when it exists and bridging with the job join until then.
+- Task attribution extending #102's join in place (`root_job_id` beside `created_by`), consuming
+  its member attribution as landed rather than rebuilding it.
 - Scope (`org` / `mine`) and the task-stats block served from the one cached fetch, like ranges.
 - Agent turns counted from each CLI's own session records at run close, stored on the job row,
   reported as a distribution distinct from job turns (runs).
@@ -26,48 +29,48 @@ no monetary fields, bucketing in core never `time_bucket()`).
 
 **Non-Goals:**
 
-- Ingest-time attribution itself (#67 owns it).
-- Reading the transcript store (`add-executor-transcript-store`) — this change counts turns at
-  close, before that store is even implemented; the store remains the future richer source (full
-  transcripts, not a count) and can supersede the close-time read without changing the reported
-  definition.
+- Member attribution — #102 shipped it (join, `unattributedSessions`, the by-user panel); this
+  change consumes it as landed. No ingest-time identity column, ever (the #102 decision).
+- Reading the transcript store (`add-executor-transcript-store`, archived) — this change counts
+  turns at close; the store remains the future richer source (full transcripts, not a count) and
+  can supersede the close-time read without changing the reported definition.
 - Agent turns for laptop/hook sessions — no close-time record exists to count; a future ingest
   change would have to add a source.
-- Cache efficiency, outcome mix, per-repo/per-member panels, hourly buckets for the day preset.
+- Cache efficiency, outcome mix, per-repo panels, hourly buckets for the day preset.
 - Identity for laptop/hook sessions — the dropped `user.*` attributes stay dropped.
 
 ## Decisions
 
-### 1. Attribution: a session→(member, task) map fetched beside the rollups, ingest-time preferred
+### 1. Task attribution: extend the landed join in place
 
-The postgres client runs one extra query per fetch:
+#102's postgres client already resolves each session's member through a `job` subquery grouped on
+`(org_id, session_id)` — `min(created_by::text)::uuid`, the follow-up author guard making the
+minimum deterministic — joined to `app_user` for the display fields, with unattributed sessions
+staying null and counted. The same subquery gains `min(root_job_id::text)::uuid as task_id`:
+every job row sharing a session id sits in one thread (follow-ups copy `root_job_id` from the
+parent), so the minimum is that root, deterministically. `SessionRollup` gains `taskKey`; `user`
+stays exactly as #102 shaped it. No new query, no new index (the #102 note about the unindexed
+grouping and the cooldown-gated read applies unchanged).
 
-```sql
-select session_id, min(created_by) as user_id, min(root_job_id) as task_id
-from job where org_id = $1 and session_id is not null
-group by session_id
-```
+No ingest-time column and no precedence seam, by decision rather than omission: #102's comment
+settles that the read-side join is the whole attribution path and the telemetry tables stay
+identity-free. The earlier design's coalesce arm is deleted, not deferred.
 
-`min()` collapses follow-up rows (author-guarded, same root, so all rows of a session agree).
-The map enriches each `SessionRollup` with `userId`/`taskKey`. When #67's `session_branch` user
-column exists, the summaries query coalesces it ahead of the join — one seam, one query, ingest
-wins because it survives thread removal (the board deletes job rows on `remove`; the store does
-not delete sessions).
-
-Alternatives considered: a web-side join of two endpoints (breaks the one-read cache design and
-moves aggregation out of core); teaching the branch reporter to carry identity now (duplicates
-#67, covers only future runs). The join covers history with zero ingest surface and no migration.
+Alternatives considered: an ingest-time column on `session_branch` (rejected by #102's decision);
+a second board-side task lookup beside the member join (same file, same fetch — one more column
+in the existing subquery is strictly smaller).
 
 ### 2. Scope is a read-time option on `telemetryStats`, mirroring `repos`
 
-`telemetryStats(input, { repos, now, user? })`: a session counts toward totals when its `userId`
-matches, exactly as repo scoping buckets today. Unattributed sessions become a third named
-exclusion beside `otherRepoSessions` and `sessionsWithoutHook` — the existing
-three-distinguishable-failures pattern extends to four. The route takes `?scope=org|mine`,
-resolves the caller from the signed-in session user, and answers `400 SCOPE_REQUIRES_USER` for
-`mine` without one (honest error over silently serving org figures under a personal heading — the
-same reasoning `resolveOrg` applies to unknown orgs). `meta` carries the scope and the resolved
-login. Coverage stays unfiltered, per docs/date-range.md.
+`telemetryStats(input, { repos, now, user? })`: a session counts toward totals when the member
+#102's join resolved for it matches the caller, exactly as repo scoping buckets today.
+Unattributed sessions (no job row — laptop sessions, backfilled transcripts, removed threads)
+are simply out of `mine`, visible through the landed `unattributedSessions` figure, which the
+org scope keeps reporting. The route takes `?scope=org|mine`, resolves the caller from the
+signed-in session user, and answers `400 SCOPE_REQUIRES_USER` for `mine` without one (honest
+error over silently serving org figures under a personal heading — the same reasoning
+`resolveOrg` applies to unknown orgs). `meta` carries the scope and the resolved login. Coverage
+stays unfiltered, per docs/date-range.md.
 
 ### 3. Task stats: raw per-run rows cached in the snapshot, distributions computed in core
 
@@ -169,14 +172,12 @@ same payload block.
 - [Risk] The assistant-entry count drifts if a CLI changes its transcript/session record shape →
   the scripts pin the exact shapes they parse (the house rule for container scripts); a parse
   miss is null, not a wrong number.
-- [Risk] #67's column lands with a different name or shape than assumed → the coalesce seam is one
-  query in one client; adjusting it belongs to whichever change lands second, and until it lands
-  the join is the sole source — stated, not hidden.
-- [Risk] Session ids could collide across orgs (both CLIs mint ids generously but not
-  universally) → the join is org-scoped (`where org_id = $1`), same partitioning every job read
-  already applies.
-- [Risk] Removed threads lose attribution (job rows deleted) → spec'd as unattributed; #67's
-  ingest path is the durable fix; tokens still count in org totals either way.
+- [Risk] Removed threads lose attribution (job rows deleted) → spec'd as unattributed; tokens
+  still count in org totals; the landed `unattributedSessions` figure already makes the state
+  visible.
+- [Risk] #102's join changes shape under this change's feet (it is one query in one client) →
+  the `task_id` column rides the same subquery; the db suite pins member and task attribution
+  together, so a refactor that drops one fails the other's test.
 - [Risk] p95 over few tasks reads as settled → N is surfaced beside every distribution.
 - [Risk] Unmapped opencode token rows make tasks vanish from distributions → excluded-not-zeroed,
   the established null contract; the empty-vs-zero panel state names it.
@@ -187,14 +188,11 @@ same payload block.
 
 ## Migration Plan
 
-One migration of our own: `job.agent_turns` (nullable int, null = unmeasured). The attribution job
-join reads existing columns; #67 owns any schema there. Deploy order is free — the report field is
-optional and unknown pre-change rows read as null. Rollback is revert. If #67 lands first, this
-change's coalesce arm activates against its column in the same PR that renames the seam.
+One migration of our own: `job.agent_turns` (nullable int, null = unmeasured). Task attribution
+extends #102's existing query — no schema. Deploy order is free — the report field is optional
+and unknown pre-change rows read as null. Rollback is revert.
 
 ## Open Questions
 
-- The exact #67 column name on `session_branch` (assumed `user_id` here) — answerable when #67
-  lands; does not change the approach or the task breakdown.
 - Whether the per-task panel later wants a histogram beside the cards — payload already carries
   per-task totals implicitly through the distributions; additive, defer.

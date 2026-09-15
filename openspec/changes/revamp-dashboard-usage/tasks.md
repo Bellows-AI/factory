@@ -1,12 +1,12 @@
-## 1. Core: attribution types and scope filter
+## 1. Core: task attribution type and scope filter
 
-- [ ] 1.1 Add `userId`/`taskKey` to `SessionRollup` (nullable, no synthetic owner) and re-export
-      from `core/src/index.ts`; verify `npm run build -w core` and that a rollup without
-      attribution typechecks through the existing suites
-- [ ] 1.2 Add `user` option to `telemetryStats`: matching sessions count toward totals,
-      non-matching bucket into a new `unattributedSessions`-style exclusion counter beside
-      `otherRepoSessions`/`sessionsWithoutHook`; verify with a core test pinning that a user-scoped
-      run counts only that user's sessions and that coverage is untouched
+- [ ] 1.1 Add `taskKey` to `SessionRollup` (nullable; `user` landed with #102 and stays as shaped)
+      and re-export from `core/src/index.ts`; verify `npm run build -w core` and that a rollup
+      without a task typechecks through the existing suites
+- [ ] 1.2 Add `user` option to `telemetryStats`: sessions whose landed `user` matches the caller
+      count toward totals, the rest fall out of scope (the landed `unattributedSessions` figure
+      keeps naming them); verify with a core test pinning that a user-scoped run counts only that
+      user's sessions and that coverage is untouched
 - [ ] 1.3 Add the independent recomputation test (no helpers imported from `telemetry.ts`, the
       `telemetry.independent.test.ts` pattern) covering scope exclusion and the unattributed count;
       verify `npx vitest run core/test/telemetry.independent.test.ts` passes
@@ -41,16 +41,16 @@
       ≤ 92 days, week beyond — and carry `granularity` in the payload; verify with frozen-`now`
       tests at 92 and 93 days
 
-## 4. Server: attribution join and snapshot extension
+## 4. Server: task attribution and snapshot extension
 
-- [ ] 4.1 Extend `postgres-client.fetchRollups()` with the org-scoped session→(user, task) map
-      query (`min(created_by)`, `min(root_job_id)` grouped by `session_id`) and enrich the rollups;
-      verify with a server db test covering executor sessions, follow-up chains agreeing, and
-      pre-accounts rows (`created_by` null → unattributed)
-- [ ] 4.2 Add the #67 coalesce seam: when the branch-record user column exists it wins over the
-      join; verify with a db fixture that pins the disagreement case (ingest says A, join says B →
-      A is used); if #67 has not landed, pin the join-only behavior and leave the seam named in a
-      test placeholder that fails loudly when the column arrives unnamed
+- [ ] 4.1 Extend #102's attribution subquery in `postgres-client.fetchRollups()` with
+      `min(root_job_id::text)::uuid as task_id` (same grouping, follow-ups copy the root so the
+      minimum is deterministic) and map it onto `taskKey`; verify with a server db test covering
+      executor sessions gaining a task beside their landed member attribution, follow-up chains
+      agreeing on one root, and #102's member join untouched by the change
+- [ ] 4.2 Pin the removed-thread scenario: deleting a thread's job rows leaves its sessions with
+      neither member nor task, the unattributed count includes them, and org totals keep their
+      tokens; verify with a db test that removes the thread and re-reads the rollups
 - [ ] 4.3 Extend the cached snapshot with per-run job rows (`root_job_id, created_by, created_at,
       agent_turns`, org-scoped) read in the same fetch; verify the cache test still shows one
       database read serving multiple ranges (and now scopes) without a second fetch
@@ -106,7 +106,8 @@
       `series.granularity`; verify the render smoke for daily and weekly fallback and that
       `labelEvery` keeps labels legible at 92 daily points
 - [ ] 7.5 Surface the unattributed-sessions figure in DataQualityPanel as its own line (distinct
-      from no-hook and other-repo); verify the render smoke shows all three exclusions separately
+      from no-hook and other-repo; `ByUserPanel` already names it — DataQuality lists it beside
+      the other setup failures); verify the render smoke shows all the exclusions separately
 
 ## 8. Docs and end-to-end verification
 

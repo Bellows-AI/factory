@@ -3,27 +3,28 @@
 ## Why
 
 The dashboard measures consumption and nothing else, at a granularity nobody acts on. It cannot
-answer "what did *I* use" (telemetry sessions carry no owner), it cannot answer "what does a task
-cost" (no per-task figures exist anywhere in the payload), and its one chart buckets by ISO week,
-which hides the day-to-day variance that is the actual signal. Issue #67 (in progress) threads
-member identity into session reporting at **ingest time** — future runs only — but the dashboard
-needs a **read path** and coverage of existing history, neither of which #67 includes.
+answer "what did *I* use" (no scope exists — #102's by-user rows are a display breakdown, not a
+filter), it cannot answer "what does a task cost" (no per-task figures exist anywhere in the
+payload — #102's join attributes sessions to members but not to tasks), and its one chart buckets
+by ISO week, which hides the day-to-day variance that is the actual signal. #102 settled the
+attribution foundation: a read-side job join that resolves each session's member, with
+`unattributedSessions` as an explicit figure, and it names that join "the whole attribution path"
+— no ingest-time identity column is coming.
 
 ## What Changes
 
-- **Read-side session attribution**: `SessionRollup` gains `userId` and `taskKey` (the job
-  thread's `root_job_id`). The postgres telemetry client enriches sessions by joining
-  `job.session_id → (created_by, root_job_id)` — retroactive over all existing rows, both CLIs
-  (opencode ids are scraped and stored the same way), no ingest changes. When #67's ingest-time
-  attribution lands on `session_branch`, it takes precedence for new sessions (it survives thread
-  removal, which deletes job rows); the join remains the fallback and the bridge for history.
+- **Task attribution**: `SessionRollup` gains `taskKey` (the job thread's `root_job_id`),
+  extending #102's landed join in place — the same board rows that resolve a session's member
+  (`job.session_id → created_by`) also know its thread, retroactively over all existing rows and
+  both CLIs (opencode ids are scraped and stored the same way). No ingest changes; no
+  ingest-time column, per #102's decision.
 - **Org vs my usage**: `/api/stats` gains a `scope` dimension (`org` default, `mine` = the signed-in
-  caller). Filtering happens at read time over the cached `TelemetryInput` — the same shape as the
-  range filter, so no new cache slot. The dashboard grows an org/my toggle. Sessions with no
-  attributable owner (laptop/hook sessions, whose identity attributes are dropped on purpose —
-  docs/telemetry.md) count in the org scope and render as an explicit *unattributed* figure, never
-  silently inside "mine". Under `AUTH_MODE=none` there is no "me"; the toggle is absent, not
-  disabled.
+  caller) — a filter over every figure, not another breakdown panel. Filtering happens at read
+  time over the cached `TelemetryInput`, matching sessions against #102's `user` — the same shape
+  as the range filter, so no new cache slot. The dashboard grows an org/my toggle. Sessions with
+  no attributable owner (laptop/hook sessions; the board holds no job row for them) count in the
+  org scope and stay in #102's explicit *unattributed* figure, never silently inside "mine".
+  Under `AUTH_MODE=none` there is no "me"; the toggle is absent, not disabled.
 - **Per-task usage stats**: a new panel reporting avg / p50 / p95 per task for three figures —
   tokens, **job turns** (runs), and **agent turns** — over the selected range. The two turn kinds
   are distinct measurements and are never conflated (see the terminology rule below). "Task" =
@@ -68,9 +69,9 @@ preset, monetary figures (permanent non-goal, docs/metrics.md).
 
 ### New Capabilities
 
-- `usage-attribution`: agent sessions are attributed to a member and a task at read time, from the
-  job join now and from #67's ingest-time attribution when it lands; `/api/stats` can scope
-  figures to the signed-in caller.
+- `usage-attribution`: sessions are attributed to their task thread at read time (extending
+  #102's member attribution, which stands as landed), and `/api/stats` can scope every figure to
+  the signed-in caller.
 - `task-usage-stats`: per-task usage distributions — tokens per task (avg, p50, p95), job turns
   (runs) per task, and agent turns per task as a distinct, separately-counted figure — over the
   selected range, with the null-not-zero and N-surfacing contracts.
@@ -79,15 +80,15 @@ preset, monetary figures (permanent non-goal, docs/metrics.md).
 
 ### Modified Capabilities
 
-<!-- openspec/specs/ is empty; no existing capability's requirements change. -->
+<!-- openspec/specs/ holds executor-transcripts only; no existing capability's requirements change. -->
 
 ## Impact
 
-- `core/src/types.ts` (`SessionRollup.userId`/`taskKey`, series and stats payload types),
-  `core/src/telemetry.ts` (distribution math, daily series, scope filter),
+- `core/src/types.ts` (`SessionRollup.taskKey` — `user` landed with #102; series and stats payload
+  types), `core/src/telemetry.ts` (distribution math, daily series, scope filter),
   `core/src/metrics.ts` (day bucketing), `core/src/index.ts` re-exports.
-- `server/src/telemetry/postgres-client.ts` (the job join; prefers `session_branch` attribution
-  once it exists), `server/src/stats-service.ts` (read-time scope filter, task-stats block from
+- `server/src/telemetry/postgres-client.ts` (extend #102's attribution subquery with
+  `root_job_id`), `server/src/stats-service.ts` (read-time scope filter, task-stats block from
   the job store), `server/src/routes/stats.ts` (`scope` query param, caller resolution).
 - Agent-turn plumbing: a migration adding `job.agent_turns` (nullable int), the completion report
   accepting an optional `agentTurns`, `driver/src/scripts/` gaining the claude-code transcript
@@ -100,10 +101,11 @@ preset, monetary figures (permanent non-goal, docs/metrics.md).
   docs/jobs.md), plus docs/metrics.md attribution/date-range updates.
 - Tests: core pure-aggregation suites (distribution null rules, daily seeding, scope filter,
   agent-turn exclusion), driver script suites (turn-count readouts, report shape), server db suite
-  (join attribution incl. follow-up chains and removed threads; agent_turns storage), web render
-  smoke.
-- Coordination: issue #67 (ingest attribution — this change consumes its column, does not create
-  it; until it lands the join is the only source and that is stated, not hidden),
-  `add-executor-transcript-store` (independent: that change persists transcripts for later richer
-  analysis; this change counts turns at close and does not read the store).
+  (task attribution incl. follow-up chains and removed threads, on top of #102's member
+  attribution; agent_turns storage), web render smoke.
+- Coordination: #102 landed issue #67's session attribution as the read-side join and chose it as
+  the whole path (telemetry tables stay identity-free) — this change extends that join in place
+  and adds no ingest-time column. `add-executor-transcript-store` (archived; it persists
+  transcripts for later richer analysis — this change counts turns at close and does not read the
+  store).
 - Migrations of our own: `job.agent_turns` only. The attribution join needs none.
