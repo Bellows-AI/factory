@@ -52,22 +52,22 @@
 
 ## 4. Driver: the publish flag (both executors, one change)
 
-- [ ] 4.1 Make the publish step conditional on the claim's `publish` flag in `driver/src/`
+- [x] 4.1 Make the publish step conditional on the claim's `publish` flag in `driver/src/`
       (docker and kubernetes paths read the same claim object); absent flag = today's behavior;
       verify `driver/test/` pins: flag false skips publish (no publish containers/Jobs), flag
       absent behaves byte-identically to the current suite's expectations
-- [ ] 4.2 Verify executor parity explicitly: the kubernetes path gates the same aux-Job publish
+- [x] 4.2 Verify executor parity explicitly: the kubernetes path gates the same aux-Job publish
       sequence on the same flag; verify with the k8s-side test twins and `npm run test:k8s`
       (offline phase) still green
 
 ## 5. Blocks and the default workflow
 
-- [ ] 5.1 Write the base workflow definition (`fix-issue`: fetch-issue → implement → review x3 →
+- [x] 5.1 Write the base workflow definition (`fix-issue`: fetch-issue → implement → review x3 →
       gates → gate-fix x3 → publish) with board-owned prompt templates carrying `{{...}}`
       placeholders and the strict `VERDICT:` contract for review; ship as a seeded org-level
       default; verify the validator accepts it and a walkthrough unit test interpolates every
       placeholder
-- [ ] 5.2 Write the block templates: fetch-issue, execute (`/fix` minus its loop skeleton),
+- [x] 5.2 Write the block templates: fetch-issue, execute (`/fix` minus its loop skeleton),
       review, fix, gate-fix; each ends with its deterministic marker where an edge needs one;
       verify template-review against the interpolation tests and the 16 KiB shares
 - [ ] 5.3 Extend `scripts/test-jobs.sh` with a stub workflow walked end-to-end offline (stub
