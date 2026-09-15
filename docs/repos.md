@@ -44,6 +44,10 @@ their GitHub account can reach — computed only where scoping is active (a GitH
 plus `auth.auto_join_github_org`; any deployment short of both is unscoped, and `AUTH_MODE=none` is
 unscoped by construction because there is no client to enumerate with).
 
+  sign-in, which recomputes their set. (The roster
+  sweep maintains membership rows only — it never recomputes repo sets.) A GitHub failure during a
+  recompute logs and leaves the last computed set standing — the store is only ever written on a
+  successful enumeration, so the set is last-known-truth, never half of one.
 - **The computation uses the credential the server already holds, not the member's token.** At
   sign-in the server asks, with the installation token: the org's teams (cached org-wide, 10-minute
   TTL — same figure and same reasoning as the installation list), each team's repos (cached the
@@ -51,7 +55,8 @@ unscoped by construction because there is no client to enumerate with).
   not-yet-reachable repo (`?affiliation=direct` — team-reached repos are not re-probed). The union,
   intersected with the installation list, is stored per member (`user_repo_access`, one row, one
   `text[]`). No new OAuth scope, no user-access token, no consent screen change; the cost is a
-  handful of rate-limit points per login against the installation's 1,500/hour.
+  handful of rate-limit points per login against the installation's own quota — a minimum of
+  5,000 requests/hour, scaling with the org's size (15,000 on Enterprise Cloud).
 - **An empty set is a real answer; a missing row is no answer at all.** `user_repo_access` has no
   row for an account that has never been computed — that account is unscoped until their next
   sign-in, which is what keeps accounts that pre-date scoping working. An EMPTY array means GitHub

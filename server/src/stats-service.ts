@@ -193,8 +193,11 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
         return {
             ...base,
             // Reachable but silent is its own state: it lets the panels render their structure,
-            // which is how you see the pipeline is wired and just has nothing to say yet.
-            status: entry.value.input.sessions.length === 0 ? 'empty' : 'ok',
+            // which is how you see the pipeline is wired and just has nothing to say yet. Judged
+            // from the SCOPED stats — the status describes what THIS caller is looking at, so a
+            // member whose subset holds no sessions sees "empty" even when the org-wide cache
+            // does not.
+            status: (stats?.totals.sessions ?? 0) === 0 ? 'empty' : 'ok',
             reason: telemetryFailure?.reason ?? null,
             fetchedAt: new Date(entry.fetchedAt).toISOString(),
             ageSeconds: Math.floor((now() - entry.fetchedAt) / 1000),

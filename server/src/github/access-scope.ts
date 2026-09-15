@@ -94,7 +94,16 @@ export function createRepoAccessScope({
         async refreshUser(userId, login) {
             // list(), not snapshot(): the refresh path, so a cold cache is warmed here rather than
             // intersecting against an empty list — which would wrongly store "can reach nothing".
-            const installation = (await repos.list()).map(fullName);
+            const listed = await repos.list();
+            // list() never throws; a failed fetch comes back as an EMPTY list with lastError set.
+            // Persisting that intersection would overwrite a good set with an authoritative
+            // "nothing" — every scoped route then denies until the next sign-in — so an
+            // empty-because-unreachable read aborts the refresh and the last computed set stands.
+            // An empty list with NO error is a real state: the installation has no repositories.
+            if (listed.length === 0 && repos.lastError()) {
+                throw new Error(`Cannot refresh repository access: ${repos.lastError()}`);
+            }
+            const installation = listed.map(fullName);
 
             const reachable = new Set<string>();
             for (const team of await cached(teams)) {

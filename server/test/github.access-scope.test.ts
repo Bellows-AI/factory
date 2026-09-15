@@ -58,6 +58,31 @@ describe('refreshUser', () => {
         expect(await access.repos('user-1')).toEqual(['acme/api']);
     });
 
+    it('never persists an empty intersection that came from a failed installation fetch', async () => {
+        // A cold RepoSource failure answers list() with [] and a lastError — intersecting that
+        // would store an authoritative "nothing", denying every scoped route until the next
+        // sign-in. The refresh must abort instead, and an empty list WITHOUT an error stays a
+        // real answer (an installation with no repositories).
+        const access = memoryUserRepoAccessStore();
+        await access.setRepos('user-1', ['acme/api']);
+        const failing = createRepoSource({
+            client: {
+                listRepositories: async () => {
+                    throw new Error('installation unreachable');
+                },
+            },
+        });
+        const scope = createRepoAccessScope({
+            appClient: stubAppClient({ listRepositories: async () => ({ repos: [], installation: null }) }),
+            repos: failing,
+            org: ORG,
+            access,
+        });
+
+        await expect(scope.refreshUser('user-1', 'octocat')).rejects.toThrow('installation unreachable');
+        expect(await access.repos('user-1')).toEqual(['acme/api']);
+    });
+
     it('reuses the org-wide team answers across users, but probes membership per user', async () => {
         const { appClient, scope } = setup();
         appClient.teamRepoLists.set('core', [{ owner: 'acme', name: 'api' }]);

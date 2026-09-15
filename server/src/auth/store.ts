@@ -491,21 +491,27 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             // `and auto_joined` is the store-level half of "the store never admits on its own
             // authority", read in reverse: GitHub may only ever un-create what it created. An
             // invited row is untouched by every GitHub-derived caller, whatever they pass in.
-            const rows = await sql<{ user_id: string }[]>`
-                delete from org_membership
-                where org_id = ${orgId} and user_id = ${userId} and auto_joined
-                returning user_id
-            `;
-            const row = rows[0];
-            if (!row) return 'missing';
-            // The same cleanup removeMember does: sessions go outright, personal tokens are marked.
-            await sql`delete from session where user_id = ${row.user_id}`;
-            await sql`
-                update access_token set revoked_at = now()
-                where org_id = ${orgId} and user_id = ${row.user_id}
-                  and kind = 'personal' and revoked_at is null
-            `;
-            return 'removed';
+            //
+            // One transaction, because the three writes are one decision: a cleanup that failed
+            // after the delete would leave live-looking credentials parked on disk, and a later
+            // auto-join re-admitting the same account would hand them back working.
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ user_id: string }[]>`
+                    delete from org_membership
+                    where org_id = ${orgId} and user_id = ${userId} and auto_joined
+                    returning user_id
+                `;
+                const row = rows[0];
+                if (!row) return 'missing';
+                // The same cleanup removeMember does: sessions go outright, personal tokens are marked.
+                await tx`delete from session where user_id = ${row.user_id}`;
+                await tx`
+                    update access_token set revoked_at = now()
+                    where org_id = ${orgId} and user_id = ${row.user_id}
+                      and kind = 'personal' and revoked_at is null
+                `;
+                return 'removed';
+            });
         },
 
         async updateMemberRole(orgId, userId, role) {

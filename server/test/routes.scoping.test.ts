@@ -148,6 +148,10 @@ describe('GET /api/stats', () => {
             'acme/web',
         ]);
         expect(body.meta.telemetry.repoFilter).toEqual(['acme/web']);
+        // The fixture's sessions all live on Bellows-AI/bellows.ai, outside this member's set —
+        // "reachable but silent" is the honest status for a caller whose subset has no activity,
+        // and it is derived from THEIR figures, not the org-wide cache's.
+        expect(body.meta.telemetry.status).toBe('empty');
     });
 
     it('keeps the full installation in meta for a member with no computed set', async () => {
@@ -160,6 +164,7 @@ describe('GET /api/stats', () => {
         const response = await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
 
         expect(response.json().meta.repos).toHaveLength(REPOS.length);
+        expect(response.json().meta.telemetry.status).toBe('ok');
     });
 });
 

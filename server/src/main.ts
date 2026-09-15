@@ -27,7 +27,7 @@ import type { GitHubConfig } from './config.js';
  * How long between roster sweeps. At-login reconciliation only would leave a removed member a
  * working dashboard for up to a session's TTL — two weeks by default — so the sweep is what makes
  * removal land without waiting for the member to sign in again. Two paginated GitHub calls per
- * sweep, against an installation quota of 1,500 an hour.
+ * sweep, against an installation quota of at least 5,000 an hour.
  */
 const ROSTER_SWEEP_MS = 15 * 60 * 1000;
 

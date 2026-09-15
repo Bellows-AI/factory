@@ -116,10 +116,10 @@ export function createGitHubAppClient(
         return response.json();
     };
 
-    // Membership and collaborator questions are answered with 204 (yes) or 404 (no) and no body —
-    // not with JSON — so they get their own path through fetch. Any other status is a fault: a 403
-    // here means the App lacks the permission the probe needs, and silently reading it as "no"
-    // would de-scope members who in fact have access.
+    // Membership and collaborator questions are answered with no-JSON statuses — 204 (yes) or 404
+    // (no) — so they get their own path through fetch. Any other status is a fault: a 403 here
+    // means the App lacks the permission the probe needs, and silently reading it as "no" would
+    // de-scope members who in fact have access.
     const probe = async (path: string): Promise<boolean> => {
         const response = await fetchFn(`${github.apiUrl}${path}`, {
             headers: {
@@ -133,13 +133,42 @@ export function createGitHubAppClient(
         throw new GitHubAppError(`GET ${path} failed with ${response.status}`);
     };
 
-    /** The standard page walk: 100 a page, empty page ends, MAX_PAGES is the loop guard. */
+    // The team-membership question looks like the probe above and answers differently: "Get team
+    // membership for a user" says yes with a 200 AND a body (`state: 'active' | 'pending'`), not
+    // with a 204. Reading 200 as a fault made every real team grant throw — and a member whose
+    // enumeration always throws never gets a stored set, which the scoped routes read as
+    // unscoped. Only 404 means "not a member"; anything else is a fault, never a guess.
+    const teamMembershipProbe = async (path: string): Promise<boolean> => {
+        const response = await fetchFn(`${github.apiUrl}${path}`, {
+            headers: {
+                authorization: `Bearer ${await tokens.get()}`,
+                accept: 'application/vnd.github+json',
+                'user-agent': 'factory-ai',
+            },
+        });
+        if (response.status === 404) return false;
+        if (!response.ok) throw new GitHubAppError(`GET ${path} failed with ${response.status}`);
+        const body = (await response.json()) as { state?: string };
+        return body.state === 'active';
+    };
+
+    /**
+     * The standard page walk: 100 a page, a short page ends it (a partial batch is GitHub saying
+     * "this is the last one", so asking again would spend a rate-limit point to learn nothing),
+     * and exhausting the ceiling throws rather than returning a prefix. A caller that persists the
+     * result — a roster, a team's repos — would otherwise treat the first 10,000 entries as the
+     * whole answer and quietly de-scope everyone it never saw.
+     */
     const pages = async function* <T>(path: string): AsyncGenerator<T[]> {
         for (let page = 1; page <= MAX_PAGES; page += 1) {
             const batch = (await call(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`)) as T[];
             if (batch.length === 0) return;
             yield batch;
+            if (batch.length < 100) return;
         }
+        throw new GitHubAppError(
+            `GET ${path}: more than ${MAX_PAGES * 100} entries — refusing a truncated enumeration`
+        );
     };
 
     return {
@@ -215,7 +244,7 @@ export function createGitHubAppClient(
         },
 
         async teamMembership(org, slug, login) {
-            return probe(
+            return teamMembershipProbe(
                 `/orgs/${encodeURIComponent(org)}/teams/${encodeURIComponent(slug)}/memberships/${encodeURIComponent(login)}`
             );
         },
