@@ -68,9 +68,10 @@ unscoped by construction because there is no client to enumerate with).
   and `repoFilter` reflect the caller's subset, and the figures are recomputed for it — the shared
   cache stays org-wide, exactly like the date range), `POST /api/jobs` (`403 REPO_NOT_ACCESSIBLE`
   outside the set — hiding the picker while the API accepted the name would make honesty depend on
-  the SPA's politeness), and `PUT /api/workspace/repos` (the clone must not widen what the stats
-  scoped). Board reads stay open: the jobs list is the org's audit trail. An organization token
-  names no person and is never scoped.
+  the SPA's politeness), `PUT /api/workspace/repos` (the clone must not widen what the stats
+  scoped), and `GET /api/env` (the repo-scope env list is filtered to the caller's set — the names
+  alone reveal that a repo exists and is configured). Board reads stay open: the jobs list is the
+  org's audit trail. An organization token names no person and is never scoped.
 - **`otherRepoSessions` reads differently under scoping.** Sessions on repos the CALLER cannot
   reach land there, beside the sessions on repos outside the installation. That is the honest
   description of what was excluded and why — fixing it would mean per-user telemetry reads and a

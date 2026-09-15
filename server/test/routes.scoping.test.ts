@@ -10,6 +10,7 @@ import { createStatsService } from '../src/stats-service.js';
 import {
     githubAuth,
     memoryAuthStore,
+    memoryEnvVarStore,
     memoryUserRepoStore,
     signedIn,
     stubTelemetryClient,
@@ -44,9 +45,11 @@ interface BootOptions {
     /** login → computed set. Omit `scope` entirely to boot unscoped. */
     scope?: Map<string, readonly string[] | null>;
     workspaceRoot?: string | null;
+    /** Registers the env routes, backed by a memory store the boot hands back. */
+    withEnvVars?: boolean;
 }
 
-async function boot({ scope: sets, workspaceRoot = null }: BootOptions = {}) {
+async function boot({ scope: sets, workspaceRoot = null, withEnvVars = false }: BootOptions = {}) {
     const store = memoryAuthStore();
     // POST /api/jobs is the only jobs route these tests reach, and create() is its whole store
     // surface — the remaining methods are the claim protocol, which worker tokens, not members,
@@ -55,6 +58,7 @@ async function boot({ scope: sets, workspaceRoot = null }: BootOptions = {}) {
     const config = testConfig({ auth: githubAuth(), workspaceRoot });
     const repos = staticRepoSource(REPOS);
     const service = createStatsService({ config, repos, telemetry: stubTelemetryClient() });
+    const envVars = withEnvVars ? memoryEnvVarStore() : undefined;
     app = await buildApp({
         config,
         service,
@@ -63,8 +67,9 @@ async function boot({ scope: sets, workspaceRoot = null }: BootOptions = {}) {
         auth: store,
         scope: sets ? fixedScope(sets) : undefined,
         userRepos: workspaceRoot ? memoryUserRepoStore() : undefined,
+        envVars,
     });
-    return { app, store };
+    return { app, store, envVars: envVars! };
 }
 
 const settle = async (): Promise<void> => {
@@ -232,6 +237,24 @@ describe('PUT /api/workspace/repos', () => {
         });
 
         expect(response.statusCode).toBe(202);
+    });
+});
+
+describe('GET /api/env', () => {
+    it("filters the repo scope list to the caller's set", async () => {
+        const sets = new Map();
+        const { app, store, envVars } = await boot({ scope: sets, withEnvVars: true });
+        const { caller, cookie } = await member(store);
+        sets.set(caller.user.id, ['acme/web']);
+        await envVars.replaceRepo('acme', 'web', [{ name: 'MODEL', value: 'x', isSecret: false }]);
+        await envVars.replaceRepo('Bellows-AI', 'bellows.ai', [{ name: 'MODEL', value: 'y', isSecret: false }]);
+
+        const response = await app.inject({ method: 'GET', url: '/api/env', headers: { cookie } });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().repos.map((r: { owner: string; name: string }) => `${r.owner}/${r.name}`)).toEqual([
+            'acme/web',
+        ]);
     });
 });
 

@@ -324,6 +324,23 @@ describe('sync on sign-in', () => {
         expect(await auth.listMembers(ORG)).toEqual([]);
         expect(auth.sessions()).toEqual([]);
     });
+
+    it('treats a GitHub failure to answer as a failed sign-in, never as a removal', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        await signIn(app);
+
+        // A rate limit or a scope problem answers 403 in the wild; the client turns that into a
+        // throw. The route must land it on the `github` failure, with the row and session intact.
+        identity.orgMembership = async () => {
+            throw new Error('rate limited');
+        };
+        const response = await signIn(app);
+
+        expect(errorOf(response.headers.location as string)).toBe('github');
+        expect(await auth.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'member', claimed: true }]);
+        expect(auth.sessions()).toHaveLength(1);
+    });
 });
 
 describe('the identity client', () => {
