@@ -359,9 +359,14 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
         db.prepare('insert into message (session_id, data) values (?, ?)').run(sessionId, JSON.stringify(data));
     };
 
-    const run = (dbPath: string, dir: string): { answer: Record<string, unknown> } => {
+    const run = (dbPath: string, dir: string, startedMs?: string): { answer: Record<string, unknown> } => {
         const stdout = execFileSync('node', [pathOf('opencode-readout.cjs')], {
-            env: { ...process.env, OPENCODE_DB: dbPath, OPENCODE_DIR: dir },
+            env: {
+                ...process.env,
+                OPENCODE_DB: dbPath,
+                OPENCODE_DIR: dir,
+                ...(startedMs !== undefined ? { RUN_STARTED_MS: startedMs } : {}),
+            },
             encoding: 'utf8',
         });
         return { answer: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
@@ -468,6 +473,24 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
 
         const { answer } = run(dbPath, MINE);
         expect(answer.turns).toBe(3);
+    });
+
+    it('counts only the turns this run wrote, when the driver passes the run start', () => {
+        // A follow-up RESUMES the root conversation: without the bound, its close-time read
+        // would book the earlier runs' turns again, and the task total would overstate. The
+        // bound is the run's own start (epoch ms); messages without a usable time cannot be
+        // placed in either side, so they are skipped, never mis-booked.
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 1000 } });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 9000 } });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 9500 } });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
+        db.close();
+
+        const { answer } = run(dbPath, MINE, '8000');
+        expect(answer.turns).toBe(2);
+        // Without the bound the whole conversation counts, as before.
+        expect(run(dbPath, MINE).answer.turns).toBe(4);
     });
 
     it('reports the LAST error when the run errored, retried through it, and errored again', () => {
@@ -613,9 +636,14 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
 describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
     const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
-    const run = (transcriptDir: string): { answer: Record<string, unknown> } => {
+    const run = (transcriptDir: string, startedAt?: string): { answer: Record<string, unknown> } => {
         const stdout = execFileSync('node', [pathOf('claude-turns.cjs')], {
-            env: { ...process.env, CLAUDE_TRANSCRIPT_DIR: transcriptDir, CLAUDE_SESSION_ID: SESSION_ID },
+            env: {
+                ...process.env,
+                CLAUDE_TRANSCRIPT_DIR: transcriptDir,
+                CLAUDE_SESSION_ID: SESSION_ID,
+                ...(startedAt !== undefined ? { RUN_STARTED_AT: startedAt } : {}),
+            },
             encoding: 'utf8',
         });
         return { answer: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
@@ -668,6 +696,28 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
 
         const { answer } = run(dir);
         expect(answer.turns).toBe(1);
+    });
+
+    it('counts only the entries this run wrote, when the driver passes the run start', () => {
+        // Same delta rule as the opencode readout: a follow-up resumes this transcript, and
+        // the whole file would book the earlier runs' turns again. Entries without a
+        // timestamp cannot be placed in either side and are skipped.
+        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(
+            join(project, `${SESSION_ID}.jsonl`),
+            [
+                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T05:00:00Z' }),
+                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T07:00:00Z' }),
+                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T08:00:00Z' }),
+                JSON.stringify({ type: 'assistant' }),
+            ].join('\n')
+        );
+
+        const { answer } = run(dir, '2026-08-20T06:00:00Z');
+        expect(answer.turns).toBe(2);
+        // Without the bound the whole transcript counts, as before.
+        expect(run(dir).answer.turns).toBe(4);
     });
 
     it('answers null when the transcript is missing — the container died first, the run never spoke', () => {

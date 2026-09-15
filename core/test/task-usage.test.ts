@@ -39,6 +39,7 @@ function session(over: Partial<SessionRollup>): SessionRollup {
 function run(over: Partial<JobRun>): JobRun {
     return {
         rootJobId: 't1',
+        repo: 'o/r',
         createdBy: ALICE.id,
         createdAt: '2026-08-20T00:00:00.000Z',
         agentTurns: 0,
@@ -264,6 +265,28 @@ describe('caller scope', () => {
             [run({ rootJobId: 't1', createdBy: null, agentTurns: 5 })]
         );
         expect(org.tokensPerTask.p50).toBe(2000);
+    });
+});
+
+describe('repo scope', () => {
+    it('excludes out-of-repo sessions and runs from every distribution', () => {
+        // The totals above the task panel bucket other-repo work out; the panel must not
+        // quietly include what the page just excluded.
+        const stats = taskUsageStats(
+            [
+                session({ sessionId: 'a', taskKey: 't1', tokens: T(1000, 1000) }),
+                session({ sessionId: 'b', taskKey: 't2', tokens: T(500, 500), repo: 'other/repo' }),
+            ],
+            [run({ rootJobId: 't1', agentTurns: 3 }), run({ rootJobId: 't2', agentTurns: 4, repo: 'other/repo' })],
+            { repos: ['o/r'] }
+        );
+        expect(stats.tokensPerTask).toEqual({ avg: 2000, p50: 2000, p95: 2000, tasks: 1 });
+        expect(stats.agentTurnsPerTask).toEqual({ avg: 3, p50: 3, p95: 3, tasks: 1 });
+        // A null-repo input is out the same way: it never reached the totals either.
+        const unlabeled = taskUsageStats([session({ sessionId: 'c', taskKey: 't3', repo: null })], [], {
+            repos: ['o/r'],
+        });
+        expect(unlabeled.tokensPerTask.tasks).toBe(0);
     });
 });
 

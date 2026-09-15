@@ -384,8 +384,9 @@ describe('GET /api/stats scope', () => {
             activeSeconds: 60,
             commits: 0,
         });
-        const runOf = (rootJobId: string, createdBy: string, agentTurns: number) => ({
+        const runOf = (rootJobId: string, repo: string, createdBy: string, agentTurns: number) => ({
             rootJobId,
+            repo,
             createdBy,
             createdAt: '2026-08-20T00:00:00.000Z',
             agentTurns,
@@ -404,7 +405,7 @@ describe('GET /api/stats scope', () => {
                 ],
                 coverage: { from: '2026-08-20T00:00:00.000Z', to: '2026-08-20T01:00:00.000Z' },
             }),
-            runs: () => [runOf('t-carol', caller.user.id, 7), runOf('t-dave', dave.id, 3)],
+            runs: () => [runOf('t-carol', TEST_REPO, caller.user.id, 7), runOf('t-dave', TEST_REPO, dave.id, 3)],
         });
         const h = await harness({ telemetry, auth: store, config: { auth: githubAuth() } });
         app = h.app;
@@ -459,11 +460,12 @@ describe('GET /api/stats task statistics', () => {
         taskKey: string | null,
         input: number | null,
         output: number | null,
-        seen: string
+        seen: string,
+        repo = TEST_REPO
     ) => ({
         sessionId,
         agent: 'claude-code',
-        repo: TEST_REPO,
+        repo,
         user: null,
         taskKey,
         firstSeen: seen,
@@ -488,14 +490,42 @@ describe('GET /api/stats task statistics', () => {
                     // and the task still enters the token distribution on what it measured.
                     taskSession('c', 't2', 500, 500, '2026-08-20T03:00:00Z'),
                     taskSession('d', 't2', null, null, '2026-08-20T04:00:00Z'),
+                    // An other-repo session: excluded from the totals above, excluded here too.
+                    taskSession('e', 't5', 90_000, 90_000, '2026-08-20T05:00:00Z', 'Other/repo'),
                 ],
                 coverage: { from: '2026-08-20T01:00:00Z', to: '2026-08-20T03:00:00Z' },
             }),
             runs: () => [
-                { rootJobId: 't1', createdBy: 'u-alice', createdAt: '2026-08-19T00:00:00Z', agentTurns: 9 },
-                { rootJobId: 't1', createdBy: 'u-alice', createdAt: '2026-08-20T05:00:00Z', agentTurns: 4 },
+                {
+                    rootJobId: 't1',
+                    repo: TEST_REPO,
+                    createdBy: 'u-alice',
+                    createdAt: '2026-08-19T00:00:00Z',
+                    agentTurns: 9,
+                },
+                {
+                    rootJobId: 't1',
+                    repo: TEST_REPO,
+                    createdBy: 'u-alice',
+                    createdAt: '2026-08-20T05:00:00Z',
+                    agentTurns: 4,
+                },
                 // t2's only run is unmeasured: excluded from the turn distribution only.
-                { rootJobId: 't2', createdBy: 'u-bob', createdAt: '2026-08-20T06:00:00Z', agentTurns: null },
+                {
+                    rootJobId: 't2',
+                    repo: TEST_REPO,
+                    createdBy: 'u-bob',
+                    createdAt: '2026-08-20T06:00:00Z',
+                    agentTurns: null,
+                },
+                // An other-repo task: out of the repo scope the totals apply, so out of here too.
+                {
+                    rootJobId: 't5',
+                    repo: 'Other/repo',
+                    createdBy: 'u-bob',
+                    createdAt: '2026-08-20T07:00:00Z',
+                    agentTurns: 50,
+                },
             ],
         });
         return harness({ telemetry });
@@ -508,11 +538,14 @@ describe('GET /api/stats task statistics', () => {
         await h.settle();
 
         const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
-        // Tokens: t1 totals 4k over its two sessions, t2 1k — the null contributor skipped.
+        // Tokens: t1 totals 4k over its two sessions, t2 1k — the null contributor skipped,
+        // and the other-repo task t5 nowhere in the distribution.
         expect(body.tasks.tokensPerTask).toEqual({ avg: 2500, p50: 1000, p95: 4000, tasks: 2 });
+        expect(body.tasks.tokensPerTask.p95).toBeLessThan(90_000);
         // Job turns: t1 ran twice, t2 once — t2 counts here even though its run was unmeasured.
         expect(body.tasks.jobTurnsPerTask).toEqual({ avg: 1.5, p50: 1, p95: 2, tasks: 2 });
-        // Agent turns: t1 banks 9 + 4 = 13; t2 is excluded for its unmeasured run.
+        // Agent turns: t1 banks 9 + 4 = 13; t2 for its unmeasured run and t5 for its repo are
+        // both out.
         expect(body.tasks.agentTurnsPerTask).toEqual({ avg: 13, p50: 13, p95: 13, tasks: 1 });
     });
 

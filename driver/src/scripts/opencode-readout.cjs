@@ -11,11 +11,17 @@
 //                  makes a follow-up's `--session` resumable at all), so two concurrent tasks
 //                  share one file: the scope is what keeps this readout answering only the
 //                  session of the task that ran here, never whichever task closed last.
+//   RUN_STARTED_MS — the run's start as epoch ms. A follow-up RESUMES the root conversation, so
+//                  the turn count is bounded to messages created at or after this instant — the
+//                  run's own delta, never the earlier runs' turns again. Absent, the whole
+//                  conversation is counted (the pre-delta shape, kept for tolerance).
 //
 // The role is a field INSIDE the message's data JSON, not a column: filtering it in SQL throws
 // "no such column: role" on every read, and the failure reads as an empty database. Filtered
 // in JS instead, where the parsed role actually is.
 const { DatabaseSync } = require('node:sqlite');
+
+const RUN_STARTED_MS = Number(process.env.RUN_STARTED_MS);
 
 try {
     const dbPath = process.env.OPENCODE_DB;
@@ -42,6 +48,13 @@ try {
         for (const m of msgs) {
             const d = JSON.parse(m.data);
             if (d.role !== 'assistant') continue;
+            // The per-run delta: a message whose own created time predates this run belongs to
+            // the run (or runs) before it. A message with no usable time cannot be placed in
+            // either — skipped rather than mis-booked, for the same reason a parse miss is null.
+            if (!Number.isNaN(RUN_STARTED_MS)) {
+                const created = d.time && typeof d.time.created === 'number' ? d.time.created : null;
+                if (created === null || created < RUN_STARTED_MS) continue;
+            }
             turns += 1;
             if (d.finish) finish = d.finish;
             if (d.tokens && typeof d.tokens.total === 'number') tokens = Math.max(tokens, d.tokens.total);

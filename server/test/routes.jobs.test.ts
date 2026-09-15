@@ -1292,6 +1292,9 @@ describe('POST /api/jobs/:id/complete', () => {
         ['a negative count', { ...done, agentTurns: -1 }],
         ['a fractional count', { ...done, agentTurns: 2.5 }],
         ['a string count', { ...done, agentTurns: 'eleven' }],
+        // int4 is the column's type: an over-range value would fail the verdict's transaction
+        // and leave a finished run unsettled, so the route is the boundary.
+        ['a count above the int4 maximum', { ...done, agentTurns: 2_147_483_648 }],
     ])('refuses %s with BAD_AGENT_TURNS', async (_label, payload) => {
         const instance = await harnessWith(stubStore());
         const response = await post(instance, `/api/jobs/${ID}/complete`, payload);

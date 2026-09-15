@@ -576,6 +576,9 @@ function auxRoutes(method: string, path: string): K8sResponse | null {
 /** A lease token distinct from the fixture job's, for the attempt that reclaimed a job. */
 const NEW_TOKEN = '99999999-9999-4999-8999-999999999999';
 
+/** The run start both close-time readouts bound their turn counts to. */
+const START = '2026-08-20T06:00:00.000Z';
+
 const configmapsPath = `/api/v1/namespaces/${namespace}/configmaps`;
 
 /** The checkout claim's path: one ConfigMap per JOB id, shared by every attempt (issue #32). */
@@ -4917,7 +4920,7 @@ describe('the opencode session readout job', () => {
     });
 
     it('runs the readout script by content, with the database path as an env value', () => {
-        const spec = opencodeReadoutJobSpec(config, job);
+        const spec = opencodeReadoutJobSpec(config, job, START);
         const container = spec.spec.template.spec.containers[0];
         expect(spec.metadata.name).toBe(opencodeReadoutJobName(job));
         expect(spec.metadata.name).toMatch(/^factory-ocread-/);
@@ -4934,11 +4937,12 @@ describe('the opencode session readout job', () => {
                 name: 'OPENCODE_DIR',
                 value: `/workspaces/bellows/${USER}`,
             },
+            { name: 'RUN_STARTED_MS', value: String(Date.parse(START)) },
         ]);
     });
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
-        const spec = opencodeReadoutJobSpec(config, { ...job, repo: 'Bellows-AI/factory' });
+        const spec = opencodeReadoutJobSpec(config, { ...job, repo: 'Bellows-AI/factory' }, START);
         expect(spec.spec.template.spec.containers[0].env).toContainEqual({
             name: 'OPENCODE_DIR',
             value: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
@@ -4946,7 +4950,7 @@ describe('the opencode session readout job', () => {
     });
 
     it('mounts the workspaces volume READ-WRITE: a WAL needing recovery has to write it', () => {
-        const spec = opencodeReadoutJobSpec(config, job);
+        const spec = opencodeReadoutJobSpec(config, job, START);
         expect(spec.spec.template.spec.containers[0].volumeMounts).toEqual([
             { name: 'workspaces', mountPath: '/workspaces' },
         ]);
@@ -4954,7 +4958,7 @@ describe('the opencode session readout job', () => {
     });
 
     it('bounds itself with a deadline of its own and reaps its pod', () => {
-        const spec = opencodeReadoutJobSpec(config, job);
+        const spec = opencodeReadoutJobSpec(config, job, START);
         expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
         expect(spec.spec.backoffLimit).toBe(0);
         expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
@@ -4975,7 +4979,8 @@ describe('the close-time claude-code turn read under kubernetes', () => {
     const spec = claudeTurnsJobSpec(
         loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
         job,
-        SESSION
+        SESSION,
+        START
     );
 
     it('runs the static script as one aux Job, its inputs by env', () => {
@@ -4993,6 +4998,8 @@ describe('the close-time claude-code turn read under kubernetes', () => {
                 value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
             },
             { name: 'CLAUDE_SESSION_ID', value: SESSION },
+            // The per-run delta bound: the transcript carries earlier runs' turns too.
+            { name: 'RUN_STARTED_AT', value: START },
         ]);
         expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
     });
@@ -5008,7 +5015,8 @@ describe('the close-time claude-code turn read under kubernetes', () => {
             claudeTurnsJobSpec(
                 loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
                 job,
-                'not-a-uuid'
+                'not-a-uuid',
+                START
             )
         ).toThrow(/not a session id/);
     });

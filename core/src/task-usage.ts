@@ -2,6 +2,12 @@ import type { JobRun, SessionRollup, TaskUsageDistribution, TaskUsageStats } fro
 
 export interface TaskUsageOptions {
     /**
+     * Only sessions the hook tagged with one of these repos, and only runs queued against
+     * them, are counted — the same repo scope every other figure on the page applies, so the
+     * task panel cannot include a task the totals above it exclude.
+     */
+    repos?: readonly string[];
+    /**
      * Scopes the distributions to the caller: only sessions whose landed user matches and
      * only runs the caller queued are counted, so the task set narrows to the caller's tasks.
      * Sessions without attribution contribute to no task in any scope.
@@ -54,10 +60,18 @@ export function taskUsageStats(
     runs: readonly JobRun[],
     options: TaskUsageOptions = {}
 ): TaskUsageStats {
-    const { user } = options;
+    const { repos, user } = options;
+    const inRepoScope = (name: string | null) => name !== null && (repos === undefined || repos.includes(name));
 
-    const visibleSessions = user ? sessions.filter((s) => s.user !== null && s.user.id === user.id) : sessions;
-    const visibleRuns = user ? runs.filter((r) => r.createdBy !== null && r.createdBy === user.id) : runs;
+    // The repo filter mirrors telemetryStats' bucket-don't-drop rule — here there is nothing to
+    // bucket (the panels above carry the exclusion counts), so out-of-repo inputs simply fall
+    // out of every distribution.
+    const visibleSessions = sessions.filter(
+        (s) => inRepoScope(s.repo) && (user === undefined || (s.user !== null && s.user.id === user.id))
+    );
+    const visibleRuns = runs.filter(
+        (r) => inRepoScope(r.repo) && (user === undefined || (r.createdBy !== null && r.createdBy === user.id))
+    );
 
     // The task set: a session attributed to the thread, or a run in it — either one puts the
     // task in scope. Sessions with no task (null taskKey) belong to no thread and no figure.

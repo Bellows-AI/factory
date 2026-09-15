@@ -42,6 +42,14 @@ export const opencodeReadoutScript = script('opencode-readout.cjs');
 /** The close-time claude-code turn count: see scripts/claude-turns.cjs. */
 export const claudeTurnsScript = script('claude-turns.cjs');
 
+/**
+ * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
+ * `activeDeadlineSeconds`. The runner's timeout is long gone by the time this read runs, so
+ * without a bound of its own a stalled daemon would hold the verdict — and the worker slot —
+ * open forever. On expiry the read answers null: unmeasured, never a wrong number.
+ */
+export const CLOSE_READ_DEADLINE_MS = 120_000;
+
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
 export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
 
@@ -647,7 +655,7 @@ export function transcriptDir(config: DriverConfig, job: BoardJob): string {
  * that ended itself (`stop`) from one the model's context limit cut short (`length`) — the exit
  * code reads 0 for both, and only one of them is a success.
  */
-export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob): string[] {
+export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
     const db = opencodeDbPath(config, job);
     return [
         'run',
@@ -664,6 +672,11 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob):
         `OPENCODE_DB=${db}`,
         '-e',
         `OPENCODE_DIR=${runWorkingDir(config, job)}`,
+        // The run's start, as epoch ms: the readout counts only the turns created at or after
+        // it, because a follow-up resumes the SAME root conversation and counting the whole
+        // session would book earlier runs' turns again.
+        '-e',
+        `RUN_STARTED_MS=${Date.parse(startedAt)}`,
         '--entrypoint',
         'node',
         config.image,
@@ -737,7 +750,7 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
  * CLAUDE_CONFIG_DIR). It runs AFTER the job container exits; the volume outlives the container,
  * so there is no teardown to race and a killed run's transcript is still readable.
  */
-export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: string): string[] {
+export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: string, startedAt: string): string[] {
     if (!UUID.test(sessionId)) {
         throw new Error(`refusing to count turns for a session id that is not a uuid: ${sessionId}`);
     }
@@ -752,6 +765,11 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
         `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
         '-e',
         `CLAUDE_SESSION_ID=${sessionId}`,
+        // The run's start as an ISO instant: the transcript carries every cycle the resumed
+        // conversation ever had, so the count is bounded to the entries written at or after
+        // this run began — its own delta, never the earlier runs' turns again.
+        '-e',
+        `RUN_STARTED_AT=${startedAt}`,
         '--entrypoint',
         'node',
         config.image,
@@ -1265,12 +1283,17 @@ type Spawn = typeof spawn;
  * the post-run inspect and the cleanup — goes through this one seam, so a test can stand in for
  * the daemon instead of shelling out to it.
  */
-type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
+/**
+ * One `docker` invocation off the hot paths. `timeout` (ms) bounds the whole exec — the process
+ * is killed and the promise rejects — which is what keeps a close-time read from holding a
+ * runner's verdict open forever when the daemon stalls.
+ */
+type ExecDocker = (args: string[], options?: { timeout?: number }) => Promise<{ stdout: string }>;
 
 export function createDockerRunner(
     config: DriverConfig,
     spawnFn: Spawn = spawn,
-    execDocker: ExecDocker = (args) => run('docker', args)
+    execDocker: ExecDocker = (args, options) => run('docker', args, { ...options, encoding: 'utf8' })
 ): Runner {
     /*
      * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
@@ -1870,6 +1893,10 @@ export function createDockerRunner(
                     return { exitCode: code, output, timedOut, idled, started, cacheLost };
                 };
 
+                // The run's start instant, captured here because both close-time turn reads key
+                // on it: a follow-up resumes its session's conversation, so the delta each read
+                // reports is bounded to what THIS run wrote.
+                const startedAt = new Date().toISOString();
                 const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork, file ?? undefined), {
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
@@ -2017,7 +2044,7 @@ export function createDockerRunner(
                                 let reason: string | null = null;
                                 for (let attempt = 0; attempt < 3 && !scraped.sessionId; attempt += 1) {
                                     if (attempt > 0) await new Promise((r) => setTimeout(r, 500));
-                                    scraped = await execDocker(opencodeSessionReadoutArgs(config, job)).then(
+                                    scraped = await execDocker(opencodeSessionReadoutArgs(config, job, startedAt)).then(
                                         (read) => parseOpencodeRunOutcome(read.stdout),
                                         (err: Error): OpencodeRunOutcome => ({
                                             sessionId: null,
@@ -2060,7 +2087,8 @@ export function createDockerRunner(
                              */
                             if (readsAgentTurns(config, session)) {
                                 outcome.agentTurns = await execDocker(
-                                    claudeTurnsArgs(config, job, (session as RunSession).id)
+                                    claudeTurnsArgs(config, job, (session as RunSession).id, startedAt),
+                                    { timeout: CLOSE_READ_DEADLINE_MS }
                                 ).then(
                                     (read) => parseClaudeTurns(read.stdout),
                                     (): null => null

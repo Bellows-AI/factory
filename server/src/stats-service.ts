@@ -243,7 +243,13 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
                 range,
                 ...(user ? { user } : {}),
             });
-            const tasks = taskUsageStats(input.sessions, filterJobRuns(entry.value.runs, range), user ? { user } : {});
+            // The same repo scope the totals above apply, on BOTH task inputs: the run rows are
+            // read org-wide, so without it a task attributed to another repo's sessions would
+            // appear here while its sessions were excluded up page.
+            const tasks = taskUsageStats(input.sessions, filterJobRuns(entry.value.runs, range), {
+                repos: repoNames(),
+                ...(user ? { user } : {}),
+            });
 
             return {
                 telemetry,

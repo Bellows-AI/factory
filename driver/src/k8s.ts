@@ -620,7 +620,12 @@ export const opencodeReadoutJobName = (job: BoardJob): string =>
  */
 export const claudeTurnsJobName = (job: BoardJob): string => `factory-cturns-${hash8(`${job.id}|${job.leaseToken}`)}`;
 
-export function claudeTurnsJobSpec(config: DriverConfig, job: BoardJob, sessionId: string): AuxJobSpec {
+export function claudeTurnsJobSpec(
+    config: DriverConfig,
+    job: BoardJob,
+    sessionId: string,
+    startedAt: string
+): AuxJobSpec {
     if (!JOB_ID.test(sessionId)) {
         throw new Error(`refusing to count turns for job ${job.id}: not a session id: ${sessionId}`);
     }
@@ -652,6 +657,8 @@ export function claudeTurnsJobSpec(config: DriverConfig, job: BoardJob, sessionI
                             env: [
                                 { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
                                 { name: 'CLAUDE_SESSION_ID', value: sessionId },
+                                // The per-run delta bound, exactly as docker passes it.
+                                { name: 'RUN_STARTED_AT', value: startedAt },
                             ],
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
@@ -663,7 +670,7 @@ export function claudeTurnsJobSpec(config: DriverConfig, job: BoardJob, sessionI
     };
 }
 
-export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
+export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, startedAt: string): AuxJobSpec {
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
         throw new Error(
             `refusing to read the opencode session database for job ${job.id}: ` +
@@ -701,6 +708,10 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob): Aux
                             env: [
                                 { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
                                 { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
+                                // The per-run delta bound, exactly as docker passes it: a
+                                // follow-up resumes the root conversation, and only the cycles
+                                // this run wrote may count as its turns.
+                                { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
                             ],
                             volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
                         },
@@ -1548,7 +1559,7 @@ export function createKubernetesRunner(
      * the CLI exited a moment ago and the database may still be mid-checkpoint, so an empty or
      * failed answer reads as "not yet", whatever the reason.
      */
-    const scrapeOpencodeSession = async (job: BoardJob): Promise<OpencodeRunOutcome> => {
+    const scrapeOpencodeSession = async (job: BoardJob, startedAt: string): Promise<OpencodeRunOutcome> => {
         const fail = (error: string): OpencodeRunOutcome => ({
             sessionId: null,
             finishReason: null,
@@ -1559,7 +1570,7 @@ export function createKubernetesRunner(
         });
         let spec: AuxJobSpec;
         try {
-            spec = opencodeReadoutJobSpec(config, job);
+            spec = opencodeReadoutJobSpec(config, job, startedAt);
         } catch (e) {
             return fail((e as Error).message);
         }
@@ -1654,10 +1665,10 @@ export function createKubernetesRunner(
      * create that was refused, a Job that deadlined or failed, an unparseable line — answers
      * null: unmeasured, never zero, exactly the contract the docker twin's failed exec keeps.
      */
-    const scrapeClaudeTurns = async (job: BoardJob, sessionId: string): Promise<number | null> => {
+    const scrapeClaudeTurns = async (job: BoardJob, sessionId: string, startedAt: string): Promise<number | null> => {
         let spec: AuxJobSpec;
         try {
-            spec = claudeTurnsJobSpec(config, job, sessionId);
+            spec = claudeTurnsJobSpec(config, job, sessionId, startedAt);
         } catch {
             return null;
         }
@@ -2323,7 +2334,10 @@ export function createKubernetesRunner(
             }
 
             // The runner — the last resource this attempt creates, only after every refusal the
-            // services could produce has been answered.
+            // services could produce has been answered. The start instant is captured here
+            // because both close-time turn reads key on it: a follow-up resumes its session's
+            // conversation, so the delta each read reports is bounded to what THIS run wrote.
+            const startedAt = new Date().toISOString();
             await launch(job, runnerJobSpec(config, job, session), cleanup);
 
             /*
@@ -2497,7 +2511,7 @@ export function createKubernetesRunner(
                 let reason: string | null = null;
                 for (let attempt = 0; attempt < 3 && !scraped.sessionId; attempt += 1) {
                     if (attempt > 0) await sleep(500);
-                    scraped = await scrapeOpencodeSession(job);
+                    scraped = await scrapeOpencodeSession(job, startedAt);
                     reason = scraped.error ?? reason;
                 }
                 if (scraped.sessionId) {
@@ -2523,7 +2537,7 @@ export function createKubernetesRunner(
              * conversation to freeze; the guard exists only to say so beside docker's.
              */
             if (config.cli === 'claude-code' && session) {
-                outcome.agentTurns = await scrapeClaudeTurns(job, session.id);
+                outcome.agentTurns = await scrapeClaudeTurns(job, session.id, startedAt);
             }
             return outcome;
         },

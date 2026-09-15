@@ -12,12 +12,18 @@
 //                           the id excludes subagent conversations, which the CLI records under
 //                           their own session ids (and, in older layouts, marks isSidechain on
 //                           the entries — excluded here too, the same root-only rule either way).
+//   RUN_STARTED_AT        — the run's start as an ISO instant. A follow-up RESUMES this
+//                           transcript, so the count is bounded to entries written at or after
+//                           the run began — its own delta, never the earlier runs' turns again.
+//                           Absent, the whole transcript is counted (the pre-delta shape).
 //
 // The parse is pinned to the shapes below: a JSONL file where each line is an event object and
 // an assistant response is a `type: "assistant"` entry. A parse miss is null, not a wrong
 // number — a CLI that changes its transcript shape costs its turn figure, never corrupts it.
 const fs = require('node:fs');
 const path = require('node:path');
+
+const RUN_STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
 
 try {
     const dir = process.env.CLAUDE_TRANSCRIPT_DIR;
@@ -42,6 +48,13 @@ try {
         // A sidechain entry is a subagent conversation riding the same file — not the run's
         // own conversation, never counted.
         if (entry.isSidechain === true) continue;
+        // The per-run delta: an entry written before this run began belongs to the run (or
+        // runs) before it. An entry with no timestamp cannot be placed in either — skipped
+        // rather than mis-booked, for the same reason a parse miss is null.
+        if (!Number.isNaN(RUN_STARTED_MS)) {
+            const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : null;
+            if (at === null || Number.isNaN(at) || at < RUN_STARTED_MS) continue;
+        }
         turns += 1;
     }
     console.log(JSON.stringify({ turns }));

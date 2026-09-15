@@ -542,6 +542,8 @@ describe('reading the remote session id', () => {
     });
 });
 
+const START = '2026-08-20T06:00:00.000Z';
+
 describe('the close-time claude-code turn count', () => {
     /**
      * The read is the opencode readout's twin: a throwaway container over the workspaces
@@ -550,8 +552,8 @@ describe('the close-time claude-code turn count', () => {
      * already gone, and the volume is the only thing that outlived it.
      */
     it('reads the transcript off the workspaces volume, session id by env, never in the script text', () => {
-        const line = claudeTurnsArgs(loadDriverConfig({}), job, SESSION);
-        expect(line.slice(0, 10)).toEqual([
+        const line = claudeTurnsArgs(loadDriverConfig({}), job, SESSION, START);
+        expect(line.slice(0, 12)).toEqual([
             'run',
             '--rm',
             '-v',
@@ -560,23 +562,28 @@ describe('the close-time claude-code turn count', () => {
             `CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
             '-e',
             `CLAUDE_SESSION_ID=${SESSION}`,
+            // The per-run delta bound: a follow-up resumes this transcript, so only the
+            // entries written at or after this run began are its turns.
+            '-e',
+            `RUN_STARTED_AT=${START}`,
             '--entrypoint',
             'node',
         ]);
-        expect(line.slice(10, 12)).toEqual(['claude-executor', '-e']);
-        const script = line[12] as string;
+        expect(line.slice(12, 14)).toEqual(['claude-executor', '-e']);
+        const script = line[14] as string;
         // The script is the static file: the paths and the session id arrive by env, so no
         // board-derived value is ever part of its text.
         expect(script).not.toContain(`/workspaces/bellows/${USER}`);
         expect(script).not.toContain(SESSION);
         expect(script).toContain('process.env.CLAUDE_TRANSCRIPT_DIR');
         expect(script).toContain('process.env.CLAUDE_SESSION_ID');
+        expect(script).toContain('process.env.RUN_STARTED_AT');
         expect(script).toContain("entry.type !== 'assistant'");
         expect(script).toContain('isSidechain');
     });
 
     it('refuses a session id that is not a uuid — it names a file the script would read', () => {
-        expect(() => claudeTurnsArgs(loadDriverConfig({}), job, '../../etc/passwd')).toThrow(/not a uuid/);
+        expect(() => claudeTurnsArgs(loadDriverConfig({}), job, '../../etc/passwd', START)).toThrow(/not a uuid/);
     });
 
     it('parses the count the script answered, and answers null for anything else', () => {
@@ -900,8 +907,8 @@ describe('scraping the session opencode used', () => {
      * path into a named volume. Pure and pinned for the same reason dockerArgs is.
      */
     it('reads the session database out of the member’s data directory, root sessions only', () => {
-        const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
-        expect(line.slice(0, 8)).toEqual([
+        const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job, START);
+        expect(line.slice(0, 10)).toEqual([
             'run',
             '--rm',
             '-v',
@@ -916,9 +923,13 @@ describe('scraping the session opencode used', () => {
             // whichever task closed last (observed 2026-09-11: two /fix tasks recorded one
             // session id, and both their follow-ups resumed the same conversation).
             `OPENCODE_DIR=/workspaces/bellows/${USER}`,
+            '-e',
+            // The per-run delta bound: a follow-up resumes the same root conversation, so the
+            // turn count is bounded to the messages written at or after this run began.
+            `RUN_STARTED_MS=${Date.parse(START)}`,
         ]);
-        expect(line.slice(8, 12)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
-        const script = line[12] as string;
+        expect(line.slice(10, 14)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[14] as string;
         // The script is the static file: the database path arrives by env, so no board-derived
         // value is ever part of its text.
         expect(script).not.toContain(`/workspaces/bellows/${USER}`);
@@ -938,10 +949,11 @@ describe('scraping the session opencode used', () => {
     });
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
-        const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), {
-            ...job,
-            repo: 'Bellows-AI/factory',
-        });
+        const line = opencodeSessionReadoutArgs(
+            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            { ...job, repo: 'Bellows-AI/factory' },
+            START
+        );
         expect(line).toContain(`OPENCODE_DIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
     });
 

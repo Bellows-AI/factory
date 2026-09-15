@@ -139,21 +139,24 @@ export interface TelemetryStats {
 
 /**
  * One run of the board: a job row. "Job turn" in the dashboard's terminology — a task's first
- * run or a follow-up, the member delivering one prompt. The four fields are exactly what the
+ * run or a follow-up, the member delivering one prompt. The five fields are exactly what the
  * task statistics read; anything more belongs to the board's own API, not this payload.
  */
 export interface JobRun {
     /** The thread root this run belongs to (`job.root_job_id`) — the task key. */
     rootJobId: string;
+    /** The repository label (`owner/name`) the run was queued against, when it carries one. */
+    repo: string | null;
     /** Who queued the run (`job.created_by`). null on rows that predate attribution. */
     createdBy: string | null;
     /** When the run was queued — the instant range selection keys on. */
     createdAt: string;
     /**
-     * Assistant response cycles counted in the run's root conversation at close, reported by
-     * the executor's own session records. null is UNMEASURED — the read failed, the run was
-     * killed first, or the mode keeps no record — and never means zero. A genuine
-     * zero-response run reports 0.
+     * Assistant response cycles THIS RUN added to the run's root conversation at close,
+     * reported by the executor's own session records — a follow-up resumes that conversation,
+     * so the count is its own delta, never the resumed whole. null is UNMEASURED — the read
+     * failed, the run was killed first, or the mode keeps no record — and never means zero. A
+     * genuine zero-response run reports 0.
      */
     agentTurns: number | null;
 }

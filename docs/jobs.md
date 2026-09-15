@@ -606,6 +606,11 @@ reported on the completion report as `agentTurns`; the board stores it on the jo
 - **kubernetes**: the twin of the docker read — the same script as one aux Job over the PVC
   before the runner pod goes. Both platforms produce the count through their own close-time read
   (executor parity, docs/kubernetes.md).
+- **A follow-up reports its own delta, not the resumed whole.** The conversation a follow-up
+  resumes already carries the earlier runs' cycles, so the driver bounds each close-time read to
+  the run's own start (passed as an env value): opencode counts root messages created at or
+  after it, claude-code the transcript entries written at or after it. The task total is the sum
+  of per-run turns — a first run of 9 and a follow-up of 4 bank 13, never 9 + 16.
 - **Null is the contract for unmeasured**: a read that failed, a run killed before it, a
   transcript that is gone — all store null, never zero. A genuine zero-response run stores 0.
   The task statistics exclude a task with any unmeasured in-range run from the agent-turn

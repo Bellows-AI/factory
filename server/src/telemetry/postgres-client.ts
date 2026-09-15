@@ -19,6 +19,7 @@ interface SummaryRow {
 
 interface RunRow {
     root_job_id: string;
+    repo: string | null;
     created_by: string | null;
     created_at: Date;
     agent_turns: number | null;
@@ -96,90 +97,103 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                 // root, deterministically. Author-less rows stay in the group rather than being
                 // filtered — min() ignores the nulls, so member resolution is untouched, and a
                 // session whose only row predates attribution still resolves to its task.
-                const [summaries, sessionFields, runRows] = await Promise.all([
-                    // `or org_id is null` is not laxity. session_summary reads its org from
-                    // session_branch, so a session the hook never reported for has none — and
-                    // those are exactly the rows that feed sessionsWithoutHook, the number that
-                    // says the plugin is missing or broken. Filtering them out would make a
-                    // broken hook look like an idle week.
-                    sql<SummaryRow[]>`
-                        select ss.*, ju.created_by as user_id, au.github_login as user_login,
-                               au.display_name as user_name, au.avatar_url as user_avatar_url,
-                               ju.task_id
-                        from session_summary ss
-                        left join (
-                            -- min over text: Postgres has no min(uuid) aggregate. Every member of
-                            -- a thread shares one author (the follow-up guard), so the minimum is
-                            -- that author, deterministically.
-                            select org_id, session_id, min(created_by::text)::uuid as created_by,
-                                   min(root_job_id::text)::uuid as task_id
-                            from job
-                            where session_id is not null
-                            group by org_id, session_id
-                        ) ju on ju.org_id = ss.org_id and ju.session_id = ss.session_id
-                        left join app_user au on au.id = ju.created_by
-                        where ss.org_id = ${orgId} or ss.org_id is null
-                    `,
-                    // Unfiltered: this view reads metric_point_used, which has no org column by
-                    // design. It is a lookup keyed by session id, and only the ids present in the
-                    // filtered summaries above are ever read out of it.
-                    sql<FieldRow[]>`select session_id, field, value from session_field_total`,
-                    // The org's own run rows, cached beside the rollups for the per-task
-                    // statistics: one round-trip against the table the join above already
-                    // touches, at a volume where that read is single-digit-ms. They ride the
-                    // same snapshot and the same TTL, which is what lets every range AND scope
-                    // be served without a second fetch.
-                    sql<RunRow[]>`
-                        select root_job_id, created_by, created_at, agent_turns
-                        from job
-                        where org_id = ${orgId}
-                    `,
-                ]);
+                // All three reads share ONE repeatable-read snapshot: the summary's taskKey and
+                // the run rows both come from `job`, and a thread removal committing between
+                // two independent reads would leave a session pointing at a task whose runs no
+                // longer exist — taskUsageStats() must combine one database moment, not two.
+                // Read-only: nothing here writes, and the mode is the database's to enforce.
+                return sql.begin('isolation level repeatable read, read only', async (tx): Promise<TelemetryFetch> => {
+                    const [summaries, sessionFields, runRows] = await Promise.all([
+                        // `or org_id is null` is not laxity. session_summary reads its org from
+                        // session_branch, so a session the hook never reported for has none — and
+                        // those are exactly the rows that feed sessionsWithoutHook, the number that
+                        // says the plugin is missing or broken. Filtering them out would make a
+                        // broken hook look like an idle week.
+                        tx<SummaryRow[]>`
+                                select ss.*, ju.created_by as user_id, au.github_login as user_login,
+                                       au.display_name as user_name, au.avatar_url as user_avatar_url,
+                                       ju.task_id
+                                from session_summary ss
+                                left join (
+                                    -- min over text: Postgres has no min(uuid) aggregate. Every member of
+                                    -- a thread shares one author (the follow-up guard), so the minimum is
+                                    -- that author, deterministically.
+                                    select org_id, session_id, min(created_by::text)::uuid as created_by,
+                                           min(root_job_id::text)::uuid as task_id
+                                    from job
+                                    where session_id is not null
+                                    group by org_id, session_id
+                                ) ju on ju.org_id = ss.org_id and ju.session_id = ss.session_id
+                                left join app_user au on au.id = ju.created_by
+                                where ss.org_id = ${orgId} or ss.org_id is null
+                            `,
+                        // Unfiltered: this view reads metric_point_used, which has no org column by
+                        // design. It is a lookup keyed by session id, and only the ids present in the
+                        // filtered summaries above are ever read out of it.
+                        tx<FieldRow[]>`select session_id, field, value from session_field_total`,
+                        // The org's own run rows, cached beside the rollups for the per-task
+                        // statistics: one round-trip against the table the join above already
+                        // touches, at a volume where that read is single-digit-ms. They ride the
+                        // same snapshot and the same TTL, which is what lets every range AND scope
+                        // be served without a second fetch.
+                        tx<RunRow[]>`
+                                select root_job_id, repo, created_by, created_at, agent_turns
+                                from job
+                                where org_id = ${orgId}
+                            `,
+                    ]);
 
-                const byField = group(sessionFields);
+                    const byField = group(sessionFields);
 
-                const sessions: SessionRollup[] = summaries.map((s) => {
-                    const values = new Map<CanonicalField, number>(
-                        (byField.get(s.session_id) ?? []).map((r) => [r.field, Number(r.value)])
-                    );
-                    const user: UserRef | null =
-                        s.user_id === null || s.user_login === null
-                            ? null
-                            : { id: s.user_id, login: s.user_login, name: s.user_name, avatarUrl: s.user_avatar_url };
+                    const sessions: SessionRollup[] = summaries.map((s) => {
+                        const values = new Map<CanonicalField, number>(
+                            (byField.get(s.session_id) ?? []).map((r) => [r.field, Number(r.value)])
+                        );
+                        const user: UserRef | null =
+                            s.user_id === null || s.user_login === null
+                                ? null
+                                : {
+                                      id: s.user_id,
+                                      login: s.user_login,
+                                      name: s.user_name,
+                                      avatarUrl: s.user_avatar_url,
+                                  };
+                        return {
+                            sessionId: s.session_id,
+                            agent: s.agent,
+                            repo: s.repo,
+                            user,
+                            taskKey: s.task_id,
+                            firstSeen: s.first_seen.toISOString(),
+                            lastSeen: s.last_seen.toISOString(),
+                            commits: values.get('commits') ?? null,
+                            ...pick(values),
+                        };
+                    });
+
+                    const times = summaries.flatMap((s) => [s.first_seen, s.last_seen]);
+                    const runs: JobRun[] = runRows.map((r) => ({
+                        rootJobId: r.root_job_id,
+                        repo: r.repo,
+                        createdBy: r.created_by,
+                        createdAt: r.created_at.toISOString(),
+                        agentTurns: r.agent_turns,
+                    }));
                     return {
-                        sessionId: s.session_id,
-                        agent: s.agent,
-                        repo: s.repo,
-                        user,
-                        taskKey: s.task_id,
-                        firstSeen: s.first_seen.toISOString(),
-                        lastSeen: s.last_seen.toISOString(),
-                        commits: values.get('commits') ?? null,
-                        ...pick(values),
+                        input: {
+                            sessions,
+                            coverage: {
+                                from: times.length
+                                    ? new Date(Math.min(...times.map((t) => t.getTime()))).toISOString()
+                                    : null,
+                                to: times.length
+                                    ? new Date(Math.max(...times.map((t) => t.getTime()))).toISOString()
+                                    : null,
+                            },
+                        },
+                        runs,
                     };
                 });
-
-                const times = summaries.flatMap((s) => [s.first_seen, s.last_seen]);
-                const runs: JobRun[] = runRows.map((r) => ({
-                    rootJobId: r.root_job_id,
-                    createdBy: r.created_by,
-                    createdAt: r.created_at.toISOString(),
-                    agentTurns: r.agent_turns,
-                }));
-                return {
-                    input: {
-                        sessions,
-                        coverage: {
-                            from: times.length
-                                ? new Date(Math.min(...times.map((t) => t.getTime()))).toISOString()
-                                : null,
-                            to: times.length
-                                ? new Date(Math.max(...times.map((t) => t.getTime()))).toISOString()
-                                : null,
-                        },
-                    },
-                    runs,
-                };
             } catch (e) {
                 // A migration failure keeps its own code: "the schema is not there" and "the
                 // query is wrong" want different fixes.
