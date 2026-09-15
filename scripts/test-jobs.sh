@@ -115,8 +115,13 @@ expect_contains() { # expect_contains <name> <haystack> <needle>
     esac
 }
 
-create_job() { # create_job <command> -> id
-    field "$(body "$(api POST /api/jobs "{\"command\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1")}")")" id
+create_job() { # create_job <command> -> id, recorded in $work/created-jobs for the teardown sweep
+    local id
+    id="$(field "$(body "$(api POST /api/jobs "{\"command\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1")}")")" id)"
+    # A file, not a variable: every caller captures this function's output by command substitution,
+    # which runs it in a subshell — an assignment here would be thrown away.
+    printf '%s\n' "$id" >>"$work/created-jobs"
+    printf '%s' "$id"
 }
 
 settled() { # settled <id> -> status once it is no longer queued/running, empty otherwise
@@ -286,8 +291,8 @@ api POST "/api/jobs/$reclaim_id/complete" \
 PARKED_SESSION='55555555-5555-4555-8555-555555555555'
 REMOTE_SESSION='cse_015tb2nHhHNrBuL7ZDhn9Wx5'
 
-# Standby, end to end: park a running job, prove it is not handed out while parked, resume it, and
-# check the claim carries the session back so the worker restores it rather than starting a new one.
+# Standby, end to end: park a running job, prove the board does not re-queue it, end its turn with
+# Stop, and continue it as a follow-up — the only resumed claim there is (docs/jobs.md).
 park_id="$(create_job 'park me')"
 park_claim="$(body "$(api POST /api/jobs/claim '{"worker":"parks","leaseSeconds":300}')")"
 park_token="$(field "$park_claim" leaseToken)"
@@ -308,21 +313,39 @@ expect_field  'it keeps its session'          "$parked" sessionId "$PARKED_SESSI
 expect_field  'and its remote session'        "$parked" remoteSessionId "$REMOTE_SESSION"
 # The reason standby is a status and not just an expired lease: an idle poll must not resume it.
 expect_status 'a parked job is not offered'   204 POST /api/jobs/claim '{"worker":"idle-poll"}'
-expect_status 'resume needs no lease token'   200 POST "/api/jobs/$park_id/resume" '{}'
-resumed="$(body "$(api POST /api/jobs/claim '{"worker":"resumes","leaseSeconds":300}')")"
-expect_field  'the resumed job comes back'    "$resumed" id "$park_id"
+# The continuation of a parked task is a person's action on a FINISHED one: while the row sits on
+# standby the turn is still open, and the follow-up is refused.
+expect_status 'a parked task cannot be continued' 409 POST "/api/jobs/$park_id/follow-up" \
+    '{"command":"too soon"}'
+# Stop ends the turn: the parked row settles stopped — terminal, the session kept for the
+# follow-up that continues exactly where things stood. There is no resume and no park resume.
+expect_status 'stop settles the parked row'   200 POST "/api/jobs/$park_id/stop"
+stopped="$(body "$(api GET "/api/jobs/$park_id")")"
+expect_field  'it is stopped'                 "$stopped" status stopped
+expect_field  'stopped keeps the session'     "$stopped" sessionId "$PARKED_SESSION"
+# Parking handed the attempt back, and Stop settles without taking one: the parked row never
+# burned a try. (suspend: attempts = greatest(attempts - 1, 0); stop does not touch attempts.)
+expect_field  'parking did not burn a try'    "$stopped" attempts 0
+# One api call, not expect_status plus a second request: every follow-up POST that passes the
+# preconditions INSERTS a row, so a duplicate call would queue a second continuation.
+follow_out="$(api POST "/api/jobs/$park_id/follow-up" '{"command":"continue this"}')"
+if [ "$(status "$follow_out")" = '201' ]; then ok 'a stopped task can be continued'; else
+    bad 'a stopped task can be continued' "wanted 201, got $(status "$follow_out"): $(body "$follow_out")"; fi
+fu_id="$(field "$(body "$follow_out")" id)"
+printf '%s\n' "$fu_id" >>"$work/created-jobs"
+fu_claim="$(body "$(api POST /api/jobs/claim '{"worker":"follows","leaseSeconds":300}')")"
+expect_field  'the follow-up claim comes back' "$fu_claim" id "$fu_id"
 # The per-member workspace, ready-made by the board: `<org>/<user id>`. The driver refuses anything
 # that is not exactly that before interpolating it into a `docker run`.
-case "$(field "$resumed" workspacePath)" in
+case "$(field "$fu_claim" workspacePath)" in
 default/????????-????-????-????-????????????) ok 'the claim carries a workspace path' ;;
-*) bad 'the claim carries a workspace path' "got '$(field "$resumed" workspacePath)'" ;;
+*) bad 'the claim carries a workspace path' "got '$(field "$fu_claim" workspacePath)'" ;;
 esac
-expect_field  'the claim carries the session' "$resumed" resumeSessionId "$PARKED_SESSION"
-# Parking gave back the attempt it took, so this second claim is still attempt 1.
-expect_field  'parking did not burn a try'    "$resumed" attempts 1
-expect_status 'a running job cannot resume'   409 POST "/api/jobs/$park_id/resume" '{}'
-api POST "/api/jobs/$park_id/complete" \
-    "{\"leaseToken\":\"$(field "$resumed" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
+expect_field  'the claim carries the session' "$fu_claim" resumeSessionId "$PARKED_SESSION"
+expect_field  'the claim says it is a follow-up' "$fu_claim" followUp true
+expect_field  'the follow-up starts at attempt 1' "$fu_claim" attempts 1
+api POST "/api/jobs/$fu_id/complete" \
+    "{\"leaseToken\":\"$(field "$fu_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
 
 # --- The driver ------------------------------------------------------------------------------
 
@@ -486,13 +509,19 @@ expect_contains 'the parse reason comes back'    "$(field "$(body "$(api GET "/a
 
 stop_driver
 
-# The network is per-job and named after the job id; nothing may survive the driver.
-svc_networks="$(docker network ls --filter name=factory-job- --format '{{.Name}}' | wc -l | tr -d ' ')"
+# Nothing of THIS RUN's jobs may survive the driver: the network is per-job (named after the job
+# id), every runner is --rm, and the driver drains before it exits. Scoped to the ids this script
+# created — the daemon may be serving a live deployment whose factory.job containers and
+# factory-job-* networks are none of this suite's business.
+svc_networks=0
+leftover=0
+for job in $(cat "$work/created-jobs" 2>/dev/null); do
+    n="$(docker network ls --filter "name=factory-job-$job-" --format '{{.Name}}' | wc -l | tr -d ' ')"
+    svc_networks=$((svc_networks + n))
+    n="$(docker ps -aq --filter "label=factory.job=$job" | wc -l | tr -d ' ')"
+    leftover=$((leftover + n))
+done
 if [ "$svc_networks" = '0' ]; then ok 'no service networks left behind'; else bad 'no service networks left behind' "$svc_networks remain"; fi
-
-# Nothing may be left running: every runner is --rm, and the driver drains before it exits. The
-# service containers carry the same factory.job label, so this check is theirs too.
-leftover="$(docker ps -aq --filter label=factory.job | wc -l | tr -d ' ')"
 if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain"; fi
 
 # --- The same board, with auth on -------------------------------------------------------------

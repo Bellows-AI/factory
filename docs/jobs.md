@@ -1157,8 +1157,9 @@ given, which is what proves the prompt, the mount and the completion path all li
 what proves the session round-trip: the `sessionId` the board hands back is found inside those
 arguments, so the link points at the session the job actually ran as. Standby is covered in the
 board phase rather than the driver phase — park, prove a parked job is not offered to an idle poll,
-resume, and check the claim carries the session back — because none of that needs a container. It
-creates a
+stop it, and continue it as a follow-up whose claim carries the session back — because none of that
+needs a container. Its leftover sweeps are scoped to the jobs this run created, so a live
+deployment sharing the daemon does not trip them. It creates a
 `*_test` database, four images and a volume, and drops all of them on exit.
 
 Two things it does that are not decoration:

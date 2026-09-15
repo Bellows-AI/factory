@@ -22,4 +22,4 @@
 ## 5. Verification sweep
 
 - [x] 5.1 `npm run typecheck && npm run lint && npm test` green across the four packages
-- [ ] 5.2 `npm run test:jobs` end-to-end (stub runners exercise the real driver loop; the new env rides argv harmlessly for stub images) and `npm run test:k8s` phase one (chart/template assertions) green — BLOCKED: `test:k8s` phase one green (34/34); `test:jobs` cannot run here (no docker daemon and no docker CLI in this environment); the offline driver suites that pin the argv it exercises are green
+- [x] 5.2 `npm run test:jobs` end-to-end (stub runners exercise the real driver loop; the new env rides argv harmlessly for stub images) and `npm run test:k8s` phase one (chart/template assertions) green — verified 2026-09-15 (#97): `test:jobs` 71 passed / 0 failed, `test:k8s` phase one 34 passed / 0 failed
