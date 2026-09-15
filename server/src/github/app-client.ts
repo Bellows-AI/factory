@@ -27,6 +27,23 @@ export interface InstallationListing {
     readonly installation: Installation;
 }
 
+export interface OrgTeam {
+    readonly slug: string;
+    readonly name: string;
+}
+
+export interface TeamRepo {
+    readonly owner: string;
+    readonly name: string;
+}
+
+export interface OrgRoster {
+    /** Every org member's login, lowercased to match how org_membership stores them. */
+    readonly logins: readonly string[];
+    /** The subset that holds the org `admin` role, same casing. */
+    readonly admins: readonly string[];
+}
+
 export interface GitHubAppClient {
     /**
      * The repositories and the installation that owns them, in one call.
@@ -37,6 +54,24 @@ export interface GitHubAppClient {
      * not with the installation token this client holds, so reaching for it here would 403.
      */
     listRepositories(): Promise<InstallationListing>;
+
+    /*
+     * What the installation can see about the org's people — the inputs of per-user repo scoping
+     * and the roster sync (#66). Every call below spends the installation's rate limit, which is
+     * why access-scope.ts caches the org-wide answers (teams, per-team repos) rather than re-asking
+     * per login.
+     */
+
+    /** The org's teams. Needs the App to hold Organization members: read. */
+    orgTeams(org: string): Promise<readonly OrgTeam[]>;
+    /** The repos a team has been granted, directly or via child-team inheritance on GitHub's side. */
+    teamRepos(org: string, slug: string): Promise<readonly TeamRepo[]>;
+    /** Whether this login belongs to this team. */
+    teamMembership(org: string, slug: string, login: string): Promise<boolean>;
+    /** Whether this login is a DIRECT collaborator on the repo — invited by name, not via a team. */
+    collaborator(owner: string, name: string, login: string): Promise<boolean>;
+    /** The org roster and its admins, for the periodic removal/role sweep. */
+    orgMembers(org: string): Promise<OrgRoster>;
 }
 
 /**
@@ -72,6 +107,32 @@ export function createGitHubAppClient(
             throw new GitHubAppError(`GET ${path} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
         }
         return response.json();
+    };
+
+    // Membership and collaborator questions are answered with 204 (yes) or 404 (no) and no body —
+    // not with JSON — so they get their own path through fetch. Any other status is a fault: a 403
+    // here means the App lacks the permission the probe needs, and silently reading it as "no"
+    // would de-scope members who in fact have access.
+    const probe = async (path: string): Promise<boolean> => {
+        const response = await fetchFn(`${github.apiUrl}${path}`, {
+            headers: {
+                authorization: `Bearer ${await tokens.get()}`,
+                accept: 'application/vnd.github+json',
+                'user-agent': 'factory-ai',
+            },
+        });
+        if (response.status === 204) return true;
+        if (response.status === 404) return false;
+        throw new GitHubAppError(`GET ${path} failed with ${response.status}`);
+    };
+
+    /** The standard page walk: 100 a page, empty page ends, MAX_PAGES is the loop guard. */
+    const pages = async function* <T>(path: string): AsyncGenerator<T[]> {
+        for (let page = 1; page <= MAX_PAGES; page += 1) {
+            const batch = (await call(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`)) as T[];
+            if (batch.length === 0) return;
+            yield batch;
+        }
     };
 
     return {
@@ -119,6 +180,63 @@ export function createGitHubAppClient(
                     repositorySelection: selection === 'all' || selection === 'selected' ? selection : null,
                 }),
             });
+        },
+
+        async orgTeams(org) {
+            const teams: OrgTeam[] = [];
+            for await (const batch of pages<{ slug?: string; name?: string }>(
+                `/orgs/${encodeURIComponent(org)}/teams`
+            )) {
+                for (const team of batch) {
+                    if (team.slug) teams.push({ slug: team.slug, name: team.name ?? team.slug });
+                }
+            }
+            return Object.freeze(teams);
+        },
+
+        async teamRepos(org, slug) {
+            const repos: TeamRepo[] = [];
+            for await (const batch of pages<RepoPayload>(
+                `/orgs/${encodeURIComponent(org)}/teams/${encodeURIComponent(slug)}/repos`
+            )) {
+                for (const repo of batch) {
+                    if (!repo.name || !repo.owner?.login) continue;
+                    repos.push({ owner: repo.owner.login, name: repo.name });
+                }
+            }
+            return Object.freeze(repos);
+        },
+
+        async teamMembership(org, slug, login) {
+            return probe(
+                `/orgs/${encodeURIComponent(org)}/teams/${encodeURIComponent(slug)}/memberships/${encodeURIComponent(login)}`
+            );
+        },
+
+        async collaborator(owner, name, login) {
+            // `affiliation=direct` — an org member who reaches the repo through a team is answered
+            // by teamMembership instead, so counting them here too would only double the calls.
+            return probe(
+                `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/collaborators/${encodeURIComponent(login)}?affiliation=direct`
+            );
+        },
+
+        async orgMembers(org) {
+            const logins: string[] = [];
+            for await (const batch of pages<{ login?: string }>(`/orgs/${encodeURIComponent(org)}/members`)) {
+                for (const member of batch) {
+                    if (member.login) logins.push(member.login.toLowerCase());
+                }
+            }
+            const admins: string[] = [];
+            for await (const batch of pages<{ login?: string }>(
+                `/orgs/${encodeURIComponent(org)}/members?role=admin`
+            )) {
+                for (const member of batch) {
+                    if (member.login) admins.push(member.login.toLowerCase());
+                }
+            }
+            return Object.freeze({ logins: Object.freeze(logins), admins: Object.freeze(admins) });
         },
     };
 }

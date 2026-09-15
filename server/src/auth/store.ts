@@ -26,6 +26,12 @@ export interface Caller {
     user: AuthUser;
     membership: Membership;
     role: Role;
+    /**
+     * How the membership row was born. An auto-joined row is the GitHub organization's to
+     * maintain — re-checked and re-roled on every sign-in, swept by the roster sync. An invited
+     * row is Factory's: GitHub is never asked about it, and can never remove or re-role it.
+     */
+    autoJoined: boolean;
 }
 
 export interface WorkerIdentity {
@@ -62,9 +68,15 @@ export interface AuthStore {
      * `autoJoin` creates that missing membership instead of refusing, as an ordinary `member`. It is
      * a parameter rather than a config read because the decision is not this layer's to make: the
      * caller passes it only after GitHub has confirmed the org, and a store that could admit anyone
-     * on its own would be one bad default away from an open deployment.
+     * on its own would be one bad default away from an open deployment. `role` rides with it — the
+     * org's role for the signing-in account, mapped admin-to-admin — and the row is stamped
+     * `auto_joined`, marking it as GitHub's to maintain rather than Factory's.
      */
-    signIn(identity: GitHubIdentity, orgId: string, options?: { autoJoin?: boolean }): Promise<Caller | null>;
+    signIn(
+        identity: GitHubIdentity,
+        orgId: string,
+        options?: { autoJoin?: boolean; role?: Role }
+    ): Promise<Caller | null>;
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date): Promise<void>;
     /** The caller behind a live session token, or null if it is unknown, expired, or unmembered. */
     findSession(tokenHash: Buffer, orgId: string): Promise<Caller | null>;
@@ -93,11 +105,21 @@ export interface AuthStore {
     revokePersonalToken(orgId: string, userId: string, id: string): Promise<'revoked' | 'missing'>;
     revokeOrgToken(orgId: string, id: string): Promise<'revoked' | 'missing'>;
 
-    // Used by the CLIs. They write through the store rather than their own SQL so that the claim
-    // predicate and the session cleanup on removal exist in exactly one place.
+    // Used by the CLIs and the roster sync. They write through the store rather than their own SQL
+    // so that the claim predicate and the session cleanup on removal exist in exactly one place.
     invite(orgId: string, login: string, role: Role): Promise<'created' | 'updated'>;
     removeMember(orgId: string, login: string): Promise<'removed' | 'missing'>;
     listMembers(orgId: string): Promise<{ login: string; role: Role; claimed: boolean }[]>;
+    /**
+     * The claimed rows auto-join created — the only rows the GitHub org is allowed to maintain.
+     * Unclaimed rows are not here: a login nobody has signed in with yet has no account to sweep.
+     */
+    listAutoJoined(orgId: string): Promise<{ login: string; role: Role; userId: string }[]>;
+    /**
+     * Moves an existing row to `role`, without creating one. Update-only on purpose — admission is
+     * never this method's business, only a row that already exists may be re-roled.
+     */
+    updateMemberRole(orgId: string, login: string, role: Role): Promise<boolean>;
     createWorkerToken(orgId: string, name: string, tokenHash: Buffer): Promise<{ id: string }>;
     revokeWorkerToken(orgId: string, name: string): Promise<'revoked' | 'missing'>;
     listWorkerTokens(orgId: string): Promise<{ name: string; createdAt: string; revoked: boolean }[]>;
@@ -114,6 +136,7 @@ interface CallerRow {
     invited_at: Date | null;
     claimed_at: Date | null;
     role: Role;
+    auto_joined: boolean;
 }
 
 interface TokenRow {
@@ -148,6 +171,7 @@ const toCaller = (row: CallerRow): Caller => ({
     },
     membership: { invitedAt: toIso(row.invited_at), claimedAt: toIso(row.claimed_at) },
     role: row.role,
+    autoJoined: row.auto_joined,
 });
 
 /**
@@ -170,7 +194,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         const rows = await sql<CallerRow[]>`
             select u.id, u.github_user_id, u.github_login, u.display_name,
                    u.avatar_url, u.created_at, u.last_login_at,
-                   m.invited_at, m.claimed_at, m.role
+                   m.invited_at, m.claimed_at, m.role, m.auto_joined
             from org_membership m join app_user u on u.id = m.user_id
             where m.org_id = ${orgId} and m.user_id = ${userId}
         `;
@@ -224,8 +248,8 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             // never gets here, so a conflict at this point is a concurrent second sign-in of this
             // same account, and the role it already has must win over a fresh `member`.
             await sql`
-                insert into org_membership (org_id, github_login, role, user_id, claimed_at)
-                values (${orgId}, ${login}, 'member', ${userId}, now())
+                insert into org_membership (org_id, github_login, role, user_id, claimed_at, auto_joined)
+                values (${orgId}, ${login}, ${options.role ?? 'member'}, ${userId}, now(), true)
                 on conflict (org_id, github_login) do nothing
             `;
             return memberOf(userId, orgId);
@@ -244,7 +268,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role
+                       m.invited_at, m.claimed_at, m.role, m.auto_joined
                 from session s
                 join app_user u on u.id = s.user_id
                 -- An inner join, so losing the membership ends the session's usefulness on the very
@@ -267,7 +291,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role
+                       m.invited_at, m.claimed_at, m.role, m.auto_joined
                 from app_user u join org_membership m on m.user_id = u.id and m.org_id = ${orgId}
                 where u.github_user_id = 0
             `;
@@ -314,7 +338,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role
+                       m.invited_at, m.claimed_at, m.role, m.auto_joined
                 from access_token t
                 join app_user u on u.id = t.user_id
                 -- The same join findSession runs, so losing the membership ends the token's reach
@@ -434,6 +458,28 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
                 role: row.role,
                 claimed: row.claimed_at !== null,
             }));
+        },
+
+        async listAutoJoined(orgId) {
+            await gate();
+            const rows = await sql<{ github_login: string; role: Role; user_id: string }[]>`
+                select github_login, role, user_id from org_membership
+                where org_id = ${orgId} and auto_joined and user_id is not null
+                order by github_login
+            `;
+            return rows.map((row) => ({ login: row.github_login, role: row.role, userId: row.user_id }));
+        },
+
+        async updateMemberRole(orgId, login, role) {
+            await gate();
+            // Update-only, so this can never admit: a row that does not exist stays nonexistent,
+            // and re-rolling a row GitHub never created is invite()'s business, not a sync's.
+            const rows = await sql<{ github_login: string }[]>`
+                update org_membership set role = ${role}
+                where org_id = ${orgId} and github_login = ${login.toLowerCase()}
+                returning github_login
+            `;
+            return rows.length > 0;
         },
 
         async createWorkerToken(orgId, name, tokenHash) {

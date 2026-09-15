@@ -10,6 +10,17 @@ export interface GitHubIdentity {
 }
 
 /**
+ * What GitHub says about an account's place in one organization.
+ *
+ * `role` is the org-level role from `GET /user/memberships/orgs/{org}` — `admin` or plain `member`.
+ * When `state` is not `active` there is no membership to have a role in, and it is `member`.
+ */
+export interface OrgMembership {
+    state: 'active' | 'pending' | 'none';
+    role: 'admin' | 'member';
+}
+
+/**
  * The two calls the OAuth exchange needs, behind a seam.
  *
  * An interface rather than direct `fetch` calls because it is what keeps `npm test` offline: the
@@ -23,16 +34,18 @@ export interface GitHubIdentityClient {
     exchange(code: string): Promise<string>;
     identity(accessToken: string): Promise<GitHubIdentity>;
     /**
-     * Whether this account is a member of `org`, asked with the signing-in person's own token.
+     * This account's membership of `org`, asked with the signing-in person's own token.
      *
      * `pending` is its own answer rather than folded into `active`: an unaccepted GitHub invitation
      * means somebody was offered a seat, not that they hold one, and admitting them would let an
      * org admin add a login to Factory without that person ever agreeing to it.
      *
-     * Only called when auth.auto_join_github_org is set, which is also the only time `read:org` is
-     * requested — an unscoped token sees no organizations and would report every account `none`.
+     * Called when auth.auto_join_github_org is set — for an account with no row yet, and again on
+     * every sign-in of a row auto-join created, which is how removals and role changes in the org
+     * reach Factory. Requires `read:org`, which is requested whenever auto-join is configured — an
+     * unscoped token sees no organizations and would report every account `none`.
      */
-    orgMembership(accessToken: string, org: string): Promise<'active' | 'pending' | 'none'>;
+    orgMembership(accessToken: string, org: string): Promise<OrgMembership>;
 }
 
 /** Where GitHub sends the browser back. Derived from the configured origin, never from a header. */
@@ -133,10 +146,13 @@ export function createGitHubIdentityClient(
             // 404 is the ordinary "not a member" answer, and 403 is what a token without read:org
             // gets. Both mean no, and neither is a fault worth failing the sign-in over — the caller
             // turns them into no_membership, which tells the person something they can act on.
-            if (response.status === 404 || response.status === 403) return 'none';
+            if (response.status === 404 || response.status === 403) return { state: 'none', role: 'member' };
             if (!response.ok) throw new GitHubAuthError(`org membership lookup failed with ${response.status}`);
-            const body = (await response.json()) as { state?: string };
-            return body.state === 'active' ? 'active' : body.state === 'pending' ? 'pending' : 'none';
+            const body = (await response.json()) as { state?: string; role?: string };
+            const state = body.state === 'active' ? 'active' : body.state === 'pending' ? 'pending' : 'none';
+            // The org role maps onto Factory's two roles directly: an org admin may maintain
+            // membership, an ordinary member may not. Anything else GitHub might report is a member.
+            return { state, role: body.role === 'admin' && state === 'active' ? 'admin' : 'member' };
         },
     };
 }

@@ -221,6 +221,41 @@ describe.skipIf(!enabled)('auto-join', () => {
         expect(await store.signIn(identity(24, 'stranger'), ORG)).toBeNull();
         expect(await store.listMembers(ORG)).toEqual([]);
     });
+
+    it('stamps auto_joined on the row it creates, never on a claimed invite', async () => {
+        const joined = await store.signIn(identity(25, 'joiner'), ORG, { autoJoin: true });
+        expect(joined?.autoJoined).toBe(true);
+
+        await store.invite(ORG, 'invited', 'admin');
+        const claimed = await store.signIn(identity(26, 'invited'), ORG);
+        expect(claimed?.autoJoined).toBe(false);
+    });
+
+    it('carries the org role it was created with, mapped by the caller', async () => {
+        const admin = await store.signIn(identity(27, 'orgadmin'), ORG, { autoJoin: true, role: 'admin' });
+        expect(admin?.role).toBe('admin');
+        expect(admin?.autoJoined).toBe(true);
+    });
+
+    it('lists the claimed auto-joined rows only, for the roster sweep', async () => {
+        await store.signIn(identity(28, 'sweepme'), ORG, { autoJoin: true, role: 'admin' });
+        await store.invite(ORG, 'notmine', 'admin');
+        await store.signIn(identity(29, 'notmine'), ORG);
+
+        const rows = await store.listAutoJoined(ORG);
+        expect(rows).toEqual([{ login: 'sweepme', role: 'admin', userId: expect.any(String) }]);
+    });
+
+    it('updateMemberRole re-roles an existing row and never creates one', async () => {
+        await store.signIn(identity(30, 'promotable'), ORG, { autoJoin: true });
+
+        expect(await store.updateMemberRole(ORG, 'promotable', 'admin')).toBe(true);
+        expect((await store.listMembers(ORG)).find((m) => m.login === 'promotable')?.role).toBe('admin');
+
+        // The never-admits rule, at the store level: no row, no effect, no row created.
+        expect(await store.updateMemberRole(ORG, 'ghost', 'admin')).toBe(false);
+        expect(await store.listMembers(ORG)).not.toContainEqual(expect.objectContaining({ login: 'ghost' }));
+    });
 });
 
 describe.skipIf(!enabled)('sessions', () => {

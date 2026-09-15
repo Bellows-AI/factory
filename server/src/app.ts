@@ -8,6 +8,7 @@ import type { EnvVarStore } from './db/env-var-store.js';
 import type { JobStore } from './db/job-store.js';
 import type { UserExecutorStore } from './db/user-executor-store.js';
 import type { UserRepoStore } from './db/user-repo-store.js';
+import type { RepoAccessScope } from './github/access-scope.js';
 import type { RepoSource } from './github/repo-source.js';
 import { createFactsCache } from './workspace/facts.js';
 import type { CloneQueue } from './workspace/queue.js';
@@ -68,6 +69,12 @@ export interface AppDeps {
     auth?: AuthStore | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
+    /**
+     * The per-user repo scope (#66). Absent — the offline tooling, the route tests without it, any
+     * deployment without a GitHub App and auto-join — and every route answers the full
+     * installation list: scoping is derived data, and nothing derives it here.
+     */
+    scope?: RepoAccessScope | undefined;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
     logger?: boolean;
@@ -104,6 +111,7 @@ export async function buildApp({
     cloneQueue,
     auth,
     identity,
+    scope,
     now = Date.now,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
@@ -124,7 +132,7 @@ export async function buildApp({
 
     await app.register(healthRoutes(config));
     if (auth) {
-        await app.register(authRoutes({ config, store: auth, identity }));
+        await app.register(authRoutes({ config, store: auth, identity, scope }));
         // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
         // credential, so a token minted here would be inert at best — and a live personal
         // credential the day the same database flips to `github`. The settings page hides both
@@ -133,10 +141,10 @@ export async function buildApp({
             await app.register(tokenRoutes({ store: auth, orgId: config.orgId }));
         }
     }
-    await app.register(statsRoutes(config, service, now));
-    await app.register(repoRoutes(repos));
+    await app.register(statsRoutes(config, service, now, scope));
+    await app.register(repoRoutes({ repos, scope }));
     if (store) await app.register(ingestRoutes(store));
-    if (jobs) await app.register(jobRoutes(jobs));
+    if (jobs) await app.register(jobRoutes({ store: jobs, scope }));
     if (envVars) await app.register(envRoutes({ store: envVars, repos }));
     if (userRepos) {
         await app.register(
@@ -149,6 +157,7 @@ export async function buildApp({
                 // two seconds does not become a `git log` and a directory walk every two seconds.
                 facts: createFactsCache(now),
                 queue: cloneQueue ?? null,
+                scope,
             })
         );
     }

@@ -1,7 +1,17 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
+import type { RepoAccessScope } from '../github/access-scope.js';
 import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals, ServiceStatus } from '../db/job-store.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
+
+export interface JobRouteDeps {
+    store: JobStore;
+    /**
+     * The per-user repo scope. Absent — or a caller with no computed set — and repo labels are not
+     * checked against anything but their shape. A WORKER token never sees this route.
+     */
+    scope?: RepoAccessScope | undefined;
+}
 
 /**
  * A command is a shell line, not a payload. 16 KiB is far past anything a human writes, and past
@@ -173,7 +183,7 @@ function leaseSeconds(raw: unknown): number | null {
 }
 
 export const jobRoutes =
-    (store: JobStore): FastifyPluginAsync =>
+    ({ store, scope }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const fields = body(request.body);
@@ -201,7 +211,28 @@ export const jobRoutes =
             // Read off the authenticated request, never off the body: a client-supplied author is
             // impersonation. Null only when the app was built with no auth store at all, which is
             // the route tests' configuration rather than a deployment's.
-            const createdBy = callerOf(request)?.user.id ?? null;
+            const caller = callerOf(request);
+            const createdBy = caller?.user.id ?? null;
+
+            /*
+             * The repo label is scoped too, not just the picker: hiding a repo from GET /api/repos
+             * while POST accepted it would make the API's honesty depend on the SPA's politeness.
+             *
+             * 403, not 400 BAD_REPO: the name is well-formed and the repo is real — this caller
+             * just may not use it. Null set (never computed) and absent scope are the unscoped
+             * cases, and org/worker tokens never reach here as callers.
+             */
+            if (scope && caller && typeof repo === 'string') {
+                const allowed = await scope.scopedNames(caller.user.id);
+                if (allowed !== null && !allowed.includes(repo)) {
+                    return bad(
+                        reply,
+                        'REPO_NOT_ACCESSIBLE',
+                        `"${repo}" is not one of the repositories your GitHub account can access`,
+                        403
+                    );
+                }
+            }
 
             const created = await guard(
                 reply,

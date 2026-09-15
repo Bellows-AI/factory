@@ -1,12 +1,14 @@
 import postgres from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
+import { runRosterSync } from './auth/reconcile.js';
 import { createAuthStore } from './auth/store.js';
 import { resolveConfig } from './config.js';
 import { createJobStore } from './db/job-store.js';
 import { migrate } from './db/migrate.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createUserRepoStore } from './db/user-repo-store.js';
+import { createUserRepoAccessStore } from './db/user-repo-access-store.js';
 import { createUserExecutorStore } from './db/user-executor-store.js';
 import { createEnvVarStore } from './db/env-var-store.js';
 import { createCloneQueue } from './workspace/queue.js';
@@ -15,10 +17,19 @@ import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
+import { createRepoAccessScope } from './github/access-scope.js';
 import { createRepoSource } from './github/repo-source.js';
 import { createStatsService } from './stats-service.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
 import type { GitHubConfig } from './config.js';
+
+/**
+ * How long between roster sweeps. At-login reconciliation only would leave a removed member a
+ * working dashboard for up to a session's TTL — two weeks by default — so the sweep is what makes
+ * removal land without waiting for the member to sign in again. Two paginated GitHub calls per
+ * sweep, against an installation quota of 1,500 an hour.
+ */
+const ROSTER_SWEEP_MS = 15 * 60 * 1000;
 
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
@@ -162,6 +173,30 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     const authStore = createAuthStore({ sql, ready });
     const identity = config.auth.mode === 'github' ? createGitHubIdentityClient(config.auth) : undefined;
 
+    /*
+     * The per-user repo scope.
+     *
+     * Built only when every input it enumerates with exists: an App installation to ask, and an
+     * auto-join org that makes the GitHub organization the membership boundary. Any deployment
+     * short of both gets `undefined` — every route then serves the full installation list, which
+     * is exactly what served before scoping existed. Offline (`github.mode: 'none'`) there is no
+     * client to ask, so there is nothing to derive and nothing to pretend.
+     */
+    const scope =
+        appClient && config.auth.mode === 'github' && config.auth.autoJoinGithubOrg
+            ? createRepoAccessScope({
+                  appClient,
+                  repos,
+                  org: config.auth.autoJoinGithubOrg,
+                  access: createUserRepoAccessStore({ sql, orgId: config.orgId, ready }),
+              })
+            : undefined;
+    if (scope) {
+        console.log(
+            "[scope] per-user repo scoping on: repos are intersected with each member's GitHub access at sign-in"
+        );
+    }
+
     if (config.auth.mode === 'github') {
         console.log(`[auth] GitHub sign-in, callback ${config.auth.publicUrl}${callbackPath}`);
         if (!config.auth.cookieSecure) {
@@ -214,6 +249,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         cloneQueue,
         auth: authStore,
         identity,
+        scope,
         logger: true,
     });
 
@@ -227,6 +263,26 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     // Note what this does NOT do any more: clone anything on its own. Boot checks nothing out. A clone
     // happens only after somebody signs in and chooses repositories.
     cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
+
+    // The roster sweep, same posture: fired, never awaited, and failure logged rather than thrown —
+    // a dead GitHub costs this feature nothing the last successful sweep did not already cover, and
+    // it must not take the dashboard down with it. Admission is never this loop's business; it only
+    // removes and re-roles rows auto-join created.
+    if (scope) {
+        const sweep = async (): Promise<void> => {
+            try {
+                const roster = await scope.roster();
+                const { removed, roled } = await runRosterSync(authStore, config.orgId, roster);
+                if (removed.length || roled.length) {
+                    console.log(`[scope] roster sync: ${removed.length} removed, ${roled.length} re-roled`);
+                }
+            } catch (e) {
+                console.error(`[scope] roster sync failed: ${(e as Error).message}`);
+            }
+        };
+        void sweep();
+        setInterval(() => void sweep(), ROSTER_SWEEP_MS).unref();
+    }
 
     await app.listen({ port: config.port, host: config.host });
 }
