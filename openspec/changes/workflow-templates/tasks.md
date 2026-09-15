@@ -77,10 +77,10 @@
 
 ## 6. Web: selection and labels
 
-- [ ] 6.1 Add the workflow dropdown to the task composer (fed by `GET /api/workflows`, beside
+- [x] 6.1 Add the workflow dropdown to the task composer (fed by `GET /api/workflows`, beside
       repo/executor, default "— none —"); verify web render smoke covers the composer with and
       without workflows
-- [ ] 6.2 Label task-detail turns with their `workflow_node` when present; verify render smoke
+- [x] 6.2 Label task-detail turns with their `workflow_node` when present; verify render smoke
       with a fixture thread carrying node labels
 
 ## 7. Docs

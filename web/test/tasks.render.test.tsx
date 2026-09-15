@@ -26,6 +26,7 @@ function job(overrides: Partial<Job> = {}): Job {
         output: null,
         repo: null,
         executor: null,
+        workflowNode: null,
         followUpTo: null,
         rootJobId: '11111111-1111-4111-8111-111111111111',
         doneAt: null,
@@ -47,6 +48,8 @@ interface ComposerArgs {
     repos?: { owner: string; name: string }[] | null;
     workspaceError?: string | null;
     executors?: { name: string; type: string }[];
+    /** The workflow choices for the repo context; null hides the select (no workflows served). */
+    workflows?: readonly { id: string; name: string; scope: 'org' | 'user' | 'repo' }[] | null;
     actionError?: string | null;
     sending?: boolean;
 }
@@ -55,6 +58,7 @@ const renderComposer = ({
     repos = [{ owner: 'acme', name: 'web' }],
     workspaceError = null,
     executors = [],
+    workflows = null,
     actionError = null,
     sending = false,
 }: ComposerArgs = {}) =>
@@ -64,6 +68,7 @@ const renderComposer = ({
             workspaceError={workspaceError}
             onRetryWorkspace={() => {}}
             executors={executors}
+            workflows={workflows}
             actionError={actionError}
             sending={sending}
             onSend={async () => null}
@@ -177,6 +182,27 @@ describe('TaskComposer', () => {
         });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
+
+    it('hides the workflow select on a board that serves no workflows', () => {
+        // The no-workflow byte-identity, rendered: the composer is exactly what it was.
+        const html = renderComposer({ workflows: null });
+        expect(html).not.toContain('Workflow');
+    });
+
+    it('offers the workflow dropdown beside repo and executor, unchosen by default', () => {
+        const html = renderComposer({
+            workflows: [
+                { id: 'w1', name: 'fix-issue', scope: 'org' },
+                { id: 'w2', name: 'mine', scope: 'user' },
+            ],
+        });
+        expect(html).toContain('Workflow');
+        expect(html).toContain('>— none —<');
+        expect(html).toContain('fix-issue');
+        expect(html).toContain('mine');
+        // Unchosen means the BOARD decides its default; the select's value is the empty option.
+        expect(html).toContain('<option value="" selected="">— none —</option>');
+    });
 });
 
 describe('TaskDetail', () => {
@@ -186,6 +212,25 @@ describe('TaskDetail', () => {
         expect(html).toContain('succeeded');
         expect(html).toContain('main');
         expect(html).toContain('2026-09-01 12:00');
+    });
+
+    it('labels history turns with their workflow node, and stays quiet without one', () => {
+        // A workflow thread's rows read as the graph they walked: the node sits beside the status
+        // pill on every HISTORY turn that carries one, and a turn without one renders as before.
+        const html = renderDetail({
+            jobs: [
+                job({ workflowNode: 'implement' }),
+                job({
+                    id: '22222222-2222-4222-8222-222222222222',
+                    status: 'running',
+                    workflowNode: null,
+                    sessionId: null,
+                }),
+            ],
+        });
+        expect(html).toContain('class="pill">implement</span>');
+        const plain = renderDetail({ jobs: [job()] });
+        expect(plain).not.toContain('class="pill">implement</span>');
     });
 
     it('names the actors behind the verdicts, and stays quiet when there are none', () => {
