@@ -94,9 +94,11 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                 .filter((row) => row.name.trim() !== '')
                 .map((row) => ({
                     name: row.name.trim(),
-                    // Blank on a secret is the keep marker; blank on a readable value is an
-                    // honest empty string.
-                    value: row.isSecret && row.value === '' ? null : (row.value ?? ''),
+                    // Blank on a secret is the keep marker — and so is the untouched null the
+                    // write-only echo delivered: either way the panel never held a value to send
+                    // back, and a '' here would overwrite the stored credential. Blank on a
+                    // readable value is an honest empty string.
+                    value: row.isSecret && (row.value === '' || row.value === null) ? null : (row.value ?? ''),
                     isSecret: row.isSecret,
                 }));
             const failure = await onSave(payload);
