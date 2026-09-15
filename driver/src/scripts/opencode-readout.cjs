@@ -11,11 +11,17 @@
 //                  makes a follow-up's `--session` resumable at all), so two concurrent tasks
 //                  share one file: the scope is what keeps this readout answering only the
 //                  session of the task that ran here, never whichever task closed last.
+//   RUN_STARTED_MS — the run's start as epoch ms. A follow-up RESUMES the root conversation, so
+//                  the turn count is bounded to messages created at or after this instant — the
+//                  run's own delta, never the earlier runs' turns again. Absent, the whole
+//                  conversation is counted (the pre-delta shape, kept for tolerance).
 //
 // The role is a field INSIDE the message's data JSON, not a column: filtering it in SQL throws
 // "no such column: role" on every read, and the failure reads as an empty database. Filtered
 // in JS instead, where the parsed role actually is.
 const { DatabaseSync } = require('node:sqlite');
+
+const RUN_STARTED_MS = Number(process.env.RUN_STARTED_MS);
 
 try {
     const dbPath = process.env.OPENCODE_DB;
@@ -35,9 +41,21 @@ try {
         let tokens = 0;
         let cost = 0;
         let error = null;
+        // The agent-turn count: assistant messages of the ROOT session only. Subagent
+        // conversations are child sessions under a parent_id, and the session selection above
+        // already excluded them — what is left here is exactly the run's own conversation.
+        let turns = 0;
         for (const m of msgs) {
             const d = JSON.parse(m.data);
             if (d.role !== 'assistant') continue;
+            // The per-run delta: a message whose own created time predates this run belongs to
+            // the run (or runs) before it. A message with no usable time cannot be placed in
+            // either — skipped rather than mis-booked, for the same reason a parse miss is null.
+            if (!Number.isNaN(RUN_STARTED_MS)) {
+                const created = d.time && typeof d.time.created === 'number' ? d.time.created : null;
+                if (created === null || created < RUN_STARTED_MS) continue;
+            }
+            turns += 1;
             if (d.finish) finish = d.finish;
             if (d.tokens && typeof d.tokens.total === 'number') tokens = Math.max(tokens, d.tokens.total);
             if (typeof d.cost === 'number') cost += d.cost;
@@ -47,7 +65,7 @@ try {
             const message = d.error && (d.error.data?.message ?? d.error.message);
             if (typeof message === 'string' && message) error = message;
         }
-        console.log(JSON.stringify({ id: s.id, finish, tokens, cost, error }));
+        console.log(JSON.stringify({ id: s.id, finish, tokens, cost, turns, error }));
     } else {
         console.log(JSON.stringify({ error: `no session ran in ${dir}` }));
     }

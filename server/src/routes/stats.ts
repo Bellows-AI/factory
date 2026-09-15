@@ -4,13 +4,14 @@ import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { RepoAccessScope } from '../github/access-scope.js';
 import type { AppConfig } from '../config.js';
-import type { StatsService } from '../stats-service.js';
+import type { StatsScope, StatsService } from '../stats-service.js';
 
 interface StatsQuery {
     range?: string;
     from?: string;
     to?: string;
     org?: string;
+    scope?: string;
 }
 
 const DAY_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -65,6 +66,36 @@ function resolveOrg(config: AppConfig, requested: string | undefined): Organizat
     };
 }
 
+/**
+ * The scope the figures are computed under, resolved from the caller.
+ *
+ * `mine` without a person behind the request is a client error, never a silent fallback to org
+ * figures under a personal heading — the same reasoning `resolveOrg` applies to unknown orgs.
+ * AUTH_MODE=none is the always-case: the deployment holds no members at all, and the `__local__`
+ * stand-in the auth hook resolves there is the deployment itself, not somebody whose usage
+ * "mine" could mean. An organization token names no person either, so it is refused here the
+ * same way — it authenticated, but there is nobody to be.
+ */
+function resolveScope(
+    config: AppConfig,
+    request: { auth: unknown },
+    requested: string | undefined
+): { value: StatsScope } | { error: string; code: string } {
+    const raw = requested ?? 'org';
+    if (raw === 'org') return { value: 'org' };
+    if (raw !== 'mine') {
+        return { error: `Unknown scope '${raw}'`, code: 'BAD_SCOPE' };
+    }
+    if (config.auth.mode !== 'none') {
+        const caller = callerOf(request as Parameters<typeof callerOf>[0]);
+        if (caller) return { value: { id: caller.user.id, login: caller.user.login } };
+    }
+    return {
+        error: 'Caller scope needs a signed-in member; this deployment has none behind this request',
+        code: 'SCOPE_REQUIRES_USER',
+    };
+}
+
 export const statsRoutes =
     (
         config: AppConfig,
@@ -92,6 +123,15 @@ export const statsRoutes =
                 return reply.code(400).send({ error: org.error, code: 'UNKNOWN_ORG' });
             }
 
+            // Beside the organization: the org decides WHICH data set, the scope decides WHOSE
+            // figures within it, and both must be settled before any range is parsed or the
+            // cache is touched — a bad scope is a bad request whatever the cache is doing.
+            // `callerScope`, not `scope`: the plugin argument named `scope` is the per-user REPO
+            // access scope, a different dimension entirely.
+            const callerScope = resolveScope(config, request, query.scope);
+            if ('error' in callerScope) {
+                return reply.code(400).send({ error: callerScope.error, code: callerScope.code });
+            }
             const range = parseRange(query, new Date(now()));
             if ('error' in range) {
                 return reply.code(400).send({ error: range.error, code: 'BAD_RANGE' });
@@ -107,7 +147,9 @@ export const statsRoutes =
             const repoFilter = scope && caller ? await scope.scopedNames(caller.user.id) : null;
 
             service.ensureFresh();
-            const payload = service.current(range, repoFilter ?? undefined);
+            // Both dimensions ride into `current()`: whose figures (caller scope), and — where
+            // per-user repo scoping is active — the caller's subset of the installation.
+            const payload = service.current(range, callerScope.value, repoFilter ?? undefined);
 
             // A stale cache is still served with 200. A failed read must keep the last
             // good render on screen and explain itself, not blank the dashboard.

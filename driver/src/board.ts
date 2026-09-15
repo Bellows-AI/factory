@@ -198,7 +198,10 @@ export interface Board {
     /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,
-     * stored beside the attempt's vitals on the board. The answer carries `threadDone` — whether
+     * stored beside the attempt's vitals on the board. `agentTurns` rides when the runner
+     * counted the run's root-conversation assistant response cycles at close — a number only:
+     * an unmeasured read is omitted, and the board stores null, never zero. The answer carries
+     * `threadDone` — whether
      * EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead') AND the user has
      * closed the thread (a `done_at` on some member), computed by the board in the SAME
      * lease-guarded transaction as the verdict — which is the signal a worker uses right after a
@@ -215,6 +218,7 @@ export interface Board {
             output: string;
             contextTokens?: number | null;
             contextCostUsd?: number | null;
+            agentTurns?: number | null;
         }
     ): Promise<{ state: LeaseState; threadDone: boolean }>;
 }
@@ -366,7 +370,7 @@ export function createBoard({
             return response.status === 409 ? 'lost' : 'held';
         },
 
-        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd }) {
+        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd, agentTurns }) {
             const response = await post(`/api/jobs/${job.id}/complete`, {
                 leaseToken: job.leaseToken,
                 status,
@@ -374,6 +378,9 @@ export function createBoard({
                 output,
                 ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
                 ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
+                // A number only: null and absent both stay off the wire, and the board stores
+                // unmeasured — the never-zero contract is the driver's to keep too.
+                ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
             });
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — the done answer is false, not unknown.

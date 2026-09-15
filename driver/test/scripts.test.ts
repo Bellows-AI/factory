@@ -26,7 +26,12 @@ import {
     prSummaryScript,
 } from '../src/publish.js';
 import { bellowsReadScript } from '../src/services.js';
-import { opencodeCacheProbeScript, opencodeReadoutScript, remoteSessionScript } from '../src/docker.js';
+import {
+    claudeTurnsScript,
+    opencodeCacheProbeScript,
+    opencodeReadoutScript,
+    remoteSessionScript,
+} from '../src/docker.js';
 
 const execFile = promisify(execFileCb);
 
@@ -78,6 +83,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['pr-summary.cjs', 'node'],
     ['bellows-read.sh', 'sh'],
     ['opencode-readout.cjs', 'node'],
+    ['claude-turns.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['remote-session.sh', 'sh'],
@@ -123,6 +129,7 @@ describe('the container scripts', () => {
         expect(prSummaryScript).toBe(readFileSync(pathOf('pr-summary.cjs'), 'utf8'));
         expect(bellowsReadScript).toBe(readFileSync(pathOf('bellows-read.sh'), 'utf8'));
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
+        expect(claudeTurnsScript).toBe(readFileSync(pathOf('claude-turns.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(remoteSessionScript).toBe(readFileSync(pathOf('remote-session.sh'), 'utf8'));
@@ -352,9 +359,14 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
         db.prepare('insert into message (session_id, data) values (?, ?)').run(sessionId, JSON.stringify(data));
     };
 
-    const run = (dbPath: string, dir: string): { answer: Record<string, unknown> } => {
+    const run = (dbPath: string, dir: string, startedMs?: string): { answer: Record<string, unknown> } => {
         const stdout = execFileSync('node', [pathOf('opencode-readout.cjs')], {
-            env: { ...process.env, OPENCODE_DB: dbPath, OPENCODE_DIR: dir },
+            env: {
+                ...process.env,
+                OPENCODE_DB: dbPath,
+                OPENCODE_DIR: dir,
+                ...(startedMs !== undefined ? { RUN_STARTED_MS: startedMs } : {}),
+            },
             encoding: 'utf8',
         });
         return { answer: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
@@ -437,6 +449,48 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
             tokens: 100016,
             error: 'Error from provider (Console): Rate limit exceeded.',
         });
+    });
+
+    it('counts the assistant responses of the root conversation, never a subagent child', () => {
+        // The agent-turn definition: one assistant response cycle in the run's ROOT conversation.
+        // A subagent's session is a CHILD under a parent_id — its messages belong to another
+        // conversation, and the root-only session selection has to keep them out of the count.
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', { role: 'user' });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'tool-calls' });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
+        // A child session under ses_mine: subagent conversation, never counted.
+        db.prepare('insert into session (id, parent_id, directory, time_created) values (?, ?, ?, ?)').run(
+            'ses_child',
+            'ses_mine',
+            MINE,
+            3000
+        );
+        insertMessage(db, 'ses_child', { role: 'assistant', finish: 'stop' });
+        insertMessage(db, 'ses_child', { role: 'assistant', finish: 'stop' });
+        db.close();
+
+        const { answer } = run(dbPath, MINE);
+        expect(answer.turns).toBe(3);
+    });
+
+    it('counts only the turns this run wrote, when the driver passes the run start', () => {
+        // A follow-up RESUMES the root conversation: without the bound, its close-time read
+        // would book the earlier runs' turns again, and the task total would overstate. The
+        // bound is the run's own start (epoch ms); messages without a usable time cannot be
+        // placed in either side, so they are skipped, never mis-booked.
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 1000 } });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 9000 } });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 9500 } });
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
+        db.close();
+
+        const { answer } = run(dbPath, MINE, '8000');
+        expect(answer.turns).toBe(2);
+        // Without the bound the whole conversation counts, as before.
+        expect(run(dbPath, MINE).answer.turns).toBe(4);
     });
 
     it('reports the LAST error when the run errored, retried through it, and errored again', () => {
@@ -569,5 +623,115 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
 
     it('is a no-op when there is nothing at the path', () => {
         expect(remove(wtPath(ROOT)).verdict).toEqual({ ok: true, removed: false });
+    });
+});
+
+/**
+ * The close-time claude-code turn count, against a real transcript file — the artifact both
+ * runners hand to a throwaway container. The parse is the part worth executing: the transcript
+ * is JSONL where an assistant response is a `type: "assistant"` entry, the file is found by
+ * GLOBBING the CLI munged project directory (a `projects` segment, then the session id file),
+ * and a missing or unreadable transcript answers null — unmeasured, never zero.
+ */
+describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
+    const SESSION_ID = '33333333-3333-4333-8333-333333333333';
+
+    const run = (transcriptDir: string, startedAt?: string): { answer: Record<string, unknown> } => {
+        const stdout = execFileSync('node', [pathOf('claude-turns.cjs')], {
+            env: {
+                ...process.env,
+                CLAUDE_TRANSCRIPT_DIR: transcriptDir,
+                CLAUDE_SESSION_ID: SESSION_ID,
+                ...(startedAt !== undefined ? { RUN_STARTED_AT: startedAt } : {}),
+            },
+            encoding: 'utf8',
+        });
+        return { answer: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
+    };
+
+    let dir: string;
+    beforeEach(() => {
+        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-cturns-')));
+    });
+
+    it('counts the assistant entries of the run session transcript alone', () => {
+        // The CLI munges the working directory into the projects/ segment; the script must
+        // find the file by glob, not by reconstructing the munging.
+        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(
+            join(project, `${SESSION_ID}.jsonl`),
+            [
+                JSON.stringify({ type: 'user', message: 'fix it' }),
+                JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
+                JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
+                JSON.stringify({ type: 'system' }),
+                '',
+            ].join('\n')
+        );
+
+        const { answer } = run(dir);
+        expect(answer.turns).toBe(2);
+    });
+
+    it('never counts a subagent conversation', () => {
+        // Older layouts ride sidechain entries in the same file; newer ones give the subagent
+        // its own session id and file — excluded by the id match alone. Both are pinned.
+        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(
+            join(project, `${SESSION_ID}.jsonl`),
+            [
+                JSON.stringify({ type: 'assistant' }),
+                JSON.stringify({ type: 'assistant', isSidechain: true }),
+                JSON.stringify({ type: 'assistant', isSidechain: true }),
+            ].join('\n')
+        );
+        // A DIFFERENT session in the same project: a subagent conversation under the newer
+        // layout. Its file is never read — the run's session id is the scope.
+        writeFileSync(
+            join(project, '44444444-4444-4444-8444-444444444444.jsonl'),
+            `${JSON.stringify({ type: 'assistant' })}\n`
+        );
+
+        const { answer } = run(dir);
+        expect(answer.turns).toBe(1);
+    });
+
+    it('counts only the entries this run wrote, when the driver passes the run start', () => {
+        // Same delta rule as the opencode readout: a follow-up resumes this transcript, and
+        // the whole file would book the earlier runs' turns again. Entries without a
+        // timestamp cannot be placed in either side and are skipped.
+        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(
+            join(project, `${SESSION_ID}.jsonl`),
+            [
+                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T05:00:00Z' }),
+                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T07:00:00Z' }),
+                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T08:00:00Z' }),
+                JSON.stringify({ type: 'assistant' }),
+            ].join('\n')
+        );
+
+        const { answer } = run(dir, '2026-08-20T06:00:00Z');
+        expect(answer.turns).toBe(2);
+        // Without the bound the whole transcript counts, as before.
+        expect(run(dir).answer.turns).toBe(4);
+    });
+
+    it('answers null when the transcript is missing — the container died first, the run never spoke', () => {
+        mkdirSync(join(dir, 'projects', '-workspaces-org-member-.worktrees-mine'), { recursive: true });
+        const { answer } = run(dir);
+        expect(answer.turns).toBeNull();
+        expect(String(answer.error)).toContain('no transcript');
+    });
+
+    it('answers null when the session id is not a session id', () => {
+        const stdout = execFileSync('node', [pathOf('claude-turns.cjs')], {
+            env: { ...process.env, CLAUDE_TRANSCRIPT_DIR: dir, CLAUDE_SESSION_ID: '../../../etc/passwd' },
+            encoding: 'utf8',
+        });
+        expect(JSON.parse(stdout.trim()).turns).toBeNull();
     });
 });

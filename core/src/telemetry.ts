@@ -1,13 +1,7 @@
 import { HOUR } from './config.js';
-import { isoWeekKey, ratio, weekStart } from './metrics.js';
-import type {
-    SessionRollup,
-    TelemetryInput,
-    TelemetryStats,
-    TelemetryWeekPoint,
-    TokenTotals,
-    UserRef,
-} from './types.js';
+import { dayKey, dayStart, isoWeekKey, ratio, weekStart } from './metrics.js';
+import type { DateRange } from './range.js';
+import type { SessionRollup, TelemetryInput, TelemetryPoint, TelemetryStats, TokenTotals, UserRef } from './types.js';
 
 /**
  * Sums the measured values and returns null only when nothing was measured at all.
@@ -43,12 +37,26 @@ function acceptRatio(accepted: number | null, rejected: number | null): number |
 export interface TelemetryStatsOptions {
     /** Only sessions the hook tagged with one of these repos are counted. */
     repos?: readonly string[];
-    /** Injected so the `partial` week flag is testable against a frozen fixture. */
+    /** Injected so the `partial` bucket flag is testable against a frozen fixture. */
     now?: Date;
+    /**
+     * Scopes every figure to the caller: only sessions whose landed user matches count toward
+     * the totals, the series and `byUser`. Unattributed sessions stay out of the totals but
+     * keep being named by `unattributedSessions` — out of "mine" is not the same as invisible.
+     * Coverage and the two setup-failure counters describe the store, not the caller, and are
+     * deliberately untouched.
+     */
+    user?: { id: string };
+    /**
+     * The selected window, for the series granularity rule: day at ≤ 92 days of window, week
+     * beyond — and for all-time, the coverage span decides. The range never changes WHICH
+     * sessions are aggregated (that already happened); it only picks the bucket size.
+     */
+    range?: DateRange;
 }
 
-interface WeekBucket {
-    week: string;
+interface Bucket {
+    key: string;
     start: string;
     sessions: number;
     tokens: { tokens: TokenTotals }[];
@@ -56,49 +64,73 @@ interface WeekBucket {
     linesRemoved: number;
 }
 
-function weeklySeries(sessions: SessionRollup[], now: Date): TelemetryWeekPoint[] {
-    if (!sessions.length) return [];
+const DAY_MS = 86_400_000;
 
-    const weeks = new Map<string, WeekBucket>();
-    const emptyWeek = (date: string): WeekBucket => ({
-        week: isoWeekKey(date),
-        start: weekStart(date).toISOString().slice(0, 10),
+/**
+ * Day buckets when the window (or, unbounded, the coverage span) is at most 92 days — the
+ * width at which a fixed-width chart of daily bars stops being information and starts being
+ * hairlines — and ISO weeks beyond.
+ */
+export function seriesGranularity(range: DateRange | undefined, input: TelemetryInput, now: Date): 'day' | 'week' {
+    let from = range?.from !== undefined && range.from !== null ? Date.parse(range.from) : null;
+    let to = range?.to !== undefined && range.to !== null ? Date.parse(range.to) : null;
+    // An unbounded edge falls back to what the store actually holds: for all-time that IS the
+    // coverage span, and an empty store answers a zero span (day, with no points) honestly.
+    if (from === null) from = input.coverage.from !== null ? Date.parse(input.coverage.from) : (to ?? now.getTime());
+    if (to === null) to = input.coverage.to !== null ? Date.parse(input.coverage.to) : now.getTime();
+    return to - from <= 92 * DAY_MS ? 'day' : 'week';
+}
+
+function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', now: Date): TelemetryPoint[] {
+    if (!sessions.length) return [];
+    const daily = granularity === 'day';
+    const keyOf = daily ? dayKey : isoWeekKey;
+    const startOf = daily ? dayStart : weekStart;
+    const stepDays = daily ? 1 : 7;
+
+    const buckets = new Map<string, Bucket>();
+    const emptyBucket = (iso: string): Bucket => ({
+        key: keyOf(iso),
+        start: startOf(iso).toISOString().slice(0, 10),
         sessions: 0,
         tokens: [],
         linesAdded: 0,
         linesRemoved: 0,
     });
 
-    // Seed every week in the window, including the quiet ones: a series that closes its own
+    // Seed every bucket in the window, including the quiet ones: a series that closes its own
     // gaps overstates activity.
     const first = sessions[0] as SessionRollup;
     const earliest = sessions.reduce((min, s) => (s.firstSeen < min ? s.firstSeen : min), first.firstSeen);
     const latest = sessions.reduce((max, s) => (s.firstSeen > max ? s.firstSeen : max), first.firstSeen);
-    const cursor = weekStart(earliest);
-    const last = weekStart(latest);
+    const cursor = startOf(earliest);
+    const last = startOf(latest);
     while (cursor <= last) {
         const iso = cursor.toISOString();
-        weeks.set(isoWeekKey(iso), emptyWeek(iso));
-        cursor.setUTCDate(cursor.getUTCDate() + 7);
+        buckets.set(keyOf(iso), emptyBucket(iso));
+        cursor.setUTCDate(cursor.getUTCDate() + stepDays);
     }
 
     for (const session of sessions) {
-        const key = isoWeekKey(session.firstSeen);
-        if (!weeks.has(key)) weeks.set(key, emptyWeek(session.firstSeen));
-        const bucket = weeks.get(key) as WeekBucket;
+        const key = keyOf(session.firstSeen);
+        if (!buckets.has(key)) buckets.set(key, emptyBucket(session.firstSeen));
+        const bucket = buckets.get(key) as Bucket;
         bucket.sessions += 1;
         bucket.tokens.push(session);
         bucket.linesAdded += session.linesAdded ?? 0;
         bucket.linesRemoved += session.linesRemoved ?? 0;
     }
 
-    const currentWeek = isoWeekKey(now.toISOString());
-    return [...weeks.values()]
-        .sort((a, b) => a.week.localeCompare(b.week))
+    const current = keyOf(now.toISOString());
+    return [...buckets.values()]
+        .sort((a, b) => a.start.localeCompare(b.start))
         .map(({ tokens, ...rest }) => ({
-            ...rest,
+            start: rest.start,
+            sessions: rest.sessions,
             tokens: sumTokens(tokens),
-            partial: rest.week === currentWeek,
+            linesAdded: rest.linesAdded,
+            linesRemoved: rest.linesRemoved,
+            partial: rest.key === current,
         }));
 }
 
@@ -111,17 +143,22 @@ function weeklySeries(sessions: SessionRollup[], now: Date): TelemetryWeekPoint[
  * counted in `sessionsWithoutHook` — three different setup failures must stay distinguishable.
  */
 export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOptions = {}): TelemetryStats {
-    const { repos, now = new Date() } = options;
+    const { repos, now = new Date(), user } = options;
     const inRepoScope = (name: string) => repos === undefined || repos.includes(name);
 
-    const inScope: SessionRollup[] = [];
+    const repoScoped: SessionRollup[] = [];
     let otherRepoSessions = 0;
     let sessionsWithoutHook = 0;
     for (const session of input.sessions) {
         if (session.repo === null) sessionsWithoutHook += 1;
         else if (!inRepoScope(session.repo)) otherRepoSessions += 1;
-        else inScope.push(session);
+        else repoScoped.push(session);
     }
+
+    // Caller scope is a filter, applied after the repo filter and before every figure below:
+    // a session the join attributed to someone else is out of "mine" entirely. Unattributed
+    // sessions are out too — but they keep their own figure, so "mine" narrows honestly.
+    const inScope = user ? repoScoped.filter((s) => s.user !== null && s.user.id === user.id) : repoScoped;
 
     const totalsTokens = sumTokens(inScope);
     const totalAccepted = sum(inScope.map((s) => s.editsAccepted));
@@ -130,18 +167,22 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
 
     // Group by the user's id, not the object: two rows resolved from the same app_user must
     // land in one bucket. Sessions with no user are counted, never dropped — the same honesty
-    // rule as sessionsWithoutHook.
+    // rule as sessionsWithoutHook. The count runs over the repo-scoped set, so the
+    // unattributed figure means the same thing under both scopes.
     const byUser = new Map<string, { user: UserRef; sessions: SessionRollup[] }>();
     let unattributedSessions = 0;
-    for (const session of inScope) {
+    for (const session of repoScoped) {
         if (session.user === null) {
             unattributedSessions += 1;
             continue;
         }
+        if (user && session.user.id !== user.id) continue;
         const bucket = byUser.get(session.user.id);
         if (bucket) bucket.sessions.push(session);
         else byUser.set(session.user.id, { user: session.user, sessions: [session] });
     }
+
+    const granularity = seriesGranularity(options.range, input, now);
 
     return {
         totals: {
@@ -158,7 +199,7 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
             .map(({ user, sessions }) => ({ user, sessions: sessions.length, tokens: sumTokens(sessions) }))
             .sort((a, b) => a.user.login.localeCompare(b.user.login)),
         unattributedSessions,
-        weekly: weeklySeries(inScope, now),
+        series: { granularity, points: bucketSeries(inScope, granularity, now) },
         coverage: input.coverage,
     };
 }

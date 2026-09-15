@@ -18,6 +18,17 @@ export function weekStart(isoDate: string): Date {
     return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day));
 }
 
+/** UTC calendar day of an instant: 23:30 and 00:15 land in different days, never a local one. */
+export function dayStart(isoDate: string): Date {
+    const d = new Date(isoDate);
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/** `YYYY-MM-DD` — the day bucket's map key, and its own bucket start. */
+export function dayKey(isoDate: string): string {
+    return dayStart(isoDate).toISOString().slice(0, 10);
+}
+
 /**
  * Returns null on a zero denominator, never 0. The entire unavailable-vs-zero contract on the
  * page rests on this: "0 reverts in 0 commits" reads as a real answer, and a 0/0 that became 0

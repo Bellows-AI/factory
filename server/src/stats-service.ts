@@ -1,11 +1,25 @@
-import { ALL_TIME, filterTelemetryInput, telemetryStats } from '@factory-ai/core';
-import type { DateRange, OrganizationMeta, TelemetryInput, TelemetryStats } from '@factory-ai/core';
+import { ALL_TIME, filterJobRuns, filterTelemetryInput, taskUsageStats, telemetryStats } from '@factory-ai/core';
+import type {
+    DateRange,
+    JobRun,
+    OrganizationMeta,
+    TaskUsageStats,
+    TelemetryInput,
+    TelemetryStats,
+} from '@factory-ai/core';
 import { createCache } from './cache.js';
 import { fullName } from './config.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
 import type { TelemetryClient } from './telemetry/client.js';
 import { TelemetryError } from './telemetry/errors.js';
+
+/**
+ * Who the figures are computed for: the whole organization, or one member. The route resolves
+ * the caller to this; `current()` applies it as a read-time filter over the same snapshot the
+ * org scope reads — a scope switch never re-fetches.
+ */
+export type StatsScope = 'org' | { id: string; login: string };
 
 export interface TelemetryMeta {
     status: 'ok' | 'empty' | 'unreachable' | 'disabled';
@@ -19,10 +33,14 @@ export interface TelemetryMeta {
     otherRepoSessions: number;
     /** Sessions with telemetry but no hook data — the plugin is missing, or failing. */
     sessionsWithoutHook: number;
+    /** Sessions no board task matches — the third exclusion, kept distinct from the two above. */
+    unattributedSessions: number;
 }
 
 export interface TelemetrySnapshot {
     input: TelemetryInput;
+    /** The organization's run rows, fetched beside the rollups for the per-task statistics. */
+    runs: JobRun[];
 }
 
 export interface FetchState {
@@ -34,6 +52,11 @@ export interface FetchState {
 
 export interface StatsPayload {
     telemetry: TelemetryStats | null;
+    /**
+     * What a task costs, over the same range and scope the telemetry block covers. Null exactly
+     * when `telemetry` is — there is no snapshot to distribute over yet.
+     */
+    tasks: TaskUsageStats | null;
     meta: {
         fetchedAt: string;
         ageSeconds: number;
@@ -51,19 +74,26 @@ export interface StatsPayload {
         /** The repos this deployment reports on. */
         repos: { owner: string; name: string }[];
         range: DateRange;
+        /**
+         * The scope the figures were computed under, and — under caller scope — the member they
+         * resolved to. An org payload names 'org' with a null login, so a reader can never
+         * mistake whose numbers are on screen.
+         */
+        scope: 'org' | 'mine';
+        scopeLogin: string | null;
         telemetry: TelemetryMeta;
     };
 }
 
 export interface StatsService {
     /**
-     * Cached payload for a range, or null if nothing has ever been fetched successfully.
+     * Cached payload for a range and scope, or null if nothing has ever been fetched.
      *
      * `repoFilter` narrows the answer to a subset of the installation — the per-user repo scope.
      * Absent, the full list is answered; the filter is a read-time intersection, so it never
      * touches the shared cache, which stays org-wide.
      */
-    current(range?: DateRange, repoFilter?: readonly string[]): StatsPayload | null;
+    current(range?: DateRange, scope?: StatsScope, repoFilter?: readonly string[]): StatsPayload | null;
     /** Kicks off a refresh if one is warranted. Single-flight. */
     ensureFresh(): void;
     refresh(): void;
@@ -126,14 +156,14 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             // Refreshes the repo snapshot the scoping filter reads. The call is cached, so this
             // is usually free.
             await repos.list();
-            const input = await telemetry.fetchRollups({ repos: repoNames() });
+            const fetch = await telemetry.fetchRollups({ repos: repoNames() });
             telemetryFailure = null;
             fetchState = {
                 ...fetchState,
                 state: 'idle',
                 finishedAt: new Date(now()).toISOString(),
             };
-            return { input };
+            return fetch;
         } catch (e) {
             telemetryFailure = {
                 at: now(),
@@ -175,6 +205,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             repoFilter: scopedNames,
             otherRepoSessions: stats?.otherRepoSessions ?? 0,
             sessionsWithoutHook: stats?.sessionsWithoutHook ?? 0,
+            unattributedSessions: stats?.unattributedSessions ?? 0,
         } as const;
 
         if (config.telemetrySource === 'off') {
@@ -206,7 +237,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
     }
 
     return {
-        current(range = ALL_TIME, repoFilter?: readonly string[]) {
+        current(range = ALL_TIME, scope: StatsScope = 'org', repoFilter?: readonly string[]) {
             const entry = cache.peek();
             if (!entry) return null;
 
@@ -219,15 +250,30 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             const scoped = wanted ? all.filter((name) => wanted.has(name)) : all;
 
             // Aggregated at read time, not at fetch time: telemetryStats() is pure over the
-            // session list, so every range is served from the one read the database paid for.
+            // session list, so every range — and now every scope — is served from the one read
+            // the database paid for. Caller scope filters the sessions the same way the range
+            // does (and the runs beside them for the task statistics); it never narrows the
+            // snapshot itself, which is what would cost a second fetch.
+            const user = scope === 'org' ? undefined : { id: scope.id };
             const input = filterTelemetryInput(entry.value.input, range);
             const telemetry = telemetryStats(input, {
                 repos: scoped,
                 now: new Date(now()),
+                range,
+                ...(user ? { user } : {}),
+            });
+            // The same repo scope the totals above apply, on BOTH task inputs: the run rows are
+            // read org-wide, so without it a task attributed to another repo's sessions would
+            // appear here while its sessions were excluded up page. `scoped` carries the
+            // per-user repo subset when one is active, and the org list when not.
+            const tasks = taskUsageStats(input.sessions, filterJobRuns(entry.value.runs, range), {
+                repos: scoped,
+                ...(user ? { user } : {}),
             });
 
             return {
                 telemetry,
+                tasks,
                 meta: {
                     fetchedAt: new Date(entry.fetchedAt).toISOString(),
                     ageSeconds: Math.floor((now() - entry.fetchedAt) / 1000),
@@ -244,6 +290,8 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
                         .filter((repo) => !wanted || wanted.has(fullName(repo)))
                         .map((repo) => ({ owner: repo.owner, name: repo.name })),
                     range,
+                    scope: scope === 'org' ? 'org' : 'mine',
+                    scopeLogin: scope === 'org' ? null : scope.login,
                     telemetry: telemetryMeta(entry, telemetry, scoped),
                 },
             };

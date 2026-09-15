@@ -20,6 +20,7 @@ function session(over: Partial<SessionRollup>): SessionRollup {
         activeSeconds: 60,
         commits: 0,
         user: null,
+        taskKey: null,
         ...over,
     };
 }

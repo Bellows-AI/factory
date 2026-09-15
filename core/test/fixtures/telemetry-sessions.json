@@ -23,7 +23,8 @@
                 "login": "alice",
                 "name": "Alice Doe",
                 "avatarUrl": "https://example.com/alice.png"
-            }
+            },
+            "taskKey": "t-s01"
         },
         {
             "sessionId": "s02-mid-a",
@@ -48,7 +49,8 @@
                 "login": "alice",
                 "name": "Alice Doe",
                 "avatarUrl": "https://example.com/alice.png"
-            }
+            },
+            "taskKey": "t-s02"
         },
         {
             "sessionId": "s03-mid-b",
@@ -73,7 +75,8 @@
                 "login": "alice",
                 "name": "Alice Doe",
                 "avatarUrl": "https://example.com/alice.png"
-            }
+            },
+            "taskKey": "t-s03"
         },
         {
             "sessionId": "s04-april",
@@ -98,7 +101,8 @@
                 "login": "bob",
                 "name": null,
                 "avatarUrl": null
-            }
+            },
+            "taskKey": "t-s04"
         },
         {
             "sessionId": "s05-april-earliest",
@@ -123,7 +127,8 @@
                 "login": "bob",
                 "name": null,
                 "avatarUrl": null
-            }
+            },
+            "taskKey": "t-s05"
         },
         {
             "sessionId": "s06-may",
@@ -148,7 +153,8 @@
                 "login": "bob",
                 "name": null,
                 "avatarUrl": null
-            }
+            },
+            "taskKey": "t-s06"
         },
         {
             "sessionId": "s07-july-a",
@@ -168,7 +174,8 @@
             "editsRejected": 4,
             "activeSeconds": 900,
             "commits": 0,
-            "user": null
+            "user": null,
+            "taskKey": null
         },
         {
             "sessionId": "s08-july-b",
@@ -188,7 +195,8 @@
             "editsRejected": 0,
             "activeSeconds": 600,
             "commits": 0,
-            "user": null
+            "user": null,
+            "taskKey": null
         },
         {
             "sessionId": "s09-other-repo",
@@ -213,7 +221,8 @@
                 "login": "bob",
                 "name": null,
                 "avatarUrl": null
-            }
+            },
+            "taskKey": "t-s09"
         },
         {
             "sessionId": "s10-no-hook",
@@ -233,7 +242,8 @@
             "editsRejected": 1,
             "activeSeconds": 1500,
             "commits": 1,
-            "user": null
+            "user": null,
+            "taskKey": null
         },
         {
             "sessionId": "s11-july-c",
@@ -253,7 +263,8 @@
             "editsRejected": 0,
             "activeSeconds": 1500,
             "commits": 1,
-            "user": null
+            "user": null,
+            "taskKey": null
         },
         {
             "sessionId": "s12-june",
@@ -278,7 +289,8 @@
                 "login": "alice",
                 "name": "Alice Doe",
                 "avatarUrl": "https://example.com/alice.png"
-            }
+            },
+            "taskKey": "t-s12"
         },
         {
             "sessionId": "s13-august",
@@ -303,7 +315,8 @@
                 "login": "bob",
                 "name": null,
                 "avatarUrl": null
-            }
+            },
+            "taskKey": "t-s13"
         },
         {
             "sessionId": "s14-july-d",
@@ -323,7 +336,8 @@
             "editsRejected": 1,
             "activeSeconds": 900,
             "commits": 2,
-            "user": null
+            "user": null,
+            "taskKey": null
         },
         {
             "sessionId": "s15-june-b",
@@ -348,7 +362,8 @@
                 "login": "alice",
                 "name": "Alice Doe",
                 "avatarUrl": "https://example.com/alice.png"
-            }
+            },
+            "taskKey": "t-s15"
         }
     ],
     "coverage": {

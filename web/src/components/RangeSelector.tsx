@@ -32,6 +32,20 @@ export function rangeQuery(range: RangeSelection): string {
     return params.toString();
 }
 
+/** Who the dashboard's figures are for. `mine` rides the request as `?scope=mine`. */
+export type ScopeSelection = 'org' | 'mine';
+
+export const DEFAULT_SCOPE: ScopeSelection = 'org';
+
+/**
+ * The full stats query: the range, then the scope. Pure and exported so the wiring is pinnable —
+ * `useStats` keys on this string, which is what makes a scope switch a re-poll with `scope=mine`
+ * and a range change a re-poll that KEEPS the scope, with no state reconciliation anywhere.
+ */
+export function statsQuery(range: RangeSelection, scope: ScopeSelection): string {
+    return scope === 'org' ? rangeQuery(range) : `${rangeQuery(range)}&scope=mine`;
+}
+
 export function RangeSelector({
     range,
     onChange,

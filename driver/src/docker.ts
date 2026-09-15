@@ -39,6 +39,17 @@ export const remoteSessionScript = script('remote-session.sh');
 /** The close-time opencode readout: see scripts/opencode-readout.cjs. */
 export const opencodeReadoutScript = script('opencode-readout.cjs');
 
+/** The close-time claude-code turn count: see scripts/claude-turns.cjs. */
+export const claudeTurnsScript = script('claude-turns.cjs');
+
+/**
+ * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
+ * `activeDeadlineSeconds`. The runner's timeout is long gone by the time this read runs, so
+ * without a bound of its own a stalled daemon would hold the verdict — and the worker slot —
+ * open forever. On expiry the read answers null: unmeasured, never a wrong number.
+ */
+export const CLOSE_READ_DEADLINE_MS = 120_000;
+
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
 export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
 
@@ -112,6 +123,16 @@ export interface RunOutcome {
      * docker-only (config refuses it under EXECUTOR=kubernetes).
      */
     cacheLost?: string | null;
+    /**
+     * The run's agent turns — one assistant response cycle in the run's ROOT conversation,
+     * counted from the session's own records at close (opencode: the session database the
+     * readout walks; claude-code: the transcript on the workspaces volume). Null when the read
+     * ran and could not measure — the transcript was gone, or the container died first; absent
+     * when no read was attempted (claude-code's Remote Control keeps an interactive
+     * conversation no single read may freeze mid-flight). The board stores what arrives: absent
+     * and null both land as null — unmeasured, never zero.
+     */
+    agentTurns?: number | null;
 }
 
 /**
@@ -634,7 +655,7 @@ export function transcriptDir(config: DriverConfig, job: BoardJob): string {
  * that ended itself (`stop`) from one the model's context limit cut short (`length`) — the exit
  * code reads 0 for both, and only one of them is a success.
  */
-export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob): string[] {
+export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
     const db = opencodeDbPath(config, job);
     return [
         'run',
@@ -651,6 +672,11 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob):
         `OPENCODE_DB=${db}`,
         '-e',
         `OPENCODE_DIR=${runWorkingDir(config, job)}`,
+        // The run's start, as epoch ms: the readout counts only the turns created at or after
+        // it, because a follow-up resumes the SAME root conversation and counting the whole
+        // session would book earlier runs' turns again.
+        '-e',
+        `RUN_STARTED_MS=${Date.parse(startedAt)}`,
         '--entrypoint',
         'node',
         config.image,
@@ -666,6 +692,11 @@ export interface OpencodeRunOutcome {
     contextTokens: number | null;
     costUsd: number | null;
     /**
+     * The agent turns the root conversation took. Null when the readout answered no count —
+     * unmeasured, never zero.
+     */
+    agentTurns: number | null;
+    /**
      * What the readout says went wrong, when it says anything. The script prints one on every
      * failure it can name; a readout that answers nothing at all parses with this null.
      */
@@ -675,13 +706,21 @@ export interface OpencodeRunOutcome {
 /** Pulls the session id, finish reason and context stats out of the readout, tolerating anything else. */
 export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
     const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    const nothing = { sessionId: null, finishReason: null, contextTokens: null, costUsd: null, error: null };
+    const nothing = {
+        sessionId: null,
+        finishReason: null,
+        contextTokens: null,
+        costUsd: null,
+        agentTurns: null,
+        error: null,
+    };
     try {
         const parsed = JSON.parse(line) as {
             id?: unknown;
             finish?: unknown;
             tokens?: unknown;
             cost?: unknown;
+            turns?: unknown;
             error?: unknown;
         };
         const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
@@ -692,11 +731,74 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
                 : null;
         const costUsd =
             typeof parsed.cost === 'number' && Number.isFinite(parsed.cost) && parsed.cost >= 0 ? parsed.cost : null;
+        const agentTurns =
+            typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
+                ? parsed.turns
+                : null;
         const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
-        return { sessionId, finishReason, contextTokens, costUsd, error };
+        return { sessionId, finishReason, contextTokens, costUsd, agentTurns, error };
     } catch {
         return nothing;
     }
+}
+
+/**
+ * The full `docker run` argv that counts the agent turns a finished claude-code run banked —
+ * pure, and exported, because it is the part worth pinning. The same throwaway shape the
+ * opencode readout runs: a container over the workspaces volume, entrypoint swapped for node,
+ * reading the transcript the CLI wrote onto the volume under FACTORY_TRANSCRIPT_DIR (its
+ * CLAUDE_CONFIG_DIR). It runs AFTER the job container exits; the volume outlives the container,
+ * so there is no teardown to race and a killed run's transcript is still readable.
+ */
+export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: string, startedAt: string): string[] {
+    if (!UUID.test(sessionId)) {
+        throw new Error(`refusing to count turns for a session id that is not a uuid: ${sessionId}`);
+    }
+    return [
+        'run',
+        '--rm',
+        '-v',
+        `${config.workspaceVolume}:${config.workspaceMount}`,
+        // Both travel as env VALUES — the script (claude-turns.cjs) is static, so nothing
+        // board-derived is ever part of its text.
+        '-e',
+        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
+        '-e',
+        `CLAUDE_SESSION_ID=${sessionId}`,
+        // The run's start as an ISO instant: the transcript carries every cycle the resumed
+        // conversation ever had, so the count is bounded to the entries written at or after
+        // this run began — its own delta, never the earlier runs' turns again.
+        '-e',
+        `RUN_STARTED_AT=${startedAt}`,
+        '--entrypoint',
+        'node',
+        config.image,
+        '-e',
+        claudeTurnsScript,
+    ];
+}
+
+/** The agent-turn count the claude script answered, or null — unmeasured, never a guess. */
+export function parseClaudeTurns(stdout: string): number | null {
+    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+    try {
+        const parsed = JSON.parse(line) as { turns?: unknown };
+        return typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
+            ? parsed.turns
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Whether this run gets a close-time agent-turn read at all. Opencode's count rides its own
+ * readout; claude-code's needs the session id the runner minted and a HEADLESS run — Remote
+ * Control keeps an interactive conversation that continues after any single read, so its count
+ * stays unmeasured rather than freezing a mid-conversation number (the design's null posture).
+ */
+export function readsAgentTurns(config: DriverConfig, session: RunSession | null): boolean {
+    return config.cli === 'claude-code' && !config.remoteControl && session !== null && UUID.test(session.id);
 }
 
 /*
@@ -1181,12 +1283,17 @@ type Spawn = typeof spawn;
  * the post-run inspect and the cleanup — goes through this one seam, so a test can stand in for
  * the daemon instead of shelling out to it.
  */
-type ExecDocker = (args: string[]) => Promise<{ stdout: string }>;
+/**
+ * One `docker` invocation off the hot paths. `timeout` (ms) bounds the whole exec — the process
+ * is killed and the promise rejects — which is what keeps a close-time read from holding a
+ * runner's verdict open forever when the daemon stalls.
+ */
+type ExecDocker = (args: string[], options?: { timeout?: number }) => Promise<{ stdout: string }>;
 
 export function createDockerRunner(
     config: DriverConfig,
     spawnFn: Spawn = spawn,
-    execDocker: ExecDocker = (args) => run('docker', args)
+    execDocker: ExecDocker = (args, options) => run('docker', args, { ...options, encoding: 'utf8' })
 ): Runner {
     /*
      * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
@@ -1786,6 +1893,10 @@ export function createDockerRunner(
                     return { exitCode: code, output, timedOut, idled, started, cacheLost };
                 };
 
+                // The run's start instant, captured here because both close-time turn reads key
+                // on it: a follow-up resumes its session's conversation, so the delta each read
+                // reports is bounded to what THIS run wrote.
+                const startedAt = new Date().toISOString();
                 const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork, file ?? undefined), {
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
@@ -1927,18 +2038,20 @@ export function createDockerRunner(
                                     finishReason: null,
                                     contextTokens: null,
                                     costUsd: null,
+                                    agentTurns: null,
                                     error: null,
                                 };
                                 let reason: string | null = null;
                                 for (let attempt = 0; attempt < 3 && !scraped.sessionId; attempt += 1) {
                                     if (attempt > 0) await new Promise((r) => setTimeout(r, 500));
-                                    scraped = await execDocker(opencodeSessionReadoutArgs(config, job)).then(
+                                    scraped = await execDocker(opencodeSessionReadoutArgs(config, job, startedAt)).then(
                                         (read) => parseOpencodeRunOutcome(read.stdout),
                                         (err: Error): OpencodeRunOutcome => ({
                                             sessionId: null,
                                             finishReason: null,
                                             contextTokens: null,
                                             costUsd: null,
+                                            agentTurns: null,
                                             error: `the readout container failed: ${err.message}`,
                                         })
                                     );
@@ -1949,6 +2062,10 @@ export function createDockerRunner(
                                     if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
                                     if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
                                     if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+                                    // The readout's turn count rides the same line: assistant
+                                    // response cycles of the root session, already scoped by the
+                                    // parent_id-is-null selection the script makes.
+                                    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
                                     // With a session scraped, the line's error is the RUN's last
                                     // provider error, not the read's failure — carried as its own
                                     // field so the verdict can name the cause of a premature stop.
@@ -1957,6 +2074,25 @@ export function createDockerRunner(
                                     outcome.readoutError =
                                         reason ?? 'the readout answered nothing (no session in the database)';
                                 }
+                            }
+
+                            /*
+                             * The claude-code turn count: one throwaway container over the
+                             * workspaces volume, reading the transcript the CLI wrote onto it
+                             * while it lived. Best-effort like every close-time read — a failed
+                             * read costs the task its agent-turn figure, never its verdict, and
+                             * a missing transcript answers null rather than zero. Remote
+                             * Control is excluded by readsAgentTurns: its conversation continues
+                             * after this read would run, so its count stays unmeasured.
+                             */
+                            if (readsAgentTurns(config, session)) {
+                                outcome.agentTurns = await execDocker(
+                                    claudeTurnsArgs(config, job, (session as RunSession).id, startedAt),
+                                    { timeout: CLOSE_READ_DEADLINE_MS }
+                                ).then(
+                                    (read) => parseClaudeTurns(read.stdout),
+                                    (): null => null
+                                );
                             }
                             return outcome;
                         })

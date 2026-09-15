@@ -168,6 +168,33 @@ test.describe('date range selector', () => {
         expect(text).not.toMatch(/revert rate/i);
         expect(text).not.toMatch(/merged into/i);
     });
+
+    test('month buckets daily, all-time falls back to weeks, and the per-task figures render', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        await open(page);
+
+        // The month preset spans 30 days: day buckets, and the blurb says so.
+        await selectPreset(page, 'Month', 'month');
+        await expect(page.getByText('tokens per day')).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/daily-month.png`, fullPage: true });
+
+        // All-time spans the seeded half-year: the weekly fallback, named as such.
+        await selectPreset(page, 'All time', 'all');
+        await expect(page.getByText('per ISO week')).toBeVisible();
+        await expect(page.getByText('too long for daily bars')).toBeVisible();
+
+        // The per-task panel: three figures, each labeled with its kind, each beside its count.
+        const panel = page.locator('section.panel', { hasText: 'Per-task usage' });
+        await expect(panel).toBeVisible();
+        for (const label of ['Tokens per task', 'Runs per task', 'Agent turns per task']) {
+            await expect(panel.getByText(label)).toBeVisible();
+        }
+        await expect(panel.getByText(/tasks? measured/).first()).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/per-task.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
 });
 
 test.describe('the organization selector', () => {

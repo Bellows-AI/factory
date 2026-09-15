@@ -31,7 +31,13 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
     listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
-    completed: { id: string; output: string | null; contextTokens: number | null; contextCostUsd: number | null }[];
+    completed: {
+        id: string;
+        output: string | null;
+        contextTokens: number | null;
+        contextCostUsd: number | null;
+        agentTurns: number | null;
+    }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
@@ -164,13 +170,14 @@ function stubStore(
             stub.progressed.push({ id, output, runtime });
             return options.verdict ?? 'ok';
         },
-        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd }) {
+        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd, agentTurns }) {
             boom();
             stub.completed.push({
                 id,
                 output,
                 contextTokens: contextTokens ?? null,
                 contextCostUsd: contextCostUsd ?? null,
+                agentTurns: agentTurns ?? null,
             });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
@@ -1229,7 +1236,9 @@ describe('POST /api/jobs/:id/complete', () => {
         const instance = await harnessWith(store);
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
-        expect(store.completed).toEqual([{ id: ID, output: 'hello', contextTokens: null, contextCostUsd: null }]);
+        expect(store.completed).toEqual([
+            { id: ID, output: 'hello', contextTokens: null, contextCostUsd: null, agentTurns: null },
+        ]);
     });
 
     // The verdict-moment done-ness of the job's whole thread — every member terminal AND the
@@ -1259,6 +1268,38 @@ describe('POST /api/jobs/:id/complete', () => {
         });
         expect(response.statusCode).toBe(200);
         expect(store.completed[0]).toMatchObject({ contextTokens: 90433, contextCostUsd: 0.31 });
+    });
+
+    // The close-time agent-turn count: a number lands, an absent one stores null — unmeasured,
+    // never zero — and a malformed one is refused before the store can be told anything.
+    it('records the agent-turn count when the driver measured one', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, agentTurns: 11 });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ agentTurns: 11 });
+    });
+
+    it('stores null when the report carries no agent-turn count', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, done);
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ agentTurns: null });
+    });
+
+    it.each([
+        ['a negative count', { ...done, agentTurns: -1 }],
+        ['a fractional count', { ...done, agentTurns: 2.5 }],
+        ['a string count', { ...done, agentTurns: 'eleven' }],
+        // int4 is the column's type: an over-range value would fail the verdict's transaction
+        // and leave a finished run unsettled, so the route is the boundary.
+        ['a count above the int4 maximum', { ...done, agentTurns: 2_147_483_648 }],
+    ])('refuses %s with BAD_AGENT_TURNS', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/complete`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_AGENT_TURNS');
     });
 
     it.each([

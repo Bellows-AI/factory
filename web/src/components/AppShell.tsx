@@ -5,13 +5,15 @@ import type { StatsPayload, FetchState } from '../api/useStats.js';
 import { useJobs } from '../api/useJobs.js';
 import type { UseJobs } from '../api/useJobs.js';
 import { useSession } from '../api/useSession.js';
-import { DEFAULT_RANGE, rangeQuery } from './RangeSelector.js';
-import type { RangeSelection } from './RangeSelector.js';
+import type { Session } from '../api/useSession.js';
+import { DEFAULT_RANGE, DEFAULT_SCOPE, statsQuery } from './RangeSelector.js';
+import type { RangeSelection, ScopeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
 import { TopBar } from './TopBar.js';
 
 /**
- * Everything both pages share: the range, the one `/api/stats` poll, and the chrome around them.
+ * Everything both pages share: the range, the scope, the one `/api/stats` poll, and the chrome
+ * around them.
  *
  * The poll lives HERE rather than in the dashboard page because the Workspace page renders the
  * repos the dashboard reports on, and two pages each running `useStats` would be two polls of the
@@ -21,6 +23,10 @@ export interface ShellContext {
     data: StatsPayload | null;
     range: RangeSelection;
     setRange: (range: RangeSelection) => void;
+    scope: ScopeSelection;
+    setScope: (scope: ScopeSelection) => void;
+    /** The signed-in member, when there is one — what makes the org/my toggle exist at all. */
+    session: Session | null;
     refreshing: boolean;
     progress: FetchState | null;
     error: string | null;
@@ -53,7 +59,11 @@ export function AppShell() {
     // input and the state moves up to here". Accounts arrived, and what moved up was the range —
     // into this layout route, which is the new "here".
     const [range, setRange] = useState<RangeSelection>(DEFAULT_RANGE);
-    const query = useMemo(() => rangeQuery(range), [range]);
+    // The scope is an input like the range, and lives beside it for the same reason: it must
+    // ride the next request and survive a range change, and `useStats` keys on the composed
+    // query string, so changing either re-polls with both values and nothing is reconciled.
+    const [scope, setScope] = useState<ScopeSelection>(DEFAULT_SCOPE);
+    const query = useMemo(() => statsQuery(range, scope), [range, scope]);
     const { data, refreshing, progress, error, refresh } = useStats(query);
 
     // The task list is the same decision as the stats poll above — one instance, above the Outlet —
@@ -70,7 +80,19 @@ export function AppShell() {
     // register is a Set for exactly this reason.
     const { session } = useSession();
 
-    const context: ShellContext = { data, range, setRange, refreshing, progress, error, refresh, tasks };
+    const context: ShellContext = {
+        data,
+        range,
+        setRange,
+        scope,
+        setScope,
+        session,
+        refreshing,
+        progress,
+        error,
+        refresh,
+        tasks,
+    };
 
     return (
         <div className="shell">

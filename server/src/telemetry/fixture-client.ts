@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { TelemetryInput } from '@factory-ai/core';
-import type { TelemetryClient } from './client.js';
+import type { TelemetryClient, TelemetryFetch } from './client.js';
 import { TelemetryError } from './errors.js';
 
 const FIXTURE = new URL('../../../core/test/fixtures/telemetry-sessions.json', import.meta.url);
@@ -20,8 +20,10 @@ export function createFixtureTelemetryClient(path: URL = FIXTURE): TelemetryClie
     return {
         async fetchRollups() {
             // Cloned because attribute() is handed the arrays directly and a caller mutating
-            // them would silently poison every later request.
-            return structuredClone(load());
+            // them would silently poison every later request. The fixture carries no run rows:
+            // it replays telemetry, and the task panel renders its empty state off the same
+            // payload shape a real deployment answers with.
+            return { input: structuredClone(load()), runs: [] };
         },
         async health() {
             return { status: 'ok', reason: null };
@@ -35,7 +37,7 @@ export function createFixtureTelemetryClient(path: URL = FIXTURE): TelemetryClie
  */
 export function createNullTelemetryClient(): TelemetryClient {
     return {
-        async fetchRollups(): Promise<TelemetryInput> {
+        async fetchRollups(): Promise<TelemetryFetch> {
             throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
         },
         async health() {

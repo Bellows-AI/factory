@@ -41,6 +41,35 @@ describe('totals, recomputed by hand', () => {
     });
 });
 
+describe('caller scope, recomputed by hand', () => {
+    // Same fixture, scoped to alice: the hand restatement below filters the raw sessions the
+    // same way the scope option claims to, so a wrong filter shows as a mismatch.
+    const ALICE_ID = 'u-alice';
+    const mine = telemetryStats(telemetry, { repos: [FIXTURE_REPO], now: FIXTURE_NOW, user: { id: ALICE_ID } });
+    const aliceSessions = mine0();
+
+    function mine0() {
+        return telemetry.sessions.filter((s) => s.repo === FIXTURE_REPO && s.user?.id === ALICE_ID);
+    }
+
+    it("totals exactly the caller's attributed sessions", () => {
+        expect(mine.totals.sessions).toBe(aliceSessions.length);
+        expect(mine.totals.tokens.input).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0));
+        expect(mine.totals.tokens.output).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.output ?? 0), 0));
+        expect(mine.totals.sessions).toBe(5);
+    });
+
+    it('still names the unattributed sessions the scope dropped', () => {
+        const unattributed = telemetry.sessions.filter((s) => s.repo === FIXTURE_REPO && s.user === null).length;
+        expect(mine.unattributedSessions).toBe(unattributed);
+        expect(unattributed).toBe(4);
+    });
+
+    it('leaves coverage untouched', () => {
+        expect(mine.coverage).toEqual(telemetry.coverage);
+    });
+});
+
 describe('landmarks pinned against the fixture', () => {
     it('pins the fixture shape, so a silent regeneration is caught', () => {
         expect(telemetry.sessions).toHaveLength(15);
@@ -50,10 +79,12 @@ describe('landmarks pinned against the fixture', () => {
     });
 
     it('emits a contiguous week series over the whole window', () => {
-        const gaps = stats.weekly
+        // No range passed: the coverage span (about four months) picks weekly buckets.
+        expect(stats.series.granularity).toBe('week');
+        const gaps = stats.series.points
             .map((w) => new Date(w.start).getTime())
             .map((t, i, all) => (i === 0 ? 7 : (t - (all[i - 1] as number)) / 86_400_000));
         expect(gaps.every((g) => g === 7)).toBe(true);
-        expect(stats.weekly.length).toBeGreaterThan(15);
+        expect(stats.series.points.length).toBeGreaterThan(15);
     });
 });
