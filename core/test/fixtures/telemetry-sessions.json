@@ -17,7 +17,13 @@
             "editsAccepted": 18,
             "editsRejected": 2,
             "activeSeconds": 1320,
-            "commits": 3
+            "commits": 3,
+            "user": {
+                "id": "u-alice",
+                "login": "alice",
+                "name": "Alice Doe",
+                "avatarUrl": "https://example.com/alice.png"
+            }
         },
         {
             "sessionId": "s02-mid-a",
@@ -36,7 +42,13 @@
             "editsAccepted": 11,
             "editsRejected": 1,
             "activeSeconds": 1080,
-            "commits": 2
+            "commits": 2,
+            "user": {
+                "id": "u-alice",
+                "login": "alice",
+                "name": "Alice Doe",
+                "avatarUrl": "https://example.com/alice.png"
+            }
         },
         {
             "sessionId": "s03-mid-b",
@@ -55,7 +67,13 @@
             "editsAccepted": 7,
             "editsRejected": 3,
             "activeSeconds": 720,
-            "commits": 1
+            "commits": 1,
+            "user": {
+                "id": "u-alice",
+                "login": "alice",
+                "name": "Alice Doe",
+                "avatarUrl": "https://example.com/alice.png"
+            }
         },
         {
             "sessionId": "s04-april",
@@ -74,7 +92,13 @@
             "editsAccepted": 10,
             "editsRejected": 5,
             "activeSeconds": 3000,
-            "commits": 4
+            "commits": 4,
+            "user": {
+                "id": "u-bob",
+                "login": "bob",
+                "name": null,
+                "avatarUrl": null
+            }
         },
         {
             "sessionId": "s05-april-earliest",
@@ -93,7 +117,13 @@
             "editsAccepted": 9,
             "editsRejected": 2,
             "activeSeconds": 2400,
-            "commits": 2
+            "commits": 2,
+            "user": {
+                "id": "u-bob",
+                "login": "bob",
+                "name": null,
+                "avatarUrl": null
+            }
         },
         {
             "sessionId": "s06-may",
@@ -112,7 +142,13 @@
             "editsAccepted": 6,
             "editsRejected": 1,
             "activeSeconds": 3600,
-            "commits": 2
+            "commits": 2,
+            "user": {
+                "id": "u-bob",
+                "login": "bob",
+                "name": null,
+                "avatarUrl": null
+            }
         },
         {
             "sessionId": "s07-july-a",
@@ -131,7 +167,8 @@
             "editsAccepted": 3,
             "editsRejected": 4,
             "activeSeconds": 900,
-            "commits": 0
+            "commits": 0,
+            "user": null
         },
         {
             "sessionId": "s08-july-b",
@@ -150,7 +187,8 @@
             "editsAccepted": 1,
             "editsRejected": 0,
             "activeSeconds": 600,
-            "commits": 0
+            "commits": 0,
+            "user": null
         },
         {
             "sessionId": "s09-other-repo",
@@ -169,7 +207,13 @@
             "editsAccepted": 40,
             "editsRejected": 5,
             "activeSeconds": 3600,
-            "commits": 6
+            "commits": 6,
+            "user": {
+                "id": "u-bob",
+                "login": "bob",
+                "name": null,
+                "avatarUrl": null
+            }
         },
         {
             "sessionId": "s10-no-hook",
@@ -188,7 +232,8 @@
             "editsAccepted": 5,
             "editsRejected": 1,
             "activeSeconds": 1500,
-            "commits": 1
+            "commits": 1,
+            "user": null
         },
         {
             "sessionId": "s11-july-c",
@@ -207,7 +252,8 @@
             "editsAccepted": 4,
             "editsRejected": 0,
             "activeSeconds": 1500,
-            "commits": 1
+            "commits": 1,
+            "user": null
         },
         {
             "sessionId": "s12-june",
@@ -226,7 +272,13 @@
             "editsAccepted": 2,
             "editsRejected": 1,
             "activeSeconds": 780,
-            "commits": 0
+            "commits": 0,
+            "user": {
+                "id": "u-alice",
+                "login": "alice",
+                "name": "Alice Doe",
+                "avatarUrl": "https://example.com/alice.png"
+            }
         },
         {
             "sessionId": "s13-august",
@@ -245,7 +297,13 @@
             "editsAccepted": 8,
             "editsRejected": 2,
             "activeSeconds": 2700,
-            "commits": 2
+            "commits": 2,
+            "user": {
+                "id": "u-bob",
+                "login": "bob",
+                "name": null,
+                "avatarUrl": null
+            }
         },
         {
             "sessionId": "s14-july-d",
@@ -264,7 +322,8 @@
             "editsAccepted": 9,
             "editsRejected": 1,
             "activeSeconds": 900,
-            "commits": 2
+            "commits": 2,
+            "user": null
         },
         {
             "sessionId": "s15-june-b",
@@ -283,7 +342,13 @@
             "editsAccepted": 5,
             "editsRejected": 2,
             "activeSeconds": 480,
-            "commits": 2
+            "commits": 2,
+            "user": {
+                "id": "u-alice",
+                "login": "alice",
+                "name": "Alice Doe",
+                "avatarUrl": "https://example.com/alice.png"
+            }
         }
     ],
     "coverage": {

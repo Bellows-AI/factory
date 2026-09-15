@@ -603,7 +603,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const { id } = await store.create('drive me', null, { repo: null, executor: null });
         const claim = await store.claim('w1', 300);
         await store.session(id, claim!.leaseToken, SESSION, REMOTE);
-        await store.stop(id);
+        await store.stop(id, null);
         expect(await store.suspend(id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
         expect((await store.get(id))?.status).toBe('stopped');
 
@@ -664,7 +664,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
     it('refuses a follow-up on a task the user has marked done', async () => {
         const parent = await finishWithSession('echo hi');
-        await store.markDone(parent);
+        await store.markDone(parent, null);
 
         expect(await store.createFollowUp(parent, 'again', null)).toBe('task_done');
     });
@@ -707,7 +707,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         // The held-up insert lands once the lock frees, and a done after it still works — the
         // sequential follow-up-then-done outcome the lock makes the only possible ordering.
         expect(await followUp).toMatchObject({ id: expect.any(String) });
-        expect(await store.markDone(parent)).toMatchObject({ status: 'succeeded' });
+        expect(await store.markDone(parent, null)).toMatchObject({ status: 'succeeded' });
     });
 
     // Without a session on the parent there is nothing to continue — an opencode run, for one, or a
@@ -831,8 +831,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('marks a finished task done and answers the same moment twice', async () => {
         const parent = await finishWithSession('echo hi');
 
-        const first = await store.markDone(parent);
-        const second = await store.markDone(parent);
+        const first = await store.markDone(parent, null);
+        const second = await store.markDone(parent, null);
 
         expect(second.doneAt).toBe(first.doneAt);
         expect((await store.get(parent))?.doneAt).toBe(first.doneAt);
@@ -841,8 +841,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('refuses to mark a moving task done, and to mark an absent one', async () => {
         const { id: queued } = await queue('echo hi');
 
-        expect(await store.markDone(queued)).toBe('conflict');
-        expect(await store.markDone(ABSENT)).toBe('missing');
+        expect(await store.markDone(queued, null)).toBe('conflict');
+        expect(await store.markDone(ABSENT, null)).toBe('missing');
     });
 
     /**
@@ -865,7 +865,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(claim?.id).toBe(followUp.id);
             await store.complete(followUp.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
 
-            await store.markDone(followUp.id);
+            await store.markDone(followUp.id, null);
 
             const rows = await reclaimRows(root);
             expect(rows).toHaveLength(1);
@@ -890,10 +890,10 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             const claim = await store.claim('w1', 300);
             expect(claim?.id).toBe(followUp.id);
             await store.session(followUp.id, claim!.leaseToken, SESSION, null);
-            await store.stop(followUp.id);
+            await store.stop(followUp.id, null);
             expect(await store.suspend(followUp.id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
 
-            await store.markDone(followUp.id);
+            await store.markDone(followUp.id, null);
 
             const rows = await reclaimRows(root);
             expect(rows).toHaveLength(1);
@@ -904,7 +904,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             const root = await finishWithSession('drive me');
             await store.createFollowUp(root, 'first adjustment', null);
 
-            await store.markDone(root);
+            await store.markDone(root, null);
 
             // Not all terminal — the done queues nothing. The follow-up's completing attempt
             // finds the done and the terminality together (the done-ness describe pins that
@@ -915,8 +915,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         it('does not queue a second reclaim when the thread is marked done again', async () => {
             const root = await finishWithSession('echo hi');
 
-            await store.markDone(root);
-            await store.markDone(root);
+            await store.markDone(root, null);
+            await store.markDone(root, null);
 
             expect(await reclaimRows(root)).toHaveLength(1);
         });
@@ -977,7 +977,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             // is the one that finds done AND terminal together.
             const root = await finishWithSession('drive me');
             const followUp = await store.createFollowUp(root, 'first adjustment', null);
-            expect(await store.markDone(root)).toMatchObject({ status: 'succeeded' });
+            expect(await store.markDone(root, null)).toMatchObject({ status: 'succeeded' });
 
             const followUpClaim = await store.claim('w1', 300);
             expect(followUpClaim?.id).toBe(followUp.id);

@@ -19,6 +19,9 @@ function job(overrides: Partial<Job> = {}): Job {
         command: 'fix the flaky login test',
         status: 'succeeded',
         attempts: 1,
+        author: null,
+        stoppedBy: null,
+        doneBy: null,
         exitCode: 0,
         output: null,
         repo: null,
@@ -183,6 +186,40 @@ describe('TaskDetail', () => {
         expect(html).toContain('succeeded');
         expect(html).toContain('main');
         expect(html).toContain('2026-09-01 12:00');
+    });
+
+    it('names the actors behind the verdicts, and stays quiet when there are none', () => {
+        const author = { id: 'a', login: 'octocat', name: null, avatarUrl: null };
+        const stopper = { id: 'b', login: 'stopper', name: null, avatarUrl: null };
+        const html = renderDetail({
+            jobs: [
+                job({ author, doneBy: author, doneAt: '2026-09-01T13:00:00.000Z' }),
+                job({ id: '22222222-2222-4222-8222-222222222222', stoppedBy: stopper, status: 'stopped' }),
+            ],
+        });
+        // The label follows the status: the stamp is the ask, only a row that settled stopped
+        // may claim the stop landed. A run that finished on its own after somebody asked keeps
+        // the ask as a request, never as a verdict.
+        expect(html).toContain('stopped by stopper');
+        expect(html).toContain('done by octocat');
+        const requested = renderDetail({ jobs: [job({ author, stoppedBy: stopper, doneBy: author })] });
+        expect(requested).toContain('stop requested by stopper');
+        expect(requested).not.toContain('stopped by stopper');
+        const plain = renderDetail({ jobs: [job()] });
+        expect(plain).not.toContain('stopped by');
+        expect(plain).not.toContain('stop requested by');
+        expect(plain).not.toContain('done by');
+    });
+
+    it('shows who queued the task in the status sidebar, honestly unknown for a pre-accounts row', () => {
+        const author = { id: 'a', login: 'octocat', name: 'The Octocat', avatarUrl: 'https://x/a.png' };
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('Queued by');
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('The Octocat');
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('https://x/a.png');
+
+        const unknown = renderDetail({ jobs: [job()] });
+        expect(unknown).toContain('Queued by');
+        expect(unknown).toContain('unknown');
     });
 
     it('renders the output as text, never as markup', () => {

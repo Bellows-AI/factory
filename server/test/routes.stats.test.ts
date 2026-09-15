@@ -77,6 +77,24 @@ describe('GET /api/stats', () => {
         expect(body.meta.telemetry.sessionsWithoutHook).toBe(1);
     });
 
+    it('serves per-user attribution beside the totals', async () => {
+        const h = await harness();
+        app = h.app;
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
+        // The fixture's in-scope sessions carry two users and four unattributed sessions — the
+        // board-task join resolved server-side, never a client guess.
+        expect(body.telemetry.byUser.map((row: { user: { login: string } }) => row.user.login)).toEqual([
+            'alice',
+            'bob',
+        ]);
+        expect(body.telemetry.byUser[0]).toMatchObject({ user: { login: 'alice', name: 'Alice Doe' }, sessions: 5 });
+        expect(body.telemetry.byUser[0].tokens.input).toBeGreaterThan(0);
+        expect(body.telemetry.unattributedSessions).toBe(4);
+    });
+
     it('filters sessions by overlap for a narrowed range', async () => {
         const h = await harness();
         app = h.app;
