@@ -65,18 +65,26 @@ unauthenticated request was remote code execution.
   nullable, and why nothing can validate that the login exists.
 - **`auth.auto_join_github_org` borrows a GitHub organization as the boundary instead**, and is the
   one thing that admits somebody nobody named in advance. It does not make a Factory organization a
-  GitHub one: the membership row is still Factory's, still `member`, and an invite still admits
-  people outside the org — which is what keeps `bootstrap_admin` and outside collaborators working.
-  What it removes is the second roster that had to be kept in step by hand.
+  GitHub one: the membership row is still Factory's, and an invite still admits people outside the
+  org — which is what keeps `bootstrap_admin` and outside collaborators working. What it removes is
+  the second roster that had to be kept in step by hand.
   - **The store never decides it.** `signIn` takes an `autoJoin` flag, and the callback passes it
     only after GitHub has confirmed the org. A store that could admit anyone on its own authority
     would be one bad default away from an open deployment.
   - **`pending` is refused, and that is the security property here.** An unaccepted GitHub
     invitation means somebody was *offered* a seat; treating it as membership would let a GitHub org
     admin add a login to Factory without that person ever agreeing to it.
-  - **The check runs only when an invite did not already settle it**, so an ordinary member pays no
-    extra GitHub call, and a role an invite granted is never overwritten by a fresh `member` — the
-    insert is `on conflict do nothing` for exactly that reason.
+  - **A row auto-join created stays GitHub's; a row an invite created stays Factory's.** The row
+    records how it was born (`org_membership.auto_joined`), and the answer decides who maintains it.
+    An auto-joined row is re-checked at EVERY sign-in of its member: gone from the GitHub org means
+    the Factory row, its sessions and its personal tokens go with it (`removeMember`'s own
+    semantics), and the org's role maps onto Factory's (`admin` → `admin`, anything else →
+    `member`) on every sign-in — promotion happens in GitHub and Factory follows. A 15-minute
+    roster sweep (`GET /orgs/{org}/members`, two paginated calls against the installation token)
+    applies the same removals and re-roles to members who never sign in again, because a session
+    TTL of two weeks is otherwise a two-week grace period for somebody who left. An invited row is
+    never checked: an admin named that person here, so GitHub is not consulted, cannot remove them,
+    and cannot re-role them — a role an invite granted survives every org change by construction.
   - **It costs the zero-scopes property**: `read:org` is requested whenever it is set, because an
     unscoped token reports every organization absent, which would refuse every sign-in with
     `no_membership` and nothing to say why. Off, no scope is requested at all.
@@ -296,9 +304,17 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 
 ## What this does not do
 
-- **Membership is not a sandbox.** Any member can still queue a command that an agent runs against
-  *their own* checkouts. This narrows "anyone who can reach the port" to "any member"; it does not
-  make the job board safe to hand out.
+- **Membership is not a sandbox — but repo visibility now is, where scoping is on.** When the
+  deployment runs a GitHub App with auto-join, the server computes, per member, which of the
+  installation's repos their GitHub account can actually reach (team grants plus direct
+  collaborator status, enumerated with the installation token — no new OAuth scope, no consent
+  screen change), and `/api/stats`, `/api/repos`, `POST /api/jobs` and `PUT /api/workspace/repos`
+  are intersected with that set. The board's READS stay open to every member — `GET /api/jobs` and
+  the thread are the org's audit trail, and `job.created_by` records who did rather than limiting
+  what they may do — and any member can still queue a command that an agent runs against *their
+  own* checkouts. This narrows "any member sees every repo" to "any member sees their repos"; it
+  still does not make the job board safe to hand out. See [repos.md](repos.md) for the scoping
+  mechanics.
 - **There is still one organization per deployment.** `meta.organization.mode` remains the literal
   `'config'` and the topbar selector stays disabled — see `docs/organizations.md`. Sign-in checks a
   caller's membership against that one organization rather than selecting between several.

@@ -1108,7 +1108,7 @@ command is exactly what a hook intercepts.
 - **One auth volume, shared by every concurrent Remote Control runner.** They all write
   `.claude.json` in the same directory. Fine for one drivable job at a time and unexamined beyond
   that; a volume per job would make the login a template to copy rather than a mount.
-- **No per-job authorization.** There is authentication now — see [auth.md](auth.md) — and the two
+- **No per-JOB authorization.** There is authentication now — see [auth.md](auth.md) — and the two
   credentials are disjoint: a session cookie queues, follows up, marks done, stops, removes and
   reads, a `Bearer fwt_…` worker token claims, heartbeats, streams output, suspends, completes,
   and drains the reclaim queue. A session on `/claim`
@@ -1119,6 +1119,11 @@ command is exactly what a hook intercepts.
   exception, and not an authorization regime: the child resumes the parent's session, and a session
   only resumes in the tree it ran in — the author's (see the follow-ups section above). Done, stop
   and remove have no such coupling, so they stay open to every member.
+  The one per-user bound is the REPO LABEL on create: where per-user repo scoping is active
+  ([repos.md](repos.md)), `POST /api/jobs` refuses a label outside the caller's GitHub-reachable set
+  (`403 REPO_NOT_ACCESSIBLE`) — the picker hiding a repo while the API accepted it would make the
+  scoping depend on the SPA's politeness. Reads stay open to every member: the board is the org's
+  audit trail, and a label never changes what a worker runs.
   Under `AUTH_MODE=none` all of it is open, including the worker routes — see [security.md](security.md),
   which is where the consequence is written down.
 - **No service volumes, health checks, depends-on ordering or restart policies.** A service that
