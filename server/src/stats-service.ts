@@ -32,6 +32,8 @@ export interface TelemetryMeta {
     otherRepoSessions: number;
     /** Sessions with telemetry but no hook data — the plugin is missing, or failing. */
     sessionsWithoutHook: number;
+    /** Sessions no board task matches — the third exclusion, kept distinct from the two above. */
+    unattributedSessions: number;
 }
 
 export interface TelemetrySnapshot {
@@ -195,6 +197,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             repoFilter: repoNames(),
             otherRepoSessions: stats?.otherRepoSessions ?? 0,
             sessionsWithoutHook: stats?.sessionsWithoutHook ?? 0,
+            unattributedSessions: stats?.unattributedSessions ?? 0,
         } as const;
 
         if (config.telemetrySource === 'off') {

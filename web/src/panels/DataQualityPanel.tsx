@@ -10,6 +10,11 @@ export function DataQualityPanel({ meta }: { meta: StatsPayload['meta'] }) {
                   `Every figure above covers ${range.from?.slice(0, 10) ?? 'the start of the window'} to ${range.to?.slice(0, 10) ?? 'now'} only. Sessions outside that range are excluded.`,
               ]
             : []),
+        // Caller scope changes what the figures cover; naming it here keeps the page honest
+        // about whose numbers are on screen when "mine" is selected.
+        ...(meta.scope === 'mine' && meta.scopeLogin
+            ? [`Figures are scoped to ${meta.scopeLogin} — switch to Org for the whole organization.`]
+            : []),
     ];
 
     // Two counters, not one: "wrong repo" and "no hook" present identically on the page
@@ -29,6 +34,14 @@ export function DataQualityPanel({ meta }: { meta: StatsPayload['meta'] }) {
         if (t.otherRepoSessions > 0) {
             items.push(
                 `${t.otherRepoSessions} agent session(s) happened in another repo and are excluded; this dashboard only counts ${t.repoFilter.join(', ')}.`
+            );
+        }
+        if (t.unattributedSessions > 0) {
+            // Its own line, beside the other exclusions: sessions with telemetry but no board
+            // task are a different setup state from no-hook and wrong-repo, and the by-user
+            // table alone does not reach a reader checking the page for holes.
+            items.push(
+                `${t.unattributedSessions} agent session(s) match no board task and are counted as unattributed — local runs, backfilled transcripts, or removed tasks.`
             );
         }
         if (t.source === 'fixture') {

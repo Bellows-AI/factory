@@ -79,14 +79,14 @@
 
 ## 6. Server: stats route scope and task stats block
 
-- [ ] 6.1 Add `?scope=org|mine` to `/api/stats`: caller resolved from the signed-in session user,
+- [x] 6.1 Add `?scope=org|mine` to `/api/stats`: caller resolved from the signed-in session user,
       `400 SCOPE_REQUIRES_USER` for `mine` without one (open auth mode, worker token), scope filter
       applied at read time in `current()`; verify with route tests covering all three cases plus
       `meta` naming the scope and resolved login
-- [ ] 6.2 Compute the task-stats block in `current()` from the cached runs + filtered sessions via
+- [x] 6.2 Compute the task-stats block in `current()` from the cached runs + filtered sessions via
       `taskUsageStats`, honoring scope; verify route test: caller scope narrows the task set, and
       the empty range answers null figures (not zeros) with the empty state reason
-- [ ] 6.3 Update `server/test` fixtures/synthetic seed so attributed and unattributed sessions,
+- [x] 6.3 Update `server/test` fixtures/synthetic seed so attributed and unattributed sessions,
       measured and unmeasured agent turns are all representable; verify
       `DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db` passes
 

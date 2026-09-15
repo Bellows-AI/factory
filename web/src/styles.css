@@ -98,6 +98,14 @@ button:disabled {
     flex-wrap: wrap;
 }
 
+/* The range and the org/my toggle on one line; main's flex gap handles the spacing. */
+.dashboard-controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
 .range-presets {
     display: flex;
     gap: 6px;
@@ -1218,4 +1226,18 @@ button.primary {
 
 .identity-name {
     font-weight: 600;
+}
+
+/* A visually hidden legend: the scope toggle's fieldset needs one for assistive tech,
+   but the visible label is the buttons themselves. */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }

@@ -7,8 +7,10 @@ import type { TelemetryMeta, StatsPayload } from '../src/api/useStats.js';
 import { AiUsagePanel } from '../src/panels/AiUsagePanel.js';
 import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
+import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
 import { DataQualityPanel } from '../src/panels/DataQualityPanel.js';
 import { tokens } from '../src/format.js';
+import type { TaskUsageStats } from '@factory-ai/core';
 
 /**
  * A render smoke test, not a UI test. It exists because the null-not-zero contract is only
@@ -38,6 +40,7 @@ const meta = (over: Partial<TelemetryMeta> = {}): TelemetryMeta => ({
     repoFilter: [REPO],
     otherRepoSessions: 1,
     sessionsWithoutHook: 1,
+    unattributedSessions: 4,
     ...over,
 });
 
@@ -132,17 +135,113 @@ describe('telemetry panels render', () => {
             },
             repos: [{ owner: 'x', name: 'y' }],
             range: { preset: 'all', from: null, to: null },
+            scope: 'org',
+            scopeLogin: null,
             telemetry: meta(),
         };
         const html = renderToStaticMarkup(<DataQualityPanel meta={payloadMeta} />);
         expect(html).toContain('agent-telemetry plugin');
         expect(html).toContain('happened in another repo');
         expect(html).toContain('synthetic fixture data');
+        // The third exclusion, on its own line beside the two setup failures.
+        expect(html).toContain('counted as unattributed');
+        // And under caller scope, the page says whose figures these are.
+        const mine = renderToStaticMarkup(
+            <DataQualityPanel meta={{ ...payloadMeta, scope: 'mine', scopeLogin: 'carol' }} />
+        );
+        expect(mine).toContain('scoped to carol');
     });
 
     it('renders no PR vocabulary anywhere', () => {
         const html = render(telemetry, meta());
         expect(html).not.toMatch(/pull request/i);
         expect(html).not.toContain('merged');
+    });
+});
+
+describe('per-task usage panel', () => {
+    const dist = (avg: number, p50: number, p95: number, tasks: number) => ({ avg, p50, p95, tasks });
+    const populated: TaskUsageStats = {
+        tokensPerTask: dist(51_200, 43_000, 96_000, 7),
+        jobTurnsPerTask: dist(1.9, 1, 4, 7),
+        agentTurnsPerTask: dist(18.3, 12, 44, 7),
+    };
+    const emptyStats: TaskUsageStats = {
+        tokensPerTask: dist(0, 0, 0, 0),
+        jobTurnsPerTask: dist(0, 0, 0, 0),
+        agentTurnsPerTask: dist(0, 0, 0, 0),
+    };
+
+    it('renders the three distributions as distinct, labeled figures with their counts', () => {
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        // Three kinds, each named — the terminology rule: never a bare "turns".
+        expect(html).toContain('Tokens per task');
+        expect(html).toContain('Runs per task');
+        expect(html).toContain('Agent turns per task');
+        expect(html).not.toMatch(/>\s*turns\s*</);
+        // Every distribution renders beside its N.
+        expect(html).toContain('7 tasks measured');
+        // Nulls and averages format, never NaN.
+        expect(html).not.toContain('NaN');
+        expect(html).toContain('51.2k');
+        expect(html).toContain('p50');
+        expect(html).toContain('p95');
+    });
+
+    it('renders an explicit empty state, never zero figures, when no task is in range', () => {
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={emptyStats} meta={meta({ status: 'empty' })} />);
+        expect(html).toContain('No attributed tasks in this range yet.');
+        expect(html).not.toContain('NaN');
+        // And it renders nothing at all when there is no snapshot yet.
+        expect(renderToStaticMarkup(<TaskUsagePanel tasks={null} meta={meta()} />)).toBe('');
+    });
+
+    it('names the unmeasured-run rule where the agent-turn figure renders', () => {
+        // Remote Control runs and failed close-time reads store null; a task holding one is
+        // excluded. The panel says so instead of rendering a quietly small number.
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        expect(html).toContain('a task with any unmeasured run is left out, never counted as zero');
+    });
+});
+
+describe('token usage series granularity', () => {
+    it('renders daily buckets with a daily blurb', () => {
+        expect(telemetry.series.granularity).toBe('week');
+        const weeklyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={meta()} />);
+        expect(weeklyHtml).toContain('per ISO week');
+        expect(weeklyHtml).toContain('the range is too long for daily bars');
+
+        // The month preset spans 30 days: day buckets, named as days.
+        const daily = telemetryStats(input, {
+            repos: [REPO],
+            now: NOW,
+            range: { preset: 'custom', from: '2026-07-22T12:00:00Z', to: '2026-08-21T12:00:00Z' },
+        });
+        expect(daily.series.granularity).toBe('day');
+        const dailyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={daily} meta={meta()} />);
+        expect(dailyHtml).toContain('per day');
+        expect(dailyHtml).toContain('today is partial');
+        expect(dailyHtml).not.toContain('NaN');
+    });
+
+    it('keeps the x-axis legible at 92 daily points', () => {
+        // A 92-day window is the widest range that still renders daily bars: 92 points with
+        // labels every ceil(92/12) bars. Counting the rendered ticks pins the label thinning —
+        // a regression to labelEvery=1 renders 92 tick texts and a hairline wall of numbers.
+        const from = new Date(NOW.getTime() - 92 * 86_400_000).toISOString();
+        const wide = telemetryStats(input, {
+            repos: [REPO],
+            now: NOW,
+            range: { preset: 'custom', from, to: NOW.toISOString() },
+        });
+        const points = wide.series.points.length;
+        expect(points).toBeGreaterThan(80);
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={wide} meta={meta()} />);
+        const every = Math.ceil(points / 12);
+        // X ticks: every `every`-th point plus the last. The bars' left axis and the line's
+        // right axis render 5 ticks each, so ten of the rendered ticks are never x labels.
+        const xTicks = Math.floor((points - 1) / every) + 1 + (points % every === 0 ? 0 : 1);
+        const ticks = html.match(/class="tick"/g)?.length ?? 0;
+        expect(ticks).toBe(xTicks + 10);
     });
 });
