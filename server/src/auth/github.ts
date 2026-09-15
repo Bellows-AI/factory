@@ -143,10 +143,12 @@ export function createGitHubIdentityClient(
                     'user-agent': 'factory-ai',
                 },
             });
-            // 404 is the ordinary "not a member" answer, and 403 is what a token without read:org
-            // gets. Both mean no, and neither is a fault worth failing the sign-in over — the caller
-            // turns them into no_membership, which tells the person something they can act on.
-            if (response.status === 404 || response.status === 403) return { state: 'none', role: 'member' };
+            // 404 is the ordinary "not a member" answer. A 403 used to fold into it too, back when
+            // the answer only refused a sign-in; the same answer now REMOVES a returning member,
+            // so "GitHub could not be asked" (a missing scope, a secondary rate limit — both 403)
+            // must fail the sign-in loudly instead of masquerading as a departure. Only GitHub
+            // answering 404 counts as `none`.
+            if (response.status === 404) return { state: 'none', role: 'member' };
             if (!response.ok) throw new GitHubAuthError(`org membership lookup failed with ${response.status}`);
             const body = (await response.json()) as { state?: string; role?: string };
             const state = body.state === 'active' ? 'active' : body.state === 'pending' ? 'pending' : 'none';

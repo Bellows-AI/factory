@@ -60,10 +60,10 @@ unscoped by construction because there is no client to enumerate with).
   the alternative (empty ⇒ everything) would make the two states indistinguishable.
 - **The stored set is intersected with the installation on every read.** A repo pulled from the App
   stops matching immediately, without waiting for the member's next sign-in; a repo granted to the
-  member's team in GitHub appears at their next sign-in (or when the roster sweep / any sign-in
-  recomputes). A GitHub failure during a recompute logs and leaves the last computed set standing —
-  the store is only ever written on a successful enumeration, so the set is last-known-truth, never
-  half of one.
+  member's team in GitHub appears at their next sign-in, which recomputes their set. (The roster
+  sweep maintains membership rows only — it never recomputes repo sets.) A GitHub failure during a
+  recompute logs and leaves the last computed set standing — the store is only ever written on a
+  successful enumeration, so the set is last-known-truth, never half of one.
 - **Every consumer of the repo list scopes.** `/api/repos` (the picker), `/api/stats` (`meta.repos`
   and `repoFilter` reflect the caller's subset, and the figures are recomputed for it — the shared
   cache stays org-wide, exactly like the date range), `POST /api/jobs` (`403 REPO_NOT_ACCESSIBLE`

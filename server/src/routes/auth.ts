@@ -136,10 +136,12 @@ export const authRoutes =
                     const membership = await identity.orgMembership(accessToken, auth.autoJoinGithubOrg);
                     if (membership.state !== 'active') {
                         // `pending` and `none` both end the row: the store's claim and its role were
-                        // GitHub's to give, and GitHub now says they are gone. removeMember also
-                        // deletes the sessions, so even the cookie this browser is about to receive
-                        // would not survive the next request.
-                        if (caller) await store.removeMember(config.orgId, who.login);
+                        // GitHub's to give, and GitHub now says they are gone. Removal is keyed by
+                        // the ACCOUNT, not the login — the row's login is the label GitHub knew at
+                        // claim time, and a member who renamed would otherwise survive their own
+                        // removal. removeMemberById also deletes the sessions, so even the cookie
+                        // this browser is about to receive would not survive the next request.
+                        if (caller) await store.removeMemberById(config.orgId, caller.user.id);
                         caller = null;
                     } else if (!caller) {
                         // GitHub has confirmed the organization — the store is told to create the
@@ -151,7 +153,7 @@ export const authRoutes =
                     } else if (caller.role !== membership.role) {
                         // Only ever reached for an auto_joined row — an invited caller never got
                         // here — so re-deriving the role cannot stomp what an invite granted.
-                        await store.updateMemberRole(config.orgId, who.login, membership.role);
+                        await store.updateMemberRole(config.orgId, caller.user.id, membership.role);
                         caller = { ...caller, role: membership.role };
                     }
                 }

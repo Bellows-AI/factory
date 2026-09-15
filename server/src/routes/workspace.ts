@@ -260,9 +260,9 @@ export const workspaceRoutes =
             if (scope) {
                 const allowed = await scope.scopedNames(caller.user.id);
                 if (allowed !== null) {
-                    const reach = new Set(allowed);
+                    const reach = new Set(allowed.map((name) => name.toLowerCase()));
                     for (const repo of selection) {
-                        if (reach.has(`${repo.owner}/${repo.name}`)) continue;
+                        if (reach.has(`${repo.owner}/${repo.name}`.toLowerCase())) continue;
                         return bad(
                             reply,
                             'REPO_NOT_ACCESSIBLE',

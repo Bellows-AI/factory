@@ -77,14 +77,19 @@ unauthenticated request was remote code execution.
   - **A row auto-join created stays GitHub's; a row an invite created stays Factory's.** The row
     records how it was born (`org_membership.auto_joined`), and the answer decides who maintains it.
     An auto-joined row is re-checked at EVERY sign-in of its member: gone from the GitHub org means
-    the Factory row, its sessions and its personal tokens go with it (`removeMember`'s own
+    the Factory row, its sessions and its personal tokens go with it (`removeMemberById`'s own
     semantics), and the org's role maps onto Factory's (`admin` → `admin`, anything else →
-    `member`) on every sign-in — promotion happens in GitHub and Factory follows. A 15-minute
-    roster sweep (`GET /orgs/{org}/members`, two paginated calls against the installation token)
-    applies the same removals and re-roles to members who never sign in again, because a session
-    TTL of two weeks is otherwise a two-week grace period for somebody who left. An invited row is
-    never checked: an admin named that person here, so GitHub is not consulted, cannot remove them,
-    and cannot re-role them — a role an invite granted survives every org change by construction.
+    `member`) on every sign-in — promotion happens in GitHub and Factory follows. Both maintenance
+    moves are keyed by the numeric GitHub id, never the login: the login is the label the row
+    happened to record at claim time, and a member who renamed would otherwise survive their own
+    removal or be false-removed by a sweep that matched the stale label. A 15-minute roster sweep
+    (`GET /orgs/{org}/members`, two paginated calls against the installation token, matched on the
+    same ids) applies the same removals and re-roles to members who never sign in again, because a
+    session TTL of two weeks is otherwise a two-week grace period for somebody who left. An invited
+    row is never checked: an admin named that person here, so GitHub is not consulted, cannot
+    remove them, and cannot re-role them — a role an invite granted survives every org change by
+    construction, and the store's id-keyed methods carry an `and auto_joined` guard so a bug
+    upstream could not change that.
   - **It costs the zero-scopes property**: `read:org` is requested whenever it is set, because an
     unscoped token reports every organization absent, which would refuse every sign-in with
     `no_membership` and nothing to say why. Off, no scope is requested at all.

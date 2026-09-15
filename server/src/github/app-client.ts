@@ -37,11 +37,18 @@ export interface TeamRepo {
     readonly name: string;
 }
 
+export interface OrgMember {
+    /** The numeric GitHub account id — the identity the roster sync matches on. */
+    readonly id: number;
+    /** The current login, lowercased to match how org_membership stores the label. */
+    readonly login: string;
+}
+
 export interface OrgRoster {
-    /** Every org member's login, lowercased to match how org_membership stores them. */
-    readonly logins: readonly string[];
-    /** The subset that holds the org `admin` role, same casing. */
-    readonly admins: readonly string[];
+    /** Every org member, with the id that survives their renames. */
+    readonly members: readonly OrgMember[];
+    /** The numeric ids that hold the org `admin` role. */
+    readonly admins: readonly number[];
 }
 
 export interface GitHubAppClient {
@@ -222,21 +229,23 @@ export function createGitHubAppClient(
         },
 
         async orgMembers(org) {
-            const logins: string[] = [];
-            for await (const batch of pages<{ login?: string }>(`/orgs/${encodeURIComponent(org)}/members`)) {
-                for (const member of batch) {
-                    if (member.login) logins.push(member.login.toLowerCase());
-                }
-            }
-            const admins: string[] = [];
-            for await (const batch of pages<{ login?: string }>(
-                `/orgs/${encodeURIComponent(org)}/members?role=admin`
+            const members: OrgMember[] = [];
+            for await (const batch of pages<{ login?: string; id?: number }>(
+                `/orgs/${encodeURIComponent(org)}/members`
             )) {
                 for (const member of batch) {
-                    if (member.login) admins.push(member.login.toLowerCase());
+                    if (member.login && typeof member.id === 'number') {
+                        members.push({ id: member.id, login: member.login.toLowerCase() });
+                    }
                 }
             }
-            return Object.freeze({ logins: Object.freeze(logins), admins: Object.freeze(admins) });
+            const admins: number[] = [];
+            for await (const batch of pages<{ id?: number }>(`/orgs/${encodeURIComponent(org)}/members?role=admin`)) {
+                for (const member of batch) {
+                    if (typeof member.id === 'number') admins.push(member.id);
+                }
+            }
+            return Object.freeze({ members: Object.freeze(members), admins: Object.freeze(admins) });
         },
     };
 }

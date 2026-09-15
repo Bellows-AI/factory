@@ -31,14 +31,15 @@ export const repoRoutes =
             // The caller's own intersection, at read time: the stored set is what GitHub said at
             // their last sign-in, the installation list is what the App can see right now, and
             // only what appears in both is checkable — a clone needs the App's token, so the
-            // narrower of the two is the honest answer.
+            // narrower of the two is the honest answer. Compared case-insensitively, because
+            // GitHub owner and repo names are.
             const caller = callerOf(request);
             let visible = list;
             if (scope && caller) {
                 const allowed = await scope.scopedNames(caller.user.id);
                 if (allowed !== null) {
-                    const reach = new Set(allowed);
-                    visible = list.filter((repo) => reach.has(`${repo.owner}/${repo.name}`));
+                    const reach = new Set(allowed.map((name) => name.toLowerCase()));
+                    visible = list.filter((repo) => reach.has(`${repo.owner}/${repo.name}`.toLowerCase()));
                 }
             }
 

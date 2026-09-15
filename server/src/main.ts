@@ -255,6 +255,11 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
 
     // Warm the cache at boot so the first visitor does not eat the cold read.
     service.ensureFresh();
+    // Scoping intersects the stored sets against this list on every read, and a cold snapshot
+    // would intersect everything to "nothing" — fail-closed, but a pointless refusal for the
+    // window before the first fetch. One call at boot closes it; failure changes nothing, the
+    // first scoped read or sign-in warms it anyway.
+    if (scope) void repos.list().catch(() => {});
 
     // Also fired, not awaited. It recovers rows a restart stranded mid-clone and sweeps the partial
     // trees those left behind, then polls — all of which is minutes of network for something no route

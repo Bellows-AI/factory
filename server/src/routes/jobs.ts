@@ -220,11 +220,14 @@ export const jobRoutes =
              *
              * 403, not 400 BAD_REPO: the name is well-formed and the repo is real — this caller
              * just may not use it. Null set (never computed) and absent scope are the unscoped
-             * cases, and org/worker tokens never reach here as callers.
+             * cases, and org/worker tokens never reach here as callers. GitHub owner and repo
+             * names are case-insensitive, so the comparison is too — a label that differs only in
+             * case from the installation's spelling is the same repository.
              */
             if (scope && caller && typeof repo === 'string') {
                 const allowed = await scope.scopedNames(caller.user.id);
-                if (allowed !== null && !allowed.includes(repo)) {
+                const wanted = repo.toLowerCase();
+                if (allowed !== null && !allowed.some((name) => name.toLowerCase() === wanted)) {
                     return bad(
                         reply,
                         'REPO_NOT_ACCESSIBLE',

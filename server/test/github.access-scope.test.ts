@@ -108,16 +108,16 @@ describe('scopedNames', () => {
 });
 
 describe('roster', () => {
-    it('maps the org roster onto roles, lowercased', async () => {
+    it('keys the org roster on the numeric id, with the current login and role', async () => {
         const { appClient, scope } = setup();
-        appClient.members.add('OctoCat');
-        appClient.members.add('hubot');
-        appClient.admins.add('HUBOT');
+        appClient.members.set('OctoCat', 4242);
+        appClient.members.set('hubot', 4243);
+        appClient.admins.add(4243);
 
         expect(await scope.roster()).toEqual(
             new Map([
-                ['octocat', 'member'],
-                ['hubot', 'admin'],
+                [4242, { login: 'octocat', role: 'member' }],
+                [4243, { login: 'hubot', role: 'admin' }],
             ])
         );
     });

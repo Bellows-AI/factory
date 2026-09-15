@@ -1,6 +1,7 @@
 import { createCache, type Cache } from '../cache.js';
 import { fullName } from '../config.js';
 import type { Role } from '../auth/store.js';
+import type { Roster } from '../auth/reconcile.js';
 import type { UserRepoAccessStore } from '../db/user-repo-access-store.js';
 import type { GitHubAppClient, TeamRepo } from './app-client.js';
 import type { RepoSource } from './repo-source.js';
@@ -39,8 +40,8 @@ export interface RepoAccessScope {
      * pre-date scoping working until their next sign-in.
      */
     scopedNames(userId: string): Promise<readonly string[] | null>;
-    /** login → org role, lowercased logins. The roster sync's input. */
-    roster(): Promise<Map<string, Role>>;
+    /** GitHub id → org role, under the login GitHub currently knows. The roster sync's input. */
+    roster(): Promise<Roster>;
 }
 
 export interface RepoAccessScopeDeps {
@@ -129,9 +130,14 @@ export function createRepoAccessScope({
         },
 
         async roster() {
-            const { logins, admins } = await appClient.orgMembers(org);
-            const adminSet = new Set(admins);
-            return new Map(logins.map((login) => [login, (adminSet.has(login) ? 'admin' : 'member') as Role]));
+            const { members, admins } = await appClient.orgMembers(org);
+            const adminIds = new Set(admins);
+            return new Map(
+                members.map((member) => [
+                    member.id,
+                    { login: member.login, role: (adminIds.has(member.id) ? 'admin' : 'member') as Role },
+                ])
+            );
         },
     };
 }

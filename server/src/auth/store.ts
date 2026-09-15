@@ -113,13 +113,21 @@ export interface AuthStore {
     /**
      * The claimed rows auto-join created — the only rows the GitHub org is allowed to maintain.
      * Unclaimed rows are not here: a login nobody has signed in with yet has no account to sweep.
+     * `githubUserId` rides along because the org's own roster is matched on it — the login is a
+     * mutable label, and matching on it removes members who renamed and re-roles strangers.
      */
-    listAutoJoined(orgId: string): Promise<{ login: string; role: Role; userId: string }[]>;
+    listAutoJoined(orgId: string): Promise<{ login: string; role: Role; userId: string; githubUserId: number }[]>;
     /**
-     * Moves an existing row to `role`, without creating one. Update-only on purpose — admission is
-     * never this method's business, only a row that already exists may be re-roled.
+     * Removes the auto-joined row of THIS account, with removeMember's cleanup (sessions deleted,
+     * personal tokens revoked). Keyed by the account, never the login, and guarded by `auto_joined`
+     * so no GitHub-derived caller can ever remove a row an invite created.
      */
-    updateMemberRole(orgId: string, login: string, role: Role): Promise<boolean>;
+    removeMemberById(orgId: string, userId: string): Promise<'removed' | 'missing'>;
+    /**
+     * Moves an existing AUTO-JOINED row to `role`, keyed by the account and update-only, so this
+     * can never admit and never re-role a row an invite owns.
+     */
+    updateMemberRole(orgId: string, userId: string, role: Role): Promise<boolean>;
     createWorkerToken(orgId: string, name: string, tokenHash: Buffer): Promise<{ id: string }>;
     revokeWorkerToken(orgId: string, name: string): Promise<'revoked' | 'missing'>;
     listWorkerTokens(orgId: string): Promise<{ name: string; createdAt: string; revoked: boolean }[]>;
@@ -462,22 +470,53 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
 
         async listAutoJoined(orgId) {
             await gate();
-            const rows = await sql<{ github_login: string; role: Role; user_id: string }[]>`
-                select github_login, role, user_id from org_membership
-                where org_id = ${orgId} and auto_joined and user_id is not null
-                order by github_login
+            const rows = await sql<
+                { github_login: string; role: Role; user_id: string; github_user_id: string | number }[]
+            >`
+                select m.github_login, m.role, m.user_id, u.github_user_id
+                from org_membership m join app_user u on u.id = m.user_id
+                where m.org_id = ${orgId} and m.auto_joined and m.user_id is not null
+                order by m.github_login
             `;
-            return rows.map((row) => ({ login: row.github_login, role: row.role, userId: row.user_id }));
+            return rows.map((row) => ({
+                login: row.github_login,
+                role: row.role,
+                userId: row.user_id,
+                githubUserId: Number(row.github_user_id),
+            }));
         },
 
-        async updateMemberRole(orgId, login, role) {
+        async removeMemberById(orgId, userId) {
             await gate();
-            // Update-only, so this can never admit: a row that does not exist stays nonexistent,
-            // and re-rolling a row GitHub never created is invite()'s business, not a sync's.
-            const rows = await sql<{ github_login: string }[]>`
+            // `and auto_joined` is the store-level half of "the store never admits on its own
+            // authority", read in reverse: GitHub may only ever un-create what it created. An
+            // invited row is untouched by every GitHub-derived caller, whatever they pass in.
+            const rows = await sql<{ user_id: string }[]>`
+                delete from org_membership
+                where org_id = ${orgId} and user_id = ${userId} and auto_joined
+                returning user_id
+            `;
+            const row = rows[0];
+            if (!row) return 'missing';
+            // The same cleanup removeMember does: sessions go outright, personal tokens are marked.
+            await sql`delete from session where user_id = ${row.user_id}`;
+            await sql`
+                update access_token set revoked_at = now()
+                where org_id = ${orgId} and user_id = ${row.user_id}
+                  and kind = 'personal' and revoked_at is null
+            `;
+            return 'removed';
+        },
+
+        async updateMemberRole(orgId, userId, role) {
+            await gate();
+            // Keyed by the account and guarded by `auto_joined`: the login column is a mutable
+            // label (renames happen), and the rows GitHub may re-role are exactly the ones it
+            // created. Update-only, so this can never admit either.
+            const rows = await sql<{ user_id: string }[]>`
                 update org_membership set role = ${role}
-                where org_id = ${orgId} and github_login = ${login.toLowerCase()}
-                returning github_login
+                where org_id = ${orgId} and user_id = ${userId} and auto_joined
+                returning user_id
             `;
             return rows.length > 0;
         },

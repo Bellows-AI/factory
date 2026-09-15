@@ -308,6 +308,55 @@ describe('sync on sign-in', () => {
         expect(identity.orgLookups).toEqual([]);
         expect(await auth.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'admin', claimed: true }]);
     });
+
+    it('removes by identity, so a GitHub rename cannot hide a member who left', async () => {
+        const { app, auth, identity } = await syncSetup();
+        identity.orgState = 'active';
+        await signIn(app);
+
+        // They left the org AND renamed: the membership row still carries the old login, and the
+        // numeric id is the only thing that still matches.
+        identity.next = { ...identity.next, login: 'octocat-renamed' };
+        identity.orgState = 'none';
+        const response = await signIn(app);
+
+        expect(errorOf(response.headers.location as string)).toBe('no_membership');
+        expect(await auth.listMembers(ORG)).toEqual([]);
+        expect(auth.sessions()).toEqual([]);
+    });
+});
+
+describe('the identity client', () => {
+    // The org answer is destructive now — a returning member whose org state is not `active` is
+    // removed outright — so what GitHub could not be ASKED must be a failure, never a `none`.
+    const base = githubAuth({ autoJoinGithubOrg: 'Bellows-AI' }) as Extract<AuthConfig, { mode: 'github' }>;
+
+    const clientFor = (status: number, body: unknown) =>
+        createGitHubIdentityClient(base, (async () => new Response(JSON.stringify(body), { status })) as typeof fetch);
+
+    it('maps the membership payload onto state and org role', async () => {
+        const active = clientFor(200, { state: 'active', role: 'admin' });
+        await expect(active.orgMembership('token', 'Bellows-AI')).resolves.toEqual({
+            state: 'active',
+            role: 'admin',
+        });
+
+        const plain = clientFor(200, { state: 'active', role: 'member' });
+        await expect(plain.orgMembership('token', 'Bellows-AI')).resolves.toEqual({
+            state: 'active',
+            role: 'member',
+        });
+    });
+
+    it('answers 404 with no membership', async () => {
+        const client = clientFor(404, { message: 'not found' });
+        await expect(client.orgMembership('token', 'Bellows-AI')).resolves.toEqual({ state: 'none', role: 'member' });
+    });
+
+    it('refuses to answer a 403 as a membership verdict — a rate limit or scope failure must not remove anyone', async () => {
+        const client = clientFor(403, { message: 'forbidden' });
+        await expect(client.orgMembership('token', 'Bellows-AI')).rejects.toThrow();
+    });
 });
 
 describe('identity is the numeric id, not the login', () => {

@@ -145,7 +145,7 @@ export async function buildApp({
     await app.register(repoRoutes({ repos, scope }));
     if (store) await app.register(ingestRoutes(store));
     if (jobs) await app.register(jobRoutes({ store: jobs, scope }));
-    if (envVars) await app.register(envRoutes({ store: envVars, repos }));
+    if (envVars) await app.register(envRoutes({ store: envVars, repos, scope }));
     if (userRepos) {
         await app.register(
             workspaceRoutes({

@@ -238,23 +238,51 @@ describe.skipIf(!enabled)('auto-join', () => {
     });
 
     it('lists the claimed auto-joined rows only, for the roster sweep', async () => {
-        await store.signIn(identity(28, 'sweepme'), ORG, { autoJoin: true, role: 'admin' });
+        const joined = await store.signIn(identity(28, 'sweepme'), ORG, { autoJoin: true, role: 'admin' });
         await store.invite(ORG, 'notmine', 'admin');
         await store.signIn(identity(29, 'notmine'), ORG);
 
         const rows = await store.listAutoJoined(ORG);
-        expect(rows).toEqual([{ login: 'sweepme', role: 'admin', userId: expect.any(String) }]);
+        expect(rows).toEqual([
+            {
+                login: 'sweepme',
+                role: 'admin',
+                userId: joined!.user.id,
+                githubUserId: joined!.user.githubUserId,
+            },
+        ]);
     });
 
-    it('updateMemberRole re-roles an existing row and never creates one', async () => {
-        await store.signIn(identity(30, 'promotable'), ORG, { autoJoin: true });
+    it('updateMemberRole re-roles an existing auto-joined row by account, and never creates one', async () => {
+        const joined = await store.signIn(identity(30, 'promotable'), ORG, { autoJoin: true });
 
-        expect(await store.updateMemberRole(ORG, 'promotable', 'admin')).toBe(true);
+        expect(await store.updateMemberRole(ORG, joined!.user.id, 'admin')).toBe(true);
         expect((await store.listMembers(ORG)).find((m) => m.login === 'promotable')?.role).toBe('admin');
 
-        // The never-admits rule, at the store level: no row, no effect, no row created.
-        expect(await store.updateMemberRole(ORG, 'ghost', 'admin')).toBe(false);
+        // The never-admits rule, at the store level: no row for this account, no effect.
+        expect(await store.updateMemberRole(ORG, '00000000-0000-4000-8000-ffffffffffff', 'admin')).toBe(false);
         expect(await store.listMembers(ORG)).not.toContainEqual(expect.objectContaining({ login: 'ghost' }));
+
+        // The `auto_joined` guard: an invited row is out of GitHub's reach even by account.
+        await store.invite(ORG, 'invited-role', 'admin');
+        const invited = await store.signIn(identity(32, 'invited-role'), ORG);
+        expect(await store.updateMemberRole(ORG, invited!.user.id, 'member')).toBe(false);
+        expect((await store.listMembers(ORG)).find((m) => m.login === 'invited-role')?.role).toBe('admin');
+    });
+
+    it('removeMemberById ends the account the row was created for, guarded by auto_joined', async () => {
+        const joined = await store.signIn(identity(33, 'swept'), ORG, { autoJoin: true });
+        await store.createSession(Buffer.alloc(32, 3), joined!.user.id, new Date(Date.now() + 3600_000));
+
+        expect(await store.removeMemberById(ORG, joined!.user.id)).toBe('removed');
+        expect(await store.listMembers(ORG)).not.toContainEqual(expect.objectContaining({ login: 'swept' }));
+        expect(await sessionCount(joined!.user.id)).toBe(0);
+
+        // An invited row survives the id-keyed removal — that path is the CLI's, not GitHub's.
+        await store.invite(ORG, 'kept', 'admin');
+        const invited = await store.signIn(identity(34, 'kept'), ORG);
+        expect(await store.removeMemberById(ORG, invited!.user.id)).toBe('missing');
+        expect(await store.listMembers(ORG)).toContainEqual(expect.objectContaining({ login: 'kept' }));
     });
 });
 

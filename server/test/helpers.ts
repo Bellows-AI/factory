@@ -871,11 +871,29 @@ export function memoryAuthStore(): MemoryAuthStore {
         async listAutoJoined(orgId) {
             return members
                 .filter((m) => m.orgId === orgId && m.autoJoined && m.userId !== null)
-                .map((m) => ({ login: m.login, role: m.role, userId: m.userId! }));
+                .map((m) => {
+                    const user = users.find((u) => u.id === m.userId)!;
+                    return { login: m.login, role: m.role, userId: m.userId!, githubUserId: user.githubUserId };
+                });
         },
 
-        async updateMemberRole(orgId, login, role) {
-            const member = members.find((m) => m.orgId === orgId && m.login === login.toLowerCase());
+        async removeMemberById(orgId, userId) {
+            const index = members.findIndex((m) => m.orgId === orgId && m.userId === userId && m.autoJoined);
+            if (index === -1) return 'missing';
+            const [removed] = members.splice(index, 1);
+            for (const [hash, session] of sessions) {
+                if (session.userId === removed!.userId) sessions.delete(hash);
+            }
+            for (const row of accessTokenRows) {
+                if (row.orgId === orgId && row.userId === removed!.userId && row.revokedAt === null) {
+                    row.revokedAt = now();
+                }
+            }
+            return 'removed';
+        },
+
+        async updateMemberRole(orgId, userId, role) {
+            const member = members.find((m) => m.orgId === orgId && m.userId === userId && m.autoJoined);
             if (!member) return false;
             member.role = role;
             return true;
@@ -953,10 +971,10 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
 
 /** What a GitHub App client needs beyond the repo list, for the access-scope tests. */
 export interface AppClientStub extends GitHubAppClient {
-    /** Logins `orgMembers` reports as org members. */
-    members: Set<string>;
-    /** Logins `orgMembers` reports as org admins. */
-    admins: Set<string>;
+    /** `orgMembers` members, as login → numeric GitHub id. */
+    members: Map<string, number>;
+    /** Numeric ids `orgMembers` reports as org admins. */
+    admins: Set<number>;
     /** slug → repos, what the `teamRepos` method answers. */
     teamRepoLists: Map<string, readonly { owner: string; name: string }[]>;
     /** (slug, login) pairs `teamMembership` answers yes to. */
@@ -977,7 +995,7 @@ export interface AppClientStub extends GitHubAppClient {
 export function stubAppClient(base: GitHubAppClient): AppClientStub {
     const stub: AppClientStub = {
         ...base,
-        members: new Set(),
+        members: new Map(),
         admins: new Set(),
         teamRepoLists: new Map(),
         teamMembers: new Set(),
@@ -1007,8 +1025,8 @@ export function stubAppClient(base: GitHubAppClient): AppClientStub {
             stub.calls.members += 1;
             if (stub.fail) throw stub.fail;
             return {
-                logins: [...stub.members].map((login) => login.toLowerCase()),
-                admins: [...stub.admins].map((login) => login.toLowerCase()),
+                members: [...stub.members].map(([login, id]) => ({ id, login: login.toLowerCase() })),
+                admins: [...stub.admins],
             };
         },
     };
