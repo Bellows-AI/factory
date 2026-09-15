@@ -77,6 +77,8 @@ const RUNTIME_ACTIVITY_LIMIT = 512;
 /** The context stats a verdict may carry: a token count no real window reaches, a cost no run hits. */
 const CONTEXT_TOKENS_MAX = 100_000_000;
 const CONTEXT_COST_MAX = 1_000_000;
+/** `job.agent_turns` is an int4 column: the route is the boundary that keeps the verdict writable. */
+const AGENT_TURNS_MAX = 2_147_483_647;
 
 /** The workspace's ten-service cap, and the name/state shapes the driver's parser enforces. */
 const SERVICES_MAX = 10;
@@ -729,7 +731,9 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd } = body(request.body);
+            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd, agentTurns } = body(
+                request.body
+            );
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
                 return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
             }
@@ -761,6 +765,20 @@ export const jobRoutes =
             ) {
                 return bad(reply, 'BAD_CONTEXT', `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}`);
             }
+            // The close-time agent-turn count: optional, and absent means unmeasured — the
+            // never-zero contract puts the boundary at the route, so a malformed report cannot
+            // write a plausible-looking zero over a run nobody counted. Capped at PostgreSQL's
+            // int4 maximum, because `job.agent_turns` is an int and an out-of-range value would
+            // fail the verdict's transaction, leaving a finished run unsettled.
+            if (
+                agentTurns !== undefined &&
+                agentTurns !== null &&
+                (!Number.isInteger(agentTurns) ||
+                    (agentTurns as number) < 0 ||
+                    (agentTurns as number) > AGENT_TURNS_MAX)
+            ) {
+                return bad(reply, 'BAD_AGENT_TURNS', `agentTurns must be an integer 0..${AGENT_TURNS_MAX}`);
+            }
 
             const result = await guard(
                 reply,
@@ -772,6 +790,7 @@ export const jobRoutes =
                         output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
                         contextTokens: (contextTokens as number | undefined) ?? null,
                         contextCostUsd: (contextCostUsd as number | undefined) ?? null,
+                        agentTurns: (agentTurns as number | undefined) ?? null,
                     })
             );
             if (!result.ok) return reply;

@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { EMPTY_TELEMETRY, harness, stubTelemetryClient } from './helpers.js';
+import {
+    EMPTY_TELEMETRY,
+    githubAuth,
+    harness,
+    memoryAuthStore,
+    signedIn,
+    stubTelemetryClient,
+    TEST_REPO,
+} from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -301,5 +309,257 @@ describe('POST /api/refresh', () => {
         expect(a.statusCode).toBe(202);
         expect(b.statusCode).toBe(202);
         expect(telemetry.rollupCalls).toBe(1);
+    });
+});
+
+describe('GET /api/stats scope', () => {
+    /**
+     * A signed-in-member harness: github-mode [auth] plus a memory store, so `?scope=mine` has
+     * a caller to resolve and the refusal cases have a credential to be refused for.
+     */
+    const scopedHarness = async (telemetry = stubTelemetryClient()) => {
+        const store = memoryAuthStore();
+        const h = await harness({ telemetry, auth: store, config: { auth: githubAuth() } });
+        return { ...h, store };
+    };
+
+    it('names the org scope the figures were computed under', async () => {
+        const h = await harness();
+        app = h.app;
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
+        expect(body.meta.scope).toBe('org');
+        expect(body.meta.scopeLogin).toBeNull();
+    });
+
+    it('rejects caller scope when nothing is signed in (open auth mode)', async () => {
+        const h = await harness();
+        app = h.app;
+        const res = await app.inject({ method: 'GET', url: '/api/stats?scope=mine' });
+        expect(res.statusCode).toBe(400);
+        expect(res.json().code).toBe('SCOPE_REQUIRES_USER');
+    });
+
+    it('rejects caller scope for an organization token, which names no person', async () => {
+        const h = await scopedHarness();
+        app = h.app;
+        const token = h.store.seedAccessToken('test-org', 'org', { label: 'board reader' });
+        const res = await app!.inject({
+            method: 'GET',
+            url: '/api/stats?scope=mine',
+            headers: { authorization: `Bearer ${token}` },
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.json().code).toBe('SCOPE_REQUIRES_USER');
+    });
+
+    it('rejects a scope it does not know', async () => {
+        const h = await harness();
+        app = h.app;
+        const res = await app.inject({ method: 'GET', url: '/api/stats?scope=team' });
+        expect(res.statusCode).toBe(400);
+        expect(res.json().code).toBe('BAD_SCOPE');
+    });
+
+    it('computes every figure over only the caller attributed sessions, naming the member', async () => {
+        // The telemetry is built around the caller: two sessions attributed to them, one to
+        // another member, one unattributed — so a leak in any direction shows in the counts.
+        const carol = { id: 'u-carol', login: 'carol', name: 'Carol', avatarUrl: null };
+        const dave = { id: 'u-dave', login: 'dave', name: null, avatarUrl: null };
+        const sessionOf = (sessionId: string, user: typeof carol | null, taskKey: string | null) => ({
+            sessionId,
+            agent: 'claude-code',
+            repo: TEST_REPO,
+            user,
+            taskKey,
+            firstSeen: '2026-08-20T00:00:00.000Z',
+            lastSeen: '2026-08-20T01:00:00.000Z',
+            tokens: { input: 1000, output: 500, cacheRead: null, cacheCreation: null },
+            linesAdded: 1,
+            linesRemoved: 0,
+            editsAccepted: 1,
+            editsRejected: 0,
+            activeSeconds: 60,
+            commits: 0,
+        });
+        const runOf = (rootJobId: string, repo: string, createdBy: string, agentTurns: number) => ({
+            rootJobId,
+            repo,
+            createdBy,
+            createdAt: '2026-08-20T00:00:00.000Z',
+            agentTurns,
+        });
+        // The caller's account id IS what the landed join resolves, so the fixture is built
+        // around it once the member exists: one member's id, another's, and null.
+        const store = memoryAuthStore();
+        const caller = store.seedMember('test-org', 'carol');
+        const telemetry = stubTelemetryClient({
+            rollups: async () => ({
+                sessions: [
+                    sessionOf('mine-1', { ...carol, id: caller.user.id }, 't-carol'),
+                    sessionOf('mine-2', { ...carol, id: caller.user.id }, 't-carol'),
+                    sessionOf('daves', dave, 't-dave'),
+                    sessionOf('anon', null, null),
+                ],
+                coverage: { from: '2026-08-20T00:00:00.000Z', to: '2026-08-20T01:00:00.000Z' },
+            }),
+            runs: () => [runOf('t-carol', TEST_REPO, caller.user.id, 7), runOf('t-dave', TEST_REPO, dave.id, 3)],
+        });
+        const h = await harness({ telemetry, auth: store, config: { auth: githubAuth() } });
+        app = h.app;
+        const cookie = await signedIn(store, caller);
+        await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
+        await h.settle();
+
+        const mine = (await app.inject({ method: 'GET', url: '/api/stats?scope=mine', headers: { cookie } })).json();
+        expect(mine.meta.scope).toBe('mine');
+        expect(mine.meta.scopeLogin).toBe('carol');
+        expect(mine.telemetry.totals.sessions).toBe(2);
+        expect(mine.telemetry.byUser.map((row: { user: { login: string } }) => row.user.login)).toEqual(['carol']);
+        // Unattributed sessions stay out of the totals but keep their own figure.
+        expect(mine.telemetry.unattributedSessions).toBe(1);
+        // Coverage still describes the store, not the scope.
+        expect(mine.telemetry.coverage.from).toBe('2026-08-20T00:00:00.000Z');
+        // The task set narrows with the scope: only the caller's task survives.
+        expect(mine.tasks.tokensPerTask).toMatchObject({ p50: 3000, tasks: 1 });
+        expect(mine.tasks.jobTurnsPerTask.tasks).toBe(1);
+        expect(mine.tasks.agentTurnsPerTask).toMatchObject({ p50: 7, tasks: 1 });
+
+        // And the same snapshot answers the whole organization from the SAME fetch — all four
+        // sessions, the unattributed one included.
+        const org = (await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } })).json();
+        expect(org.telemetry.totals.sessions).toBe(4);
+        expect(org.tasks.tokensPerTask).toMatchObject({ tasks: 2 });
+        expect(org.tasks.agentTurnsPerTask).toMatchObject({ tasks: 2 });
+    });
+
+    it('serves org and mine from the one fetch the cache paid for', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember('test-org', 'carol');
+        const telemetry = stubTelemetryClient();
+        const h = await harness({ telemetry, auth: store, config: { auth: githubAuth() } });
+        app = h.app;
+        const headers = { cookie: await signedIn(store, caller) };
+        await app.inject({ method: 'GET', url: '/api/stats', headers });
+        await h.settle();
+        expect(telemetry.rollupCalls).toBe(1);
+
+        await app.inject({ method: 'GET', url: '/api/stats?scope=mine', headers });
+        await app.inject({ method: 'GET', url: '/api/stats?scope=org', headers });
+        await h.settle();
+        // A scope switch is a re-aggregation, never a second read.
+        expect(telemetry.rollupCalls).toBe(1);
+    });
+});
+
+describe('GET /api/stats task statistics', () => {
+    const taskSession = (
+        sessionId: string,
+        taskKey: string | null,
+        input: number | null,
+        output: number | null,
+        seen: string,
+        repo = TEST_REPO
+    ) => ({
+        sessionId,
+        agent: 'claude-code',
+        repo,
+        user: null,
+        taskKey,
+        firstSeen: seen,
+        lastSeen: seen,
+        tokens: { input, output, cacheRead: null, cacheCreation: null },
+        linesAdded: 1,
+        linesRemoved: 0,
+        editsAccepted: 1,
+        editsRejected: 0,
+        activeSeconds: 60,
+        commits: 0,
+    });
+
+    const taskHarness = async () => {
+        const telemetry = stubTelemetryClient({
+            rollups: async () => ({
+                sessions: [
+                    // t1: two measured sessions, 1k and 3k billable tokens.
+                    taskSession('a', 't1', 600, 400, '2026-08-20T01:00:00Z'),
+                    taskSession('b', 't1', 2400, 600, '2026-08-20T02:00:00Z'),
+                    // t2: one measured session and one null — the null contributor is skipped,
+                    // and the task still enters the token distribution on what it measured.
+                    taskSession('c', 't2', 500, 500, '2026-08-20T03:00:00Z'),
+                    taskSession('d', 't2', null, null, '2026-08-20T04:00:00Z'),
+                    // An other-repo session: excluded from the totals above, excluded here too.
+                    taskSession('e', 't5', 90_000, 90_000, '2026-08-20T05:00:00Z', 'Other/repo'),
+                ],
+                coverage: { from: '2026-08-20T01:00:00Z', to: '2026-08-20T03:00:00Z' },
+            }),
+            runs: () => [
+                {
+                    rootJobId: 't1',
+                    repo: TEST_REPO,
+                    createdBy: 'u-alice',
+                    createdAt: '2026-08-19T00:00:00Z',
+                    agentTurns: 9,
+                },
+                {
+                    rootJobId: 't1',
+                    repo: TEST_REPO,
+                    createdBy: 'u-alice',
+                    createdAt: '2026-08-20T05:00:00Z',
+                    agentTurns: 4,
+                },
+                // t2's only run is unmeasured: excluded from the turn distribution only.
+                {
+                    rootJobId: 't2',
+                    repo: TEST_REPO,
+                    createdBy: 'u-bob',
+                    createdAt: '2026-08-20T06:00:00Z',
+                    agentTurns: null,
+                },
+                // An other-repo task: out of the repo scope the totals apply, so out of here too.
+                {
+                    rootJobId: 't5',
+                    repo: 'Other/repo',
+                    createdBy: 'u-bob',
+                    createdAt: '2026-08-20T07:00:00Z',
+                    agentTurns: 50,
+                },
+            ],
+        });
+        return harness({ telemetry });
+    };
+
+    it('reports the per-task distributions over the range, with their counts', async () => {
+        const h = await taskHarness();
+        app = h.app;
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
+        // Tokens: t1 totals 4k over its two sessions, t2 1k — the null contributor skipped,
+        // and the other-repo task t5 nowhere in the distribution.
+        expect(body.tasks.tokensPerTask).toEqual({ avg: 2500, p50: 1000, p95: 4000, tasks: 2 });
+        expect(body.tasks.tokensPerTask.p95).toBeLessThan(90_000);
+        // Job turns: t1 ran twice, t2 once — t2 counts here even though its run was unmeasured.
+        expect(body.tasks.jobTurnsPerTask).toEqual({ avg: 1.5, p50: 1, p95: 2, tasks: 2 });
+        // Agent turns: t1 banks 9 + 4 = 13; t2 for its unmeasured run and t5 for its repo are
+        // both out.
+        expect(body.tasks.agentTurnsPerTask).toEqual({ avg: 13, p50: 13, p95: 13, tasks: 1 });
+    });
+
+    it('answers null figures, not zeros, for a range with nothing in it', async () => {
+        const h = await taskHarness();
+        app = h.app;
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const url = '/api/stats?range=custom&from=2026-09-01T00:00:00Z&to=2026-09-02T00:00:00Z';
+        const body = (await app.inject({ method: 'GET', url })).json();
+        expect(body.telemetry.totals.sessions).toBe(0);
+        expect(body.tasks.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(body.tasks.jobTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(body.tasks.agentTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
     });
 });

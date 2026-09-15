@@ -405,6 +405,21 @@ describe('the poll loop', () => {
         });
     });
 
+    it('reports the close-time agent-turn count with the verdict, and never a non-number', async () => {
+        const board = stubBoard([job(1), job(2)]);
+        let ran = 0;
+        const runner = stubRunner(async () => (ran++ === 0 ? ok({ agentTurns: 11 }) : ok()));
+
+        await drive({ ...board, runner });
+
+        // A measured count rides the report.
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', agentTurns: 11 });
+
+        // The second job's runner read nothing: the field stays OFF the wire entirely, so the
+        // board stores unmeasured — the never-zero contract holds on the driver's side too.
+        expect(board.board.completed[1]).not.toHaveProperty('agentTurns');
+    });
+
     // An opencode run always leaves a session, so an empty scrape is a failed readout — said out
     // loud, because a silently-lost session presents later as "this run cannot take a follow-up"
     // with nothing anywhere naming why.

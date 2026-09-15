@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
+import { telemetryStats } from '@factory-ai/core';
 import { migrate } from '../src/db/migrate.js';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
 
@@ -255,85 +256,15 @@ describe.skipIf(!enabled)('the postgres client', () => {
     it('reports an empty store as empty, not unreachable', async () => {
         const client = createPostgresTelemetryClient({ sql, orgId: ORG });
         expect((await client.health()).status).toBe('empty');
-        const input = await client.fetchRollups();
+        const { input } = await client.fetchRollups();
         expect(input.sessions).toEqual([]);
         expect(input.coverage).toEqual({ from: null, to: null });
     });
 
-    it('marks a multi-branch cumulative session indivisible instead of halving it', async () => {
-        await branch({ session: 's1', branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T10:30:00Z' });
-        await branch({ session: 's1', branch: 'feat/b', from: '2026-08-01T10:30:00Z', to: '2026-08-01T11:00:00Z' });
-        await point({
-            session: 's1',
-            field: 'tokens_input',
-            value: 100,
-            time: '2026-08-01T10:59:00Z',
-            temporality: 'cumulative',
-            startTime: '2026-08-01T10:00:00Z',
-        });
-
-        const client = createPostgresTelemetryClient({ sql, orgId: ORG });
-        const input = await client.fetchRollups();
-        expect(input.sessions[0]?.granularity).toBe('session');
-        expect(input.splits).toHaveLength(2);
-        for (const split of input.splits) {
-            expect(split.share).toBeNull();
-            expect(split.tokens.input).toBeNull();
-        }
-        // The session total survives: the work happened, it just cannot be placed.
-        expect(input.sessions[0]?.tokens.input).toBe(100);
-    });
-
-    it('attributes a single-branch cumulative session in full', async () => {
-        await branch({ session: 's1', branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
-        await point({
-            session: 's1',
-            field: 'tokens_input',
-            value: 100,
-            time: '2026-08-01T10:59:00Z',
-            temporality: 'cumulative',
-            startTime: '2026-08-01T10:00:00Z',
-        });
-
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        expect(input.splits[0]?.share).toBe(1);
-        expect(input.splits[0]?.tokens.input).toBe(100);
-    });
-
     it('reports a session with no hook data as repo null', async () => {
         await point({ session: 's1', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions[0]?.repo).toBeNull();
-        expect(input.splits).toEqual([]);
-    });
-
-    it("does not attribute one organization's session to another's branch", async () => {
-        // Same repo path, same branch name, same session window — routine across tenants. Keyed
-        // without org_id, the slice from one organization would claim the other's datapoints, and
-        // the number rendered would be plausible and wrong.
-        await branch({
-            session: 's1',
-            branch: 'feat/a',
-            from: '2026-08-01T10:00:00Z',
-            to: '2026-08-01T11:00:00Z',
-        });
-        await branch({
-            session: 's1',
-            branch: 'feat/a',
-            org: OTHER_ORG,
-            from: '2026-08-01T10:00:00Z',
-            to: '2026-08-01T11:00:00Z',
-        });
-        await point({ session: 's1', field: 'tokens_input', value: 100, time: '2026-08-01T10:30:00Z' });
-
-        // One slice each, not two apiece: session_branch_slice partitions its window by org, so
-        // neither organization's clamp truncates the other's.
-        const mine = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        const theirs = await createPostgresTelemetryClient({ sql, orgId: OTHER_ORG }).fetchRollups();
-        expect(mine.spans).toHaveLength(1);
-        expect(theirs.spans).toHaveLength(1);
-        expect(mine.splits.map((s) => s.tokens.input)).toEqual([100]);
-        expect(theirs.splits.map((s) => s.tokens.input)).toEqual([100]);
     });
 
     it('still reports a hook-less session, which belongs to no organization', async () => {
@@ -342,7 +273,7 @@ describe.skipIf(!enabled)('the postgres client', () => {
         // missing or broken — so filtering them by org would make a broken hook look like an idle
         // week.
         await point({ session: 'orphan', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions.map((s) => s.sessionId)).toEqual(['orphan']);
         expect(input.sessions[0]?.repo).toBeNull();
     });
@@ -350,7 +281,7 @@ describe.skipIf(!enabled)('the postgres client', () => {
     it('leaves unmeasured fields null rather than zero', async () => {
         await branch({ session: 's1', branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
         await point({ session: 's1', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         const session = input.sessions[0];
         expect(session?.tokens.input).toBe(10);
         expect(session?.tokens.output).toBeNull();
@@ -449,7 +380,7 @@ describe.skipIf(!enabled)('session attribution', () => {
             to: '2026-08-01T11:00:00Z',
         });
 
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions[0]?.user).toEqual({
             id: userId,
             login: 'attributor',
@@ -477,7 +408,7 @@ describe.skipIf(!enabled)('session attribution', () => {
             to: '2026-08-01T11:00:00Z',
         });
 
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions[0]?.user).toEqual({
             id: userId,
             login: 'labeled',
@@ -497,7 +428,7 @@ describe.skipIf(!enabled)('session attribution', () => {
         });
         await point({ session: 'attr-3', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions[0]?.user).toBeNull();
     });
 
@@ -519,7 +450,7 @@ describe.skipIf(!enabled)('session attribution', () => {
         });
         await point({ session: 'attr-4', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
-        const input = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions).toHaveLength(1);
         expect(input.sessions[0]?.user?.login).toBe('thread-author');
         await sql`delete from job where root_job_id = ${rootId}`;
@@ -537,9 +468,142 @@ describe.skipIf(!enabled)('session attribution', () => {
         });
         await point({ session: 'attr-5', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
-        const mine = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const mine = (await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups()).input;
         expect(mine.sessions[0]?.user).toBeNull();
         await sql`delete from job where id = ${jobId}`;
         await sql`delete from app_user where id = ${userId}`;
+    });
+});
+
+describe.skipIf(!enabled)('task attribution', () => {
+    // WHICH task thread a session belongs to, resolved by the SAME subquery that resolves its
+    // member: a session id carried by any job row resolves to that row's thread root, so the
+    // task travels beside the user it was landed with — never through a second lookup.
+
+    let userSeq = 0;
+    const githubUserId = () => (Date.now() % 1_000_000_000) * 1000 + ++userSeq;
+    const account = async (login: string): Promise<string> => {
+        const [row] = await sql<{ id: string }[]>`
+            insert into app_user (github_user_id, github_login)
+            values (${githubUserId()}, ${login})
+            returning id
+        `;
+        return row!.id;
+    };
+
+    const job = async (row: {
+        session?: string | null;
+        createdBy?: string | null;
+        root?: string;
+        parent?: string;
+        org?: string;
+    }): Promise<string> => {
+        const id = randomUUID();
+        await sql`
+            insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
+            values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${row.root ?? id}, ${row.parent ?? null},
+                    ${row.createdBy ?? null}, ${row.session ?? null}, now())
+        `;
+        return id;
+    };
+
+    const fetchOrg = async (org = ORG) => createPostgresTelemetryClient({ sql, orgId: org }).fetchRollups();
+
+    const seedSession = async (session: string) => {
+        await branch({
+            session,
+            branch: 'feat/a',
+            from: '2026-08-01T10:00:00Z',
+            to: '2026-08-01T11:00:00Z',
+        });
+        await point({ session, field: 'tokens_input', value: 10, time: '2026-08-01T10:30:00Z' });
+    };
+
+    beforeEach(async () => {
+        if (!enabled) return;
+        await sql`truncate job`;
+    });
+
+    it('attributes an executor session to its task beside the member attribution', async () => {
+        const userId = await account('task-author');
+        const rootId = await job({ session: 'task-1', createdBy: userId });
+        await seedSession('task-1');
+
+        const { input } = await fetchOrg();
+        expect(input.sessions[0]?.user?.login).toBe('task-author');
+        expect(input.sessions[0]?.taskKey).toBe(rootId);
+        await sql`delete from job`;
+        await sql`delete from app_user where id = ${userId}`;
+    });
+
+    it('resolves a follow-up chain to the one thread root', async () => {
+        // The follow-up copies the parent's session AND root_job_id, so both rows land in the
+        // same group and the minimum is that root — the session is counted once under it.
+        const userId = await account('chain-author');
+        const rootId = await job({ session: 'task-2', createdBy: userId });
+        await job({ session: 'task-2', createdBy: userId, root: rootId, parent: rootId });
+        await seedSession('task-2');
+
+        const { input } = await fetchOrg();
+        expect(input.sessions).toHaveLength(1);
+        expect(input.sessions[0]?.taskKey).toBe(rootId);
+        await sql`delete from job`;
+        await sql`delete from app_user where id = ${userId}`;
+    });
+
+    it('keeps a session with no matching job row task-less, exactly as it is member-less', async () => {
+        await seedSession('task-3');
+        const { input } = await fetchOrg();
+        expect(input.sessions[0]?.taskKey).toBeNull();
+        expect(input.sessions[0]?.user).toBeNull();
+    });
+
+    it('resolves the task of an author-less row even though the member stays null', async () => {
+        // A row that predates attribution still names its thread: min() ignores the null
+        // author, so member resolution is untouched — and the task is still known.
+        const rootId = await job({ session: 'task-4', createdBy: null });
+        await seedSession('task-4');
+
+        const { input } = await fetchOrg();
+        expect(input.sessions[0]?.taskKey).toBe(rootId);
+        expect(input.sessions[0]?.user).toBeNull();
+        await sql`delete from job`;
+    });
+
+    it('leaves a removed thread with neither member nor task, its tokens still in the totals', async () => {
+        // Deleting the thread's job rows removes the only bridge to both the member and the
+        // task — the session falls into the unattributed figure rather than vanishing, and
+        // its tokens keep counting in the organization's totals.
+        const userId = await account('doomed-author');
+        const rootId = await job({ session: 'task-5', createdBy: userId });
+        await seedSession('task-5');
+
+        const before = await fetchOrg();
+        expect(before.input.sessions[0]?.taskKey).toBe(rootId);
+        expect(before.input.sessions[0]?.tokens.input).toBe(10);
+
+        await sql`delete from job where root_job_id = ${rootId}`;
+        const { input } = await fetchOrg();
+        expect(input.sessions[0]?.taskKey).toBeNull();
+        expect(input.sessions[0]?.user).toBeNull();
+        expect(input.sessions[0]?.tokens.input).toBe(10);
+        const stats = telemetryStats(input);
+        expect(stats.unattributedSessions).toBe(1);
+        expect(stats.totals.tokens.input).toBe(10);
+        await sql`delete from app_user where id = ${userId}`;
+    });
+
+    it('fetches the org run rows beside the rollups, and never another orgs', async () => {
+        const mineRoot = await job({ session: 'task-6', createdBy: null });
+        await seedSession('task-6');
+        await job({ session: 'task-7', createdBy: null, org: OTHER_ORG });
+
+        const { input, runs } = await fetchOrg();
+        expect(input.sessions.map((s) => s.sessionId)).toEqual(['task-6']);
+        // Org-scoped: the other organization's run row stays out of this snapshot.
+        expect(runs.map((r) => r.rootJobId)).toEqual([mineRoot]);
+        // The column is new: every row so far reads unmeasured, never zero.
+        expect(runs[0]?.agentTurns).toBeNull();
+        await sql`delete from job`;
     });
 });

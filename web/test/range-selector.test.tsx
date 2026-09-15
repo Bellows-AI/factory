@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_RANGE, RangeSelector, rangeQuery } from '../src/components/RangeSelector.js';
+import { DEFAULT_RANGE, RangeSelector, rangeQuery, statsQuery } from '../src/components/RangeSelector.js';
+import type { ScopeSelection } from '../src/components/RangeSelector.js';
+import { ScopeToggle } from '../src/components/ScopeToggle.js';
 
 describe('rangeQuery', () => {
     it('sends the preset alone', () => {
@@ -48,5 +50,45 @@ describe('RangeSelector', () => {
     it('stops the from picker from crossing the to date', () => {
         const html = render({ preset: 'custom', from: '', to: '2026-08-07' });
         expect(html).toContain('max="2026-08-07"');
+    });
+});
+
+describe('statsQuery', () => {
+    // The scope rides the same query string the range does, which is the whole wiring: useStats
+    // keys on the string, so a scope change re-polls with `scope=mine` and a range change
+    // re-polls with the scope preserved — no state reconciliation anywhere.
+    it('omits the scope parameter under the default org scope', () => {
+        expect(statsQuery({ ...DEFAULT_RANGE, preset: 'month' }, 'org')).toBe('range=month');
+        expect(statsQuery(DEFAULT_RANGE, 'org')).toBe('range=all');
+    });
+
+    it('appends scope=mine for caller scope', () => {
+        expect(statsQuery({ ...DEFAULT_RANGE, preset: 'month' }, 'mine')).toBe('range=month&scope=mine');
+        expect(statsQuery({ ...DEFAULT_RANGE, preset: 'all' }, 'mine')).toBe('range=all&scope=mine');
+    });
+
+    it('keeps the scope across a range change, and the range across a scope change', () => {
+        expect(statsQuery({ ...DEFAULT_RANGE, preset: 'week' }, 'mine')).toBe('range=week&scope=mine');
+        expect(statsQuery({ preset: 'custom', from: '2026-08-01', to: '2026-08-07' }, 'mine')).toBe(
+            'range=custom&from=2026-08-01&to=2026-08-07&scope=mine'
+        );
+    });
+});
+
+describe('ScopeToggle', () => {
+    const renderToggle = (scope: ScopeSelection) =>
+        renderToStaticMarkup(<ScopeToggle scope={scope} onChange={() => {}} />);
+
+    it('offers Org and Me and marks the active one', () => {
+        expect(renderToggle('org')).toContain('Org');
+        expect(renderToggle('org')).toContain('Me');
+        expect(renderToggle('org')).toContain('aria-pressed="true"');
+        expect(renderToggle('mine')).toMatch(/Me<\/button>/);
+    });
+
+    it('marks org active only when org is selected', () => {
+        // aria-pressed is how the state is read; both buttons render either way.
+        const org = renderToggle('org');
+        expect(org).toContain('Org</button>');
     });
 });

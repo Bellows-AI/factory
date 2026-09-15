@@ -1,0 +1,15 @@
+-- The run's agent-turn count, reported by the executor at close.
+--
+-- "Agent turn" = one assistant response cycle in the run's ROOT conversation, counted by the
+-- executor from its own session records (opencode: the session database the readout walks;
+-- claude-code: the transcript, read by the driver before container teardown) and reported on
+-- the completion report. No OTLP metric carries turns — the arriving metric set is closed — so
+-- the close-time read is the source, and this column is its store.
+--
+-- Nullable, and null is UNMEASURED, never zero: the read failed, the run was killed before it,
+-- the mode keeps no record (Remote Control runs keep an interactive conversation whose turn
+-- count any single read would freeze mid-flight), or the row predates this migration. A
+-- genuine zero-response run stores 0. The task statistics exclude a task with any unmeasured
+-- in-range run from the agent-turn distribution rather than sum it partially (core's
+-- taskUsageStats); no index — the stats read scans the org's rows anyway.
+alter table job add column if not exists agent_turns int;

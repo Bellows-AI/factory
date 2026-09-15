@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DateRange, OrganizationMeta, TelemetryStats } from '@factory-ai/core';
+import type { DateRange, OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
 import { reportUnauthenticated } from './useSession.js';
 
 export interface TelemetryMeta {
@@ -18,10 +18,14 @@ export interface TelemetryMeta {
     repoFilter: string[];
     otherRepoSessions: number;
     sessionsWithoutHook: number;
+    /** Sessions no board task matches — the third exclusion, beside the two setup failures. */
+    unattributedSessions: number;
 }
 
 export interface StatsPayload {
     telemetry: TelemetryStats | null;
+    /** What a task costs over the same range and scope. Null exactly when telemetry is. */
+    tasks: TaskUsageStats | null;
     meta: {
         fetchedAt: string;
         ageSeconds: number;
@@ -36,6 +40,9 @@ export interface StatsPayload {
         repos: { owner: string; name: string }[];
         /** The range the server actually aggregated over, presets already resolved. */
         range: DateRange;
+        /** The scope the figures were computed under, and the member `mine` resolved to. */
+        scope: 'org' | 'mine';
+        scopeLogin: string | null;
         telemetry: TelemetryMeta;
     };
 }
