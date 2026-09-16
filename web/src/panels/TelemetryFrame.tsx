@@ -26,7 +26,6 @@ export function TelemetryFrame({
             <h2>
                 {title}
                 {meta.source === 'fixture' ? <span className="badge">synthetic fixture</span> : null}
-                {meta.stale ? <span className="badge badge-warn">stale</span> : null}
             </h2>
             <p className="muted">{blurb}</p>
             {broken ? (

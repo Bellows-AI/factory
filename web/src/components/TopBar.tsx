@@ -54,9 +54,7 @@ export function TopBar({
                  */}
                 {meta ? <OrgSelector organization={meta.organization} /> : null}
                 <span className="muted">
-                    {meta
-                        ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}${meta.stale ? ' (stale)' : ''}`
-                        : ''}
+                    {meta ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}` : ''}
                 </span>
                 <button type="button" onClick={onRefresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh'}
