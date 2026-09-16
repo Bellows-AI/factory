@@ -11,13 +11,13 @@ import type { InstallationTokenProvider } from '../src/github/app-token.js';
 const github = {
     mode: 'app',
     appId: '1',
-    installationId: '4242',
     apiUrl: 'https://api.github.test',
     privateKey: 'not-a-real-key',
 } as unknown as Extract<GitHubConfig, { mode: 'app' }>;
 
 const tokens: InstallationTokenProvider = {
     get: async () => 'installation-token',
+    fresh: async () => 'installation-token',
     installationId: async () => '4242',
 };
 
@@ -44,82 +44,121 @@ function fetchScript(script: Call[], requests: string[]): typeof fetch {
     }) as typeof fetch;
 }
 
-const member = (id: number, login: string) => ({ id, login });
+const repo = (owner: string, name: string) => ({
+    name,
+    private: false,
+    default_branch: 'main',
+    pushed_at: '2026-08-21T12:00:00Z',
+    owner: { login: owner },
+});
 
-describe('teamMembership', () => {
-    // "Get team membership for a user" answers 200 WITH a body ({ state }) — not 204. Reading it
-    // as a 204-probe made every real team grant throw, which left members with no stored set
-    // unscoped: the opposite of what the enumeration exists to do.
-    it('answers yes only for an active 200 membership, and no for a 404', async () => {
+describe('listRepositories', () => {
+    it('maps the payload and infers the installation account from a single owner', async () => {
         const requests: string[] = [];
         const client = createGitHubAppClient(
             github,
             tokens,
             fetchScript(
                 [
-                    { path: '/x', status: 200, body: { state: 'active' } },
-                    { path: '/x', status: 200, body: { state: 'pending' } },
-                    { path: '/x', status: 404, body: { message: 'not found' } },
+                    {
+                        path: '/x',
+                        status: 200,
+                        body: {
+                            total_count: 2,
+                            repository_selection: 'selected',
+                            repositories: [repo('acme', 'web'), repo('acme', 'api')],
+                        },
+                    },
                 ],
                 requests
             )
         );
 
-        await expect(client.teamMembership('acme', 'core', 'octocat')).resolves.toBe(true);
-        await expect(client.teamMembership('acme', 'core', 'octocat')).resolves.toBe(false);
-        await expect(client.teamMembership('acme', 'core', 'octocat')).resolves.toBe(false);
-        expect(requests.every((path) => path.includes('/teams/core/memberships/octocat'))).toBe(true);
+        const listing = await client.listRepositories();
+
+        expect(listing.repos).toEqual([
+            { owner: 'acme', name: 'web', private: false, defaultBranch: 'main', pushedAt: '2026-08-21T12:00:00Z' },
+            { owner: 'acme', name: 'api', private: false, defaultBranch: 'main', pushedAt: '2026-08-21T12:00:00Z' },
+        ]);
+        expect(listing.installation).toMatchObject({ id: '4242', account: 'acme', repositorySelection: 'selected' });
+        expect(requests.every((p) => p.startsWith('/installation/repositories'))).toBe(true);
     });
 
-    it('refuses to guess on any other status', async () => {
+    it('answers a null account when the installation spans several owners', async () => {
+        // "The account this is installed on" is then not a single answer, and a first-repo guess
+        // would be a wrong one.
+        const client = createGitHubAppClient(
+            github,
+            tokens,
+            fetchScript(
+                [
+                    {
+                        path: '/x',
+                        status: 200,
+                        body: { total_count: 2, repositories: [repo('acme', 'web'), repo('other', 'api')] },
+                    },
+                ],
+                []
+            )
+        );
+
+        const listing = await client.listRepositories();
+        expect(listing.installation.account).toBeNull();
+    });
+
+    it('walks pages until total_count is reached', async () => {
+        const requests: string[] = [];
+        const client = createGitHubAppClient(
+            github,
+            tokens,
+            fetchScript(
+                [
+                    {
+                        path: '/x',
+                        status: 200,
+                        body: { total_count: 3, repositories: [repo('acme', 'a'), repo('acme', 'b')] },
+                    },
+                    { path: '/x', status: 200, body: { total_count: 3, repositories: [repo('acme', 'c')] } },
+                ],
+                requests
+            )
+        );
+
+        const listing = await client.listRepositories();
+        expect(listing.repos).toHaveLength(3);
+        expect(requests.some((p) => p.includes('page=2'))).toBe(true);
+        expect(requests.some((p) => p.includes('page=3'))).toBe(false);
+    });
+
+    it('skips a malformed entry instead of costing the whole list', async () => {
+        const client = createGitHubAppClient(
+            github,
+            tokens,
+            fetchScript(
+                [
+                    {
+                        path: '/x',
+                        status: 200,
+                        body: { total_count: 2, repositories: [repo('acme', 'good'), { owner: { login: 'acme' } }] },
+                    },
+                    { path: '/x', status: 200, body: { total_count: 2, repositories: [] } },
+                ],
+                []
+            )
+        );
+
+        const listing = await client.listRepositories();
+        expect(listing.repos).toHaveLength(1);
+        expect(listing.repos[0]).toMatchObject({ name: 'good' });
+    });
+
+    it('maps a failure status to a named error carrying GitHub’s reason', async () => {
         const client = createGitHubAppClient(
             github,
             tokens,
             fetchScript([{ path: '/x', status: 403, body: { message: 'rate limited' } }], [])
         );
 
-        await expect(client.teamMembership('acme', 'core', 'octocat')).rejects.toThrow(/403/);
-    });
-});
-
-describe('collaborator', () => {
-    // The collaborator check is the opposite wire shape: 204 no-content for yes, 404 for no.
-    it('answers 204 as yes and 404 as no', async () => {
-        let status = 204;
-        const fetchFn = (async () => new Response(null, { status })) as typeof fetch;
-        const client = createGitHubAppClient(github, tokens, fetchFn);
-
-        await expect(client.collaborator('acme', 'web', 'octocat')).resolves.toBe(true);
-        status = 404;
-        await expect(client.collaborator('acme', 'web', 'octocat')).resolves.toBe(false);
-    });
-});
-
-describe('page walks', () => {
-    it('stops at a short page instead of asking once more', async () => {
-        const requests: string[] = [];
-        const client = createGitHubAppClient(
-            github,
-            tokens,
-            fetchScript([{ path: '/x', status: 200, body: [member(1, 'a'), member(2, 'b')] }], requests)
-        );
-
-        const roster = await client.orgMembers('acme');
-        expect(roster.members).toHaveLength(2);
-        // One request per walk — the member walk and the admin walk — the short page ending each.
-        expect(requests.filter((p) => p.includes('/orgs/acme/members'))).toHaveLength(2);
-    });
-
-    it('refuses to persist a truncated enumeration when the safety limit is exhausted', async () => {
-        // A full hundredth page means there may be a hundred and first; treating the first 10,000
-        // entries as the whole roster would de-scope members it never saw.
-        const full = Array.from({ length: 100 }, (_, i) => member(i, `user-${i}`));
-        const client = createGitHubAppClient(
-            github,
-            tokens,
-            fetchScript([{ path: '/x', status: 200, body: full }], [])
-        );
-
-        await expect(client.orgMembers('acme')).rejects.toThrow(/truncated/);
+        await expect(client.listRepositories()).rejects.toThrow(/403[\s\S]*rate limited/);
     });
 });

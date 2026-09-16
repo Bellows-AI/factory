@@ -7,12 +7,13 @@ import { UUID, bad, body as jsonBody, guard } from './helpers.js';
 
 /**
  * Access-token management for the settings page (#70): a member's personal tokens (`fat_`), and
- * the organization's tokens (`oat_`), the latter admin-gated like every other org-wide write.
+ * the organization's tokens (`oat_`). Both mint into the org the caller is signed into (#99) —
+ * installation access is membership, so every member is the same trust level and the org-token
+ * routes carry no admin gate.
  *
- * The credential for all six routes is the browser's session — minting is a settings-UI act, and
- * an org token is refused here by the hook before this plugin ever runs, since these paths are not
- * on its allowlist. The plaintext token exists exactly twice: in the mint response, and nowhere —
- * only its hash is stored, so the create reply is the one chance to copy it.
+ * The credential for all six routes is the browser's session — minting is a settings-UI act. The
+ * plaintext token exists exactly twice: in the mint response, and nowhere — only its hash is
+ * stored, so the create reply is the one chance to copy it.
  */
 
 /** A ceiling, not a policy: a label is a line in a list, far past any real one. */
@@ -29,12 +30,23 @@ function parseLabel(raw: unknown): string | null {
 
 export interface TokenRoutesDeps {
     readonly store: AuthStore;
-    readonly orgId: string;
 }
 
 export const tokenRoutes =
-    ({ store, orgId }: TokenRoutesDeps): FastifyPluginAsync =>
+    ({ store }: TokenRoutesDeps): FastifyPluginAsync =>
     async (app) => {
+        /**
+         * Every route scopes to the CALLER's org (#99): a personal token is minted into the org
+         * the caller is signed into, and an org token into the org of the admin... of the member
+         * who mints it — installation access is membership and there are no roles above member,
+         * so the org-token routes lost their admin gate with the roster that fed it.
+         */
+        const orgIdOf = (request: Parameters<typeof callerOf>[0]): string => {
+            const caller = callerOf(request);
+            if (!caller) throw new Error('token routes require a caller');
+            return caller.org.id;
+        };
+
         app.post('/api/tokens', { bodyLimit: 4096 }, async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
@@ -48,7 +60,7 @@ export const tokenRoutes =
                     const token = mintAccessToken('personal');
                     const row = await store.createAccessToken({
                         kind: 'personal',
-                        orgId,
+                        orgId: orgIdOf(request),
                         userId: caller.user.id,
                         createdBy: caller.user.id,
                         label,
@@ -67,7 +79,7 @@ export const tokenRoutes =
             const listed = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
-                () => store.listPersonalTokens(orgId, caller.user.id)
+                () => store.listPersonalTokens(orgIdOf(request), caller.user.id)
             );
             if (!listed.ok) return reply;
             return reply.code(200).send({ tokens: listed.value });
@@ -82,7 +94,7 @@ export const tokenRoutes =
             const revoked = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
-                () => store.revokePersonalToken(orgId, caller.user.id, id)
+                () => store.revokePersonalToken(orgIdOf(request), caller.user.id, id)
             );
             if (!revoked.ok) return reply;
             // Not-found covers unknown, someone else's, and already revoked alike: a revoke that
@@ -94,9 +106,6 @@ export const tokenRoutes =
         app.post('/api/tokens/org', { bodyLimit: 4096 }, async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-            if (caller.role !== 'admin') {
-                return bad(reply, 'FORBIDDEN', 'Only an admin can manage organization tokens', 403);
-            }
             const label = parseLabel(request.body);
             if (label === null) return bad(reply, 'BAD_LABEL', `label must be 1 to ${LABEL_LIMIT} characters`);
 
@@ -107,7 +116,7 @@ export const tokenRoutes =
                     const token = mintAccessToken('org');
                     const row = await store.createAccessToken({
                         kind: 'org',
-                        orgId,
+                        orgId: orgIdOf(request),
                         userId: null,
                         createdBy: caller.user.id,
                         label,
@@ -123,13 +132,10 @@ export const tokenRoutes =
         app.get('/api/tokens/org', async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-            if (caller.role !== 'admin') {
-                return bad(reply, 'FORBIDDEN', 'Only an admin can manage organization tokens', 403);
-            }
             const listed = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
-                () => store.listOrgTokens(orgId)
+                () => store.listOrgTokens(orgIdOf(request))
             );
             if (!listed.ok) return reply;
             return reply.code(200).send({ tokens: listed.value });
@@ -138,16 +144,13 @@ export const tokenRoutes =
         app.post('/api/tokens/org/:id/revoke', async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-            if (caller.role !== 'admin') {
-                return bad(reply, 'FORBIDDEN', 'Only an admin can manage organization tokens', 403);
-            }
             const { id } = request.params as { id: string };
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
             const revoked = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
-                () => store.revokeOrgToken(orgId, id)
+                () => store.revokeOrgToken(orgIdOf(request), id)
             );
             if (!revoked.ok) return reply;
             if (revoked.value === 'missing') return bad(reply, 'NOT_FOUND', 'No such token', 404);

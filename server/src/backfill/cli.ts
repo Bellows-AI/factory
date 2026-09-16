@@ -1,13 +1,18 @@
 import postgres from 'postgres';
-import { resolveConfig } from '../config.js';
+import { LOCAL_ORG_ID, resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
+import { parseArgs, value } from '../admin/args.js';
 import { backfillTranscripts } from './transcripts.js';
 
 /**
- *     npm run backfill
+ *     npm run backfill [-- --org <installation-id>]
  *
  * Reads Claude Code transcripts from disk and imports them. Safe to re-run: rows land with
  * `source = 'transcript'` and the dedup index makes a second pass a no-op.
+ *
+ * `--org` names the organization the sessions belong to. It defaults to the local org
+ * (AUTH_MODE=none); a github-mode deployment names its installation id — the same id
+ * `npm run adopt` printed for the legacy data.
  */
 const { config } = resolveConfig();
 if (!config.databaseUrl) {
@@ -17,18 +22,17 @@ if (!config.databaseUrl) {
     process.exit(1);
 }
 
+const args = parseArgs(process.argv.slice(2));
+const orgId = value(args, 'org') ?? LOCAL_ORG_ID;
+
 const sql = postgres(config.databaseUrl, { max: 4 });
 try {
-    // Imported sessions land in the configured organization, so a backfill run against the wrong
-    // one is worth naming before it writes anything.
-    console.log(`[org] importing into ${config.orgName} (${config.orgId})`);
-    await migrate(sql, {
-        orgId: config.orgId,
-        orgName: config.orgName,
-        log: (m) => console.log(`[migrate] ${m}`),
-    });
+    // Imported sessions land in one organization, so a backfill run against the wrong one is
+    // worth naming before it writes anything.
+    console.log(`[org] importing into ${orgId}`);
+    await migrate(sql, { log: (m) => console.log(`[migrate] ${m}`) });
     const summary = await backfillTranscripts(sql, {
-        orgId: config.orgId,
+        orgId,
         log: (m) => console.log(`[backfill] ${m}`),
     });
 

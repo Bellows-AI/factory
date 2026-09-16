@@ -49,8 +49,6 @@ export type GitHubConfig =
            * accepted as the JWT `iss`, and the numeric form has to survive being one too.
            */
           readonly appId: string;
-          /** Null discovers it from `GET /app/installations`, which is fatal on 0 or more than 1. */
-          readonly installationId: string | null;
           /**
            * The PEM itself, never a path — `loadConfig` does no I/O. `GITHUB_APP_PRIVATE_KEY_FILE`
            * is read by `resolveConfig`, which already does every byte of I/O in this system, and
@@ -109,22 +107,6 @@ export type AuthConfig =
            * choose the `redirect_uri`, which is redirect poisoning.
            */
           readonly publicUrl: string;
-          /** A GitHub login made an admin at boot iff the organization has no members at all. */
-          readonly bootstrapAdmin: string | null;
-          /**
-           * A GitHub organization whose members admit themselves on first sign-in, as ordinary
-           * members. Null keeps invite-only membership, where an admin names every login in advance.
-           *
-           * The boundary moves to GitHub, which is the point: onboarding becomes "add them to the
-           * org" rather than a second, parallel roster that has to be kept in step by hand. It is
-           * not a *restriction* on invited members — an invite still admits somebody outside the
-           * org, which is what keeps `bootstrapAdmin` and outside collaborators working.
-           *
-           * Costs the zero-scopes property: `read:org` is requested when this is set, so GitHub's
-           * consent screen changes and the exchange makes one extra API call. That is the trade for
-           * not maintaining the roster twice.
-           */
-          readonly autoJoinGithubOrg: string | null;
           readonly ingestToken: string | null;
           /** Overridable so the browser check can drive a stub. Environment only — see loadAuth. */
           readonly authorizeUrl: string;
@@ -134,19 +116,13 @@ export type AuthConfig =
 
 export interface AppConfig {
     /**
-     * The organization every figure on the page belongs to, and the key every org-owned primary
-     * key leads with. One per deployment, and therefore still a constant for the life of the
-     * process: accounts and memberships exist now, but a member's memberships are checked against
-     * this one org rather than selecting between several.
-     */
-    readonly orgId: string;
-    /** Display only, never a key — which is why it has no character rules and the id does. */
-    readonly orgName: string;
-    /**
-     * There is no `repos` here any more. The list is whatever the App installation reports, which
-     * is a network read and therefore async — see `RepoSource`. Keeping a configured copy beside it
-     * would be a second roster to hold in step, which is the thing `auth.auto_join_github_org`
-     * already exists to avoid one level up.
+     * There is no `orgId`/`orgName` here any more. The organizations are the GitHub App
+     * installations, upserted at sign-in (#99) — the org is a property of the caller, resolved
+     * from the session or the token on every request, never of the process. AUTH_MODE=none keeps
+     * the single `default` org, named by LOCAL_ORG_ID.
+     *
+     * There is no `repos` here either. The list is whatever the App installation reports, which
+     * is a network read and therefore async — see `RepoSource`.
      */
     readonly github: GitHubConfig;
     readonly port: number;
@@ -186,43 +162,22 @@ const MIN_TELEMETRY_TTL_SECONDS = 5;
 const DISPOSABLE_DATABASE = /_(test|seed|synthetic|demo|e2e)$/;
 
 /**
- * The organization id when nothing sets one.
+ * The one organization AUTH_MODE=none has.
  *
- * A literal rather than something derived from GITHUB_OWNER: the id leads every org-owned primary
- * key, so deriving it would silently re-key every persisted row the day the owner changes — the
- * dashboard comes back empty and it reads as data loss, not as a config change. The *name* is
- * derived from the owner for exactly the opposite reason: nothing keys on a label.
- *
- * It defaults rather than being required because `loadConfig({})` has to keep meaning what it means
- * today; a newly required variable that fails every existing case is the signal not to require it.
+ * With no GitHub sign-in there is nothing to derive an installation id from, so the offline and
+ * local tooling — seed, verify:ui, test-jobs, the route tests — all live in this one partition.
+ * Github mode never uses it: there the org ids are the installation ids GitHub reports.
  */
-const DEFAULT_ORG_ID = 'default';
-
-/**
- * The id lands in a database primary key and in a `?org=` query parameter, so the character set is
- * closed here rather than checked at each edge. Lowercase only, because a case-insensitive
- * collision in a key is invisible: `Bellows` and `bellows` are two partitions that read as one. No
- * dots, so the id stays usable as a bare path segment later. 39 characters is GitHub's login bound
- * — a familiar cap that keeps the key short.
- */
-const ORG_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,38}$/;
+export const LOCAL_ORG_ID = 'default';
 
 /**
  * A uuid, as `app_user.id` and `job.id` are.
  *
- * Beside `ORG_ID_PATTERN` because it is the same kind of thing — the shape of an identifier that
- * ends up in a path, a URL and a shell command — and because both `routes/` and `workspace/`
- * legitimately depend on this module, where neither should depend on the other. `driver/` keeps its
- * own copy, deliberately: that package depends on nothing.
+ * The shape of an identifier that ends up in a path, a URL and a shell command; both `routes/`
+ * and `workspace/` legitimately depend on this module, where neither should depend on the other.
+ * `driver/` keeps its own copy, deliberately: that package depends on nothing.
  */
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Reserved: `005_organizations.sql` backfills pre-organization rows to `__unclaimed__` and adopts
- * them into the configured org once, at boot. A configured id inside that namespace would make the
- * adoption a no-op that looks like it worked.
- */
-const RESERVED_ORG_PREFIX = '__';
 
 function databaseName(url: string): string | null {
     try {
@@ -308,15 +263,9 @@ function loadGitHub(env: NodeJS.ProcessEnv): Extract<GitHubConfig, { mode: 'app'
         );
     }
 
-    const installationId = env.GITHUB_APP_INSTALLATION_ID?.trim() || null;
-    if (installationId !== null && !/^\d+$/.test(installationId)) {
-        throw new Error(`GITHUB_APP_INSTALLATION_ID must be a number, got "${installationId}"`);
-    }
-
     return Object.freeze({
         mode: 'app' as const,
         appId: appId!,
-        installationId,
         privateKeyPem: pem,
         // Environment only, and deliberately not a documented variable, for the same reason
         // the three GITHUB_OAUTH_*_URL overrides are: a configurable API host in a file that ships
@@ -430,8 +379,6 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         sessionTtlMs: sessionTtlHours * 3600 * 1000,
         cookieSecure: bool(env.COOKIE_SECURE, false, 'COOKIE_SECURE'),
         publicUrl: origin.origin,
-        bootstrapAdmin: env.AUTH_BOOTSTRAP_ADMIN?.trim().toLowerCase() || null,
-        autoJoinGithubOrg: env.AUTH_AUTO_JOIN_GITHUB_ORG?.trim() || null,
         ingestToken,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
         // a phishing vector; as an environment variable it stays a test seam that index.ts logs
@@ -480,7 +427,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     }
     if (env.GITHUB_OWNER) {
         throw new Error(
-            'GITHUB_OWNER is no longer supported: the installation reports each repository with its own owner, so there is no default owner for a bare name to take. Remove the line. Use ORG_NAME to change what the page calls this organization.'
+            "GITHUB_OWNER is no longer supported: the installation reports each repository with its own owner, and the organizations are the App's installations. Remove the line."
         );
     }
     if (env.SYNC_TTL_SECONDS) {
@@ -499,17 +446,38 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         );
     }
 
-    const orgId = env.ORG_ID?.trim() || DEFAULT_ORG_ID;
-    if (!ORG_ID_PATTERN.test(orgId) || orgId.startsWith(RESERVED_ORG_PREFIX)) {
+    /*
+     * The keys the multi-org sign-in replaced (#99).
+     *
+     * Same register as the block above: each one used to decide what the process served, so an
+     * ignored one boots a deployment that silently reports on the wrong organization — or only
+     * one of the organizations it now could.
+     */
+    if (env.ORG_ID?.trim()) {
         throw new Error(
-            `ORG_ID must be 1-39 characters of lowercase letters, digits, "-" or "_", starting with a letter or digit, and may not begin with "__" — it is a database key and a URL parameter, so it is rejected rather than normalised — got "${orgId}"`
+            "ORG_ID is no longer supported: organizations are the GitHub App installations now — one installation per org, created at sign-in and named after its account. Remove the line. To adopt an existing database into an installation's org: npm run adopt -- --installation <id>."
         );
     }
-    // Falls back to the id, where it used to fall back to GITHUB_OWNER. There is no owner to fall
-    // back to any more — an installation reports many — and the id is the only other name this
-    // process has for the organization. Empty is unset, because an empty name renders an invisible
-    // control.
-    const orgName = env.ORG_NAME?.trim() || orgId;
+    if (env.ORG_NAME?.trim()) {
+        throw new Error(
+            "ORG_NAME is no longer supported: an organization's name is the installation account's GitHub login, reported at sign-in. Remove the line."
+        );
+    }
+    if (env.GITHUB_APP_INSTALLATION_ID?.trim()) {
+        throw new Error(
+            'GITHUB_APP_INSTALLATION_ID is no longer supported: installation tokens are minted per organization from organization.installation_id, and the organizations are the installations the App reports at sign-in. Remove the line.'
+        );
+    }
+    if (env.AUTH_AUTO_JOIN_GITHUB_ORG?.trim()) {
+        throw new Error(
+            'AUTH_AUTO_JOIN_GITHUB_ORG is no longer supported: installation access is membership — anyone who can see an installation signs into its org, and nobody else does. Remove the line.'
+        );
+    }
+    if (env.AUTH_BOOTSTRAP_ADMIN?.trim()) {
+        throw new Error(
+            'AUTH_BOOTSTRAP_ADMIN is no longer supported: there is no first-admin problem when membership comes from GitHub — the first person who can see the installation signs in. Remove the line.'
+        );
+    }
 
     const workspaceRoot = workspaceRootOf(env);
 
@@ -567,8 +535,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const host = env.HOST ?? '127.0.0.1';
 
     return Object.freeze({
-        orgId,
-        orgName,
         github,
         port,
         host,

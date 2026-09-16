@@ -65,13 +65,15 @@ describe('the App private key', () => {
         );
     });
 
-    it('accepts a numeric installation id and rejects anything else', () => {
-        expect(loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '42' })).github).toMatchObject({
-            installationId: '42',
-        });
-        // Null means "discover it", which is fatal on zero or several — see github.app-token.test.
-        expect(loadConfig(app()).github).toMatchObject({ installationId: null });
-        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: 'acme' }))).toThrow(/must be a number/);
+    it('refuses GITHUB_APP_INSTALLATION_ID: the orgs are the installations now (#99)', () => {
+        // Installation tokens mint per organization from organization.installation_id, so a
+        // process-wide one has nothing to point at — and a variable that worked yesterday must
+        // not silently no-op.
+        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '42' }))).toThrow(
+            /GITHUB_APP_INSTALLATION_ID is no longer supported/
+        );
+        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '' }))).not.toThrow();
+        expect('installationId' in (loadConfig(app()).github as object)).toBe(false);
     });
 });
 

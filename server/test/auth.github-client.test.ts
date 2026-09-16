@@ -3,10 +3,7 @@ import { createGitHubIdentityClient, GitHubAuthError } from '../src/auth/github.
 import { githubAuth } from './helpers.js';
 
 const client = (fetchFn: typeof fetch) =>
-    createGitHubIdentityClient(
-        githubAuth() as Extract<ReturnType<typeof githubAuth>, { mode: 'github' }>,
-        fetchFn
-    );
+    createGitHubIdentityClient(githubAuth() as Extract<ReturnType<typeof githubAuth>, { mode: 'github' }>, fetchFn);
 
 /** Answers `/user/installations` the way GitHub does, recording the request. */
 function stubInstallations(body: unknown, status = 200) {

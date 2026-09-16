@@ -3,8 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { GitHubAppClient, InstallationListing } from '../src/github/app-client.js';
 import { createRepoSource } from '../src/github/repo-source.js';
-import { createStatsService } from '../src/stats-service.js';
-import { stubTelemetryClient, testConfig } from './helpers.js';
+import { staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -31,12 +30,7 @@ function stubAppClient(behaviour: () => Promise<InstallationListing>): GitHubApp
 async function boot(client?: GitHubAppClient) {
     const config = testConfig();
     const repos = createRepoSource({ client });
-    const service = createStatsService({
-        config,
-        repos,
-        telemetry: stubTelemetryClient(),
-    });
-    app = await buildApp({ config, service, repos });
+    app = await buildApp({ config, orgs: staticRegistry({ config, repos, telemetry: stubTelemetryClient() }) });
     return { app, repos };
 }
 

@@ -1,10 +1,9 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { callerOf } from '../auth/plugin.js';
+import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
-import { fullName, type Repo } from '../config.js';
-import type { RepoAccessScope } from '../github/access-scope.js';
-import type { RepoSource } from '../github/repo-source.js';
+import { fullName, type AppConfig, type Repo } from '../config.js';
+import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 
 /**
  * Environment variables and secrets for runners, in three stacked scopes — org ("core") <
@@ -136,22 +135,34 @@ function parseRepo(raw: unknown): Repo | string {
 }
 
 export interface EnvRoutesDeps {
-    readonly store: EnvVarStore;
-    readonly repos: RepoSource;
-    /**
-     * The per-user repo scope. The org and workspace scopes are the caller's own by construction,
-     * but the repo list is org-wide — it is filtered to the caller's set, so a member cannot read
-     * which env config a repo they cannot reach carries.
-     */
-    readonly scope?: RepoAccessScope | undefined;
+    readonly config: AppConfig;
+    /** The per-org runtimes; the env store and repo list a request touches are the caller's org's. */
+    readonly orgs: OrgRegistry;
+    /** Present in the live server; absent in the route-test mode with no auth. */
+    readonly store?: import('../auth/store.js').AuthStore | undefined;
 }
 
 export const envRoutes =
-    ({ store, repos, scope }: EnvRoutesDeps): FastifyPluginAsync =>
+    ({ config: _config, orgs }: EnvRoutesDeps): FastifyPluginAsync =>
     async (app) => {
+        /**
+         * The caller's org env context, narrowed to what these routes touch — no runtime (no such
+         * org) or no store behind it, and there is nothing to serve.
+         */
+        const runtimeOf = async (
+            request: Parameters<typeof callerOf>[0]
+        ): Promise<{ envVars: EnvVarStore; repos: OrgRuntime['repos'] } | null> => {
+            const rt = await orgs.for(orgOf(request));
+            if (!rt?.envVars) return null;
+            return { envVars: rt.envVars, repos: rt.repos };
+        };
+
         app.get('/api/env', async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            const rt = await runtimeOf(request);
+            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            const store = rt.envVars;
 
             const loaded = await guard(
                 reply,
@@ -164,31 +175,21 @@ export const envRoutes =
             );
             if (!loaded.ok) return reply;
 
-            // The names alone say "this repo exists and someone configured it" — that much is
-            // already beyond what a scoped member should learn about a repo they cannot reach.
-            let repoScope = loaded.value[2];
-            if (scope) {
-                const allowed = await scope.scopedNames(caller.user.id);
-                if (allowed !== null) {
-                    const reach = new Set(allowed.map((name) => name.toLowerCase()));
-                    repoScope = repoScope.filter((r) => reach.has(`${r.owner}/${r.name}`.toLowerCase()));
-                }
-            }
-
             return reply.code(200).send({
                 org: loaded.value[0],
                 workspace: loaded.value[1],
-                repos: repoScope,
+                repos: loaded.value[2],
             });
         });
 
-        // The "Core secrets" scope: one list for the whole deployment, admin-written.
+        // The "Core secrets" scope: one list for the whole organization. Written by any member —
+        // installation access is membership, and there are no roles above member to gate it with.
         app.put('/api/env/org', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-            if (caller.role !== 'admin') {
-                return bad(reply, 'FORBIDDEN', 'Only an admin can configure core environment', 403);
-            }
+            const rt = await runtimeOf(request);
+            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            const store = rt.envVars;
 
             const vars = parseVars(request.body);
             if (typeof vars === 'string') {
@@ -211,6 +212,9 @@ export const envRoutes =
         app.put('/api/env/workspace', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            const rt = await runtimeOf(request);
+            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            const store = rt.envVars;
 
             const vars = parseVars(request.body);
             if (typeof vars === 'string') {
@@ -230,13 +234,14 @@ export const envRoutes =
         });
 
         // Org-wide per-repository scope: one configuration per repository, applied to every
-        // member's runs in it — the GitHub Actions precedent — so admin-written, like core.
+        // member's runs in it — the GitHub Actions precedent.
         app.put('/api/env/repo', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-            if (caller.role !== 'admin') {
-                return bad(reply, 'FORBIDDEN', 'Only an admin can configure repository environment', 403);
-            }
+            const rt = await runtimeOf(request);
+            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            const store = rt.envVars;
+            const repos = rt.repos;
 
             const repo = parseRepo(request.body);
             if (typeof repo === 'string') return bad(reply, 'BAD_BODY', repo);

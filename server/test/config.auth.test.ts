@@ -120,21 +120,17 @@ describe('the rest of [auth]', () => {
         expect((github().auth as { sessionTtlMs: number }).sessionTtlMs).toBe(14 * 24 * 3600 * 1000);
     });
 
-    it('lowercases the bootstrap admin, because GitHub logins are case-insensitive', () => {
-        expect((github({ AUTH_BOOTSTRAP_ADMIN: 'OctoCat' }).auth as { bootstrapAdmin: string }).bootstrapAdmin).toBe(
-            'octocat'
+    it('refuses the bootstrap admin and auto-join, whose membership decisions moved to GitHub (#99)', () => {
+        // Installation access IS membership: nobody is invited, nobody auto-joins, nobody needs
+        // bootstrapping — and a variable that worked yesterday must not silently no-op.
+        expect(() => github({ AUTH_BOOTSTRAP_ADMIN: 'octocat' })).toThrow(
+            /AUTH_BOOTSTRAP_ADMIN is no longer supported/
         );
-    });
-
-    it('leaves auto-join off unless an organization is named', () => {
-        const auth = (env: NodeJS.ProcessEnv = {}) => github(env).auth as { autoJoinGithubOrg: string | null };
-        // Off is invite-only membership, which is the state every existing deployment is in.
-        expect(auth().autoJoinGithubOrg).toBeNull();
-        expect(auth({ AUTH_AUTO_JOIN_GITHUB_ORG: '  ' }).autoJoinGithubOrg).toBeNull();
-        // NOT lowercased, unlike the bootstrap admin: this is a path segment sent to GitHub's API,
-        // which is case-insensitive about it, and the value is echoed back in the log and the
-        // consent screen where the operator's own spelling is what they will recognise.
-        expect(auth({ AUTH_AUTO_JOIN_GITHUB_ORG: 'Bellows-AI' }).autoJoinGithubOrg).toBe('Bellows-AI');
+        expect(() => github({ AUTH_AUTO_JOIN_GITHUB_ORG: 'Bellows-AI' })).toThrow(
+            /AUTH_AUTO_JOIN_GITHUB_ORG is no longer supported/
+        );
+        expect('bootstrapAdmin' in (github().auth as object)).toBe(false);
+        expect('autoJoinGithubOrg' in (github().auth as object)).toBe(false);
     });
 
     it('carries the ingest token in both modes', () => {

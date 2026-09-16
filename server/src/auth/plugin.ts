@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { AppConfig } from '../config.js';
+import { LOCAL_ORG_ID, type AppConfig } from '../config.js';
 import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity, WorkerIdentity } from './store.js';
@@ -139,14 +139,16 @@ export function createUserResolver({ config, store }: AuthPluginDeps) {
 
     return async (request: FastifyRequest): Promise<Caller | null> => {
         if (auth.mode === 'none') {
-            local ??= store.localCaller(config.orgId);
+            local ??= store.localCaller(LOCAL_ORG_ID);
             return local;
         }
         const signed = request.cookies[SESSION_COOKIE];
         // Verified before the database is touched, so a flood of forged cookies costs a hash rather
         // than a query each.
         const token = unsign(signed, auth.sessionSecret);
-        return token ? store.findSession(hashToken(token), config.orgId) : null;
+        // The org comes back FROM the session row (#99) — a property of the caller, re-checked
+        // through the membership join inside.
+        return token ? store.findSession(hashToken(token)) : null;
     };
 }
 
@@ -192,10 +194,10 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
 
             const token = bearer(request);
             const worker = token ? await store.findWorkerToken(hashToken(token)) : null;
-            // Bound to the organization the token was minted for. In a deployment that serves one
-            // organization this can only ever be config.orgId, but the check is here rather than
-            // assumed so that a token from another database cannot drive this board.
-            if (!worker || worker.orgId !== config.orgId) {
+            // The token IS the org binding (#99): the org_id it leads with scopes everything the
+            // driver does, and any organization in this database is legitimate — a token from
+            // another database simply hashes to nothing here.
+            if (!worker) {
                 return reply.code(401).send({ error: 'Invalid worker token', code: 'UNAUTHENTICATED' });
             }
             request.auth = { kind: 'worker', worker };
@@ -216,7 +218,9 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
                 }
                 const tokenHash = hashToken(accessToken);
                 if (accessToken.startsWith(ORG_TOKEN_PREFIX)) {
-                    const orgToken = await store.findOrgToken(tokenHash, config.orgId);
+                    // The org comes from the token row: an oat_ is minted INTO an organization and
+                    // reads only that one, whatever else this database serves.
+                    const orgToken = await store.findOrgToken(tokenHash);
                     if (!orgToken) {
                         return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
                     }
@@ -227,7 +231,7 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
                     request.auth = { kind: 'org', token: orgToken };
                     return;
                 }
-                const tokenCaller = await store.findPersonalToken(tokenHash, config.orgId);
+                const tokenCaller = await store.findPersonalToken(tokenHash);
                 if (!tokenCaller) {
                     return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
                 }
@@ -251,3 +255,19 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
 /** The signed-in user behind a request, or null when a worker token got it here. */
 export const callerOf = (request: FastifyRequest): Caller | null =>
     request.auth?.kind === 'user' ? request.auth.caller : null;
+
+/**
+ * The organization a request is scoped to — the org each kind of principal carries (#99).
+ *
+ * `LOCAL_ORG_ID` answers for `request.auth === null`, which is only reachable when no auth hook is
+ * registered at all: the route-test mode, where the app is built without a store and every route
+ * would otherwise have nowhere to point. It is the AUTH_MODE=none semantic — one local org —
+ * expressed for the tests that predate accounts.
+ */
+export const orgOf = (request: FastifyRequest): string => {
+    const auth = request.auth;
+    if (!auth) return LOCAL_ORG_ID;
+    if (auth.kind === 'user') return auth.caller.org.id;
+    if (auth.kind === 'worker') return auth.worker.orgId;
+    return auth.token.orgId;
+};

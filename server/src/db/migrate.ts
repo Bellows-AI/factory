@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import type { Sql } from 'postgres';
+import { LOCAL_ORG_ID } from '../config.js';
 import { TelemetryError } from '../telemetry/errors.js';
 
 /**
@@ -10,35 +11,12 @@ const DIR = new URL('../../migrations/', import.meta.url);
 
 export interface MigrateOptions {
     /**
-     * The organization every pre-organization row is adopted into. Required, not defaulted: a
-     * default here would be a second place that decides what the configured org is, and the two
-     * disagreeing produces an empty dashboard with no error.
-     */
-    orgId: string;
-    /**
-     * The organization's display name. Seeded here rather than by 010_auth.sql for the same reason
-     * adoptOrg exists: a .sql file cannot see the config.
+     * Whether to prepare the single LOCAL organization AUTH_MODE=none lives in (#99): the
+     * `default` row, the stand-in account, and the adoption of pre-organization rows into it.
      *
-     * Defaulted where `orgId` is required, and the asymmetry is the same one config.ts draws: the id
-     * is a key, so a second place deciding it produces an empty dashboard, whereas nothing keys on a
-     * label and the worst a wrong one does is render oddly.
-     */
-    orgName?: string;
-    /**
-     * A GitHub login to make an admin, applied only when the organization has no members at all.
-     *
-     * Without this an upgrade is a lockout. After 010 an existing database has rows, zero users and
-     * zero memberships, so turning auth on 401s every route forever with no log line — which reads
-     * as "auth is broken" rather than "nobody has been invited". Exactly the class of silent failure
-     * adoptOrg() exists to prevent, one level up.
-     */
-    bootstrapAdmin?: string | null;
-    /**
-     * Whether to create the stand-in account AUTH_MODE=none attributes everything to.
-     *
-     * `none` synthesises a caller rather than skipping the auth path, so that there is one
-     * downstream code path instead of two and `job.created_by` is always populated. That requires a
-     * real row for the foreign key to point at.
+     * Github mode leaves all of it alone — there the organizations are the App's installations,
+     * materialized at sign-in, and booting cannot know any installation id. Legacy data is
+     * re-homed by `npm run adopt`, which calls adoptOrg() itself.
      */
     localUser?: boolean;
     /**
@@ -53,11 +31,8 @@ export interface MigrateOptions {
 /**
  * The login of the stand-in account used when AUTH_MODE=none.
  *
- * Underscores are not legal in a GitHub login, so this can never collide with a real one — which
- * matters twice: the account cannot be impersonated by registering the name, and bootstrapAdmin can
- * exclude it when asking whether an organization has any real members. Without that exclusion,
- * booting once without auth would leave a membership behind and silently suppress the bootstrap that
- * is the only way into the deployment afterwards.
+ * Underscores are not legal in a GitHub login, so this can never collide with a real one: the
+ * stand-in account cannot be impersonated by somebody registering the name.
  */
 export const LOCAL_LOGIN = '__local__';
 
@@ -81,16 +56,18 @@ const UNCLAIMED_ORG = '__unclaimed__';
 const ORG_OWNED = ['session_branch'] as const;
 
 /**
- * Claims every row 005 parked in the reserved namespace for the configured organization.
+ * Claims every row parked in the reserved `__unclaimed__` namespace into `orgId`.
  *
- * This is the other half of the migration, and it cannot live in the .sql file because that file
- * cannot see the config. Without it a deployment that sets ORG_ID=bellows reads an empty partition:
- * 200 OK, zero sessions, no log line, indistinguishable from data loss.
+ * Since #99 this runs at boot only for the LOCAL org (AUTH_MODE=none); github mode's adoption is
+ * the one-off `npm run adopt` CLI, which imports this function — boot cannot know an installation
+ * id, so it cannot know an org to claim rows into. Without an adoption somewhere, a re-homed
+ * deployment reads an empty partition: 200 OK, zero sessions, no log line, indistinguishable from
+ * data loss.
  *
- * Runs on every boot, and is a no-op after the first: nothing writes '__unclaimed__' once the
- * column default has been consumed, so the update matches nothing.
+ * Also a no-op after the first run: nothing writes '__unclaimed__' once the column default has
+ * been consumed, so the update matches nothing.
  */
-async function adoptOrg(sql: Sql, orgId: string, log: (message: string) => void): Promise<void> {
+export async function adoptOrg(sql: Sql, orgId: string, log: (message: string) => void): Promise<void> {
     if (orgId.startsWith('__')) {
         // config.ts already refuses this. Asserted again because the DB layer must not trust its
         // caller with a value that decides which partition every row lands in.
@@ -110,50 +87,20 @@ async function adoptOrg(sql: Sql, orgId: string, log: (message: string) => void)
 }
 
 /**
- * Plants the configured organization so memberships have something to reference.
+ * Plants the LOCAL organization so the stand-in membership has something to reference.
  *
- * The row is created, never updated: config decides the organization exists, and the database owns
- * its name afterwards. Renaming through `ORG_NAME` on a later boot would otherwise silently rewrite
- * a name somebody may have set deliberately.
+ * The row is created, never updated, and only in localUser mode: github mode's organizations are
+ * materialized at sign-in from the App's installations, and none of them can be named at boot.
  */
-async function seedOrganization(sql: Sql, orgId: string, orgName: string): Promise<void> {
+async function seedOrganization(sql: Sql, orgId: string): Promise<void> {
     await sql`
-        insert into organization (id, name) values (${orgId}, ${orgName})
+        insert into organization (id, name) values (${orgId}, ${orgId})
         on conflict (id) do nothing
     `;
 }
 
 /**
- * One-shot ignition for a deployment that has nobody in it yet.
- *
- * Deliberately not a standing grant: it fires only when the organization has no real members, so an
- * admin who removes themselves does not find the bootstrap silently reinstating them on the next
- * restart. The invite is unclaimed, like any other — the account is bound when that person first
- * signs in, through exactly the same path.
- */
-async function bootstrapAdmin(sql: Sql, orgId: string, login: string, log: (message: string) => void): Promise<void> {
-    const normalised = login.trim().toLowerCase();
-    if (!normalised) return;
-
-    const [existing] = await sql<{ count: number }[]>`
-        select count(*)::int as count from org_membership
-        where org_id = ${orgId} and github_login <> ${LOCAL_LOGIN}
-    `;
-    if (existing && existing.count > 0) return;
-
-    await sql`
-        insert into org_membership (org_id, github_login, role)
-        values (${orgId}, ${normalised}, 'admin')
-        on conflict (org_id, github_login) do nothing
-    `;
-    log(`bootstrapped admin "${normalised}" into "${orgId}"`);
-}
-
-/**
  * The account AUTH_MODE=none attributes every request to.
- *
- * Idempotent, and safe to run on a database that later switches to real auth: bootstrapAdmin ignores
- * this membership when deciding whether anyone has been invited.
  */
 async function ensureLocalUser(sql: Sql, orgId: string): Promise<void> {
     const [user] = await sql<{ id: string }[]>`
@@ -163,10 +110,12 @@ async function ensureLocalUser(sql: Sql, orgId: string): Promise<void> {
         returning id
     `;
     if (!user) return;
+    // The stand-in is the org's admin: AUTH_MODE=none has no sign-in to materialize a membership,
+    // so the local org seeds its own — keyed like every membership since 029, by account.
     await sql`
         insert into org_membership (org_id, github_login, user_id, role, claimed_at)
         values (${orgId}, ${LOCAL_LOGIN}, ${user.id}, 'admin', now())
-        on conflict (org_id, github_login) do update set user_id = excluded.user_id
+        on conflict (org_id, user_id) do update set user_id = excluded.user_id
     `;
 }
 
@@ -212,7 +161,7 @@ function files(): { version: string; sql: string; repeatable: boolean }[] {
  * `create or replace`, and applied versions are recorded, so a second run is a no-op.
  */
 export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> {
-    const { orgId, orgName = orgId, attempts = 10, backoffMs = 1000, log = () => {} } = options;
+    const { attempts = 10, backoffMs = 1000, log = () => {} } = options;
 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -245,16 +194,14 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
                           on conflict (version) do nothing`;
             }
 
-            // After the files, so the column and its default exist. Inside the retry loop, so a
-            // database that was not up for the first attempt gets adopted on the one that works.
-            await adoptOrg(sql, orgId, log);
-
-            // Same placement, same reason: these read the config, so they cannot live in a .sql
-            // file, and a database that only came up on the fourth attempt still gets them.
-            // Ordered — the organization row is the foreign key target for both that follow.
-            await seedOrganization(sql, orgId, orgName);
-            if (options.localUser) await ensureLocalUser(sql, orgId);
-            if (options.bootstrapAdmin) await bootstrapAdmin(sql, orgId, options.bootstrapAdmin, log);
+            if (options.localUser) {
+                // After the files, so the columns and defaults exist. Inside the retry loop, so a
+                // database that was not up for the first attempt still gets them on a later one.
+                // Ordered — the organization row is the foreign key target for what follows.
+                await seedOrganization(sql, LOCAL_ORG_ID);
+                await adoptOrg(sql, LOCAL_ORG_ID, log);
+                await ensureLocalUser(sql, LOCAL_ORG_ID);
+            }
             await reapSessions(sql);
             return;
         } catch (e) {

@@ -29,7 +29,7 @@
         "lint:fix": "biome check --write .",
         "backfill": "npm run build -w core && npm run build -w server && node server/dist/backfill/cli.js",
         "seed": "npm run build -w core && npm run build -w server && node server/dist/seed/cli.js",
-        "invite": "npm run build -w core && npm run build -w server && node --env-file-if-exists=.env server/dist/admin/invite.js",
+        "adopt": "npm run build -w core && npm run build -w server && node --env-file-if-exists=.env server/dist/admin/adopt.js",
         "worker-token": "npm run build -w core && npm run build -w server && node --env-file-if-exists=.env server/dist/admin/worker-token.js"
     },
     "devDependencies": {
@@ -40,5 +40,9 @@
         "concurrently": "^9.1.2",
         "typescript": "^5.7.0",
         "vitest": "^3.0.0"
+    },
+    "allowScripts": {
+        "esbuild@0.28.2": true,
+        "esbuild@0.25.12": true
     }
 }

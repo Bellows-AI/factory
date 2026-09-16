@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import { createStatsService } from '../src/stats-service.js';
 import type { RepoSource } from '../src/github/repo-source.js';
 import {
     githubAuth,
@@ -9,7 +8,7 @@ import {
     memoryAuthStore,
     memoryEnvVarStore,
     signedIn,
-    stubTelemetryClient,
+    staticRegistry,
     testConfig,
     type MemoryEnvVarStore,
 } from './helpers.js';
@@ -147,42 +146,28 @@ describe('PUT /api/env/workspace', () => {
 });
 
 describe('PUT /api/env/org and /api/env/repo', () => {
-    it('refuses a member and accepts an admin', async () => {
-        const { app, memberCookie, adminCookie } = await boot();
+    it('accepts a member for the org scope — installation access is membership (#99)', async () => {
+        // The roles died with the roster they gated: every member of the installation is the same
+        // trust level, so the org-wide env scope is writable by anyone who can see it.
+        const { app, memberCookie } = await boot();
         const memberPut = await app.inject({
             method: 'PUT',
             url: '/api/env/org',
             headers: { cookie: memberCookie },
             payload: { vars: [{ name: 'CORE', value: '1', isSecret: false }] },
         });
-        expect(memberPut.statusCode).toBe(403);
-
-        const adminPut = await app.inject({
-            method: 'PUT',
-            url: '/api/env/org',
-            headers: { cookie: adminCookie },
-            payload: { vars: [{ name: 'CORE', value: '1', isSecret: false }] },
-        });
-        expect(adminPut.statusCode).toBe(200);
+        expect(memberPut.statusCode).toBe(200);
     });
 
-    it('refuses a member and accepts an admin for a repository scope too', async () => {
-        const { app, memberCookie, adminCookie } = await boot();
+    it('accepts a member for a repository scope too', async () => {
+        const { app, memberCookie } = await boot();
         const memberPut = await app.inject({
             method: 'PUT',
             url: '/api/env/repo',
             headers: { cookie: memberCookie },
             payload: { repo: { owner: 'acme', name: 'web' }, vars: [{ name: 'R', value: '1', isSecret: false }] },
         });
-        expect(memberPut.statusCode).toBe(403);
-
-        const adminPut = await app.inject({
-            method: 'PUT',
-            url: '/api/env/repo',
-            headers: { cookie: adminCookie },
-            payload: { repo: { owner: 'acme', name: 'web' }, vars: [{ name: 'R', value: '1', isSecret: false }] },
-        });
-        expect(adminPut.statusCode).toBe(200);
+        expect(memberPut.statusCode).toBe(200);
     });
 
     it('refuses a repository outside the installation', async () => {
@@ -212,15 +197,9 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             fetchedAt: () => null,
         };
         const config = testConfig({ auth: githubAuth() });
-        const service = createStatsService({
-            config,
-            telemetry: stubTelemetryClient(),
-        });
         const instance = await buildApp({
             config,
-            service,
-            repos: unreachable,
-            envVars: memoryEnvVarStore(),
+            orgs: staticRegistry({ config, repos: unreachable, envVars: memoryEnvVarStore() }),
             auth,
         });
         app = instance;

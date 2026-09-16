@@ -1,15 +1,15 @@
 import { join } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
 import { EXECUTOR_TYPES } from '@factory-ai/core';
-import { callerOf } from '../auth/plugin.js';
+import { callerOf, orgOf } from '../auth/plugin.js';
+import type { AuthStore } from '../auth/store.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import type { UserExecutor, UserExecutorStore } from '../db/user-executor-store.js';
+import type { UserRepoStore } from '../db/user-repo-store.js';
 import { fullName, type AppConfig, type Repo } from '../config.js';
-import type { UserRepo, UserRepoStore } from '../db/user-repo-store.js';
-import type { RepoAccessScope } from '../github/access-scope.js';
-import type { RepoSource } from '../github/repo-source.js';
+import type { UserRepo } from '../db/user-repo-store.js';
+import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 import type { FactsCache } from '../workspace/facts.js';
-import type { CloneQueue } from '../workspace/queue.js';
 import { ensureUserWorkspace } from '../workspace/provision.js';
 import { workspaceDir } from '../workspace/reconcile.js';
 
@@ -103,27 +103,52 @@ function parseExecutors(raw: unknown): { name: string; type: string; config: Rec
 
 export interface WorkspaceRoutesDeps {
     readonly config: AppConfig;
-    readonly store: UserRepoStore;
-    /** Null in the same configurations queue is: a store is always built in index.ts. */
-    readonly executors: UserExecutorStore | null;
-    readonly repos: RepoSource;
+    /** The per-org runtimes; the stores, repo list and clone queue are the caller's org's. */
+    readonly orgs: OrgRegistry;
+    /** Present in the live server; absent in the route-test mode with no auth. */
+    readonly store?: AuthStore | undefined;
     readonly facts: FactsCache;
-    readonly queue: CloneQueue | null;
-    /** The per-user repo scope: a clone must never widen what /api/stats and /api/repos scoped. */
-    readonly scope?: RepoAccessScope | undefined;
 }
 
 export const workspaceRoutes =
-    ({ config, store, executors, repos, facts, queue, scope }: WorkspaceRoutesDeps): FastifyPluginAsync =>
+    ({ config, orgs, facts }: WorkspaceRoutesDeps): FastifyPluginAsync =>
     async (app) => {
         const root = config.workspaceRoot;
 
-        const describe = (userId: string, row: UserRepo) => {
+        /** The caller's org runtime, or the reason a route cannot serve them. */
+        const runtimeOf = async (
+            request: Parameters<typeof callerOf>[0]
+        ): Promise<
+            | {
+                  userRepos: UserRepoStore;
+                  userExecutors: UserExecutorStore | undefined;
+                  repos: OrgRuntime['repos'];
+                  cloneQueue: OrgRuntime['cloneQueue'];
+              }
+            | { error: string; code: string; status: number }
+        > => {
+            const rt = await orgs.for(orgOf(request));
+            if (!rt?.userRepos) {
+                return {
+                    error: 'No workspace store for this organization',
+                    code: 'WORKSPACE_UNAVAILABLE',
+                    status: 503,
+                };
+            }
+            return {
+                userRepos: rt.userRepos,
+                userExecutors: rt.userExecutors,
+                repos: rt.repos,
+                cloneQueue: rt.cloneQueue,
+            };
+        };
+
+        const describe = (orgId: string, userId: string, row: UserRepo) => {
             // Only a `ready` checkout has anything on disk to read. Asking about one that is still
             // cloning would walk a half-written tree and report a size that means nothing.
             const onDisk =
                 root && row.status === 'ready'
-                    ? facts.get(join(workspaceDir(root, config.orgId, userId), row.name))
+                    ? facts.get(join(workspaceDir(root, orgId, userId), row.name))
                     : { branch: null, lastCommit: null, sizeBytes: null };
             return {
                 owner: row.owner,
@@ -144,6 +169,10 @@ export const workspaceRoutes =
             // operator chose, and the page renders a sentence about it rather than an error.
             if (!root) return reply.code(200).send({ root: null, repos: [], orphaned: [], executors: [] });
 
+            const rt = await runtimeOf(request);
+            if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
+            const { userRepos: store, userExecutors: executors } = rt;
+
             const loaded = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
@@ -153,7 +182,7 @@ export const workspaceRoutes =
                     // session that predates this deploy.
                     ensureUserWorkspace({
                         root,
-                        orgId: config.orgId,
+                        orgId: caller.org.id,
                         userId: caller.user.id,
                         login: caller.user.login,
                         githubUserId: caller.user.githubUserId,
@@ -169,8 +198,8 @@ export const workspaceRoutes =
 
             const [selected, orphaned, executorRows] = loaded.value;
             return reply.code(200).send({
-                root: workspaceDir(root, config.orgId, caller.user.id),
-                repos: selected.map((row) => describe(caller.user.id, row)),
+                root: workspaceDir(root, caller.org.id, caller.user.id),
+                repos: selected.map((row) => describe(caller.org.id, caller.user.id, row)),
                 // Deselected, still on disk, nothing prunes them. Reported so that growth is at
                 // least visible on the page rather than only in `df`.
                 orphaned: orphaned.map((row) => ({ owner: row.owner, name: row.name })),
@@ -191,6 +220,9 @@ export const workspaceRoutes =
             if (!root) {
                 return bad(reply, 'WORKSPACE_DISABLED', 'This deployment has no workspace root configured', 409);
             }
+            const rt = await runtimeOf(request);
+            if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
+            const { userRepos: store, repos, cloneQueue: queue } = rt;
 
             const selection = parseSelection(request.body);
             if (typeof selection === 'string') {
@@ -251,35 +283,13 @@ export const workspaceRoutes =
                 );
             }
 
-            /*
-             * The installation check bounds what the SERVER can clone; this one bounds what the
-             * CALLER may reach. The clone rides the App's installation token, so without it the
-             * fetch itself would succeed — scoping the picker and the stats while the checkout
-             * route stayed open would hide repos from nobody who mattered.
-             */
-            if (scope) {
-                const allowed = await scope.scopedNames(caller.user.id);
-                if (allowed !== null) {
-                    const reach = new Set(allowed.map((name) => name.toLowerCase()));
-                    for (const repo of selection) {
-                        if (reach.has(`${repo.owner}/${repo.name}`.toLowerCase())) continue;
-                        return bad(
-                            reply,
-                            'REPO_NOT_ACCESSIBLE',
-                            `"${repo.owner}/${repo.name}" is not one of the repositories your GitHub account can access`,
-                            403
-                        );
-                    }
-                }
-            }
-
             const saved = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
                 async () => {
                     ensureUserWorkspace({
                         root,
-                        orgId: config.orgId,
+                        orgId: caller.org.id,
                         userId: caller.user.id,
                         login: caller.user.login,
                         githubUserId: caller.user.githubUserId,
@@ -305,6 +315,9 @@ export const workspaceRoutes =
             if (!root) {
                 return bad(reply, 'WORKSPACE_DISABLED', 'This deployment has no workspace root configured', 409);
             }
+            const rt = await runtimeOf(request);
+            if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
+            const { userExecutors: executors } = rt;
             if (!executors) {
                 return reply.code(503).send({
                     error: 'No executor store is configured for this deployment',
@@ -337,6 +350,9 @@ export const workspaceRoutes =
             if (!root) {
                 return bad(reply, 'WORKSPACE_DISABLED', 'This deployment has no workspace root configured', 409);
             }
+            const rt = await runtimeOf(request);
+            if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
+            const { userExecutors: executors } = rt;
             if (!executors) {
                 return reply.code(503).send({
                     error: 'No executor store is configured for this deployment',

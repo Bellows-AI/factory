@@ -136,7 +136,7 @@ describe('loadConfig', () => {
         expect(config.telemetryTtlMs).toBe(30_000);
     });
 
-    it('still defaults the organization, which nothing here should have changed', () => {
-        expect(loadConfig(env()).orgId).toBe('default');
+    it("configures no organization, which is the sign-in flow's business now (#99)", () => {
+        expect('orgId' in loadConfig(env())).toBe(false);
     });
 });

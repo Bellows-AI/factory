@@ -9,7 +9,7 @@ import type { Claim, Job, JobStore } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { MemoryAuthStore } from './helpers.js';
-import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -71,15 +71,10 @@ const telemetryStub = (): TelemetryStore => ({
 
 async function build(auth: AuthConfig, store: MemoryAuthStore) {
     const config = testConfig({ auth });
-    const service = createStatsService({
-        config,
-        telemetry: stubTelemetryClient(),
-    });
     app = await buildApp({
         config,
-        service,
+        orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
         store: telemetryStub(),
-        jobs: jobStub(),
         auth: store,
     });
     return app;
@@ -211,7 +206,9 @@ describe('with github auth configured', () => {
         const cookie = await signedIn(store, caller);
         expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: { cookie } })).statusCode).toBe(200);
 
-        await store.removeMember(ORG, 'octocat');
+        // Nothing in production deletes a membership except the sign-in propagation (GitHub no
+        // longer reporting an installation) — which is exactly what this stands in for.
+        store.removeMembership(ORG, caller.user.id);
 
         // The next request, not the next fortnight. This immediacy is why sessions are rows.
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: { cookie } });
@@ -345,7 +342,10 @@ describe('the two credentials are disjoint', () => {
         expect(response.statusCode).toBe(401);
     });
 
-    it('refuses a worker token minted for another organization', async () => {
+    it('accepts a worker token of ANOTHER organization — the token is the org binding (#99)', async () => {
+        // One database serves many orgs now, and the token IS how a process says which one it
+        // works for: any org in this database is legitimate, and the org it names scopes the
+        // claim. A token from a DIFFERENT database hashes to nothing here and stays a 401.
         const store = memoryAuthStore();
         store.seedWorkerToken('some-other-org', 'driver-1', WORKER_TOKEN);
         const server = await build(githubAuth(), store);
@@ -357,7 +357,7 @@ describe('the two credentials are disjoint', () => {
             headers: { authorization: `Bearer ${WORKER_TOKEN}` },
         });
 
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(200);
     });
 });
 
@@ -402,7 +402,7 @@ describe('AUTH_MODE=none', () => {
          * feature is actually developed.
          */
         const store = memoryAuthStore();
-        store.seedLocalUser(ORG);
+        store.seedLocalUser('default');
         const server = await build({ mode: 'none', ingestToken: null }, store);
 
         const response = await server.inject({
@@ -422,7 +422,7 @@ describe('AUTH_MODE=none', () => {
          * test-jobs.sh, which drives the whole lease protocol with no credential at all.
          */
         const store = memoryAuthStore();
-        store.seedLocalUser(ORG);
+        store.seedLocalUser('default');
         const server = await build({ mode: 'none', ingestToken: null }, store);
 
         const response = await server.inject({
@@ -442,7 +442,7 @@ describe('AUTH_MODE=none', () => {
          * the server inventing a displayable identity.
          */
         const store = memoryAuthStore();
-        store.seedLocalUser(ORG);
+        store.seedLocalUser('default');
         const server = await build({ mode: 'none', ingestToken: null }, store);
 
         const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
@@ -458,18 +458,15 @@ describe('AUTH_MODE=none', () => {
 
     it('reports the member workspace path once a root is configured, without creating anything', async () => {
         const store = memoryAuthStore();
-        store.seedLocalUser(ORG);
+        store.seedLocalUser('default');
+        const config = testConfig({
+            auth: { mode: 'none', ingestToken: null },
+            workspaceRoot: '/tmp/factory-settings-test',
+        });
         const server = await buildApp({
-            config: testConfig({
-                auth: { mode: 'none', ingestToken: null },
-                workspaceRoot: '/tmp/factory-settings-test',
-            }),
-            service: createStatsService({
-                config: testConfig({ auth: { mode: 'none', ingestToken: null } }),
-                telemetry: stubTelemetryClient(),
-            }),
+            config,
+            orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
             store: telemetryStub(),
-            jobs: jobStub(),
             auth: store,
         });
         app = server;
@@ -478,7 +475,7 @@ describe('AUTH_MODE=none', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.json().workspacePath).toBe(
-            '/tmp/factory-settings-test/test-org/00000000-0000-4000-8000-000000000000'
+            '/tmp/factory-settings-test/default/00000000-0000-4000-8000-000000000000'
         );
         // Read-only display: computing a path must not provision a directory. That is
         // GET /api/workspace's job, and it is idempotent there.

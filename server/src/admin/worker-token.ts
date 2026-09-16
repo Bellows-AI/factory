@@ -1,7 +1,7 @@
 /**
- *     npm run worker-token -- --name driver-1
- *     npm run worker-token -- --name driver-1 --revoke
- *     npm run worker-token -- --list
+ *     npm run worker-token -- --org <installation-id> --name driver-1
+ *     npm run worker-token -- --org <installation-id> --name driver-1 --revoke
+ *     npm run worker-token -- --org <installation-id> --list
  *
  * Mints the credential a driver claims jobs with, and prints it exactly once — only its hash is
  * stored, so a lost token is reissued rather than recovered.
@@ -10,6 +10,10 @@
  * organization; this issues a credential that lets a process claim work and report results without a
  * human anywhere, so it is minted by somebody with shell on the machine rather than by anybody with
  * a session.
+ *
+ * `--org` is required since #99: the token IS the org binding, and the orgs are the App's
+ * installations — one token per org, minted after the org exists (sign-in creates it, or
+ * `npm run adopt` for a legacy database).
  */
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
@@ -25,24 +29,24 @@ import { parseArgs, value } from './args.js';
  */
 const PREFIX = 'fwt_';
 
-// No fetch credential, said in code, for the same reason as invite.ts: this mints one credential
-// against the database and never reads GitHub, so App credentials are not its business — and
-// requiring them would stop it running against the disposable database scripts/test-jobs.sh uses.
+// No fetch credential, said in code, for the same reason as the other admin CLIs: this mints one
+// credential against the database and never reads GitHub, so App credentials are not its business —
+// and requiring them would stop it running against the disposable database scripts/test-jobs.sh uses.
 const { config } = resolveConfig({ env: process.env, github: { mode: 'none' } });
 const args = parseArgs(process.argv.slice(2));
 
-const orgId = value(args, 'org') ?? config.orgId;
+const orgId = value(args, 'org');
 const name = value(args, 'name');
 
-if (!name && !args.list) {
-    console.error('usage: npm run worker-token -- --name <worker-name> [--revoke]');
-    console.error('       npm run worker-token -- --list');
+if (!orgId || (!name && !args.list)) {
+    console.error('usage: npm run worker-token -- --org <installation-id> --name <worker-name> [--revoke]');
+    console.error('       npm run worker-token -- --org <installation-id> --list');
     process.exit(1);
 }
 
 const sql = postgres(config.databaseUrl, { max: 2 });
 try {
-    const ready = migrate(sql, { orgId, orgName: config.orgName, attempts: 3 });
+    const ready = migrate(sql, { attempts: 3 });
     const store = createAuthStore({ sql, ready });
 
     if (args.list) {
@@ -59,6 +63,17 @@ try {
         }
         console.log(`revoked "${name}"; its driver will start failing every claim with 401`);
     } else {
+        const org = await (async () => {
+            await ready;
+            const rows = await sql<{ id: string }[]>`select id from organization where id = ${orgId}`;
+            return rows[0] ?? null;
+        })();
+        if (!org) {
+            console.error(
+                `"${orgId}" is not an organization in this database. Installations become organizations at sign-in; for a legacy database run: npm run adopt -- --installation <id>.`
+            );
+            process.exit(1);
+        }
         const token = `${PREFIX}${randomBytes(32).toString('base64url')}`;
         await store.createWorkerToken(orgId, name!, hashToken(token));
         console.log(`worker token for "${name}" in "${orgId}" — shown once, only its hash is stored:\n`);

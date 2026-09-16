@@ -8,7 +8,6 @@ import type {
     TelemetryStats,
 } from '@factory-ai/core';
 import { createCache } from './cache.js';
-import { fullName } from './config.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
 import type { TelemetryClient } from './telemetry/client.js';
@@ -89,11 +88,12 @@ export interface StatsService {
     /**
      * Cached payload for a range and scope, or null if nothing has ever been fetched.
      *
-     * `repoFilter` narrows the answer to a subset of the installation — the per-user repo scope.
-     * Absent, the full list is answered; the filter is a read-time intersection, so it never
-     * touches the shared cache, which stays org-wide.
+     * `orgMeta` is what the payload's `meta.organization` carries: the org the figures were
+     * computed for and what else THIS caller could ask for — resolved per request by the route,
+     * because since #99 both are properties of the caller, not of the process. The route-test
+     * default keeps the payload renderable when nobody resolved anything.
      */
-    current(range?: DateRange, scope?: StatsScope, repoFilter?: readonly string[]): StatsPayload | null;
+    current(range?: DateRange, scope?: StatsScope, orgMeta?: OrganizationMeta): StatsPayload | null;
     /** Kicks off a refresh if one is warranted. Single-flight. */
     ensureFresh(): void;
     refresh(): void;
@@ -138,11 +138,6 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
      * pure re-aggregation of an already-fetched payload.
      */
     const repoNames = (): readonly string[] => repos.snapshotNames();
-
-    // Frozen once: with no accounts there is nothing that could change it mid-process, and one
-    // object shared by `current` and `available` makes their equality structural rather than
-    // coincidental.
-    const organization = Object.freeze({ id: config.orgId, name: config.orgName });
 
     let fetchState = idleState();
     let telemetryFailure: { at: number; reason: string } | null = null;
@@ -237,17 +232,14 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
     }
 
     return {
-        current(range = ALL_TIME, scope: StatsScope = 'org', repoFilter?: readonly string[]) {
+        current(range = ALL_TIME, scope: StatsScope = 'org', orgMeta?: OrganizationMeta) {
             const entry = cache.peek();
             if (!entry) return null;
 
-            // The scope narrows the read before anything aggregates: telemetryStats() counts a
-            // session only when its repo is in `repos`, so a filtered set is a different answer,
-            // not the same answer with rows hidden. Read-time, from the one shared fetch — the
-            // cache stays org-wide, exactly like the range.
+            // No scoping filter any more (#99): the per-user repo scope retired with auto-join,
+            // and the caller's organization is chosen by the route resolving the caller, not by
+            // filtering the repo list here. The whole snapshot is this org's.
             const all = repoNames();
-            const wanted = repoFilter ? new Set(repoFilter) : null;
-            const scoped = wanted ? all.filter((name) => wanted.has(name)) : all;
 
             // Aggregated at read time, not at fetch time: telemetryStats() is pure over the
             // session list, so every range — and now every scope — is served from the one read
@@ -257,17 +249,15 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             const user = scope === 'org' ? undefined : { id: scope.id };
             const input = filterTelemetryInput(entry.value.input, range);
             const telemetry = telemetryStats(input, {
-                repos: scoped,
+                repos: all,
                 now: new Date(now()),
                 range,
                 ...(user ? { user } : {}),
             });
-            // The same repo scope the totals above apply, on BOTH task inputs: the run rows are
-            // read org-wide, so without it a task attributed to another repo's sessions would
-            // appear here while its sessions were excluded up page. `scoped` carries the
-            // per-user repo subset when one is active, and the org list when not.
+            // The org's full repo list on BOTH task inputs: the run rows are read org-wide, and
+            // the sessions they attribute to come from the same list.
             const tasks = taskUsageStats(input.sessions, filterJobRuns(entry.value.runs, range), {
-                repos: scoped,
+                repos: all,
                 ...(user ? { user } : {}),
             });
 
@@ -278,21 +268,21 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
                     fetchedAt: new Date(entry.fetchedAt).toISOString(),
                     ageSeconds: Math.floor((now() - entry.fetchedAt) / 1000),
                     stale: cache.isStale(),
-                    organization: {
-                        // A literal, not a config field. A switch that could say 'directory' with
-                        // no directory behind it is the inexpressible-bad-combination rule.
-                        mode: 'config',
-                        current: organization,
-                        available: [organization],
-                    },
-                    repos: repos
-                        .snapshot()
-                        .filter((repo) => !wanted || wanted.has(fullName(repo)))
-                        .map((repo) => ({ owner: repo.owner, name: repo.name })),
+                    organization:
+                        orgMeta ??
+                        ({
+                            // The route always supplies it; this default exists so the signature
+                            // stays optional for the service's own tests. 'config' with one org is
+                            // the only thing a service with no caller can honestly claim.
+                            mode: 'config',
+                            current: { id: 'default', name: 'default' },
+                            available: [{ id: 'default', name: 'default' }],
+                        } as OrganizationMeta),
+                    repos: repos.snapshot().map((repo) => ({ owner: repo.owner, name: repo.name })),
                     range,
                     scope: scope === 'org' ? 'org' : 'mine',
                     scopeLogin: scope === 'org' ? null : scope.login,
-                    telemetry: telemetryMeta(entry, telemetry, scoped),
+                    telemetry: telemetryMeta(entry, telemetry, all),
                 },
             };
         },

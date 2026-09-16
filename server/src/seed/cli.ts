@@ -15,7 +15,7 @@
  * the same reason, which is that the failure leaves no trace to notice later.
  */
 import postgres from 'postgres';
-import { createAuthStore } from '../auth/store.js';
+import { LOCAL_ORG_ID } from '../config.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
 import { generate, SYNTHETIC_MEMBERS } from './synthetic.js';
@@ -76,22 +76,15 @@ const data = generate({ repo, now });
 
 const sql = postgres(config.databaseUrl, { max: 4 });
 try {
-    console.log(`[seed] organization ${config.orgName} (${config.orgId})`);
+    // Seeding is an AUTH_MODE=none affair: one local organization, no GitHub anything. The
+    // browser check's github-mode board signs in against the stub IdP and materializes its own
+    // installation org, so nothing to plant here for it either (#99).
+    console.log(`[seed] organization ${LOCAL_ORG_ID} (local)`);
     await migrate(sql, {
-        orgId: config.orgId,
-        orgName: config.orgName,
+        localUser: true,
         attempts: 5,
         log: (m) => console.log(`[migrate] ${m}`),
     });
-
-    // An unclaimed invite, so the browser check can drive a real sign-in against a stub identity
-    // provider. Only the invite, never the account: binding one here would skip the claim, which is
-    // the half of sign-in most worth exercising in a browser.
-    const invited = process.env.SEED_INVITE_LOGIN?.trim();
-    if (invited) {
-        await createAuthStore({ sql }).invite(config.orgId, invited, 'admin');
-        console.log(`[seed] invited ${invited} to ${config.orgId} as admin`);
-    }
 
     // Telemetry: raw datapoints and the branch side channel, exactly as the live pipelines
     // write them. `delta` because each row is an increment; a cumulative series would need a
@@ -99,7 +92,7 @@ try {
     for (const s of data.sessions) {
         await sql`
             insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            values (${config.orgId}, 'claude-code', ${s.sessionId}, ${s.repo}, ${s.branch}, null,
+            values (${LOCAL_ORG_ID}, 'claude-code', ${s.sessionId}, ${s.repo}, ${s.branch}, null,
                     ${new Date(s.firstSeen)}, ${new Date(s.lastSeen)}, ${s.samples})
             on conflict (org_id, agent, session_id, repo, branch) do nothing
         `;
@@ -153,7 +146,7 @@ try {
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, created_by, session_id,
                              created_at, started_at, finished_at, agent_turns)
-            values (${config.orgId}, ${j.id}, ${j.rootJobId}, ${j.parentJobId}, 'seed task', 'succeeded',
+            values (${LOCAL_ORG_ID}, ${j.id}, ${j.rootJobId}, ${j.parentJobId}, 'seed task', 'succeeded',
                     ${createdBy}, ${j.sessionId}, ${new Date(j.createdAt)}, ${new Date(j.createdAt)},
                     ${new Date(j.createdAt)}, ${j.agentTurns})
             on conflict (org_id, id) do nothing

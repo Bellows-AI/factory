@@ -20,13 +20,21 @@ export interface TelemetryStore {
 }
 
 /**
- * `orgId` is bound at construction, the way every store binds it: it is a constant for
- * the life of the process, and a per-call parameter is one more thing an ingest route can forget.
+ * The ingest side has no caller to carry an org — a collector or a laptop plugin reports
+ * sessions, not membership — so the store asks a resolver per report instead of binding one
+ * process-wide org (#99). Under AUTH_MODE=none the resolver is a constant; in github mode it
+ * matches the report's repo owner against the installation orgs' account logins.
  *
- * Note that `insertMetrics` does not stamp it. metric_point has no org column on purpose — a
+ * Note that `insertMetrics` needs no org at all. metric_point has no org column on purpose — a
  * datapoint's organization is resolved through session_branch, exactly as its repo is.
  */
-export function createPostgresStore({ sql, orgId }: { sql: Sql; orgId: string }): TelemetryStore {
+export function createPostgresStore({
+    sql,
+    orgFor,
+}: {
+    sql: Sql;
+    orgFor: (repo: string) => Promise<string>;
+}): TelemetryStore {
     return {
         async insertMetrics(rows) {
             if (!rows.length) return 0;
@@ -53,7 +61,9 @@ export function createPostgresStore({ sql, orgId }: { sql: Sql; orgId: string })
             return inserted.count;
         },
 
-        async recordBranch({ agent, sessionId, repo, branch, headSha, at }) {
+        async recordBranch(report) {
+            const { agent, sessionId, repo, branch, headSha, at } = report;
+            const orgId = await orgFor(repo);
             const when = new Date(at);
             // Widen the interval rather than overwrite it: each report is one sample of a
             // branch that was held for some span, and the span is what the attribution join

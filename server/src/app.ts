@@ -4,15 +4,8 @@ import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
-import type { EnvVarStore } from './db/env-var-store.js';
-import type { JobStore } from './db/job-store.js';
-import type { UserExecutorStore } from './db/user-executor-store.js';
-import type { UserRepoStore } from './db/user-repo-store.js';
-import type { RepoAccessScope } from './github/access-scope.js';
-import type { RepoSource } from './github/repo-source.js';
+import type { OrgRegistry } from './orgs.js';
 import { createFactsCache } from './workspace/facts.js';
-import type { CloneQueue } from './workspace/queue.js';
-import { workspaceRoutes } from './routes/workspace.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -21,47 +14,27 @@ import { jobRoutes } from './routes/jobs.js';
 import { repoRoutes } from './routes/repos.js';
 import { statsRoutes } from './routes/stats.js';
 import { tokenRoutes } from './routes/tokens.js';
-import type { StatsService } from './stats-service.js';
+import { workspaceRoutes } from './routes/workspace.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
 export interface AppDeps {
     config: AppConfig;
-    service: StatsService;
     /**
-     * The repositories the GitHub App installation reports. Required, because a credential-less
-     * process (the offline tooling) is a source that reports an empty list rather than an absent
-     * one — the picker then says "nothing is installed", which is the truth, where a missing route
-     * would say nothing at all.
+     * The per-org runtimes: the routes resolve the CALLER's org through it and take the repo
+     * source, telemetry and stats service from there (#99). In tests, `orgs.for` answers for any
+     * org with the same runtime, which keeps the single-org route tests honest about one thing:
+     * every route reads the org the caller carries, never a process constant.
      */
-    repos: RepoSource;
+    orgs: OrgRegistry;
     /** Absent unless there is somewhere to write, so the ingest routes simply do not exist. */
     store?: TelemetryStore | undefined;
-    /** Same bargain: no job board without a store behind it, so the routes are not registered. */
-    jobs?: JobStore | undefined;
-    /**
-     * Per-member checkouts. Same bargain again — without a store the routes do not exist.
-     *
-     * Note that an absent WORKSPACE ROOT is a different thing entirely: the routes still exist and
-     * answer 200 with `root: null`, so the page can say the feature is off. Only an absent STORE
-     * removes them, and that is the route tests' mode.
-     */
-    userRepos?: UserRepoStore | undefined;
-    /** Rides the same registration bargain as userRepos — no store, no routes. */
-    userExecutors?: UserExecutorStore | undefined;
-    /**
-     * Environment variables and secrets for runners. Unconditional in main.ts — the database is
-     * mandatory — but optional here, so the route tests that predate it stay as they are.
-     */
-    envVars?: EnvVarStore | undefined;
-    /** Absent in the route tests, where nothing should start cloning. */
-    cloneQueue?: CloneQueue | undefined;
     /**
      * Absent means no auth at all — no hook, no /api/auth routes, every route open.
      *
      * This is the ROUTE TESTS' mode, not a deployment's: main.ts always supplies one, because the
      * database is mandatory and there is therefore always somewhere for accounts to live. It exists
      * so the seven route-test files that predate accounts keep driving the app with no cookie,
-     * and it is the same bargain `store` and `jobs` already make.
+     * and it is the same bargain `store` already makes.
      *
      * A deployment that wants everything open sets AUTH_MODE=none, which is a different thing: the
      * hook still runs and still resolves a caller, so there is one code path rather than two.
@@ -69,12 +42,8 @@ export interface AppDeps {
     auth?: AuthStore | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
-    /**
-     * The per-user repo scope (#66). Absent — the offline tooling, the route tests without it, any
-     * deployment without a GitHub App and auto-join — and every route answers the full
-     * installation list: scoping is derived data, and nothing derives it here.
-     */
-    scope?: RepoAccessScope | undefined;
+    /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
+    appSlug?: (() => Promise<string>) | undefined;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
     logger?: boolean;
@@ -101,17 +70,11 @@ function csp(dev: boolean): string {
 /** No `listen` here — that split is what lets the route tests drive the app in-process. */
 export async function buildApp({
     config,
-    service,
-    repos,
+    orgs,
     store,
-    jobs,
-    userRepos,
-    userExecutors,
-    envVars,
-    cloneQueue,
     auth,
     identity,
-    scope,
+    appSlug,
     now = Date.now,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
@@ -130,37 +93,32 @@ export async function buildApp({
     if (auth) await registerAuth(app, { config, store: auth });
     else app.decorateRequest('auth', null);
 
-    await app.register(healthRoutes(config));
+    await app.register(healthRoutes());
     if (auth) {
-        await app.register(authRoutes({ config, store: auth, identity, scope }));
+        await app.register(authRoutes({ config, store: auth, identity, appSlug }));
         // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
         // credential, so a token minted here would be inert at best — and a live personal
         // credential the day the same database flips to `github`. The settings page hides both
         // sections for exactly this reason; the API matches it.
-        if (auth && config.auth.mode !== 'none') {
-            await app.register(tokenRoutes({ store: auth, orgId: config.orgId }));
+        if (config.auth.mode !== 'none') {
+            await app.register(tokenRoutes({ store: auth }));
         }
     }
-    await app.register(statsRoutes(config, service, now, scope));
-    await app.register(repoRoutes({ repos, scope }));
+    await app.register(statsRoutes(config, orgs, auth, now));
+    await app.register(repoRoutes({ config, orgs, store: auth }));
     if (store) await app.register(ingestRoutes(store));
-    if (jobs) await app.register(jobRoutes({ store: jobs, scope }));
-    if (envVars) await app.register(envRoutes({ store: envVars, repos, scope }));
-    if (userRepos) {
-        await app.register(
-            workspaceRoutes({
-                config,
-                store: userRepos,
-                executors: userExecutors ?? null,
-                repos,
-                // One cache per app, not per request: the whole point of it is that a poll every
-                // two seconds does not become a `git log` and a directory walk every two seconds.
-                facts: createFactsCache(now),
-                queue: cloneQueue ?? null,
-                scope,
-            })
-        );
-    }
+    await app.register(jobRoutes({ config, orgs, store: auth }));
+    await app.register(envRoutes({ config, orgs, store: auth }));
+    await app.register(
+        workspaceRoutes({
+            config,
+            orgs,
+            store: auth,
+            // One cache per app, not per request: the whole point of it is that a poll every
+            // two seconds does not become a `git log` and a directory walk every two seconds.
+            facts: createFactsCache(now),
+        })
+    );
 
     if (config.webRoot) {
         const { default: fastifyStatic } = await import('@fastify/static');

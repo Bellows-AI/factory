@@ -1,17 +1,23 @@
 import { readFileSync } from 'node:fs';
 import type { JobRun, TelemetryInput } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
-import type { GitHubIdentity, GitHubIdentityClient } from '../src/auth/github.js';
+import type { GitHubIdentity, GitHubIdentityClient, InstallationAccount } from '../src/auth/github.js';
 import { SESSION_COOKIE, hashToken, mintToken, sign } from '../src/auth/session.js';
-import type { AuthStore, AccessTokenKind, AccessTokenView, Caller, OrgTokenIdentity, Role } from '../src/auth/store.js';
-import type { AppConfig, AuthConfig } from '../src/config.js';
+import type {
+    AuthStore,
+    AccessTokenKind,
+    AccessTokenView,
+    Caller,
+    InstallationRef,
+    OrgTokenIdentity,
+    Role,
+} from '../src/auth/store.js';
+import { LOCAL_ORG_ID, type AppConfig, type AuthConfig } from '../src/config.js';
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { CloneStatus, UserRepo, UserRepoStore } from '../src/db/user-repo-store.js';
-import type { UserRepoAccessStore } from '../src/db/user-repo-access-store.js';
-import type { GitHubAppClient } from '../src/github/app-client.js';
-import type { RepoAccessScope } from '../src/github/access-scope.js';
+import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryClient, TelemetryHealth } from '../src/telemetry/client.js';
@@ -35,12 +41,11 @@ export const EMPTY_TELEMETRY: TelemetryInput = {
 
 export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     return {
-        orgId: 'test-org',
-        orgName: 'Test Org',
         // `none` — the code-only no-fetch arm — so the offline suite never constructs a token
         // provider or an App client. The repo list reaches the service through `staticRepoSource`
         // in `harness` instead — which is the same seam `npm run seed` and `verify:ui` use, rather
-        // than a test-only one.
+        // than a test-only one. There is no orgId/orgName any more (#99): the orgs live in the
+        // store and the registry, and the tests that name one use 'test-org' explicitly.
         github: { mode: 'none' },
         port: 0,
         host: '127.0.0.1',
@@ -70,8 +75,6 @@ export function githubAuth(overrides: Partial<Extract<AuthConfig, { mode: 'githu
         sessionTtlMs: 14 * 24 * 3600 * 1000,
         cookieSecure: false,
         publicUrl: 'http://127.0.0.1:8080',
-        bootstrapAdmin: null,
-        autoJoinGithubOrg: null,
         ingestToken: null,
         authorizeUrl: 'https://github.test/login/oauth/authorize',
         tokenUrl: 'https://github.test/login/oauth/access_token',
@@ -462,13 +465,24 @@ export interface MemoryAuthStore extends AuthStore {
      * Creates a claimed membership and returns the account, so a test can hold a session without
      * driving the whole OAuth round trip to get one.
      */
-    seedMember(orgId: string, login: string, role?: Role, autoJoined?: boolean): Caller;
+    seedMember(orgId: string, login: string, role?: Role): Caller;
     /**
      * The stand-in account AUTH_MODE=none resolves, exactly as migrate()'s ensureLocalUser writes
      * it: github_user_id 0, a value GitHub never issues, and the reserved `__local__` login, which
      * is unrepresentable as a real GitHub login because underscores are not permitted in one.
      */
     seedLocalUser(orgId: string): Caller;
+    /**
+     * Plants an organization row, so a test can name an org that exists without anybody being a
+     * member of it — the 403 case — or an installation org without running a sign-in.
+     */
+    seedOrg(id: string, name?: string, installationId?: string): void;
+    /**
+     * Removes one membership directly, standing in for the sign-in-time propagation a real
+     * deployment gets from GitHub no longer reporting an installation. A test utility, not a
+     * store method: nothing in production deletes a membership except signIn.
+     */
+    removeMembership(orgId: string, userId: string): void;
     /** Every live session's user id, so a test can assert one was created — or was not. */
     sessions(): string[];
     seedWorkerToken(orgId: string, name: string, token: string): void;
@@ -508,20 +522,24 @@ export function memoryAuthStore(): MemoryAuthStore {
         createdAt: string;
         lastLoginAt: string | null;
     }
+    interface Org {
+        id: string;
+        name: string;
+        installationId: string | null;
+    }
     interface Member {
         orgId: string;
         login: string;
-        userId: string | null;
+        userId: string;
         role: Role;
-        claimed: boolean;
-        autoJoined: boolean;
         invitedAt: string;
-        claimedAt: string | null;
+        claimedAt: string;
     }
 
     const users: User[] = [];
+    const orgs = new Map<string, Org>();
     const members: Member[] = [];
-    const sessions = new Map<string, { userId: string; expiresAt: number }>();
+    const sessions = new Map<string, { userId: string; orgId: string; expiresAt: number }>();
     const workerTokens: { orgId: string; id: string; name: string; hash: string; revoked: boolean }[] = [];
     interface AccessTokenRow {
         orgId: string;
@@ -553,6 +571,7 @@ export function memoryAuthStore(): MemoryAuthStore {
     const tokenId = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
     const key = (hash: Buffer) => hash.toString('hex');
+    const orgNameOf = (orgId: string): string => orgs.get(orgId)?.name ?? orgId;
     const callerFor = (user: User, member: Member): Caller => ({
         user: {
             id: user.id,
@@ -563,14 +582,21 @@ export function memoryAuthStore(): MemoryAuthStore {
             createdAt: user.createdAt,
             lastLoginAt: user.lastLoginAt,
         },
+        org: { id: member.orgId, name: orgNameOf(member.orgId) },
         membership: { invitedAt: member.invitedAt, claimedAt: member.claimedAt },
         role: member.role,
-        autoJoined: member.autoJoined,
     });
     const memberOf = (userId: string, orgId: string): Caller | null => {
         const member = members.find((m) => m.orgId === orgId && m.userId === userId);
         const user = users.find((u) => u.id === userId);
         return member && user ? callerFor(user, member) : null;
+    };
+    const ensureOrg = (id: string, name?: string, installationId?: string | null): Org => {
+        const existing = orgs.get(id);
+        if (existing) return existing;
+        const org: Org = { id, name: name ?? id, installationId: installationId ?? null };
+        orgs.set(id, org);
+        return org;
     };
     const viewToken = (row: AccessTokenRow): AccessTokenView => ({
         id: row.id,
@@ -579,10 +605,8 @@ export function memoryAuthStore(): MemoryAuthStore {
         lastUsedAt: row.lastUsedAt,
         revokedAt: row.revokedAt,
     });
-    const findLiveToken = (tokenHash: Buffer, orgId: string, kind: AccessTokenKind): AccessTokenRow | undefined =>
-        accessTokenRows.find(
-            (t) => t.hash === key(tokenHash) && t.kind === kind && t.orgId === orgId && t.revokedAt === null
-        );
+    const findLiveToken = (tokenHash: Buffer, kind: AccessTokenKind): AccessTokenRow | undefined =>
+        accessTokenRows.find((t) => t.hash === key(tokenHash) && t.kind === kind && t.revokedAt === null);
     // The SQL store throttles the stamp to one rewrite a minute — an access token rides the
     // dashboard's two-second poll — and the memory store mirrors that contract, not the write rate.
     const touch = (row: AccessTokenRow) => {
@@ -593,7 +617,8 @@ export function memoryAuthStore(): MemoryAuthStore {
     const now = () => new Date().toISOString();
 
     const store: MemoryAuthStore = {
-        seedMember(orgId, login, role = 'member', autoJoined = false) {
+        seedMember(orgId, login, role = 'member') {
+            ensureOrg(orgId);
             const user: User = {
                 id: userId(nextId),
                 githubUserId: nextId,
@@ -610,8 +635,6 @@ export function memoryAuthStore(): MemoryAuthStore {
                 login: user.login,
                 userId: user.id,
                 role,
-                claimed: true,
-                autoJoined,
                 invitedAt: STAMP,
                 claimedAt: STAMP,
             };
@@ -620,6 +643,7 @@ export function memoryAuthStore(): MemoryAuthStore {
         },
 
         seedLocalUser(orgId) {
+            ensureOrg(orgId);
             const user: User = {
                 id: userId(0),
                 githubUserId: 0,
@@ -635,13 +659,20 @@ export function memoryAuthStore(): MemoryAuthStore {
                 login: user.login,
                 userId: user.id,
                 role: 'admin',
-                claimed: true,
-                autoJoined: false,
                 invitedAt: STAMP,
                 claimedAt: STAMP,
             };
             members.push(member);
             return callerFor(user, member);
+        },
+
+        seedOrg(id, name, installationId) {
+            ensureOrg(id, name, installationId);
+        },
+
+        removeMembership(orgId, userId) {
+            const index = members.findIndex((m) => m.orgId === orgId && m.userId === userId);
+            if (index !== -1) members.splice(index, 1);
         },
 
         sessions: () => [...sessions.values()].map((s) => s.userId),
@@ -684,7 +715,7 @@ export function memoryAuthStore(): MemoryAuthStore {
                 revoked: t.revokedAt !== null,
             })),
 
-        async signIn(identity, orgId, options) {
+        async signIn(identity, orgId, installations) {
             const login = identity.login.toLowerCase();
             const now = new Date().toISOString();
             let user = users.find((u) => u.githubUserId === identity.githubUserId);
@@ -710,44 +741,74 @@ export function memoryAuthStore(): MemoryAuthStore {
                 users.push(user);
             }
 
-            for (const member of members) {
-                if (member.login !== login || member.userId !== null) continue;
-                if (members.some((m) => m.orgId === member.orgId && m.userId === user.id)) continue;
-                member.userId = user.id;
-                member.claimed = true;
-                member.claimedAt = now;
+            // One installation = one organization: every reported installation gets an org row and
+            // a membership for this account (label re-derived, first claim stamped).
+            for (const install of installations) {
+                ensureOrg(install.id, install.name, install.id);
+                const existing = members.find((m) => m.orgId === install.id && m.userId === user!.id);
+                if (existing) {
+                    existing.login = login;
+                } else {
+                    members.push({
+                        orgId: install.id,
+                        login,
+                        userId: user.id,
+                        role: 'member',
+                        invitedAt: now,
+                        claimedAt: now,
+                    });
+                }
             }
-            const claimed = memberOf(user.id, orgId);
-            if (claimed || !options?.autoJoin) return claimed;
-            // Mirrors the SQL store's `on conflict do nothing`: an existing row for this login keeps
-            // whatever role it has rather than being reset to `member`.
-            if (!members.some((m) => m.orgId === orgId && m.login === login)) {
-                members.push({
-                    orgId,
-                    login,
-                    userId: user.id,
-                    role: options.role ?? 'member',
-                    claimed: true,
-                    autoJoined: true,
-                    invitedAt: now,
-                    claimedAt: now,
-                });
+
+            // The propagation half: memberships of installation orgs GitHub no longer reports are
+            // gone, and with them this account's reach into those orgs.
+            const reported = new Set(installations.map((i) => i.id));
+            for (let i = members.length - 1; i >= 0; i -= 1) {
+                const member = members[i]!;
+                if (member.userId !== user.id) continue;
+                const org = orgs.get(member.orgId);
+                if (org?.installationId !== null && org?.installationId !== undefined && !reported.has(member.orgId)) {
+                    members.splice(i, 1);
+                }
             }
-            return memberOf(user.id, orgId);
+
+            const caller = memberOf(user.id, orgId);
+            if (!caller) throw new Error(`sign-in resolved no membership of "${orgId}" for this account`);
+            return caller;
         },
 
-        async createSession(tokenHash, userId, expiresAt) {
-            sessions.set(key(tokenHash), { userId, expiresAt: expiresAt.getTime() });
+        async createSession(tokenHash, userId, expiresAt, orgId) {
+            sessions.set(key(tokenHash), { userId, orgId, expiresAt: expiresAt.getTime() });
         },
 
-        async findSession(tokenHash, orgId) {
+        async findSession(tokenHash) {
             const session = sessions.get(key(tokenHash));
             if (!session || session.expiresAt <= Date.now()) return null;
-            return memberOf(session.userId, orgId);
+            return memberOf(session.userId, session.orgId);
+        },
+
+        async updateSessionOrg(tokenHash, orgId) {
+            const session = sessions.get(key(tokenHash));
+            if (!session) return false;
+            if (!members.some((m) => m.orgId === orgId && m.userId === session.userId)) return false;
+            session.orgId = orgId;
+            return true;
         },
 
         async deleteSession(tokenHash) {
             sessions.delete(key(tokenHash));
+        },
+
+        async findOrg(orgId) {
+            const org = orgs.get(orgId);
+            return org ? { id: org.id, name: org.name } : null;
+        },
+
+        async membershipsOf(userId) {
+            return members
+                .filter((m) => m.userId === userId)
+                .map((m) => ({ id: m.orgId, name: orgNameOf(m.orgId) }))
+                .sort((a, b) => a.name.localeCompare(b.name));
         },
 
         async localCaller(orgId) {
@@ -777,18 +838,18 @@ export function memoryAuthStore(): MemoryAuthStore {
             return { id: row.id };
         },
 
-        async findPersonalToken(tokenHash, orgId) {
-            const row = findLiveToken(tokenHash, orgId, 'personal');
+        async findPersonalToken(tokenHash) {
+            const row = findLiveToken(tokenHash, 'personal');
             if (!row || row.userId === null) return null;
             touch(row);
-            return memberOf(row.userId, orgId);
+            return memberOf(row.userId, row.orgId);
         },
 
-        async findOrgToken(tokenHash, orgId): Promise<OrgTokenIdentity | null> {
-            const row = findLiveToken(tokenHash, orgId, 'org');
+        async findOrgToken(tokenHash): Promise<OrgTokenIdentity | null> {
+            const row = findLiveToken(tokenHash, 'org');
             if (!row) return null;
             touch(row);
-            return { id: row.id, label: row.label };
+            return { orgId: row.orgId, id: row.id, label: row.label };
         },
 
         async listPersonalTokens(orgId, userId) {
@@ -824,81 +885,6 @@ export function memoryAuthStore(): MemoryAuthStore {
             return 'revoked';
         },
 
-        async invite(orgId, login, role) {
-            const normalised = login.toLowerCase();
-            const held = members.find((m) => m.orgId === orgId && m.login === normalised);
-            if (held) {
-                held.role = role;
-                return 'updated';
-            }
-            members.push({
-                orgId,
-                login: normalised,
-                userId: null,
-                role,
-                claimed: false,
-                autoJoined: false,
-                invitedAt: new Date().toISOString(),
-                claimedAt: null,
-            });
-            return 'created';
-        },
-
-        async removeMember(orgId, login) {
-            const normalised = login.toLowerCase();
-            const index = members.findIndex((m) => m.orgId === orgId && m.login === normalised);
-            if (index === -1) return 'missing';
-            const [removed] = members.splice(index, 1);
-            for (const [hash, session] of sessions) {
-                if (session.userId === removed!.userId) sessions.delete(hash);
-            }
-            // The membership is what findPersonalToken joins through, so access already ended —
-            // but the rows stay as history with revoked_at set, matching the SQL store.
-            for (const row of accessTokenRows) {
-                if (row.orgId === orgId && row.userId === removed!.userId && row.revokedAt === null) {
-                    row.revokedAt = now();
-                }
-            }
-            return 'removed';
-        },
-
-        async listMembers(orgId) {
-            return members
-                .filter((m) => m.orgId === orgId)
-                .map((m) => ({ login: m.login, role: m.role, claimed: m.claimed }));
-        },
-
-        async listAutoJoined(orgId) {
-            return members
-                .filter((m) => m.orgId === orgId && m.autoJoined && m.userId !== null)
-                .map((m) => {
-                    const user = users.find((u) => u.id === m.userId)!;
-                    return { login: m.login, role: m.role, userId: m.userId!, githubUserId: user.githubUserId };
-                });
-        },
-
-        async removeMemberById(orgId, userId) {
-            const index = members.findIndex((m) => m.orgId === orgId && m.userId === userId && m.autoJoined);
-            if (index === -1) return 'missing';
-            const [removed] = members.splice(index, 1);
-            for (const [hash, session] of sessions) {
-                if (session.userId === removed!.userId) sessions.delete(hash);
-            }
-            for (const row of accessTokenRows) {
-                if (row.orgId === orgId && row.userId === removed!.userId && row.revokedAt === null) {
-                    row.revokedAt = now();
-                }
-            }
-            return 'removed';
-        },
-
-        async updateMemberRole(orgId, userId, role) {
-            const member = members.find((m) => m.orgId === orgId && m.userId === userId && m.autoJoined);
-            if (!member) return false;
-            member.role = role;
-            return true;
-        },
-
         async createWorkerToken(orgId, name, tokenHash) {
             const id = `worker-${workerTokens.length + 1}`;
             workerTokens.push({ orgId, id, name, hash: key(tokenHash), revoked: false });
@@ -921,10 +907,10 @@ export function memoryAuthStore(): MemoryAuthStore {
     return store;
 }
 
-/** Mints a live session for `caller` and returns the Cookie header that presents it. */
+/** Mints a live session for `caller` — in the caller's own org — and returns the Cookie header. */
 export async function signedIn(store: AuthStore, caller: Caller, secret = TEST_SESSION_SECRET): Promise<string> {
     const token = mintToken();
-    await store.createSession(hashToken(token), caller.user.id, new Date(Date.now() + 3600_000));
+    await store.createSession(hashToken(token), caller.user.id, new Date(Date.now() + 3600_000), caller.org.id);
     return `${SESSION_COOKIE}=${sign(token, secret)}`;
 }
 
@@ -932,12 +918,14 @@ export interface IdentityStub extends GitHubIdentityClient {
     /** What the next exchange resolves to. Set per test. */
     next: GitHubIdentity;
     exchanges: string[];
-    /** What GitHub says about the auto-join organization. Set per test. */
-    orgState: 'active' | 'pending' | 'none';
-    /** The org role GitHub reports for the signing-in account. */
-    orgRole: 'admin' | 'member';
-    /** Every org the callback asked about, so a test can assert it did not ask at all. */
-    orgLookups: string[];
+    /** The standing `installations()` answer, until a queued one-shot overrides it. */
+    installationsAnswer: InstallationAccount[];
+    /** One-shot answers, consumed first — for flows whose answer CHANGES between sign-ins. */
+    installationsQueue: InstallationAccount[][];
+    /** When set, the next `installations()` throws instead — GitHub could not be asked. */
+    installationsError?: Error;
+    /** Every installations call, so a test can assert it happened (or did not). */
+    installationsCalls: string[];
 }
 
 export function stubIdentityClient(identity?: Partial<GitHubIdentity>): IdentityStub {
@@ -950,9 +938,9 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
             ...identity,
         },
         exchanges: [],
-        orgState: 'none',
-        orgRole: 'member',
-        orgLookups: [],
+        installationsAnswer: [],
+        installationsQueue: [],
+        installationsCalls: [],
         authorizeUrl: (state) => `https://github.test/login/oauth/authorize?state=${state}`,
         async exchange(code) {
             stub.exchanges.push(code);
@@ -961,99 +949,21 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
         async identity() {
             return stub.next;
         },
-        async orgMembership(_accessToken, org) {
-            stub.orgLookups.push(org);
-            return { state: stub.orgState, role: stub.orgRole };
+        async installations() {
+            stub.installationsCalls.push('installations');
+            if (stub.installationsError) throw stub.installationsError;
+            return stub.installationsQueue.shift() ?? stub.installationsAnswer;
         },
     };
     return stub;
 }
 
-/** What a GitHub App client needs beyond the repo list, for the access-scope tests. */
-export interface AppClientStub extends GitHubAppClient {
-    /** `orgMembers` members, as login → numeric GitHub id. */
-    members: Map<string, number>;
-    /** Numeric ids `orgMembers` reports as org admins. */
-    admins: Set<number>;
-    /** slug → repos, what the `teamRepos` method answers. */
-    teamRepoLists: Map<string, readonly { owner: string; name: string }[]>;
-    /** (slug, login) pairs `teamMembership` answers yes to. */
-    teamMembers: Set<string>;
-    /** "owner/name" repos `collaborator` answers yes to (keyed with the login). */
-    collaborations: Set<string>;
-    calls: {
-        teams: number;
-        teamRepos: Map<string, number>;
-        memberships: number;
-        collaborators: number;
-        members: number;
-    };
-    /** When set, every call throws — the failure path. */
-    fail?: Error;
-}
+/** Shorthand: one installation, the common case. */
+export const oneInstallation = (id: string, account = 'acme'): InstallationAccount[] => [{ id, account }];
 
-export function stubAppClient(base: GitHubAppClient): AppClientStub {
-    const stub: AppClientStub = {
-        ...base,
-        members: new Map(),
-        admins: new Set(),
-        teamRepoLists: new Map(),
-        teamMembers: new Set(),
-        collaborations: new Set(),
-        calls: { teams: 0, teamRepos: new Map(), memberships: 0, collaborators: 0, members: 0 },
-        async orgTeams() {
-            stub.calls.teams += 1;
-            if (stub.fail) throw stub.fail;
-            return [...stub.teamRepoLists.keys()].map((slug) => ({ slug, name: slug }));
-        },
-        async teamRepos(_org, slug) {
-            stub.calls.teamRepos.set(slug, (stub.calls.teamRepos.get(slug) ?? 0) + 1);
-            if (stub.fail) throw stub.fail;
-            return stub.teamRepoLists.get(slug) ?? [];
-        },
-        async teamMembership(_org, slug, login) {
-            stub.calls.memberships += 1;
-            if (stub.fail) throw stub.fail;
-            return stub.teamMembers.has(`${slug}/${login.toLowerCase()}`);
-        },
-        async collaborator(owner, name, login) {
-            stub.calls.collaborators += 1;
-            if (stub.fail) throw stub.fail;
-            return stub.collaborations.has(`${owner}/${name}/${login.toLowerCase()}`);
-        },
-        async orgMembers() {
-            stub.calls.members += 1;
-            if (stub.fail) throw stub.fail;
-            return {
-                members: [...stub.members].map(([login, id]) => ({ id, login: login.toLowerCase() })),
-                admins: [...stub.admins],
-            };
-        },
-    };
-    return stub;
-}
-
-/**
- * An in-memory UserRepoAccessStore. `null` before the first computation, exactly like the SQL
- * store: an empty array is a real answer ("GitHub grants this account nothing"), never the
- * uncomputed state.
- */
-export interface MemoryUserRepoAccessStore extends UserRepoAccessStore {
-    rows(): { orgId: string; userId: string; repos: readonly string[] }[];
-}
-
-export function memoryUserRepoAccessStore(orgId = 'test-org'): MemoryUserRepoAccessStore {
-    const stored = new Map<string, readonly string[]>();
-    return {
-        async setRepos(userId, repos) {
-            stored.set(userId, [...repos]);
-        },
-        async repos(userId) {
-            return stored.get(userId) ?? null;
-        },
-        rows: () => [...stored.entries()].map(([userId, repos]) => ({ orgId, userId, repos: [...repos] })),
-    };
-}
+/** Installation refs as the store's signIn takes them. */
+export const refsOf = (installations: readonly InstallationAccount[]): InstallationRef[] =>
+    installations.map((i) => ({ id: i.id, name: i.account ?? i.id }));
 
 export interface TelemetryStubOptions {
     rollups?: () => Promise<TelemetryInput>;
@@ -1089,6 +999,46 @@ export function stubTelemetryClient(options: TelemetryStubOptions = {}): Telemet
     return stub;
 }
 
+/**
+ * A registry that answers for EVERY org id with one runtime — the single-org shape most route
+ * tests want. Tests that need a specific org to exist pass `orgsFor` here or use `harness`.
+ */
+export function staticRegistry(
+    parts: {
+        config?: AppConfig;
+        repos?: ReturnType<typeof staticRepoSource>;
+        telemetry?: TelemetryStub;
+        service?: ReturnType<typeof createStatsService>;
+        jobs?: OrgRuntime['jobs'];
+        envVars?: OrgRuntime['envVars'];
+        userRepos?: OrgRuntime['userRepos'];
+        userExecutors?: OrgRuntime['userExecutors'];
+        cloneQueue?: OrgRuntime['cloneQueue'];
+        /** When set, `for()` answers null for every id not in it. */
+        orgsFor?: readonly string[];
+    } = {}
+): OrgRegistry {
+    const config = parts.config ?? testConfig();
+    const telemetry = parts.telemetry ?? stubTelemetryClient();
+    const repos = parts.repos ?? staticRepoSource([]);
+    const runtime: OrgRuntime = {
+        orgId: LOCAL_ORG_ID,
+        repos,
+        telemetry,
+        service: parts.service ?? createStatsService({ config, repos, telemetry }),
+        jobs: parts.jobs,
+        envVars: parts.envVars,
+        userRepos: parts.userRepos,
+        userExecutors: parts.userExecutors,
+        cloneQueue: parts.cloneQueue,
+    };
+    return {
+        for: async (orgId) => (parts.orgsFor && !parts.orgsFor.includes(orgId) ? null : runtime),
+        list: async () => [{ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID, installationId: null }],
+        warmAll: async () => {},
+    };
+}
+
 export async function harness({
     config: overrides,
     telemetry: telemetryOption,
@@ -1098,7 +1048,8 @@ export async function harness({
     userRepos,
     userExecutors,
     envVars,
-    scope,
+    appSlug,
+    orgsFor,
 }: {
     config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
@@ -1106,21 +1057,27 @@ export async function harness({
     /**
      * Absent by default, which builds the app with NO auth at all — no hook, no /api/auth routes.
      *
-     * That default is what lets the seventeen route-test files written before accounts existed keep
-     * driving `app.inject()` with no cookie. A test that is about auth passes a store explicitly.
+     * That default is what lets the route-test files written before accounts existed keep driving
+     * `app.inject()` with no cookie. A test that is about auth passes a store explicitly.
      */
     auth?: AuthStore;
     identity?: GitHubIdentityClient;
     /** Which repos this org measures. Defaults to the one the fixture PRs are stamped with. */
     repos?: readonly { owner: string; name: string }[];
-    /** Absent by default, which leaves the workspace routes unregistered. */
+    /** Absent by default, which leaves the workspace routes answering 503. */
     userRepos?: UserRepoStore;
     /** Defaults to an empty in-memory store whenever userRepos is given. */
     userExecutors?: UserExecutorStore;
-    /** Absent by default, which leaves the env routes unregistered. */
+    /** Absent by default, which leaves the env routes answering 503. */
     envVars?: EnvVarStore;
-    /** Absent by default, which leaves every route unscoped. */
-    scope?: RepoAccessScope;
+    /** The install-page slug, for the callback's 0-installations redirect. Absent offline. */
+    appSlug?: () => Promise<string>;
+    /**
+     * Overrides which org ids the registry answers for. Tests are single-org, so the default
+     * answers for EVERY id with the same runtime — the honest shape for a harness that has no
+     * database: every route reads the org its caller carries, and here every caller resolves.
+     */
+    orgsFor?: readonly string[];
 } = {}) {
     const config = testConfig(overrides);
     const telemetry = telemetryOption ?? stubTelemetryClient();
@@ -1133,16 +1090,26 @@ export async function harness({
         now: () => clock,
     });
     const executors = userRepos ? (userExecutors ?? memoryUserExecutorStore()) : undefined;
-    const app = await buildApp({
-        config,
-        service,
+    const runtime: OrgRuntime = {
+        orgId: LOCAL_ORG_ID,
         repos,
+        telemetry,
+        service,
+        envVars,
         userRepos,
         userExecutors: executors,
-        envVars,
+    };
+    const orgs: OrgRegistry = {
+        for: async (orgId) => (orgsFor && !orgsFor.includes(orgId) ? null : runtime),
+        list: async () => [{ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID, installationId: null }],
+        warmAll: async () => {},
+    };
+    const app = await buildApp({
+        config,
+        orgs,
         auth,
         identity,
-        scope,
+        appSlug,
         now: () => clock,
     });
     return {

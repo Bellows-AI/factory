@@ -15,8 +15,7 @@ import type {
     RuntimeVitals,
     StopResult,
 } from '../src/db/job-store.js';
-import { createStatsService } from '../src/stats-service.js';
-import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -218,12 +217,10 @@ function stubStore(
 
 async function harnessWith(jobs?: StoreStub) {
     const config = testConfig();
-    const service = createStatsService({
+    const instance = await buildApp({
         config,
-        telemetry: stubTelemetryClient(),
-        now: () => Date.parse('2026-08-21T12:00:00.000Z'),
+        orgs: staticRegistry({ config, jobs, telemetry: stubTelemetryClient() }),
     });
-    const instance = await buildApp({ config, service, jobs });
     app = instance;
     return instance;
 }
@@ -955,9 +952,12 @@ describe('lifecycle actor attribution', () => {
     const signedInHarness = async () => {
         const auth = memoryAuthStore();
         const config = testConfig({ auth: githubAuth() });
-        const service = createStatsService({ config, telemetry: stubTelemetryClient() });
         const store = stubStore();
-        const instance = await buildApp({ config, service, jobs: store, auth });
+        const instance = await buildApp({
+            config,
+            orgs: staticRegistry({ config, jobs: store, telemetry: stubTelemetryClient() }),
+            auth,
+        });
         app = instance;
         const caller = auth.seedMember('test-org', 'octocat');
         const cookie = await signedIn(auth, caller);
@@ -1481,12 +1481,13 @@ describe('GET /api/jobs', () => {
     });
 });
 
-// Guards the `if (jobs)` in app.ts: every existing route test builds an app without a job store,
-// and registering the board unconditionally would give them all a live queue.
-it('does not register the board when there is no job store', async () => {
+// The board is registered for every caller; without a job store BEHIND the registry, the route
+// answers unavailable rather than pretending the command was queued.
+it('answers 503 when the org runtime has no job store', async () => {
     const instance = await harnessWith();
     const response = await post(instance, '/api/jobs', { command: 'echo hi' });
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(503);
+    expect(response.json().code).toBe('JOBS_UNAVAILABLE');
 });
 
 describe('POST /api/jobs/:id/gates-reread', () => {
