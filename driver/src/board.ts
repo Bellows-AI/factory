@@ -78,6 +78,14 @@ export interface BoardJob {
      * env from spoofing these names must not strip the driver's own.
      */
     gateEnv?: Record<string, string>;
+    /**
+     * Whether the driver may publish after this run's succeeded gated run. The BOARD's decision —
+     * on a workflow task only the graph's publish node may push (docs/workflows.md), so a mid-loop
+     * review success never does. Read defensively like every board field: ABSENT means a board
+     * that predates the flag, which published every succeeded gated run — so absent is read as
+     * "publish", and every claim without the field behaves byte-identically to before it existed.
+     */
+    publish?: boolean;
 }
 
 /** Whether the board still recognises this worker as the holder of the job. */

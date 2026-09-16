@@ -1460,6 +1460,21 @@ describe('publishing the produced work', () => {
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
 
+    // Executor parity for the publish flag (docs/workflows.md): the flag is read in exactly ONE
+    // place — the loop, shared by both executors — so this transport must have no opinion of its
+    // own. A `publish: false` claim that reached publishGit anyway would publish; the loop tests
+    // pin that the loop never lets it through. If this runner grew its own gate, the flag would
+    // live in two places and drift.
+    it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },
+        ]);
+        const result = await runner(request).publishGit({ ...ISSUE_JOB, publish: false });
+
+        expect(result.ok).toBe(true);
+        expect(calls.some((call) => call.path === jobsPath(namespace))).toBe(true);
+    });
+
     it('answers the clean-tree no-op after the probe alone', async () => {
         const { request, calls } = scripted([
             { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },

@@ -1,6 +1,8 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import type { UserRef } from '@factory-ai/core';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
+import { type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
 
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
@@ -156,6 +158,12 @@ export interface Job {
      */
     rootJobId: string;
     /**
+     * The workflow node this run walks, when the task runs a workflow (027). Null on every other
+     * row — workflow-less tasks, user follow-ups, and every job that predates workflows. This is
+     * the graph position: the loop counts and the task view's node labels read it.
+     */
+    workflowNode: string | null;
+    /**
      * When the user declared the task done — the verdict no run can make. Null until they say so,
      * and only settable on a finished task; it never replaces the run's own outcome.
      */
@@ -281,6 +289,14 @@ export interface Claim {
      * the claim route or pass silently as "no gates".
      */
     gateError?: string | null;
+    /**
+     * Whether the driver may publish after this run's succeeded gated run. ABSENT on a
+     * workflow-less claim — the driver reads its absence as "publish", the exact behavior before
+     * workflows existed, which is what keeps the no-workflow claim byte-identical. On a workflow
+     * row the board decides from the graph: true only for a publish node's run, so a mid-loop
+     * review success never pushes (docs/workflows.md).
+     */
+    publish?: boolean;
 }
 
 /**
@@ -367,24 +383,36 @@ export interface JobStore {
      * authenticated caller's id. A client-supplied one would be impersonation on the audit trail of
      * a route that runs shell commands.
      *
-     * `target` carries the optional repo/executor labels the tasks chat groups and displays by.
+     * `target` carries the optional repo/executor labels the tasks chat groups and displays by,
+     * and — when the task runs a workflow — the resolved workflow: the id, the ENTRY node the
+     * thread's first run walks, and the definition SNAPSHOT frozen onto the root row. The snapshot
+     * is the graph the whole thread walks: editing the workflow mid-flight changes later tasks,
+     * never this one (docs/workflows.md). Null when no workflow resolved, which is the ordinary
+     * create and behaves exactly as it did before 027.
      */
     create(
         command: string,
         createdBy: string | null,
-        target: { repo: string | null; executor: string | null }
+        target: {
+            repo: string | null;
+            executor: string | null;
+            workflow?: { id: string; node: string; snapshot: WorkflowDefinition } | null;
+        }
     ): Promise<{ id: string }>;
     /**
      * Queues a follow-up on a finished task: a new job that inherits the parent's repo, executor
-     * and session ids, linked through `followUpTo`. Atomic and conditional — the insert only
-     * lands when the parent is finished, not done, carries a session, and is the caller's own
-     * task — so the refusals above are decided in the same statement that would have created the
-     * row, never by a read that could race a claim or a completion in between.
+     * and — the thread's PRIMARY — session ids, linked through `followUpTo`. Atomic and
+     * conditional — the insert only lands when the parent is finished, not done, carries a
+     * session, and is the caller's own task — so the refusals above are decided in the same
+     * statement that would have created the row, never by a read that could race a claim or a
+     * completion in between.
      *
      * The thread's labels and session are ALL the parent's, taken from the row and never from a
      * body: an adjustment continues the run it adjusts, on the executor that ran it — a
      * conversation switching executors mid-thread is exactly the cross-CLI resume the driver
-     * cannot do.
+     * cannot do. On a workflow thread the session copied is the primary (the first resume run's),
+     * whatever node ran last, and the follow-up row itself is off-graph — no `workflow_node` —
+     * so its completion re-fires the halted node's edges (docs/workflows.md).
      */
     createFollowUp(
         parentId: string,
@@ -623,6 +651,8 @@ interface JobRow {
     executor: string | null;
     parent_job_id: string | null;
     root_job_id: string;
+    /** The row's graph position (027); null on workflow-less rows and user follow-ups. */
+    workflow_node: string | null;
     done_at: Date | null;
     cancel_requested_at: Date | null;
     command_delivered_at: Date | null;
@@ -809,6 +839,7 @@ export function createJobStore({
         executor: row.executor,
         followUpTo: row.parent_job_id,
         rootJobId: row.root_job_id,
+        workflowNode: row.workflow_node ?? null,
         doneAt: iso(row.done_at),
         cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,
@@ -825,10 +856,17 @@ export function createJobStore({
         async create(command, createdBy, target) {
             await gate();
             // id and root_job_id are the SAME uuid, computed once in the select so the column can
-            // be not null from insert — the root's root is itself (022).
+            // be not null from insert — the root's root is itself (022). The workflow triple rides
+            // the same insert when a workflow resolved: workflow_id names what the task walks,
+            // workflow_node is the entry the first run carries, and the snapshot freezes the
+            // graph onto the root — where every transition decision reads it. All three are null
+            // on a workflow-less create, byte-identical to the pre-027 insert.
             const rows = await sql<{ id: string }[]>`
-                insert into job (org_id, command, created_by, repo, executor, id, root_job_id)
-                select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x
+                insert into job (org_id, command, created_by, repo, executor, id, root_job_id, workflow_id, workflow_node, workflow_snapshot)
+                select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
+                       ${target.workflow?.id ?? null},
+                       ${target.workflow?.node ?? null},
+                       ${target.workflow ? sql.json(target.workflow.snapshot as never) : null}
                 from (select gen_random_uuid() as x) s
                 returning id
             `;
@@ -851,6 +889,14 @@ export function createJobStore({
             // conversation, on the executor that ran it, without any new claim-side rule. The
             // parent's root_job_id comes across with them — the child joins the SAME conversation
             // (022), whether its parent is a root or a mid-chain turn.
+            //
+            // WHICH session: a pre-workflow thread copies the PARENT's session — the newest run's,
+            // the conversation chaining forward exactly as it always has. A workflow thread copies
+            // its PRIMARY session — the first `resume`-policy run's, read off the root's snapshot
+            // (design.md Decision 3): the newest row of a workflow thread is often a fresh-eyes
+            // review, whose session is a side branch, and a follow-up must continue the thread,
+            // not the branch. The coalesce answers the parent's session when no resume run has
+            // reported one yet, so the refusal shape below never changes.
             const rows = await sql<{ id: string }[]>`
                 with parent as (
                     select id, repo, executor, session_id, remote_session_id, root_job_id
@@ -861,10 +907,52 @@ export function createJobStore({
                       and session_id is not null
                       and created_by is not distinct from ${createdBy}
                     for update
+                ),
+                root as (
+                    select root.id as root_id, root.workflow_snapshot as snapshot
+                    from parent, job root
+                    where root.org_id = ${orgId} and root.id = parent.root_job_id
+                ),
+                primary_session as (
+                    select
+                        case
+                            when root.snapshot is null then parent.session_id
+                            else (
+                                select r.session_id
+                                from job r
+                                where r.org_id = ${orgId} and r.root_job_id = root.root_id
+                                  and r.session_id is not null
+                                  and exists (
+                                      select 1 from jsonb_array_elements(root.snapshot -> 'nodes') node
+                                      where node->>'name' = r.workflow_node and node->>'session' = 'resume'
+                                  )
+                                order by r.created_at, r.id
+                                limit 1
+                            )
+                        end as session_id,
+                        case
+                            when root.snapshot is null then parent.remote_session_id
+                            else (
+                                select r.remote_session_id
+                                from job r
+                                where r.org_id = ${orgId} and r.root_job_id = root.root_id
+                                  and r.session_id is not null
+                                  and exists (
+                                      select 1 from jsonb_array_elements(root.snapshot -> 'nodes') node
+                                      where node->>'name' = r.workflow_node and node->>'session' = 'resume'
+                                  )
+                                order by r.created_at, r.id
+                                limit 1
+                            )
+                        end as remote_session_id
+                    from parent, root
                 )
                 insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id, root_job_id)
-                select ${orgId}, ${command}, ${createdBy}, repo, executor, id, session_id, remote_session_id, root_job_id
-                from parent
+                select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.id,
+                       coalesce(primary_session.session_id, parent.session_id),
+                       coalesce(primary_session.remote_session_id, parent.remote_session_id),
+                       parent.root_job_id
+                from parent, root, primary_session
                 returning id
             `;
             if (rows[0]) return { id: rows[0]!.id };
@@ -1094,6 +1182,7 @@ export function createJobStore({
                             parent_job_id: string | null;
                             executor: string | null;
                             follow_up: boolean;
+                            workflow_node: string | null;
                         }[]
                     >`
                         update job set
@@ -1145,7 +1234,7 @@ export function createJobStore({
                         -- never been parked, so its command still has to go out; a suspended one settles
                         -- stopped or standby, and is never claimed again.
                         returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                                  session_id, repo, parent_job_id, executor,
+                                  session_id, repo, parent_job_id, executor, workflow_node,
                                   (parent_job_id is not null and command_delivered_at is null) as follow_up
                     `;
 
@@ -1213,6 +1302,37 @@ export function createJobStore({
                         if (read.error) gateError = read.error;
                         else claimGates = read.config;
                     }
+
+                    /*
+                     * The workflow read: the graph's per-node decisions, computed off the ROOT row's
+                     * snapshot. `publish` is the board's answer to "may this run push" — true only
+                     * out of a publish node, false on every other workflow node, and ABSENT (the
+                     * field simply not sent) on a workflow-less row, which the driver reads as
+                     * "publish": the exact behavior before 027, so no-workflow claims stay
+                     * byte-identical. A node may also opt its run out of the gates — a fresh-eyes
+                     * review need not pay suite minutes, and must not fail the thread on a gate it
+                     * did not touch — in which case neither gates nor a gate error ride the claim.
+                     */
+                    let publish: boolean | undefined;
+                    if (row.workflow_node !== null) {
+                        const [root] = await tx<{ workflow_snapshot: WorkflowDefinition | null }[]>`
+                            select workflow_snapshot from job
+                            where org_id = ${orgId} and id = ${rootJobId}
+                        `;
+                        const snapshot = root?.workflow_snapshot ?? null;
+                        if (snapshot === null) {
+                            // A node without a snapshot cannot happen on a live thread (the
+                            // transition insert always copies the id and the root carries the
+                            // snapshot); answering "do not publish" is the safe arm of the branch.
+                            publish = false;
+                        } else {
+                            publish = isPublishNode(snapshot, row.workflow_node);
+                            if (nodeOf(snapshot, row.workflow_node)?.gates === false) {
+                                claimGates = null;
+                                gateError = null;
+                            }
+                        }
+                    }
                     return {
                         id: row.id,
                         command: row.command,
@@ -1231,6 +1351,7 @@ export function createJobStore({
                         ...(claimEnv ? { env: claimEnv } : {}),
                         ...(row.repo !== null ? { repo: row.repo } : {}),
                         ...(claimGates || gateError ? { gates: claimGates, gateError: gateError } : {}),
+                        ...(publish !== undefined ? { publish } : {}),
                     };
                 }
             });
@@ -1589,18 +1710,114 @@ export function createJobStore({
                     // job is someone else's now, and the two runs did different work.
                     return { result: (await exists(sql, orgId, id)) ? 'lost' : 'missing' };
                 }
+                const completedId = rows[0]!.id;
+                const rootJobId = rows[0]!.root_job_id;
+
+                /*
+                 * The workflow transition, when this thread walks a graph — decided HERE, in the
+                 * verdict's transaction (docs/workflows.md): the driver reports one verdict and the
+                 * board inserts the next row, or rests the thread. A workflow-less thread has no
+                 * snapshot on its root and skips all of this: its completes behave byte-identically
+                 * to before 027.
+                 */
+                const [root] = await tx<
+                    {
+                        workflow_id: string | null;
+                        workflow_snapshot: WorkflowDefinition | null;
+                        created_by: string | null;
+                        repo: string | null;
+                    }[]
+                >`
+                    select workflow_id, workflow_snapshot, created_by, repo from job
+                    where org_id = ${orgId} and id = ${rootJobId}
+                `;
+                if (root?.workflow_snapshot) {
+                    // The same per-root advisory lock the claim takes: a transition insert must not
+                    // interleave with a claim's select-lock-claim of this thread, or two rows of
+                    // one thread could end up claimed against the one-worktree guarantee.
+                    await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+
+                    // The whole thread, oldest first — the audit trail the decision derives from:
+                    // loop counts are row counts per node (dead rows included), the halted node is
+                    // the newest carried node, the primary session is the first resume run's, and
+                    // the placeholder tails are prior rows' stored outputs.
+                    const threadRows = await tx<
+                        {
+                            id: string;
+                            workflow_node: string | null;
+                            status: string;
+                            output: string | null;
+                            gates: GateReport[] | null;
+                            session_id: string | null;
+                            repo: string | null;
+                            executor: string | null;
+                        }[]
+                    >`
+                        select id, workflow_node, status, output, gates, session_id, repo, executor
+                        from job
+                        where org_id = ${orgId} and root_job_id = ${rootJobId}
+                        order by created_at, id
+                    `;
+                    const engineRows = threadRows.map((row) => ({
+                        id: row.id,
+                        node: row.workflow_node,
+                        status: row.status,
+                        output: row.output,
+                        gates: row.gates,
+                        sessionId: row.session_id,
+                    }));
+                    // The completed row's stored state: the UPDATE above just landed the verdict
+                    // columns, so `gates` and `output` here are THIS run's — what the edge rules
+                    // evaluate against (gate-failed reads the stored reports; markers read the tail).
+                    const completed = threadRows.find((row) => row.id === completedId);
+                    const completedRun: CompletedRun = {
+                        id: completedId,
+                        node: completed?.workflow_node ?? null,
+                        status,
+                        output,
+                        gates: completed?.gates ?? null,
+                    };
+
+                    const transition = nextTransition({
+                        snapshot: root.workflow_snapshot,
+                        rows: engineRows,
+                        completed: completedRun,
+                    });
+                    if (transition.action === 'insert') {
+                        // A resume node carries the thread's PRIMARY session from insert (design.md
+                        // Decision 3); a fresh node carries none and mints its own at claim. The
+                        // row is an ordinary queued job: the driver claims it through the existing
+                        // lease/fence machinery, `max_attempts` governing it individually.
+                        const session =
+                            transition.session === 'resume'
+                                ? primarySessionId(root.workflow_snapshot, engineRows)
+                                : null;
+                        await tx`
+                            insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_id, workflow_node)
+                            values (${orgId}, ${transition.command}, ${root.created_by}, ${completed?.repo ?? root.repo},
+                                    ${completed?.executor ?? null}, ${completedId}, ${session}, ${rootJobId},
+                                    ${root.workflow_id}, ${transition.node.name})
+                        `;
+                    }
+                    // `rest` lands nothing: an exhausted loop, an unmatched verdict or marker
+                    // absence leaves the thread where the run ended — visible and follow-up-able,
+                    // never silently continued (docs/workflows.md).
+                }
+
                 // The thread's state, read off the root column the row already carries (022) —
                 // every member answers to the same root_job_id. The just-updated row's verdict
                 // status is visible here, and the aggregate answers in one row: terminal means
                 // every member reached `succeeded`/`failed`/`dead`/`stopped`; done means ONE member carries
                 // the user's `done_at` (the UI marks the thread's head, so the column can sit on
-                // any member). Both must hold before the tree may go.
+                // any member). Both must hold before the tree may go. A transition-inserted row
+                // above is queued, not terminal — the aggregate then says the thread moves on,
+                // which is exactly why this read runs after the insert decision.
                 const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
                     select count(*)::int as total,
                            count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal,
                            count(*) filter (where done_at is not null)::int as done
                     from job
-                    where org_id = ${orgId} and root_job_id = ${rows[0].root_job_id}
+                    where org_id = ${orgId} and root_job_id = ${rootJobId}
                 `;
                 return {
                     result: 'ok',
@@ -1619,7 +1836,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+                       parent_job_id, root_job_id, workflow_node, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                        -- The task's overall wall clock, summed over the thread the WHERE already
                        -- scoped: every member carries the total, so the view reads it off any of
                        -- them. A sum over all-null banks is null — nothing measurable, never zero.
@@ -1640,7 +1857,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+                       parent_job_id, root_job_id, workflow_node, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                        summary, wall_clock_ms
                        ${authorColumns}
                 from job ${authorJoin}
