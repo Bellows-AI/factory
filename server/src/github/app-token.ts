@@ -67,6 +67,12 @@ function appJwt(appId: string, key: KeyObject, nowMs: number): string {
 
 export interface AppTokenOptions {
     readonly github: Extract<GitHubConfig, { mode: 'app' }>;
+    /**
+     * The installation to mint for, when the caller already knows it. Set, discovery never runs —
+     * this is the per-org mint path (#99): the org registry passes each organization's
+     * installation_id, so one process holds one provider per installation.
+     */
+    readonly installationId?: string;
     readonly fetchFn?: typeof fetch;
     readonly now?: () => number;
     readonly mintTimeoutMs?: number;
@@ -155,7 +161,7 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         throw new GitHubAppError(`GITHUB_APP_PRIVATE_KEY is not a usable private key: ${(error as Error).message}`);
     }
 
-    let installation = github.installationId;
+    let installation = options.installationId ?? github.installationId;
     let cached: { token: string; expiresAt: number } | null = null;
     // Single-flight. Two concurrent callers past a stale cache would otherwise mint two tokens and
     // race to store one; GitHub does not invalidate the loser, but it counts against the App and the
@@ -217,6 +223,54 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
             await this.get();
             // `mint` sets it, and throws if it could not.
             return installation as unknown as string;
+        },
+    };
+}
+
+export interface AppSlugProvider {
+    /** The App's URL slug — the `apps/<slug>` path segment of its install page. */
+    slug(): Promise<string>;
+}
+
+/**
+ * The App's slug, for building install-page URLs (`github.com/apps/<slug>/installations/new`).
+ *
+ * `GET /app` authenticates with the App JWT — not the installation token every app-client call
+ * carries — which is why it lives here beside the signer rather than in app-client.ts. The slug
+ * is cached for the life of the process (a rename is cosmetic and nothing keys on it); failures
+ * are rethrown uncached, because the caller is the sign-in request path (0 installations →
+ * redirect to the install page) and a stale miss there must fail the sign-in, not loop it.
+ */
+export function createAppSlugProvider(options: AppTokenOptions): AppSlugProvider {
+    const { github, fetchFn = fetch, now = Date.now, mintTimeoutMs = MINT_TIMEOUT_MS } = options;
+
+    let key: KeyObject;
+    try {
+        key = createPrivateKey(github.privateKeyPem);
+    } catch (error) {
+        throw new GitHubAppError(`GITHUB_APP_PRIVATE_KEY is not a usable private key: ${(error as Error).message}`);
+    }
+
+    let cached: string | null = null;
+
+    return {
+        async slug() {
+            if (cached) return cached;
+            const jwt = appJwt(github.appId, key, now());
+            const response = await fetchFn(`${github.apiUrl}/app`, {
+                headers: {
+                    authorization: `Bearer ${jwt}`,
+                    accept: 'application/vnd.github+json',
+                    'user-agent': 'factory-ai',
+                },
+                // The sign-in request path holds: a hung GitHub aborts here rather than pinning
+                // the browser's callback.
+                signal: AbortSignal.timeout(mintTimeoutMs),
+            });
+            const body = (await json(response, 'app lookup')) as { slug?: string };
+            if (!body.slug) throw new GitHubAppError('app response carried no slug');
+            cached = body.slug;
+            return body.slug;
         },
     };
 }

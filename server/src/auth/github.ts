@@ -21,6 +21,18 @@ export interface OrgMembership {
 }
 
 /**
+ * One GitHub App installation the signing-in account can see.
+ *
+ * `id` is the installation id as a decimal string, because it becomes the organization id —
+ * which is a `^[a-z0-9][a-z0-9_-]{0,38}$` database key and URL parameter, not a number.
+ */
+export interface InstallationAccount {
+    id: string;
+    /** The account (organization or user) the App is installed on, by login. A label. */
+    account: string | null;
+}
+
+/**
  * The two calls the OAuth exchange needs, behind a seam.
  *
  * An interface rather than direct `fetch` calls because it is what keeps `npm test` offline: the
@@ -46,6 +58,14 @@ export interface GitHubIdentityClient {
      * unscoped token sees no organizations and would report every account `none`.
      */
     orgMembership(accessToken: string, org: string): Promise<OrgMembership>;
+    /**
+     * The GitHub App installations this account can see, asked with the signing-in person's own
+     * token. This IS the membership decision under multi-org sign-in (#99): one installation is
+     * one organization, so what this returns is exactly the orgs the caller may sign into.
+     * Requires `read:org`, which the authorize URL requests unconditionally in github mode — an
+     * unscoped token reports no installations and would send everybody to the install page.
+     */
+    installations(accessToken: string): Promise<InstallationAccount[]>;
 }
 
 /** Where GitHub sends the browser back. Derived from the configured origin, never from a header. */
@@ -155,6 +175,27 @@ export function createGitHubIdentityClient(
             // The org role maps onto Factory's two roles directly: an org admin may maintain
             // membership, an ordinary member may not. Anything else GitHub might report is a member.
             return { state, role: body.role === 'admin' && state === 'active' ? 'admin' : 'member' };
+        },
+
+        async installations(accessToken) {
+            // Derived from userUrl rather than configured separately, so the one environment seam
+            // that already redirects /user redirects this too and the stub IdP needs no second knob.
+            const response = await fetchFn(`${auth.userUrl}/installations`, {
+                headers: {
+                    authorization: `Bearer ${accessToken}`,
+                    accept: 'application/vnd.github+json',
+                    'user-agent': 'factory-ai',
+                },
+            });
+            if (!response.ok) throw new GitHubAuthError(`installation lookup failed with ${response.status}`);
+            const body = (await response.json()) as {
+                installations?: { id?: number; account?: { login?: string } | null }[];
+            };
+            // A well-formed but meaningless entry (no numeric id) is skipped, not fatal: GitHub
+            // owns the payload, and one malformed row must not lock everybody out.
+            return (body.installations ?? [])
+                .filter((install) => typeof install.id === 'number')
+                .map((install) => ({ id: String(install.id), account: install.account?.login ?? null }));
         },
     };
 }
