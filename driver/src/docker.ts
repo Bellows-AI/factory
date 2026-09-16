@@ -133,6 +133,15 @@ export interface RunOutcome {
      * and null both land as null — unmeasured, never zero.
      */
     agentTurns?: number | null;
+    /**
+     * What the run did, in the agent's own last words — the run's final assistant text, read
+     * from the same records as `agentTurns` (opencode: the session database's part rows;
+     * claude-code: the transcript's text blocks), collapsed to one line by the script. Null
+     * when the read ran and found none — a run cut off mid-tool-call has no final text; absent
+     * when no read was attempted. Reported with the verdict and stored on the job row, where
+     * the recently-completed view shows what a task did without opening its output.
+     */
+    summary?: string | null;
 }
 
 /**
@@ -696,6 +705,8 @@ export interface OpencodeRunOutcome {
      * unmeasured, never zero.
      */
     agentTurns: number | null;
+    /** The run's last assistant text, or null when the read answered none — unmeasured, never empty. */
+    summary: string | null;
     /**
      * What the readout says went wrong, when it says anything. The script prints one on every
      * failure it can name; a readout that answers nothing at all parses with this null.
@@ -712,6 +723,7 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
         contextTokens: null,
         costUsd: null,
         agentTurns: null,
+        summary: null,
         error: null,
     };
     try {
@@ -721,6 +733,7 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
             tokens?: unknown;
             cost?: unknown;
             turns?: unknown;
+            summary?: unknown;
             error?: unknown;
         };
         const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
@@ -735,8 +748,9 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
             typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
                 ? parsed.turns
                 : null;
+        const summary = typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : null;
         const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
-        return { sessionId, finishReason, contextTokens, costUsd, agentTurns, error };
+        return { sessionId, finishReason, contextTokens, costUsd, agentTurns, summary, error };
     } catch {
         return nothing;
     }
@@ -778,16 +792,20 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
     ];
 }
 
-/** The agent-turn count the claude script answered, or null — unmeasured, never a guess. */
-export function parseClaudeTurns(stdout: string): number | null {
+/** What the claude close-time read answered: the turn count and the run's last words, or nulls. */
+export function parseClaudeCloseRead(stdout: string): { turns: number | null; summary: string | null } {
     const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
     try {
-        const parsed = JSON.parse(line) as { turns?: unknown };
-        return typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
-            ? parsed.turns
-            : null;
+        const parsed = JSON.parse(line) as { turns?: unknown; summary?: unknown };
+        return {
+            turns:
+                typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
+                    ? parsed.turns
+                    : null,
+            summary: typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : null,
+        };
     } catch {
-        return null;
+        return { turns: null, summary: null };
     }
 }
 
@@ -2039,6 +2057,7 @@ export function createDockerRunner(
                                     contextTokens: null,
                                     costUsd: null,
                                     agentTurns: null,
+                                    summary: null,
                                     error: null,
                                 };
                                 let reason: string | null = null;
@@ -2052,6 +2071,7 @@ export function createDockerRunner(
                                             contextTokens: null,
                                             costUsd: null,
                                             agentTurns: null,
+                                            summary: null,
                                             error: `the readout container failed: ${err.message}`,
                                         })
                                     );
@@ -2066,6 +2086,7 @@ export function createDockerRunner(
                                     // response cycles of the root session, already scoped by the
                                     // parent_id-is-null selection the script makes.
                                     if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
+                                    if (scraped.summary) outcome.summary = scraped.summary;
                                     // With a session scraped, the line's error is the RUN's last
                                     // provider error, not the read's failure — carried as its own
                                     // field so the verdict can name the cause of a premature stop.
@@ -2086,13 +2107,18 @@ export function createDockerRunner(
                              * after this read would run, so its count stays unmeasured.
                              */
                             if (readsAgentTurns(config, session)) {
-                                outcome.agentTurns = await execDocker(
+                                const read = await execDocker(
                                     claudeTurnsArgs(config, job, (session as RunSession).id, startedAt),
                                     { timeout: CLOSE_READ_DEADLINE_MS }
                                 ).then(
-                                    (read) => parseClaudeTurns(read.stdout),
-                                    (): null => null
+                                    (out) => parseClaudeCloseRead(out.stdout),
+                                    (): { turns: number | null; summary: string | null } => ({
+                                        turns: null,
+                                        summary: null,
+                                    })
                                 );
+                                outcome.agentTurns = read.turns;
+                                if (read.summary) outcome.summary = read.summary;
                             }
                             return outcome;
                         })

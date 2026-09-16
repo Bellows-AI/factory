@@ -84,6 +84,9 @@ metadata:
 data:
     # files/collector.yaml is a template, not a static file: the exporter points at THIS release's
     # dashboard service, and the ingest-token header is present only when a token is configured.
+    # The content is indented to 8 — deeper than this mapping's children at 4, or the block scalar
+    # absorbs nothing and every top-level config key becomes a data entry (a map, which the
+    # apiserver refuses — helm template decodes nothing, so only a real install catches it).
     config.yaml: |
-{{ tpl (.Files.Get "files/collector.yaml") . | indent 4 }}
+{{ tpl (.Files.Get "files/collector.yaml") . | indent 8 }}
 {{- end }}

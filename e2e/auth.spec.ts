@@ -55,12 +55,19 @@ test('signing out returns to the gate', async ({ page }) => {
     await signIn(page).click();
     await expect(cards(page)).toHaveCount(5, { timeout: 60_000 });
 
-    const response = await page.request.post('/api/auth/logout');
-    expect(response.status()).toBe(204);
-
-    await page.reload();
+    // Through the user menu — the affordance, not a hand-crafted request.
+    await page.locator('.user-menu-button').click();
+    await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(gate(page)).toBeVisible();
     await expect(cards(page)).toHaveCount(0);
+
+    // The old cookie no longer authenticates: /me answers "nobody".
+    const me = await page.request.get('/api/auth/me');
+    expect(await me.json()).toMatchObject({ authenticated: false });
+
+    // Idempotent: signing out again, or with an already-dead session, is a 204 — never an error.
+    const response = await page.request.post('/api/auth/logout');
+    expect(response.status()).toBe(204);
 });
 
 test('the returnTo path survives the round trip', async ({ page }) => {

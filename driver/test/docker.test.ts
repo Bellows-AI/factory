@@ -19,7 +19,7 @@ import {
     gateExecArgs,
     opencodeCacheProbeArgs,
     opencodeSessionReadoutArgs,
-    parseClaudeTurns,
+    parseClaudeCloseRead,
     parseDockerServicePs,
     parseDockerStats,
     parseOpencodeCacheProbe,
@@ -586,16 +586,22 @@ describe('the close-time claude-code turn count', () => {
         expect(() => claudeTurnsArgs(loadDriverConfig({}), job, '../../etc/passwd', START)).toThrow(/not a uuid/);
     });
 
-    it('parses the count the script answered, and answers null for anything else', () => {
-        expect(parseClaudeTurns('{"turns":11}\n')).toBe(11);
+    it('parses the count and summary the script answered, and answers nulls for anything else', () => {
+        expect(parseClaudeCloseRead('{"turns":11,"summary":"Fixed the failing gates"}\n')).toEqual({
+            turns: 11,
+            summary: 'Fixed the failing gates',
+        });
         // A genuine zero is a measurement — a conversation with no assistant response.
-        expect(parseClaudeTurns('{"turns":0}')).toBe(0);
-        expect(parseClaudeTurns('{"turns":null,"error":"no transcript for session x"}')).toBeNull();
+        expect(parseClaudeCloseRead('{"turns":0,"summary":null}')).toEqual({ turns: 0, summary: null });
+        expect(parseClaudeCloseRead('{"turns":null,"summary":null,"error":"no transcript for session x"}')).toEqual({
+            turns: null,
+            summary: null,
+        });
         // Fractional, negative, or garbage: unmeasured, never a wrong number.
-        expect(parseClaudeTurns('{"turns":2.5}')).toBeNull();
-        expect(parseClaudeTurns('{"turns":-3}')).toBeNull();
-        expect(parseClaudeTurns('')).toBeNull();
-        expect(parseClaudeTurns('node: nothing to run')).toBeNull();
+        expect(parseClaudeCloseRead('{"turns":2.5,"summary":42}')).toEqual({ turns: null, summary: null });
+        expect(parseClaudeCloseRead('{"turns":-3,"summary":"x"}')).toEqual({ turns: null, summary: 'x' });
+        expect(parseClaudeCloseRead('')).toEqual({ turns: null, summary: null });
+        expect(parseClaudeCloseRead('node: nothing to run')).toEqual({ turns: null, summary: null });
     });
 });
 
@@ -968,6 +974,7 @@ describe('scraping the session opencode used', () => {
             contextTokens: 90433,
             costUsd: 0.31,
             agentTurns: null,
+            summary: null,
             error: null,
         });
         // A healthy run's closing word, and a free-tier cost of zero.
@@ -977,6 +984,7 @@ describe('scraping the session opencode used', () => {
             contextTokens: 1200,
             costUsd: 0,
             agentTurns: 7,
+            summary: null,
             error: null,
         });
         // A message that never reported a finish or tokens reads as none, not as a reason.
@@ -987,6 +995,7 @@ describe('scraping the session opencode used', () => {
             contextTokens: null,
             costUsd: null,
             agentTurns: null,
+            summary: null,
             error: null,
         });
         // The readout's own failure line: carried through as the reason, with no stats.
@@ -996,6 +1005,7 @@ describe('scraping the session opencode used', () => {
             contextTokens: null,
             costUsd: null,
             agentTurns: null,
+            summary: null,
             error: 'no such column: role',
         });
         expect(parseOpencodeRunOutcome('')).toEqual({
@@ -1004,6 +1014,7 @@ describe('scraping the session opencode used', () => {
             contextTokens: null,
             costUsd: null,
             agentTurns: null,
+            summary: null,
             error: null,
         });
         // Not a session id: a path, an error line, or a uuid that would read as claude's.
@@ -1020,6 +1031,7 @@ describe('scraping the session opencode used', () => {
             contextTokens: null,
             costUsd: null,
             agentTurns: null,
+            summary: null,
             error: null,
         });
         // A session line that also carries the last provider error: both ride — the session makes
@@ -1034,6 +1046,7 @@ describe('scraping the session opencode used', () => {
             contextTokens: 100016,
             costUsd: 0,
             agentTurns: null,
+            summary: null,
             error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
         });
     });

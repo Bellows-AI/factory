@@ -39,6 +39,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `workflow`, `027_workflows.sql`, `db/workflow-*.ts`, `routes/workflows.ts`, the claim's `publish` flag | [docs/workflows.md](docs/workflows.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, the driver's env forwarding, the `/env` page | [docs/env.md](docs/env.md) |
 | `filterTelemetryInput()`, `parseRange`, the range selector, charts | [docs/date-range.md](docs/date-range.md) |
+| `web/src/styles.css`, tokens and primitives, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | Bind addresses, headers, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |

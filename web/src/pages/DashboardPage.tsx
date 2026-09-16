@@ -1,11 +1,11 @@
 import { useShell } from '../components/AppShell.js';
-import { Limitations } from '../components/Limitations.js';
+import { useCompletedJobs } from '../api/useCompletedJobs.js';
 import { RangeSelector } from '../components/RangeSelector.js';
 import { ScopeToggle } from '../components/ScopeToggle.js';
 import { StatusBanner } from '../components/StatusBanner.js';
 import { AiUsagePanel } from '../panels/AiUsagePanel.js';
 import { ByUserPanel } from '../panels/ByUserPanel.js';
-import { DataQualityPanel } from '../panels/DataQualityPanel.js';
+import { RecentTasksPanel } from '../panels/RecentTasksPanel.js';
 import { TaskUsagePanel } from '../panels/TaskUsagePanel.js';
 import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
 
@@ -17,6 +17,9 @@ import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
  */
 export function DashboardPage() {
     const { data, range, setRange, scope, setScope, session, progress, error } = useShell();
+    // The board's own completed runs — a poll beside the stats one, not part of the stats
+    // payload: this is jobs data, and the dashboard renders it even while telemetry is down.
+    const completed = useCompletedJobs();
 
     return (
         <>
@@ -38,8 +41,7 @@ export function DashboardPage() {
                                 <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                             </>
                         ) : null}
-                        <DataQualityPanel meta={data.meta} />
-                        <Limitations />
+                        <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
                     </>
                 ) : null}
             </main>

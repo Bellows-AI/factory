@@ -695,6 +695,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     // A number only: an unmeasured read stays off the report and the board
                     // stores null — the driver keeps the never-zero contract on the wire.
                     ...(typeof outcome.agentTurns === 'number' ? { agentTurns: outcome.agentTurns } : {}),
+                    // The run's last words, when the close-time read lifted them; absent stays
+                    // absent, and the board stores null.
+                    ...(outcome.summary ? { summary: outcome.summary } : {}),
                 });
                 log(
                     verdict === 'lost'

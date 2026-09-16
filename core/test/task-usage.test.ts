@@ -43,6 +43,7 @@ function run(over: Partial<JobRun>): JobRun {
         createdBy: ALICE.id,
         createdAt: '2026-08-20T00:00:00.000Z',
         agentTurns: 0,
+        wallClockMs: 60_000,
         ...over,
     };
 }
@@ -287,6 +288,47 @@ describe('repo scope', () => {
             repos: ['o/r'],
         });
         expect(unlabeled.tokensPerTask.tasks).toBe(0);
+    });
+});
+
+describe('wall clock per task', () => {
+    it('sums the runs banked wall clock per thread, as a distribution over tasks', () => {
+        const stats = taskUsageStats(
+            [],
+            [
+                run({ rootJobId: 't1', wallClockMs: 60_000 }),
+                run({ rootJobId: 't1', wallClockMs: 30_000 }),
+                run({ rootJobId: 't2', wallClockMs: 200_000 }),
+            ]
+        );
+        // Nearest-rank over [90_000, 200_000]: p50 is the 1st of the sort, p95 the 2nd.
+        expect(stats.wallClockPerTask).toEqual({ avg: 145_000, p50: 90_000, p95: 200_000, tasks: 2 });
+    });
+
+    it('excludes a task with any unmeasured run from this distribution only', () => {
+        // t2's run never executed (null wall clock = never ran, not zero); both tasks carry a
+        // measured session, so both count in tokens while only t1 counts in wall clock.
+        const stats = taskUsageStats(
+            [
+                session({ sessionId: 'a', taskKey: 't1', tokens: T(1000, 1000) }),
+                session({ sessionId: 'b', taskKey: 't2', tokens: T(1000, 1000) }),
+            ],
+            [run({ rootJobId: 't1', wallClockMs: 60_000 }), run({ rootJobId: 't2', wallClockMs: null })]
+        );
+        expect(stats.wallClockPerTask).toEqual({ avg: 60_000, p50: 60_000, p95: 60_000, tasks: 1 });
+        expect(stats.tokensPerTask.tasks).toBe(2);
+    });
+
+    it('counts a task with no in-range run as zero banked time, not missing', () => {
+        // The task entered through its sessions; no run of it was queued in the range, so zero
+        // execution time in-range is what was measured.
+        const stats = taskUsageStats([session({ sessionId: 'a', taskKey: 't1' })], []);
+        expect(stats.wallClockPerTask).toEqual({ avg: 0, p50: 0, p95: 0, tasks: 1 });
+    });
+
+    it('answers null figures, not zeros, when no task is measured', () => {
+        const stats = taskUsageStats([], []);
+        expect(stats.wallClockPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
     });
 });
 

@@ -89,4 +89,42 @@ describe('the env vars panel', () => {
         const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />);
         expect(html).not.toContain('<form');
     });
+
+    it('renders both tabs with Variables active and the raw toggle', () => {
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />);
+        expect(html).toContain('Variables');
+        expect(html).toContain('Secrets');
+        expect(html).toContain('aria-pressed="true"');
+        expect(html).toContain('>raw</button>');
+        expect(html).toContain('aria-pressed="false"');
+        // Raw defaults off: the table view renders, the editor does not.
+        expect(html).not.toContain('<textarea');
+        expect(html).toContain('Add variable');
+    });
+
+    it('renders secret rows inside the hidden Secrets tab while Variables is active', () => {
+        const html = renderToStaticMarkup(
+            <EnvVarsPanel
+                title="Core"
+                hint=""
+                initialVars={[
+                    { name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' },
+                ]}
+                onSave={noop}
+            />
+        );
+        expect(html).toContain('CORE_SECRET');
+        expect(html).toContain('hidden');
+        expect(html).toContain('leave blank to keep');
+    });
+
+    it('renders a read-only scope with both tabs and every control disabled', () => {
+        const html = renderToStaticMarkup(
+            <EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} disabled />
+        );
+        expect(html).toContain('>raw</button>');
+        expect(html).toContain('Add variable');
+        expect(html).toContain('disabled');
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
 });

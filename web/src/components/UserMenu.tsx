@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import { NavLink } from 'react-router-dom';
-import type { Session } from '../api/useSession.js';
+import { signOut, type Session } from '../api/useSession.js';
 
 /**
  * The account affordance in the topbar: avatar (or an initial chip when GitHub reports none, as
@@ -30,6 +30,22 @@ export function UserMenu({ session }: { session: Session }) {
                 <NavLink to="/settings" onClick={close}>
                     Settings
                 </NavLink>
+                {/*
+                    Under AUTH_MODE=none there is no session to end, so no item — a button that can
+                    never work is a broken button. A fetch POST and not a <form>: the CSP bans
+                    form navigation, and the server refuses GET for the same CSRF reason.
+                */}
+                {session.mode !== 'none' ? (
+                    <button
+                        type="button"
+                        onClick={() => {
+                            close();
+                            void signOut();
+                        }}
+                    >
+                        Sign out
+                    </button>
+                ) : null}
             </div>
         </details>
     );
