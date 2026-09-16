@@ -125,7 +125,7 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Env | `env-tab`, `env-tabs`, `env-paste`, `env-paste-actions`, `env-paste-errors` | The Variables/Secrets tab strip and the `.env` paste box |
+| Env | `env-tab`, `env-tabs`, `env-raw`, `env-errors` | The Variables/Secrets tab strip and the raw `.env` editor toggle |
 
 ### One-offs
 
@@ -160,7 +160,7 @@ Components:
 | `TopBar.tsx` | topbar |
 | `UserMenu.tsx` | user-menu, avatar |
 
-Panels (`env-paste.ts` is the paste-box parser the env panel imports — a helper, not a panel):
+Panels (`env-raw.ts` is the raw-`.env` parser the env panel imports — a helper, not a panel):
 
 | File | Primitives |
 | --- | --- |
@@ -170,6 +170,7 @@ Panels (`env-paste.ts` is the paste-box parser the env panel imports — a helpe
 | `DataQualityPanel.tsx` | panel warn |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
+| `RecentTasksPanel.tsx` | panel, by-user, chart-wrap, task-avatar, alert |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
@@ -178,7 +179,7 @@ Panels (`env-paste.ts` is the paste-box parser the env panel imports — a helpe
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
 | `WorkspaceReposPanel.tsx` | panel, table |
-| `env-paste.ts` | helper — no markup |
+| `env-raw.ts` | helper — no markup |
 
 Pages:
 
