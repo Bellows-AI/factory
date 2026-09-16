@@ -102,8 +102,7 @@ claude plugin validate ./plugins/agent-telemetry
 ```
 
 Worth running after any edit: a malformed `hooks/hooks.json` loads the plugin **without** its
-hooks, and the only symptom is `sessionsWithoutHook` climbing on the dashboard's Data quality
-panel.
+hooks, and the only symptom is `sessionsWithoutHook` climbing on the dashboard.
 
 ## Limits
 

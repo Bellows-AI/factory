@@ -3,12 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { telemetryStats } from '@factory-ai/core';
 import { readFileSync } from 'node:fs';
 import type { TelemetryInput, TelemetryStats } from '@factory-ai/core';
-import type { TelemetryMeta, StatsPayload } from '../src/api/useStats.js';
+import type { TelemetryMeta } from '../src/api/useStats.js';
 import { AiUsagePanel } from '../src/panels/AiUsagePanel.js';
 import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
-import { DataQualityPanel } from '../src/panels/DataQualityPanel.js';
 import { tokens } from '../src/format.js';
 import type { TaskUsageStats } from '@factory-ai/core';
 
@@ -121,35 +120,6 @@ describe('telemetry panels render', () => {
         expect(html).toContain('panel bad');
         expect(html).toContain('connection refused');
         expect(html).not.toContain('NaN');
-    });
-
-    it('surfaces both setup failures in data quality', () => {
-        const payloadMeta: StatsPayload['meta'] = {
-            fetchedAt: NOW.toISOString(),
-            ageSeconds: 0,
-            stale: false,
-            organization: {
-                mode: 'config',
-                current: { id: 'x-org', name: 'X Org' },
-                available: [{ id: 'x-org', name: 'X Org' }],
-            },
-            repos: [{ owner: 'x', name: 'y' }],
-            range: { preset: 'all', from: null, to: null },
-            scope: 'org',
-            scopeLogin: null,
-            telemetry: meta(),
-        };
-        const html = renderToStaticMarkup(<DataQualityPanel meta={payloadMeta} />);
-        expect(html).toContain('agent-telemetry plugin');
-        expect(html).toContain('happened in another repo');
-        expect(html).toContain('synthetic fixture data');
-        // The third exclusion, on its own line beside the two setup failures.
-        expect(html).toContain('counted as unattributed');
-        // And under caller scope, the page says whose figures these are.
-        const mine = renderToStaticMarkup(
-            <DataQualityPanel meta={{ ...payloadMeta, scope: 'mine', scopeLogin: 'carol' }} />
-        );
-        expect(mine).toContain('scoped to carol');
     });
 
     it('renders no PR vocabulary anywhere', () => {

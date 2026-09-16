@@ -1,11 +1,9 @@
 import { useShell } from '../components/AppShell.js';
-import { Limitations } from '../components/Limitations.js';
 import { RangeSelector } from '../components/RangeSelector.js';
 import { ScopeToggle } from '../components/ScopeToggle.js';
 import { StatusBanner } from '../components/StatusBanner.js';
 import { AiUsagePanel } from '../panels/AiUsagePanel.js';
 import { ByUserPanel } from '../panels/ByUserPanel.js';
-import { DataQualityPanel } from '../panels/DataQualityPanel.js';
 import { TaskUsagePanel } from '../panels/TaskUsagePanel.js';
 import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
 
@@ -38,8 +36,6 @@ export function DashboardPage() {
                                 <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                             </>
                         ) : null}
-                        <DataQualityPanel meta={data.meta} />
-                        <Limitations />
                     </>
                 ) : null}
             </main>

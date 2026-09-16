@@ -66,7 +66,9 @@ from the agent-turn distribution only, while its tokens and job turns still coun
   is counted in `sessionsWithoutHook`; a session whose board task no longer exists (or never
   existed) is counted in `unattributedSessions`. Four different states must stay distinguishable —
   a repo removed from the installation, a broken plugin, a removed task, and genuinely no AI usage
-  must not render identically, which is why the data-quality panel lists each on its own line.
+  must not render identically. The figures live in the payload; the dashboard does not render the
+  breakdown (#109 removed the data-quality panel), but the counters are contract — tests and the
+  telemetry client both speak them.
 - **`TelemetryStats.totals` comes only from in-scope sessions.** `otherRepoSessions` and
   `sessionsWithoutHook` contribute to no total. Pinning that is what stops a future "count
   everything" refactor from rendering figures over an unnamed subset of sessions.

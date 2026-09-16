@@ -7,7 +7,7 @@ import type { TelemetryMeta } from '../api/useStats.js';
  * 'unreachable' renders the frame with a reason and no numbers, rather than dashes: a dash
  * means "measured, unavailable", and nothing was measured here. The 'fixture' badge is loud
  * because synthetic token counts sitting beside real PR numbers is precisely the
- * invented-number problem the limitations panel exists to warn about.
+ * invented-number problem.
  */
 export function TelemetryFrame({
     title,
