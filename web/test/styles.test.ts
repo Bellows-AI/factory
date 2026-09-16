@@ -6,7 +6,12 @@ import { describe, expect, it } from 'vitest';
 const webSrc = fileURLToPath(new URL('../src', import.meta.url));
 const docPath = fileURLToPath(new URL('../../docs/design-system.md', import.meta.url));
 
-const COLOR_RE = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/g;
+// Functional color syntaxes join hex and rgb/hsl; CSS named colors are deliberately out —
+// prose like "white-space" would collide with a value scan, and no rule writes one today.
+const COLOR_RE = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|okl(ch|ab)\([^)]*\)|color(-mix)?\([^)]*\)/g;
+
+/** Block comments removed, so prose cannot mint phantom tokens, classes or color mentions. */
+const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 
 /** The :root token block's [start, end) span, by brace counting from the first `:root {`. */
 const rootSpan = (css: string): [number, number] => {
@@ -51,7 +56,7 @@ describe('the stylesheet', () => {
     });
 
     it('defines every var() the stylesheet references', () => {
-        const css = readFileSync(join(webSrc, 'styles.css'), 'utf8');
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
         const [start, end] = rootSpan(css);
         const defined = new Set([...css.slice(start, end).matchAll(/--([a-zA-Z][\w-]*)\s*:/g)].map((m) => m[1]));
         const used = new Set([...css.matchAll(/var\(--([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
@@ -60,7 +65,7 @@ describe('the stylesheet', () => {
     });
 
     it('uses every token it defines', () => {
-        const css = readFileSync(join(webSrc, 'styles.css'), 'utf8');
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
         const [start, end] = rootSpan(css);
         const defined = [...css.slice(start, end).matchAll(/--([a-zA-Z][\w-]*)\s*:/g)].map((m) => m[1]);
         const used = new Set([...css.matchAll(/var\(--([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
@@ -72,6 +77,8 @@ describe('the stylesheet', () => {
         // Negative controls: the modern space-syntax rgb() is the easiest form to miss.
         expect('background: #fff'.match(COLOR_RE)).toEqual(['#fff']);
         expect('background: rgb(0 0 0 / 60%)'.match(COLOR_RE)).toEqual(['rgb(0 0 0 / 60%)']);
+        expect('color: oklch(70% 0.1 200)'.match(COLOR_RE)).toEqual(['oklch(70% 0.1 200)']);
+        expect('color: color-mix(in srgb, red, blue)'.match(COLOR_RE)).toEqual(['color-mix(in srgb, red, blue)']);
     });
 
     it('finds the :root span without swallowing a later block', () => {
@@ -97,12 +104,12 @@ describe('the design-system inventory', () => {
     });
 
     it('documents every class the stylesheet defines', () => {
-        // Comments are stripped first: prose in styles.css may mention file names and other
-        // dotted text without putting those "classes" on the inventory's books.
-        const css = readFileSync(join(webSrc, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        // The text before every opening brace is a selector prelude — collected at any depth, so
+        // a class defined only inside @media lands on the inventory's books like the rest.
         const defined = new Set<string>();
-        for (const rule of css.match(/[^{}]+\{[^}]*\}/g) ?? []) {
-            for (const match of rule.split('{')[0].matchAll(/\.([a-zA-Z][\w-]*)/g)) defined.add(match[1]);
+        for (const prelude of css.matchAll(/([^{}]*)\{/g)) {
+            for (const match of prelude[1].matchAll(/\.([a-zA-Z][\w-]*)/g)) defined.add(match[1]);
         }
         expect([...defined].filter((name) => !doc.includes(name))).toEqual([]);
     });

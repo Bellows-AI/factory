@@ -20,7 +20,7 @@ whole theme surface (issue 117 is a second `:root` block, not a restyle).
 | `--panel` | Card and panel surface |
 | `--panel-raised` | One step above `--panel`: controls, inline `code`, the avatar placeholder, hover fills |
 | `--border` | Every hairline: panel edges, table row rules, control outlines |
-| `--overlay` | Modal backdrop behind a `dialog` |
+| `--overlay` | Modal backdrop behind a `dialog` — `var()` resolves in `::backdrop` on every engine since the 2024 originating-element inheritance change (Chrome 122, Firefox 120, Safari 17.4) |
 | `--text` | Primary foreground |
 | `--muted` | Secondary foreground: labels, captions, ticks, disabled text |
 | `--primary` | The accent: links, active controls, the default chart bar |
