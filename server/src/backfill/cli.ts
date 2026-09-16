@@ -23,7 +23,15 @@ if (!config.databaseUrl) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const orgId = value(args, 'org') ?? LOCAL_ORG_ID;
+// none mode falls back to the local org, which boot seeds. Github mode has no fallback: a legacy
+// `default` row can still sit in an upgraded database, so the existence check below cannot tell a
+// live installation from that leftover, and an omitted --org would land the import outside every
+// installation org. Explicit is the only safe spelling there.
+const orgId = value(args, 'org') ?? (config.auth.mode === 'none' ? LOCAL_ORG_ID : undefined);
+if (!orgId) {
+    console.error('github mode requires --org <installation-id> — its organizations come from sign-in, not boot.');
+    process.exit(1);
+}
 
 const sql = postgres(config.databaseUrl, { max: 4 });
 try {

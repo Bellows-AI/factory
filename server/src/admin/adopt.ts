@@ -36,6 +36,13 @@ if (from && from.startsWith('__')) {
     process.exit(1);
 }
 
+if (from && from === installation) {
+    // The merge would upsert every row onto itself and the cleanup would then delete the
+    // org's whole history — the one argument pair that turns an adoption into a wipe.
+    console.error('--from must name the legacy organization, not the installation being adopted into.');
+    process.exit(1);
+}
+
 const sql = postgres(config.databaseUrl, { max: 2 });
 try {
     const ready = migrate(sql, { attempts: 3, log: (m) => console.log(`[migrate] ${m}`) });
@@ -63,17 +70,22 @@ try {
         // appeared writes exactly that row. UPDATE would violate it on the first collision and
         // abort the adoption partway; upserting widens the span instead, and only a successful
         // merge deletes the legacy rows.
-        const mergedBranches = await sql`
-            insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            select ${installation}, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples
-            from session_branch where org_id = ${from}
-            on conflict (org_id, agent, session_id, repo, branch) do update set
-                head_sha   = coalesce(excluded.head_sha, session_branch.head_sha),
-                first_seen = least(session_branch.first_seen, excluded.first_seen),
-                last_seen  = greatest(session_branch.last_seen, excluded.last_seen),
-                samples    = session_branch.samples + excluded.samples
-        `;
-        await sql`delete from session_branch where org_id = ${from}`;
+        // One transaction, because a crash between the upsert and the delete would make a rerun
+        // merge the same legacy rows again and add `excluded.samples` a second time.
+        const mergedBranches = await sql.begin(async (tx) => {
+            const merged = await tx`
+                insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
+                select ${installation}, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples
+                from session_branch where org_id = ${from}
+                on conflict (org_id, agent, session_id, repo, branch) do update set
+                    head_sha   = coalesce(excluded.head_sha, session_branch.head_sha),
+                    first_seen = least(session_branch.first_seen, excluded.first_seen),
+                    last_seen  = greatest(session_branch.last_seen, excluded.last_seen),
+                    samples    = session_branch.samples + excluded.samples
+            `;
+            await tx`delete from session_branch where org_id = ${from}`;
+            return merged;
+        });
         console.log(`[adopt] merged ${mergedBranches.count} session_branch rows from "${from}" into "${installation}"`);
 
         // Members merge, never duplicate: a person already reported by a sign-in into the
