@@ -235,7 +235,9 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
                 await sql`
                     insert into organization (id, name, installation_id)
                     values (${org.id}, ${org.name}, ${org.id}::bigint)
-                    on conflict (id) do update set name = excluded.name
+                    on conflict (id) do update set
+                        name = excluded.name,
+                        installation_id = excluded.installation_id
                 `;
                 await sql`
                     insert into org_membership (org_id, github_login, user_id, claimed_at)

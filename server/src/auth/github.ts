@@ -47,6 +47,9 @@ export interface GitHubIdentityClient {
 /** Where GitHub sends the browser back. Derived from the configured origin, never from a header. */
 export const callbackPath = '/api/auth/github/callback';
 
+/** 100 a page, ten pages, then fail loud rather than feed signIn a prefix of the truth. */
+const MAX_INSTALLATION_PAGES = 10;
+
 export class GitHubAuthError extends Error {}
 
 export function createGitHubIdentityClient(
@@ -126,22 +129,38 @@ export function createGitHubIdentityClient(
         async installations(accessToken) {
             // Derived from userUrl rather than configured separately, so the one environment seam
             // that already redirects /user redirects this too and the stub IdP needs no second knob.
-            const response = await fetchFn(`${auth.userUrl}/installations`, {
-                headers: {
-                    authorization: `Bearer ${accessToken}`,
-                    accept: 'application/vnd.github+json',
-                    'user-agent': 'factory-ai',
-                },
-            });
-            if (!response.ok) throw new GitHubAuthError(`installation lookup failed with ${response.status}`);
-            const body = (await response.json()) as {
-                installations?: { id?: number; account?: { login?: string } | null }[];
-            };
-            // A well-formed but meaningless entry (no numeric id) is skipped, not fatal: GitHub
-            // owns the payload, and one malformed row must not lock everybody out.
-            return (body.installations ?? [])
-                .filter((install) => typeof install.id === 'number')
-                .map((install) => ({ id: String(install.id), account: install.account?.login ?? null }));
+            //
+            // Paginated, and PAST THE CAP A LOUD FAILURE, never a prefix: the callback feeds this
+            // list to signIn, which deletes every membership of an installation-org NOT in it —
+            // silently truncating at GitHub's default 30-per-page would make every sign-in
+            // permanently remove an enterprise-scale account's orgs beyond page one. Fail the
+            // sign-in instead; a thousand installations is not a page-walk problem anybody has.
+            const out: InstallationAccount[] = [];
+            for (let page = 1; page <= MAX_INSTALLATION_PAGES; page += 1) {
+                const response = await fetchFn(`${auth.userUrl}/installations?per_page=100&page=${page}`, {
+                    headers: {
+                        authorization: `Bearer ${accessToken}`,
+                        accept: 'application/vnd.github+json',
+                        'user-agent': 'factory-ai',
+                    },
+                });
+                if (!response.ok) throw new GitHubAuthError(`installation lookup failed with ${response.status}`);
+                const body = (await response.json()) as {
+                    installations?: { id?: number; account?: { login?: string } | null }[];
+                };
+                const batch = body.installations ?? [];
+                // A well-formed but meaningless entry (no numeric id) is skipped, not fatal: GitHub
+                // owns the payload, and one malformed row must not lock everybody out.
+                for (const install of batch) {
+                    if (typeof install.id === 'number') {
+                        out.push({ id: String(install.id), account: install.account?.login ?? null });
+                    }
+                }
+                if (batch.length < 100) return out;
+            }
+            throw new GitHubAuthError(
+                `more than ${MAX_INSTALLATION_PAGES * 100} installations — refusing a truncated list, because sign-in removes what this list does not report`
+            );
         },
     };
 }

@@ -150,13 +150,21 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
         for(orgId) {
             let runtime = runtimes.get(orgId);
             if (!runtime) {
-                runtime = build(orgId).catch((e: Error) => {
-                    // Do not cache a failure: the next request retries, and the log line is what
-                    // tells the operator which org could not be built.
-                    console.error(`[org] runtime for "${orgId}" failed: ${e.message}`);
-                    runtimes.delete(orgId);
-                    return null;
-                });
+                runtime = build(orgId)
+                    .then((built) => {
+                        // Do not cache a MISS either: `for` is called with principal-carried ids
+                        // (FK-guaranteed today), but a caller that asks before the org row lands
+                        // would otherwise remember null for the process's whole life.
+                        if (built === null) runtimes.delete(orgId);
+                        return built;
+                    })
+                    .catch((e: Error) => {
+                        // Do not cache a failure either: the next request retries, and the log
+                        // line is what tells the operator which org could not be built.
+                        console.error(`[org] runtime for "${orgId}" failed: ${e.message}`);
+                        runtimes.delete(orgId);
+                        return null;
+                    });
                 runtimes.set(orgId, runtime);
             }
             return runtime;

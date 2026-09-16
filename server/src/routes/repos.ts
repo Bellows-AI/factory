@@ -28,7 +28,8 @@ export const repoRoutes =
         app.get('/api/repos', async (request, reply) => {
             const orgId = orgOf(request);
             const rt = await orgs.for(orgId);
-            if (!rt) return bad(reply, 'UNKNOWN_ORG', `Unknown organization '${orgId}'`, 400);
+            // Principal-carried org ids are FK-guaranteed, so null is a failed build, not a typo.
+            if (!rt) return bad(reply, 'REPOS_UNAVAILABLE', `No runtime for '${orgId}'; retry`, 503);
             const repos = rt.repos;
 
             const { repos: list, installation } = await repos.detail();

@@ -256,9 +256,8 @@ export const authRoutes =
 
             const token = unsign(request.cookies[SESSION_COOKIE], secret);
             if (!token) {
-                // AUTH_MODE=none has no session to move — the stand-in caller is bound to the one
-                // local org and the selector is disabled there. Reaching this route without a
-                // session cookie is a programming error, not an outcome.
+                // Registered in github mode only, so this is a caller with no session cookie at
+                // all — the same 401 class the hook answers for every other route.
                 return reply.code(400).send({ error: 'No session to switch', code: 'NO_SESSION' });
             }
             const moved = await store.updateSessionOrg(hashToken(token), orgId);

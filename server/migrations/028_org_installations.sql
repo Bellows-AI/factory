@@ -23,6 +23,11 @@ create unique index if not exists organization_installation_uk
 
 alter table session add column if not exists org_id text;
 create index if not exists session_org on session (org_id);
-alter table session
-    add constraint session_org_fk foreign key (org_id)
-    references organization (id) on update cascade on delete cascade;
+-- Re-runnable, like every statement in every file: a crash between applying a file and recording
+-- its version re-applies the whole body, so a plain `add constraint` would fail the retry with
+-- duplicate_object and brick the boot. The same DO-block 010 uses.
+do $$ begin
+    alter table session
+        add constraint session_org_fk foreign key (org_id)
+        references organization (id) on update cascade on delete cascade;
+exception when duplicate_object then null; end $$;

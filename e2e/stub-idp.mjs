@@ -19,7 +19,7 @@ const userId = Number(process.env.STUB_IDP_USER_ID ?? 424242);
 const installations = (process.env.STUB_IDP_INSTALLATIONS ?? '999999')
     .split(',')
     .map((id) => id.trim())
-    .filter(/\d+/.test.bind(/\d+/));
+    .filter((id) => /^\d+$/.test(id));
 
 const json = (response, body) => {
     response.writeHead(200, { 'content-type': 'application/json' });

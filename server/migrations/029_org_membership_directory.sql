@@ -21,7 +21,9 @@ delete from org_membership where user_id is null;
 alter table org_membership alter column user_id set not null;
 
 alter table org_membership drop constraint if exists org_membership_pk;
-alter table org_membership add constraint org_membership_pk primary key (org_id, user_id);
+do $$ begin
+    alter table org_membership add constraint org_membership_pk primary key (org_id, user_id);
+exception when duplicate_object then null; end $$;
 -- The PK now covers this: one person, at most one membership per organization, is the primary key.
 drop index if exists org_membership_user_uk;
 
@@ -29,8 +31,10 @@ drop index if exists org_membership_user_uk;
 -- deleting an account would violate its own membership instead of detaching it. A membership is
 -- GitHub-reported, and with the account gone there is nothing left to report on: cascade.
 alter table org_membership drop constraint if exists org_membership_user_fk;
-alter table org_membership add constraint org_membership_user_fk
-    foreign key (user_id) references app_user (id) on delete cascade;
+do $$ begin
+    alter table org_membership add constraint org_membership_user_fk
+        foreign key (user_id) references app_user (id) on delete cascade;
+exception when duplicate_object then null; end $$;
 
 alter table org_membership drop column if exists auto_joined;
 alter table org_membership drop column if exists invited_by;
