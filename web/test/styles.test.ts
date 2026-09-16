@@ -1,15 +1,26 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const webSrc = fileURLToPath(new URL('../src', import.meta.url));
 const docPath = fileURLToPath(new URL('../../docs/design-system.md', import.meta.url));
 
-// Functional color syntaxes join hex and rgb/hsl; CSS named colors are deliberately out —
-// prose like "white-space" would collide with a value scan, and no rule writes one today.
+// Functional color syntaxes join hex and rgb/hsl, matched case-insensitively because CSS
+// function names are. `transparent` and `currentColor` are theme keywords, not literals,
+// so the named-color list below leaves them out — `currentColor` is in active use.
 const COLOR_RE =
-    /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|okl(ch|ab)\([^)]*\)|hwb\([^)]*\)|(lab|lch|light-dark|color(-mix)?)\([^)]*\)/g;
+    /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|okl(ch|ab)\([^)]*\)|hwb\([^)]*\)|(lab|lch|light-dark|color(-mix)?)\([^)]*\)/gi;
+
+// A named color only counts where a VALUE can start — after a declaration's `:` or a
+// function's `(`/`,` — so property names ("white-space"), selectors and prose never collide
+// with the list.
+const NAMED_COLOR_RE = new RegExp(
+    `(?<=[:,(]\\s*)(${'aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen'
+        .split(' ')
+        .join('|')})\\b`,
+    'gi'
+);
 
 /** Block comments removed, so prose cannot mint phantom tokens, classes or color mentions. */
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -48,9 +59,11 @@ describe('the stylesheet', () => {
             const text = readFileSync(path, 'utf8');
             const rel = path.slice(webSrc.length + 1);
             const span = rel === 'styles.css' ? rootSpan(text) : [-1, -1];
-            for (const match of text.matchAll(COLOR_RE)) {
-                const at = match.index ?? 0;
-                if (at < span[0] || at >= span[1]) violations.push(`${rel}:${lineAt(text, at)}`);
+            for (const colorRe of [COLOR_RE, NAMED_COLOR_RE]) {
+                for (const match of text.matchAll(colorRe)) {
+                    const at = match.index ?? 0;
+                    if (at < span[0] || at >= span[1]) violations.push(`${rel}:${lineAt(text, at)}`);
+                }
             }
         }
         expect(violations).toEqual([]);
@@ -75,11 +88,17 @@ describe('the stylesheet', () => {
     });
 
     it('matches colors in every shape the UI writes them', () => {
-        // Negative controls: the modern space-syntax rgb() is the easiest form to miss.
+        // Negative controls: the modern space-syntax rgb() is the easiest form to miss, CSS
+        // function names are case-insensitive, and the named-color scan must collide with
+        // neither property names nor the theme keywords.
         expect('background: #fff'.match(COLOR_RE)).toEqual(['#fff']);
         expect('background: rgb(0 0 0 / 60%)'.match(COLOR_RE)).toEqual(['rgb(0 0 0 / 60%)']);
         expect('color: oklch(70% 0.1 200)'.match(COLOR_RE)).toEqual(['oklch(70% 0.1 200)']);
-        expect('color: color-mix(in srgb, red, blue)'.match(COLOR_RE)).toEqual(['color-mix(in srgb, red, blue)']);
+        expect('color: COLOR-MIX(in srgb, red, blue)'.match(COLOR_RE)).toEqual(['COLOR-MIX(in srgb, red, blue)']);
+        expect('color: red'.match(NAMED_COLOR_RE)).toEqual(['red']);
+        expect('white-space: nowrap'.match(NAMED_COLOR_RE)).toBeNull();
+        expect('background: currentColor'.match(NAMED_COLOR_RE)).toBeNull();
+        expect('background: transparent'.match(NAMED_COLOR_RE)).toBeNull();
     });
 
     it('finds the :root span without swallowing a later block', () => {
@@ -97,7 +116,7 @@ describe('the design-system inventory', () => {
 
     it('inventories every UI unit under web/src', () => {
         const units = ['components', 'panels', 'pages', 'charts'].flatMap((dir) =>
-            walkFiles(join(webSrc, dir)).map((path) => path.split('/').pop()!)
+            walkFiles(join(webSrc, dir)).map((path) => basename(path))
         );
         expect(units.filter((name) => !doc.includes(name))).toEqual([]);
     });
