@@ -34,7 +34,9 @@ function job(overrides: Partial<Job> = {}): Job {
         createdAt: '2026-09-01T12:00:00.000Z',
         startedAt: '2026-09-01T12:00:01.000Z',
         finishedAt: '2026-09-01T12:04:00.000Z',
+        wallClockMs: null,
         taskWallClockMs: null,
+        summary: null,
         // A finished claude-code run has a session by default here: the follow-up composer is
         // offered for exactly these, and the sessionless case has its own test below.
         sessionId: '33333333-3333-4333-8333-333333333333',

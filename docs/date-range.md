@@ -28,6 +28,9 @@ Read before: touching `filterTelemetryInput()`, `parseRange`, the range selector
   overlap rule (`filterTelemetryInput`); its run rows follow the queued-instant rule
   (`filterJobRuns`, half-open like the session bounds). Either one puts the task in the range's
   statistics — boundary-straddling work is not dropped.
-- **`BarChart` caps `barWidth` at 56px.** The chart is fixed-width, so a one-week range renders
-  a single ~580px bar that reads as a filled panel rather than as one data point. Types, tests
-  and the SSR smoke render all passed; only `npm run verify:ui` showed it.
+- **`BarChart` caps `barWidth` at an eighth of the plot width (never below 56px).** The chart is
+  fixed-width, so a one-week range would otherwise render a single ~580px bar that reads as a
+  filled panel rather than as one data point — but a flat 56px cap starved the other sparse
+  case: a handful of day-bars rendered as narrow strips in wide empty bands. The cap scales
+  with the chart, so sparse ranges fill their bands while the single bar stays a bar (#109).
+  Types, tests and the SSR smoke render all passed; only `npm run verify:ui` showed it.

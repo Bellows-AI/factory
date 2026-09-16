@@ -8,7 +8,6 @@ import {
     claimContinuesSession,
     claimEnv,
     claudeTurnsScript,
-    containerName,
     envFileBody,
     GATE_GID,
     GATE_HOME,
@@ -16,7 +15,7 @@ import {
     opencodeDbPath,
     opencodeReadoutScript,
     OUTPUT_LIMIT,
-    parseClaudeTurns,
+    parseClaudeCloseRead,
     parseOpencodeRunOutcome,
     reportTail,
     runWorkingDir,
@@ -294,7 +293,10 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
         apiVersion: 'batch/v1',
         kind: 'Job',
         metadata: {
-            name: containerName(job),
+            // runnerJobName, not containerName(job): the Job's name lands on the pod template as
+            // the `job-name` label, and a label value tops out at 63 bytes — the raw form is 85.
+            // See runnerJobName for the full constraint.
+            name: runnerJobName(job),
             // factory.job is shared by every attempt of the job: it is what `kubectl get jobs -l
             // factory.job=<id>` finds a runner that outlived its driver by, and what the re-claim
             // fence sweeps by. factory.lease is this attempt's alone — the label form of the
@@ -322,7 +324,11 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                     automountServiceAccountToken: false,
                     containers: [
                         {
-                            name: containerName(job),
+                            // A constant: a container name is a DNS LABEL (63 bytes), which rules
+                            // out containerName(job) (85) the same way it rules the Job's own name
+                            // out of the raw form. Nothing addresses the container by name — its
+                            // log is read off the pod's labels, its lifecycle by the Job's.
+                            name: 'runner',
                             image: config.image,
                             // Stated, never defaulted: kubernetes reads a missing or :latest tag as
                             // `Always` and would reach for a registry, past the image the node
@@ -543,6 +549,20 @@ export const envBodyToData = (body: string): Record<string, string> => {
 const BELLOWS_READ_DEADLINE_SECONDS = 120;
 
 export const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash8(`${job.id}|${job.leaseToken}`)}`;
+
+/**
+ * The runner Job's name, hashed like the readout's rather than `containerName(job)`'s raw
+ * `<id>-<lease token>`: the apiserver carries the Job's name onto the pod template as the
+ * `job-name` label, and a LABEL VALUE is capped at 63 bytes — the raw form is 85, and the
+ * create answers 422. A DNS subdomain would take it; the label does not, and the label wins.
+ * The hash keys on the same pair the raw form spelled out — job id and lease token — so the
+ * name stays attempt-scoped: a reclaimed job's replacement attempt gets a different name, and
+ * nothing a superseded attempt deletes by name can reach the winner's Job. Distinct prefix from
+ * `bellowsJobName`, whose hash key is the same pair — one attempt's readout and runner must not
+ * collide. Addressing is by label everywhere it can be (the fence's sweep, the pod log); the
+ * name is only ever spoken by this process, which minted it.
+ */
+export const runnerJobName = (job: BoardJob): string => `factory-runner-${hash8(`${job.id}|${job.leaseToken}`)}`;
 
 export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
@@ -1414,7 +1434,9 @@ export function createKubernetesRunner(
         if (!JOB_ID.test(job.id)) {
             throw new Error(`refusing to address a job id that is not a uuid: ${job.id}`);
         }
-        return containerName(job);
+        // The same name the spec was created under — the poll's GETs and every delete reach the
+        // Job through it.
+        return runnerJobName(job);
     };
 
     const secretsPath = `/api/v1/namespaces/${config.k8sNamespace}/secrets`;
@@ -1566,6 +1588,7 @@ export function createKubernetesRunner(
             contextTokens: null,
             costUsd: null,
             agentTurns: null,
+            summary: null,
             error,
         });
         let spec: AuxJobSpec;
@@ -1660,26 +1683,31 @@ export function createKubernetesRunner(
         );
 
     /**
-     * The close-time claude-code turn count: one aux Job over the PVC, its one answer parsed to
-     * a number or null. Every failure on the way — a spec the board's ids do not satisfy, a
-     * create that was refused, a Job that deadlined or failed, an unparseable line — answers
-     * null: unmeasured, never zero, exactly the contract the docker twin's failed exec keeps.
+     * The close-time claude-code read: one aux Job over the PVC, its one answer parsed to the
+     * turn count and the run's last words, or nulls. Every failure on the way — a spec the
+     * board's ids do not satisfy, a create that was refused, a Job that deadlined or failed, an
+     * unparseable line — answers nulls: unmeasured, never zero, exactly the contract the docker
+     * twin's failed exec keeps.
      */
-    const scrapeClaudeTurns = async (job: BoardJob, sessionId: string, startedAt: string): Promise<number | null> => {
+    const scrapeClaudeCloseRead = async (
+        job: BoardJob,
+        sessionId: string,
+        startedAt: string
+    ): Promise<{ turns: number | null; summary: string | null }> => {
         let spec: AuxJobSpec;
         try {
             spec = claudeTurnsJobSpec(config, job, sessionId, startedAt);
         } catch {
-            return null;
+            return { turns: null, summary: null };
         }
         const jobName = spec.metadata.name;
         try {
             const created = await request('POST', jobsPath(config.k8sNamespace), spec);
-            if (created.status >= 300) return null;
+            if (created.status >= 300) return { turns: null, summary: null };
             const verdict = await auxVerdict(jobName);
-            return parseClaudeTurns(verdict.output);
+            return parseClaudeCloseRead(verdict.output);
         } catch {
-            return null;
+            return { turns: null, summary: null };
         } finally {
             void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
                 () => undefined,
@@ -2506,6 +2534,7 @@ export function createKubernetesRunner(
                     contextTokens: null,
                     costUsd: null,
                     agentTurns: null,
+                    summary: null,
                     error: null,
                 };
                 let reason: string | null = null;
@@ -2519,6 +2548,10 @@ export function createKubernetesRunner(
                     if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
                     if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
                     if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+                    // The turn count rides the same line — merged here as the docker twin
+                    // merges it, so an opencode run's agent turns survive either executor.
+                    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
+                    if (scraped.summary) outcome.summary = scraped.summary;
                     // With a session scraped, the line's error is the RUN's last provider error,
                     // not the read's failure — carried as its own field so the verdict can name
                     // the cause of a premature stop, exactly as the docker runner does.
@@ -2529,15 +2562,18 @@ export function createKubernetesRunner(
             }
 
             /*
-             * The claude-code turn count, the twin of docker's: one throwaway Job over the PVC
+             * The claude-code close read, the twin of docker's: one throwaway Job over the PVC
              * reading the transcript the CLI wrote onto the volume, after the runner exited. A
              * failed read — the Job refused, deadlined, or answered nothing parseable — costs
-             * the task its agent-turn figure, never its verdict: null, never zero. Remote
-             * Control is refused at config under this executor, so there is no interactive
-             * conversation to freeze; the guard exists only to say so beside docker's.
+             * the task its agent-turn figure and its summary, never its verdict: null, never
+             * zero. Remote Control is refused at config under this executor, so there is no
+             * interactive conversation to freeze; the guard exists only to say so beside
+             * docker's.
              */
             if (config.cli === 'claude-code' && session) {
-                outcome.agentTurns = await scrapeClaudeTurns(job, session.id, startedAt);
+                const read = await scrapeClaudeCloseRead(job, session.id, startedAt);
+                outcome.agentTurns = read.turns;
+                if (read.summary) outcome.summary = read.summary;
             }
             return outcome;
         },
@@ -2553,8 +2589,11 @@ export function createKubernetesRunner(
         // publish: the publish runs in the loop's post-run position where the heartbeat is
         // still live, so the lease — not the ConfigMap — is what excludes a replacement.
         async publishGit(job: BoardJob, publishToken?: string): Promise<PublishResult> {
+            // Null here is a COMMAND-ONLY job, and the verdict belongs to publishCheckout — its
+            // publishNothing is the ordinary no-op ("nothing to publish"), not a failure. This
+            // transport once refused first and failed every exit-0 command-only run; the docker
+            // transport never did, because it has no guard of its own to get wrong.
             const repo = worktreeDir(config, job);
-            if (!repo) return publishFailed('the job names no checkout this driver can publish');
             const env = envBodyToData(envFileBody(withPublishToken(job, publishToken)));
             const secret = Object.keys(env).length ? publishEnvSecretName(job) : null;
             if (secret) {
@@ -2579,6 +2618,10 @@ export function createKubernetesRunner(
                 return await publishCheckout(config, job, async (publish) => {
                     stepNumber += 1;
                     const jobName = publishStepJobName(job, stepNumber);
+                    // Unreachable: the workflow answers a null-repo job with publishNothing
+                    // before any step runs. The assertion keeps the transport honest if the
+                    // workflow's contract ever changes under it.
+                    if (!repo) throw new Error('the publish workflow ran a step for a job with no checkout');
                     try {
                         const created = await request(
                             'POST',

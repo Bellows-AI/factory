@@ -139,7 +139,7 @@ export interface TelemetryStats {
 
 /**
  * One run of the board: a job row. "Job turn" in the dashboard's terminology — a task's first
- * run or a follow-up, the member delivering one prompt. The five fields are exactly what the
+ * run or a follow-up, the member delivering one prompt. The six fields are exactly what the
  * task statistics read; anything more belongs to the board's own API, not this payload.
  */
 export interface JobRun {
@@ -159,6 +159,13 @@ export interface JobRun {
      * genuine zero-response run reports 0.
      */
     agentTurns: number | null;
+    /**
+     * The wall clock the board banked for THIS run — the executed segments accumulated at the
+     * settle points (claim, dead retirement, verdict, suspend park), never the time a queued
+     * row sat waiting. null is UNMEASURED: the row never executed, and zero would claim a
+     * measurement that was never made.
+     */
+    wallClockMs: number | null;
 }
 
 /** One distribution of per-task figures: the spread of what a task cost, over the tasks measured. */
@@ -190,4 +197,11 @@ export interface TaskUsageStats {
      * in-range run is excluded from THIS distribution only, never summed partially.
      */
     agentTurnsPerTask: TaskUsageDistribution;
+    /**
+     * Wall clock per task — the execution time the board banked for the task's in-range runs,
+     * summed. A task with any unmeasured (never-executed) in-range run is excluded from THIS
+     * distribution only; a task with no in-range run banks zero, which is measured — no run of
+     * it executed inside the range.
+     */
+    wallClockPerTask: TaskUsageDistribution;
 }

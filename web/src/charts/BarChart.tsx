@@ -20,9 +20,11 @@ export interface BarChartProps {
 export function BarChart({ labels, series, line, width = 720, height = 260, labelEvery = 1 }: BarChartProps) {
     const innerWidth = width - PAD.left - PAD.right;
     const band = innerWidth / Math.max(labels.length, 1);
-    // Capped, because the chart is fixed-width: a one-week range would otherwise render a
-    // single bar ~580px wide, which reads as a filled panel rather than as one data point.
-    const barWidth = Math.min(Math.max(band * 0.7, 1), 56);
+    // The chart is fixed-width, so the cap keeps a one-week range's single bar from rendering
+    // ~580px wide and reading as a filled panel — but a flat cap starved sparse ranges: seven
+    // day-bars of 56px in 800px read as gaps. The cap is a fraction of the plot instead: a bar
+    // can never exceed an eighth of it (never a panel), and band-limited ranges fill out.
+    const barWidth = Math.min(Math.max(band * 0.7, 1), Math.max(56, innerWidth / 8));
     const bandCentre = (i: number) => PAD.left + band * i + band / 2;
 
     const stackTotals = labels.map((_, i) => series.reduce((sum, s) => sum + (s.values[i] ?? 0), 0));

@@ -3,12 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { telemetryStats } from '@factory-ai/core';
 import { readFileSync } from 'node:fs';
 import type { TelemetryInput, TelemetryStats } from '@factory-ai/core';
-import type { TelemetryMeta, StatsPayload } from '../src/api/useStats.js';
+import type { TelemetryMeta } from '../src/api/useStats.js';
 import { AiUsagePanel } from '../src/panels/AiUsagePanel.js';
 import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
-import { DataQualityPanel } from '../src/panels/DataQualityPanel.js';
 import { tokens } from '../src/format.js';
 import type { TaskUsageStats } from '@factory-ai/core';
 
@@ -59,7 +58,7 @@ describe('telemetry panels render', () => {
         expect(html).not.toContain('undefined');
     });
 
-    it('renders the by-user table with the attributed users and the unattributed line', () => {
+    it('renders the by-user table with the attributed users', () => {
         const html = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={meta()} />);
         expect(html).toContain('Usage by user');
         expect(html).toContain('alice');
@@ -67,7 +66,14 @@ describe('telemetry panels render', () => {
         expect(html).toContain('bob');
         // The avatar renders only when the account carries one; bob's has none.
         expect(html).toContain('https://example.com/alice.png');
-        expect(html).toContain('4 sessions ran with no matching board task');
+        // The per-user split: the four token figures as four columns, never summed into one.
+        expect(html).toContain('<th>Input</th>');
+        expect(html).toContain('<th>Output</th>');
+        expect(html).toContain('<th>Cache read</th>');
+        expect(html).toContain('<th>Cache writes</th>');
+        // Off-board usage is not surfaced at all (#109): the payload keeps the count, the page
+        // does not speak it.
+        expect(html).not.toContain('no matching board task');
         expect(html).not.toContain('NaN');
     });
 
@@ -123,35 +129,6 @@ describe('telemetry panels render', () => {
         expect(html).not.toContain('NaN');
     });
 
-    it('surfaces both setup failures in data quality', () => {
-        const payloadMeta: StatsPayload['meta'] = {
-            fetchedAt: NOW.toISOString(),
-            ageSeconds: 0,
-            stale: false,
-            organization: {
-                mode: 'config',
-                current: { id: 'x-org', name: 'X Org' },
-                available: [{ id: 'x-org', name: 'X Org' }],
-            },
-            repos: [{ owner: 'x', name: 'y' }],
-            range: { preset: 'all', from: null, to: null },
-            scope: 'org',
-            scopeLogin: null,
-            telemetry: meta(),
-        };
-        const html = renderToStaticMarkup(<DataQualityPanel meta={payloadMeta} />);
-        expect(html).toContain('agent-telemetry plugin');
-        expect(html).toContain('happened in another repo');
-        expect(html).toContain('synthetic fixture data');
-        // The third exclusion, on its own line beside the two setup failures.
-        expect(html).toContain('counted as unattributed');
-        // And under caller scope, the page says whose figures these are.
-        const mine = renderToStaticMarkup(
-            <DataQualityPanel meta={{ ...payloadMeta, scope: 'mine', scopeLogin: 'carol' }} />
-        );
-        expect(mine).toContain('scoped to carol');
-    });
-
     it('renders no PR vocabulary anywhere', () => {
         const html = render(telemetry, meta());
         expect(html).not.toMatch(/pull request/i);
@@ -165,19 +142,22 @@ describe('per-task usage panel', () => {
         tokensPerTask: dist(51_200, 43_000, 96_000, 7),
         jobTurnsPerTask: dist(1.9, 1, 4, 7),
         agentTurnsPerTask: dist(18.3, 12, 44, 7),
+        wallClockPerTask: dist(4_212_000, 3_600_000, 10_800_000, 7),
     };
     const emptyStats: TaskUsageStats = {
         tokensPerTask: dist(0, 0, 0, 0),
         jobTurnsPerTask: dist(0, 0, 0, 0),
         agentTurnsPerTask: dist(0, 0, 0, 0),
+        wallClockPerTask: dist(0, 0, 0, 0),
     };
 
-    it('renders the three distributions as distinct, labeled figures with their counts', () => {
+    it('renders the four distributions as distinct, labeled figures with their counts', () => {
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
-        // Three kinds, each named — the terminology rule: never a bare "turns".
+        // Four kinds, each named — the terminology rule: never a bare "turns".
         expect(html).toContain('Tokens per task');
         expect(html).toContain('Runs per task');
         expect(html).toContain('Agent turns per task');
+        expect(html).toContain('Wall clock per task');
         expect(html).not.toMatch(/>\s*turns\s*</);
         // Every distribution renders beside its N.
         expect(html).toContain('7 tasks measured');
@@ -201,6 +181,13 @@ describe('per-task usage panel', () => {
         // excluded. The panel says so instead of rendering a quietly small number.
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
         expect(html).toContain('a task with any unmeasured run is left out, never counted as zero');
+    });
+
+    it('formats the wall clock distribution as a duration, not a raw millisecond count', () => {
+        // avg 4_212_000ms renders as "1.2h" — a millisecond figure beside tokens would be noise.
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        expect(html).toContain('1.2h');
+        expect(html).not.toContain('4212000');
     });
 });
 

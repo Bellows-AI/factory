@@ -236,7 +236,9 @@ instant fake clock cannot see it, so `loop.test.ts` models a period that never e
 
 **The board banks the task's wall clock at its own settle points.** `job.wall_clock_ms` (024)
 accumulates the milliseconds each row actually spent executing, and the task view's head clock is
-the thread's sum of them (`taskWallClockMs`, served by the thread read; `get`/`list` answer null).
+the thread's sum of them (`taskWallClockMs`, served by the thread read; `get`/`list` carry the ROW's
+own banked total as `wallClockMs`, which is what the recently-completed view renders — the thread
+sum stays thread-only).
 Every statement that ends or supersedes a running attempt — the claim, the dead retirement, the
 verdict, the suspend park — adds `started_at → now()` to the row's total in the same breath, which
 is the only moment it can: `started_at` resetting on every claim is exactly what would otherwise
@@ -585,7 +587,7 @@ Three things it needs that a headless run does not, all decided in `dockerArgs`:
 Off by default, so that turning a worker slot into a long-lived interactive session is something
 somebody typed.
 
-## The close-time agent-turn read
+## The close-time agent-turn read, and the run summary
 
 **Every run banks one number at close: its agent turns** — one assistant response cycle in the
 run's ROOT conversation, subagent conversations excluded (the definition of record is the
@@ -593,24 +595,34 @@ terminology block in docs/metrics.md, where "job turn" and "agent turn" are kept
 figure or label says a bare "turns"). No OTLP metric carries turns — the arriving metric set is
 closed — so the count comes from the session's own records, taken by the driver at run close and
 reported on the completion report as `agentTurns`; the board stores it on the job row
-(`job.agent_turns`, the only migration this feature needed).
+(`job.agent_turns`, the only migration this feature needed). The SAME reads lift the run's
+**summary** (`job.summary`, 028) — the agent's last words, what the run actually did, for the
+dashboard's recently-completed view; the command records what was asked, never what was done.
 
 - **opencode**: `opencode-readout.cjs` already walked the root session's messages — the count is
   a counter in that loop, emitted as `turns` on the readout's JSON line. The session selection
-  (`parent_id is null`) is what excludes subagents; there is no second read.
+  (`parent_id is null`) is what excludes subagents; there is no second read. The summary is the
+  last assistant message's text `part` rows, collapsed to one line by the script; a database
+  whose schema predates the `part` table costs the summary alone, never the rest of the line.
 - **claude-code**: the transcript lands on the workspaces volume under `FACTORY_TRANSCRIPT_DIR`
   (the runner's `CLAUDE_CONFIG_DIR`), so the driver reads it AFTER the run exits as a throwaway
   container over the volume — nothing dies with the runner, and there is no teardown to race.
   `claude-turns.cjs` (a real file under `driver/src/scripts/`, passed by content) finds the run's
   session transcript by glob and counts `type: "assistant"` entries that are not sidechains.
+  The summary is the last such entry's text blocks, collapsed the same way.
 - **kubernetes**: the twin of the docker read — the same script as one aux Job over the PVC
-  before the runner pod goes. Both platforms produce the count through their own close-time read
-  (executor parity, docs/kubernetes.md).
+  before the runner pod goes. Both platforms produce the count and the summary through their own
+  close-time read (executor parity, docs/kubernetes.md).
 - **A follow-up reports its own delta, not the resumed whole.** The conversation a follow-up
   resumes already carries the earlier runs' cycles, so the driver bounds each close-time read to
   the run's own start (passed as an env value): opencode counts root messages created at or
-  after it, claude-code the transcript entries written at or after it. The task total is the sum
+  after it, claude-code the transcript entries written at or after it — and the summary is
+  bounded the same way, so a follow-up's last words are ITS last words. The task total is the sum
   of per-run turns — a first run of 9 and a follow-up of 4 bank 13, never 9 + 16.
+- **The summary is prose, bounded, and null is the contract for none**: a run cut off
+  mid-tool-call has no final text, and null means exactly that — never an empty string, never a
+  fabricated line. The driver truncates to one line (400 characters) and the completing route
+  re-bounds it; the board's list read carries it for the recently-completed view (#109).
 - **Null is the contract for unmeasured**: a read that failed, a run killed before it, a
   transcript that is gone — all store null, never zero. A genuine zero-response run stores 0.
   The task statistics exclude a task with any unmeasured in-range run from the agent-turn

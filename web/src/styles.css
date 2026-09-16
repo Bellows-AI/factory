@@ -1,13 +1,34 @@
+/*
+ * The app's styling: the token set in :root, then the primitives that consume it.
+ * Every color in web/src is a token defined here and nowhere else — web/test/styles.test.ts
+ * holds that line. The :root block is the whole theme surface: a light theme (issue 117)
+ * is a second :root block, nothing more. What each primitive is for: docs/design-system.md.
+ */
 :root {
     --bg: #0e1116;
     --panel: #161b22;
+    /* One step above --panel: controls, inline code, the avatar placeholder, hover fills. */
+    --panel-raised: #21262d;
     --border: #2a313c;
+    --overlay: rgb(0 0 0 / 60%);
     --text: #e6edf3;
     --muted: #8b949e;
+    /* --primary accents text and controls; --chart-primary is the series fill. Two blues on
+       purpose — .bar's default and button.primary stay on --primary, and unifying them is a
+       pixel change. */
     --primary: #58a6ff;
+    --on-primary: #06121f;
     --ok: #3fb950;
+    --ok-border: #1c4523;
     --warn: #d29922;
+    --warn-border: #4a3a12;
+    --on-warn: #1a1204;
     --bad: #f85149;
+    --bad-border: #5a1e1c;
+    --on-bad: #fff;
+    --chart-grid: #262c36;
+    --chart-neutral: #6e7681;
+    --chart-primary: #2f6feb;
     --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
 }
 
@@ -38,7 +59,7 @@ h2 {
 code {
     font-family: var(--mono);
     font-size: 0.92em;
-    background: #21262d;
+    background: var(--panel-raised);
     padding: 1px 4px;
     border-radius: 3px;
 }
@@ -72,7 +93,7 @@ code {
 }
 
 button {
-    background: #21262d;
+    background: var(--panel-raised);
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -135,7 +156,7 @@ button:disabled {
    page. */
 .range-custom input,
 .org-select {
-    background: #21262d;
+    background: var(--panel-raised);
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -184,11 +205,11 @@ main {
 }
 
 .panel.warn {
-    border-color: #4a3a12;
+    border-color: var(--warn-border);
 }
 
 .panel.bad {
-    border-color: #5a1e1c;
+    border-color: var(--bad-border);
 }
 
 .alert {
@@ -199,7 +220,7 @@ main {
 .badge {
     background: var(--bad);
     border-radius: 4px;
-    color: #fff;
+    color: var(--on-bad);
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -211,7 +232,7 @@ main {
 
 .badge-warn {
     background: var(--warn);
-    color: #1a1204;
+    color: var(--on-warn);
 }
 
 .two-up {
@@ -264,7 +285,7 @@ main {
 }
 
 .grid {
-    stroke: #262c36;
+    stroke: var(--chart-grid);
     stroke-width: 1;
 }
 
@@ -309,7 +330,7 @@ main {
 
 /* Kept in step with .bar-primary / .bar-ok below, which the chart uses. */
 .swatch-primary {
-    background: #2f6feb;
+    background: var(--chart-primary);
 }
 
 .swatch-ok {
@@ -317,7 +338,7 @@ main {
 }
 
 .bar-primary {
-    fill: #2f6feb;
+    fill: var(--chart-primary);
 }
 
 .bar-ok {
@@ -339,7 +360,7 @@ main {
 }
 
 .dot {
-    fill: #6e7681;
+    fill: var(--chart-neutral);
     fill-opacity: 0.8;
 }
 
@@ -459,7 +480,7 @@ footer {
 /* An anchor, not a button, because the CSP blocks form submission and a fetch cannot follow the
    redirect to github.com. Styled to match `button` so the difference is invisible. */
 .login-button {
-    background: #21262d;
+    background: var(--panel-raised);
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -764,18 +785,18 @@ table.by-user th {
 }
 
 .pill-ready {
-    border-color: #1c4523;
+    border-color: var(--ok-border);
     color: var(--ok);
 }
 
 .pill-cloning,
 .pill-queued {
-    border-color: #4a3a12;
+    border-color: var(--warn-border);
     color: var(--warn);
 }
 
 .pill-failed {
-    border-color: #5a1e1c;
+    border-color: var(--bad-border);
     color: var(--bad);
 }
 
@@ -806,7 +827,7 @@ table.by-user th {
 }
 
 .picker::backdrop {
-    background: rgb(0 0 0 / 60%);
+    background: var(--overlay);
 }
 
 .picker h2 {
@@ -867,7 +888,7 @@ table.by-user th {
 button.primary {
     background: var(--primary);
     border-color: var(--primary);
-    color: #06121f;
+    color: var(--on-primary);
 }
 
 /* The tasks pages. */
@@ -1033,20 +1054,20 @@ button.primary {
 /* The user's verdict on a finished task. Same greens as a ready checkout: it is a good state, and
    it is one no run can reach by itself. */
 .chat-done {
-    border-color: #1c4523;
+    border-color: var(--ok-border);
     color: var(--ok);
 }
 
 /* Stop wears the same amber as a queued run: a request in flight, not yet a verdict. The darkened
    pill is its request-landed state — the run is coming down but has not parked yet. */
 .chat-stop {
-    border-color: #4a3a12;
+    border-color: var(--warn-border);
     color: var(--warn);
 }
 
 /* Remove is the thread's end: the red a failed run wears, because it is the same finality. */
 .chat-remove {
-    border-color: #5a1e1c;
+    border-color: var(--bad-border);
     color: var(--bad);
 }
 
@@ -1139,7 +1160,7 @@ button.primary {
     display: flex;
     align-items: center;
     gap: 8px;
-    background: #21262d;
+    background: var(--panel-raised);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 4px 10px;
@@ -1165,7 +1186,7 @@ button.primary {
 .avatar {
     border-radius: 50%;
     display: block;
-    background: #21262d;
+    background: var(--panel-raised);
     border: 1px solid var(--border);
 }
 
@@ -1198,15 +1219,25 @@ button.primary {
     z-index: 10;
 }
 
-.user-menu-panel a {
+.user-menu-panel a,
+.user-menu-panel button {
     display: block;
+    width: 100%;
     padding: 6px 10px;
     border-radius: 4px;
     text-decoration: none;
+    /* Button resets, so the sign-out item reads exactly like the Settings link beside it. */
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
 }
 
-.user-menu-panel a:hover {
-    background: #21262d;
+.user-menu-panel a:hover,
+.user-menu-panel button:hover {
+    background: var(--panel-raised);
 }
 
 .user-menu-panel a.active {
@@ -1242,7 +1273,7 @@ button.primary {
     border: 0;
 }
 
-/* The environment panel's Variables | Secrets tab strip and the .env paste box. */
+/* The environment panel's Variables | Secrets tab strip and the raw editor. */
 
 .panel-actions {
     display: flex;
@@ -1260,14 +1291,14 @@ button.primary {
     color: var(--primary);
 }
 
-.env-paste {
+.env-raw {
     display: flex;
     flex-direction: column;
     gap: 8px;
     margin-bottom: 12px;
 }
 
-.env-paste textarea {
+.env-raw textarea {
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -1279,11 +1310,6 @@ button.primary {
     width: 100%;
 }
 
-.env-paste-actions {
-    display: flex;
-    gap: 8px;
-}
-
-.env-paste-errors {
+.env-errors {
     white-space: pre-wrap;
 }

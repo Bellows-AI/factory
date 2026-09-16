@@ -105,6 +105,13 @@ expect_contains 'the collector forwards to the release dashboard' "$(cat "$work/
     "endpoint: http://$RELEASE-factory:8080/api/otlp"
 expect_contains 'the collector exports uncompressed, or the server answers 400' \
     "$(cat "$work/rendered.yaml")" 'compression: none'
+# The config must render INSIDE the block scalar: content indented no deeper than the
+# `config.yaml:` key (the chart's own 4-space children level) empties the scalar and leaks every
+# top-level config key into data as maps — refused only by an install's apiserver validation,
+# which helm template never runs. The needle is exactly 4 spaces + receivers:; the correct render
+# carries 8.
+expect_not_contains 'the collector config stays inside its block scalar' "$(cat "$work/rendered.yaml")" \
+    $'\n    receivers:'
 
 # Credentials by reference, checked STRUCTURALLY: the line after every credential env's name must
 # be `valueFrom:` — the pod spec carries the reference and never the value, so anything readable in

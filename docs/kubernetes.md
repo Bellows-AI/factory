@@ -98,7 +98,10 @@ ordering, and the board's lease is the authority on liveness.
 The label sweep survives as the janitor UNDER the claim: every Job the `factory.job=<id>`
 selector answers is deleted by name, Foreground, until the selector answers nothing — safe to
 sweep "everything" exactly because the claim is held (this attempt's own Job cannot exist yet;
-its name carries its own lease token). No age filter and no cutoff, as before: a predecessor's
+its name is attempt-scoped, `factory-runner-<hash8(id|lease token)>` — hashed, because the
+apiserver stamps the Job's name onto the pod template as the `job-name` label and a label value
+is capped at 63 bytes, which the raw `<id>-<lease token>` form at 85 blows through and the
+create answers 422). No age filter and no cutoff, as before: a predecessor's
 Job can be younger than any time-derived bound — its attempt's fencing waited on the kubelet's
 unbounded garbage collector — so the sweep still classifies nothing. What changed is that the
 claim is re-read before every deleting round: an attempt whose claim was taken over mid-sweep
