@@ -799,7 +799,13 @@ export const jobRoutes =
                         contextTokens: (contextTokens as number | undefined) ?? null,
                         contextCostUsd: (contextCostUsd as number | undefined) ?? null,
                         agentTurns: (agentTurns as number | undefined) ?? null,
-                        summary: typeof summary === 'string' ? summary.slice(0, SUMMARY_LIMIT) : null,
+                        // Empty is none, the same contract the store and the docs state: null
+                        // is unmeasured, never an empty string. Bounded by codepoint, so the
+                        // cap never splits a surrogate pair.
+                        summary:
+                            typeof summary === 'string' && summary.trim()
+                                ? [...summary].slice(0, SUMMARY_LIMIT).join('')
+                                : null,
                     })
             );
             if (!result.ok) return reply;

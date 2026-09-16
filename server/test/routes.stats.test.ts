@@ -390,6 +390,7 @@ describe('GET /api/stats scope', () => {
             createdBy,
             createdAt: '2026-08-20T00:00:00.000Z',
             agentTurns,
+            wallClockMs: 60_000,
         });
         // The caller's account id IS what the landed join resolves, so the fixture is built
         // around it once the member exists: one member's id, another's, and null.

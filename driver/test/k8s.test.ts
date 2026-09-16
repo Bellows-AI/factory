@@ -5097,7 +5097,14 @@ describe('the kubernetes runner under opencode', () => {
 
     it('scrapes the session the run minted, and rides it on the outcome', async () => {
         const { request, calls } = opencodeFake({
-            log: JSON.stringify({ id: 'ses_n3w', finish: 'stop', tokens: 4321, cost: 0.12 }),
+            log: JSON.stringify({
+                id: 'ses_n3w',
+                finish: 'stop',
+                tokens: 4321,
+                cost: 0.12,
+                turns: 9,
+                summary: 'Fixed the flaky test',
+            }),
         });
         const outcome = await ocRunner(request).run(job, null);
 
@@ -5105,6 +5112,11 @@ describe('the kubernetes runner under opencode', () => {
         expect(outcome.finishReason).toBe('stop');
         expect(outcome.contextTokens).toBe(4321);
         expect(outcome.costUsd).toBeCloseTo(0.12);
+        // The turn count and the summary ride the same readout line, merged onto the outcome
+        // exactly as the docker runner merges them (executor parity — the turn merge was once
+        // missing here and opencode runs under this executor lost their count).
+        expect(outcome.agentTurns).toBe(9);
+        expect(outcome.summary).toBe('Fixed the flaky test');
         expect(outcome.readoutError).toBeUndefined();
         expect(outcome.exitCode).toBe(0);
         expect(outcome.started).toBe(true);

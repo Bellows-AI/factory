@@ -619,7 +619,7 @@ interface JobRow {
     created_at: Date;
     started_at: Date | null;
     finished_at: Date | null;
-    /** Only thread() sums it; bigint reads back as a string, converted in toJob. */
+    /** Selected by every read (the list and detail serve it); bigint reads back as a string. */
     wall_clock_ms?: string | null;
     /** Only thread() selects it; bigint (and the sum over it) read back as a string. */
     task_wall_clock_ms?: string | null;
