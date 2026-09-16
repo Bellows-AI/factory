@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claudeTurnsScript, containerName } from '../src/docker.js';
+import { claudeTurnsScript } from '../src/docker.js';
 import { CONTAINER_GONE } from '../src/gates.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
 import {
@@ -25,6 +25,7 @@ import {
     publishEnvSecretName,
     publishStepJobName,
     publishStepJobSpec,
+    runnerJobName,
     runnerJobSpec,
     reclaimJobName,
     reclaimJobSpec,
@@ -61,10 +62,15 @@ const resumedSpec = (env: NodeJS.ProcessEnv = {}) =>
     runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: true });
 
 describe('the runner job spec', () => {
-    it('is a batch/v1 Job named after the job id', () => {
+    it('is a batch/v1 Job named after the job id and lease token, within the label bound', () => {
         expect(spec().apiVersion).toBe('batch/v1');
         expect(spec().kind).toBe('Job');
-        expect(spec().metadata.name).toBe(containerName(job));
+        expect(spec().metadata.name).toBe(runnerJobName(job));
+        // The apiserver stamps the Job's name onto the pod template as the `job-name` label, and
+        // a label value is capped at 63 bytes — the raw `factory-job-<id>-<lease token>` is 85
+        // and the create answers 422. Hashed, the name is 23; the pin is the BOUND, not today's
+        // spelling, so a future name change cannot reintroduce the refusal.
+        expect(spec().metadata.name.length).toBeLessThanOrEqual(63);
     });
 
     // The executor image's ENTRYPOINT is the claude wrapper, so the container args are exactly what
@@ -440,7 +446,7 @@ const ANSWER: Record<string, Route> = {};
 
 const namespace = 'factory';
 
-const podName = `${containerName(job)}-xxxxx`;
+const podName = `${runnerJobName(job)}-xxxxx`;
 
 /**
  * The close-time claude-code turn read, appended to every claude-code run: one aux Job over the
@@ -1704,7 +1710,7 @@ describe('the kubernetes runner', () => {
             `GET ${claimPathFor(job.id)}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPathFor(job.id)}`,
-            `GET ${jobPath(namespace, containerName(job))}`,
+            `GET ${jobPath(namespace, runnerJobName(job))}`,
             'GET /api/v1/namespaces/factory/pods',
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
@@ -1782,7 +1788,7 @@ describe('the kubernetes runner', () => {
         await runner(request).kill(envJob);
         expect(
             calls.some(
-                (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, containerName(envJob)))
+                (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, runnerJobName(envJob)))
             )
         ).toBe(true);
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
@@ -1873,7 +1879,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
                 // First poll: still running, and worth a look at the log. Second: done.
                 return Promise.resolve(
@@ -1935,7 +1941,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
                 return Promise.resolve(
                     gets === 1 ? { status: 200, body: JSON.stringify({ status: {} }) } : (FAKE.job as K8sResponse)
@@ -2004,7 +2010,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2116,7 +2122,7 @@ describe('the kubernetes runner', () => {
      */
     it('stands down when a newer attempt holds the checkout claim, and touches nothing of its replacement', async () => {
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
-        const newerJobName = containerName(newerJob);
+        const newerJobName = runnerJobName(newerJob);
         const claimPath = claimPathFor(job.id);
         const calls: Call[] = [];
         let replacementAlive = true;
@@ -2151,7 +2157,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2213,7 +2219,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(newerJob))) {
+            if (path === jobPath(namespace, runnerJobName(newerJob))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2258,7 +2264,7 @@ describe('the kubernetes runner', () => {
             `GET ${claimPath}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPath}`,
-            `GET ${jobPath(namespace, containerName(newerJob))}`,
+            `GET ${jobPath(namespace, runnerJobName(newerJob))}`,
             'GET /api/v1/namespaces/factory/pods',
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped. It
@@ -2282,7 +2288,7 @@ describe('the kubernetes runner', () => {
     it('admits one runner per checkout: the superseded attempt stands down mid-sweep', async () => {
         const olderJob: BoardJob = { ...job, attempts: 1 };
         const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
-        const newerJobName = containerName(newerJob);
+        const newerJobName = runnerJobName(newerJob);
         const serve = claimServer();
         const calls: Call[] = [];
         const liveJobs = new Set<string>();
@@ -2314,7 +2320,7 @@ describe('the kubernetes runner', () => {
                 liveJobs.delete(path.slice(jobsPath(namespace).length + 1).split('?')[0] ?? '');
                 return Promise.resolve({ status: 200, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(olderJob)) || path === jobPath(namespace, newerJobName)) {
+            if (path === jobPath(namespace, runnerJobName(olderJob)) || path === jobPath(namespace, newerJobName)) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2407,7 +2413,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2501,7 +2507,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2610,7 +2616,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2700,7 +2706,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2770,7 +2776,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2881,7 +2887,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -2936,7 +2942,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3027,7 +3033,7 @@ describe('the kubernetes runner', () => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: '{"items":[]}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3055,7 +3061,7 @@ describe('the kubernetes runner', () => {
         // Its OWN Job, by name, Foreground.
         expect(calls).toContainEqual({
             method: 'DELETE',
-            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+            path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
         });
         // And nothing of the winner's: no Job of the newer attempt is ever addressed.
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(NEW_TOKEN))).toBe(false);
@@ -3085,7 +3091,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3150,7 +3156,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3181,7 +3187,7 @@ describe('the kubernetes runner', () => {
                 (call) =>
                     call.method === 'POST' &&
                     call.path === jobsPath(namespace) &&
-                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name === containerName(job)
+                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name === runnerJobName(job)
             )
         ).toHaveLength(1);
     });
@@ -3219,7 +3225,7 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 return Promise.resolve({ status: 200, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3287,7 +3293,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3316,7 +3322,7 @@ describe('the kubernetes runner', () => {
                 (call) =>
                     call.method === 'POST' &&
                     call.path === jobsPath(namespace) &&
-                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name === containerName(job)
+                    (call.body as { metadata?: { name?: string } } | undefined)?.metadata?.name === runnerJobName(job)
             )
         ).toHaveLength(1);
         const firstClaimRead = calls.findIndex((call) => call.method === 'GET' && call.path === claimPath);
@@ -3367,7 +3373,7 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 return Promise.resolve({ status: 200, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3395,7 +3401,7 @@ describe('the kubernetes runner', () => {
         // The delete names only this attempt's own Job, Foreground — best-effort.
         expect(calls).toContainEqual({
             method: 'DELETE',
-            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+            path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
         });
     });
 
@@ -3438,7 +3444,7 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 return Promise.resolve({ status: 200, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3465,7 +3471,7 @@ describe('the kubernetes runner', () => {
         );
         expect(calls).toContainEqual({
             method: 'DELETE',
-            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+            path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
         });
     });
 
@@ -3517,7 +3523,7 @@ describe('the kubernetes runner', () => {
                 // The delete fails: whether the Job is really going away is unknown.
                 return Promise.resolve({ status: 500, body: 'refused' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3582,7 +3588,7 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3650,7 +3656,7 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 return Promise.resolve({ status: 200, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3727,7 +3733,7 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 return Promise.resolve({ status: 500, body: 'refused' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3755,7 +3761,7 @@ describe('the kubernetes runner', () => {
         // The stand-down did try its own Job delete — and only its own.
         expect(calls).toContainEqual({
             method: 'DELETE',
-            path: `${jobPath(namespace, containerName(job))}?propagationPolicy=Foreground`,
+            path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
         });
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.includes(NEW_TOKEN))).toBe(false);
         // And the claim that moved on is never deleted.
@@ -3803,7 +3809,7 @@ describe('the kubernetes runner', () => {
             if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}/`)) {
                 return Promise.resolve({ status: 500, body: 'refused' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3876,7 +3882,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -3980,7 +3986,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
                 if (gets <= 2) return Promise.resolve({ status: 503, body: 'unavailable' });
                 return Promise.resolve(FAKE.job as K8sResponse);
@@ -4027,7 +4033,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 gets += 1;
                 return Promise.resolve({ status: 503, body: 'unavailable' });
             }
@@ -4100,7 +4106,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(script[served++] ?? outage());
             }
             if (
@@ -4217,7 +4223,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -4264,7 +4270,7 @@ describe('the kubernetes runner', () => {
             if (path.startsWith(`${jobsPath(namespace)}?`)) {
                 return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return Promise.resolve(FAKE.job as K8sResponse);
             }
             if (
@@ -4303,7 +4309,7 @@ describe('the kubernetes runner', () => {
         await runner(request).kill(job);
 
         expect(calls[0].method).toBe('DELETE');
-        expect(calls[0].path).toContain(`jobs/${containerName(job)}`);
+        expect(calls[0].path).toContain(`jobs/${runnerJobName(job)}`);
         // Every further call is the job's own fleet teardown: the lease-scoped pod and service
         // lists (and 404 deletes for whatever they ever named). No Secrets — kill() deletes none.
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
@@ -4787,7 +4793,7 @@ describe('the kubernetes services flow', () => {
             (c) =>
                 c.method === 'POST' &&
                 c.path === jobsPath(namespace) &&
-                (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job)
+                (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
         );
         expect(bellowsPost).toBeGreaterThanOrEqual(0);
         expect(podPost).toBeGreaterThan(bellowsPost);
@@ -4812,7 +4818,7 @@ describe('the kubernetes services flow', () => {
                 (c) =>
                     c.method === 'POST' &&
                     c.path === jobsPath(namespace) &&
-                    (c.body as { metadata?: { name?: string } })?.metadata?.name === containerName(job)
+                    (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
             )
         ).toBe(false);
         // And the partial fleet was torn down on the way out: the lease lists ran (their empty
@@ -5055,13 +5061,13 @@ describe('the kubernetes runner under opencode', () => {
             if (path === jobsPath(namespace) && method === 'POST') {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === jobPath(namespace, containerName(job))) {
+            if (path === jobPath(namespace, runnerJobName(job))) {
                 return ok({ status: { succeeded: 1 } });
             }
             if (path === jobPath(namespace, ocreadName)) {
                 return ok(readout.status === 'failed' ? { status: { failed: 1 } } : { status: { succeeded: 1 } });
             }
-            if (path.startsWith(`${ns}/pods?`) && decodeURIComponent(path).includes(`job-name=${containerName(job)}`)) {
+            if (path.startsWith(`${ns}/pods?`) && decodeURIComponent(path).includes(`job-name=${runnerJobName(job)}`)) {
                 return ok({
                     items: [
                         {

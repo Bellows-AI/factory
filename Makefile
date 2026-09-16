@@ -55,3 +55,72 @@ opencode-executor:
 runners-build: claude-executor opencode-executor
 
 runners: runners-build
+
+# The Kubernetes stack, end to end on a local kind cluster — the chart walkthrough
+# (charts/factory/README.md) as one command. Builds the images, loads them into the cluster and
+# installs the chart with charts/factory/values-local.yaml, the offline profile: AUTH_MODE=none +
+# the code-only no-fetch dashboard entry, stub echo executor — no GitHub App, no Claude credential.
+# Re-runs upgrade the release in place, keeping its data. Once everything is up the port-forward
+# takes the foreground; Ctrl-C detaches it and leaves the stack running. K8S_PORT defaults to 8081
+# so it can sit beside a running dev stack on 8080, the same reasoning as BAKED_PORT. `make stop`
+# uninstalls the release and reaps what uninstall leaves: the claims (checkouts and history go
+# with them — a dev install is disposable by construction) and the runner Jobs, created at runtime
+# by the driver and therefore not the release's. `make cleanup` deletes the kind cluster itself.
+
+CLUSTER ?= factory
+K8S_RELEASE ?= dev
+K8S_PORT ?= 8081
+DRIVER_IMAGE ?= factory-driver
+STUB_IMAGE ?= echo-executor
+COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib
+
+.PHONY: start stop
+
+start:
+	@for tool in docker kind helm kubectl; do \
+		command -v $$tool >/dev/null || { echo "make start: $$tool is required"; exit 1; }; \
+	done
+	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --name $(CLUSTER)
+	@kubectl config use-context kind-$(CLUSTER)
+	@echo 'building the images on the host daemon'
+	docker build -f docker/Dockerfile --target runtime -t $(IMAGE) .
+	docker build -f docker/driver.Dockerfile -t $(DRIVER_IMAGE) .
+	printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' | docker build -t $(STUB_IMAGE) -
+	docker pull -q $(COLLECTOR_IMAGE)
+	@echo "loading the images into the kind cluster $(CLUSTER)"
+	@for image in $(IMAGE) $(DRIVER_IMAGE) $(STUB_IMAGE) $(COLLECTOR_IMAGE); do \
+		kind load docker-image $$image --name $(CLUSTER) || exit 1; \
+	done
+	@echo "installing the release $(K8S_RELEASE)"
+	helm upgrade --install $(K8S_RELEASE) charts/factory -f charts/factory/values-local.yaml
+	# The images are side-loaded under one tag and read with IfNotPresent, so an upgrade whose
+	# values did not change rolls nothing out and a re-run would keep the stale pods. Restart both
+	# workloads so every start runs what the build above just loaded.
+	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver
+	@echo 'waiting for the deployments (a cold node pulls the database image for minutes)'
+	kubectl wait --for=condition=available \
+		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver \
+		deployment/$(K8S_RELEASE)-factory-timescale deployment/$(K8S_RELEASE)-factory-collector \
+		--timeout=600s
+	@echo
+	@echo "board on http://127.0.0.1:$(K8S_PORT) — queue a job and watch it run through a pod:"
+	@echo "  curl -s -X POST localhost:$(K8S_PORT)/api/jobs -H 'content-type: application/json' -d '{\"command\":\"hello from the cluster\"}'"
+	@echo '  curl -s localhost:$(K8S_PORT)/api/jobs/<id>'
+	@echo
+	# The forward lands on one ready endpoint of the service, and a restart — this start's own
+	# rollout, or any future one — can take that pod out from under it ("lost connection to
+	# pod"). Retry until interrupted: Ctrl-C is the only thing that should end a start.
+	until kubectl port-forward svc/$(K8S_RELEASE)-factory $(K8S_PORT):8080; do sleep 2; done
+
+stop:
+	helm uninstall $(K8S_RELEASE) || true
+	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_RELEASE)" || true
+	kubectl delete jobs -l factory.job || true
+
+# The kind cluster itself, `stop` being only the release: this takes the node down with every
+# volume bound to it — checkouts, database, history. Everything `make start` needs it rebuilds
+# (images on the host daemon, cluster, release), so this is the reset button, not a loss.
+.PHONY: cleanup
+
+cleanup:
+	kind delete cluster --name $(CLUSTER)
