@@ -1242,7 +1242,7 @@ button.primary {
     border: 0;
 }
 
-/* The environment panel's Variables | Secrets tab strip and the .env paste box. */
+/* The environment panel's Variables | Secrets tab strip and the raw editor. */
 
 .panel-actions {
     display: flex;

@@ -32,7 +32,8 @@ export interface EnvVarsPanelProps {
  * text shows the line errors and stays in the editor. Secrets keeps the old masked flow verbatim:
  * no raw editor, blank means keep what is stored, and the flag of a stored secret stays locked
  * because its value was never sent here. Draft state spans tabs; Save submits one merged list
- * exactly as before.
+ * exactly as before — and is disabled while raw mode holds text that has not been applied to the
+ * draft, since saving then would PUT the stale rows under a false "Saved.".
  *
  * The whole list is the unit of save — the PUT replaces the scope's rows, so a retried request
  * changes nothing. A row whose name is cleared is dropped from the payload entirely, which is how
@@ -319,7 +320,12 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                 ) : null}
             </div>
 
-            <button type="button" onClick={() => void save()} disabled={locked}>
+            <button
+                type="button"
+                onClick={() => void save()}
+                disabled={locked || rawOpen}
+                title={rawOpen ? 'Toggle raw off to apply the text to the draft first' : undefined}
+            >
                 {saving ? 'Saving…' : 'Save'}
             </button>
         </section>
