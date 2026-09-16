@@ -27,8 +27,8 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * fetch runs — a member value there would be member-controlled code executed by the sync
  * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
  * starting claims into restore mode, silently skipping the fetch and rebase (issue #58). The
- * three reporter names steer the branch reporter — where it posts, what
- * authenticates it, and which session it claims — and a member value in any of them is a
+ * three reporter names steer the branch reporter — where it posts, which
+ * attempt it speaks for, and which session it claims — and a member value in any of them is a
  * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the headless
  * transcript store lives: the driver composes it from the claim (transcriptDir in
  * driver/src/docker.ts), and a member value would steer transcripts — and, through the runner
@@ -49,7 +49,8 @@ export const RESERVED_ENV_NAMES = [
     'RESTORE',
     'FACTORY_TRANSCRIPT_DIR',
     'FACTORY_STATS_URL',
-    'INGEST_TOKEN',
+    'RUNNER_JOB_ID',
+    'RUNNER_LEASE_TOKEN',
     'BELLOWS_SESSION_ID',
     'OPENCODE_CONFIG_CONTENT',
 ] as const;

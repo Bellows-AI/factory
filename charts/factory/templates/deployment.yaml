@@ -104,6 +104,13 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: ingest-token
+                      # The App's installation webhook: present, the route verifies GitHub's HMAC
+                      # against it; empty, the route does not exist at all.
+                      - name: GITHUB_WEBHOOK_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: github-webhook-secret
                   {{- with .Values.dashboard.resources }}
                   resources:
                       {{- toYaml . | nindent 20 }}

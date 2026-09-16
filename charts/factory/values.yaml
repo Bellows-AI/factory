@@ -79,6 +79,9 @@ secret:
     existingSecret: ''
     oauthClientSecret: ''
     sessionSecret: ''
+    # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route
+    # does not exist and a GitHub-side removal waits for the removed account's next sign-in.
+    githubWebhookSecret: ''
     # The drivers' credentials, one per organization (#99): the worker token IS the org binding,
     # so the chart renders one driver Deployment (and its gate Service) per entry. Keys are the
     # installation ids sign-in created — `npm run worker-token -- --org <installation-id> --name

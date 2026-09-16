@@ -64,13 +64,6 @@ export interface DriverConfig {
      * board, the reporter's reports silently no-op, exactly as its other failures do.
      */
     statsUrl: string;
-    /**
-     * The board's optional ingest token, forwarded so the reporter's reports authenticate on a
-     * board that requires one. Empty forwards nothing. A credential: it travels the env file
-     * (docker) or the per-attempt Secret (kubernetes), never an argv — and never under Remote
-     * Control, where no forwarded credential of any kind rides (docs/jobs.md).
-     */
-    ingestToken: string;
     /** Joins the runner to a docker network, which is what lets its telemetry reach the collector. */
     network: string | null;
     concurrency: number;
@@ -387,7 +380,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // compose network, so the endpoint is always provided to the runner.
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,
         statsUrl,
-        ingestToken: (env.RUNNER_INGEST_TOKEN ?? '').trim(),
         network: (env.RUNNER_NETWORK ?? '').trim() || null,
         concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, 1, 32),
         pollMs: int(env.DRIVER_POLL_MS, 'DRIVER_POLL_MS', DEFAULTS.pollMs, 250, 300_000),

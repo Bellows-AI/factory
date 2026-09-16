@@ -245,8 +245,13 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
-            'the ingest token the branch reporter authenticates with',
-            { vars: [{ name: 'INGEST_TOKEN', value: 'spoof', isSecret: true }] },
+            'the attempt pair the branch reporter authenticates with',
+            { vars: [{ name: 'RUNNER_JOB_ID', value: 'spoof', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
+            'the lease half of that pair',
+            { vars: [{ name: 'RUNNER_LEASE_TOKEN', value: 'spoof', isSecret: true }] },
             'RESERVED_ENV_NAME',
         ],
         [

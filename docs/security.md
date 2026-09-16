@@ -35,7 +35,8 @@ GitHub's UI and redeploying. It may sit inline in `.env` — gitignored and dock
 or in a `.pem` that `GITHUB_APP_PRIVATE_KEY_FILE` points at. `chmod 600` either: the boot warning
 about a group/world-readable mode is not decorative, because no application-level auth plus a
 readable key is worse than either alone. The same care covers `GITHUB_OAUTH_CLIENT_SECRET`,
-`SESSION_SECRET` and `INGEST_TOKEN` — a `.env` holding only a session secret is exactly as bad
+`SESSION_SECRET`, `INGEST_TOKEN` and `GITHUB_WEBHOOK_SECRET` — a `.env` holding only a session
+secret is exactly as bad
 to leak as one holding the key.
 
 **What the App improved:** the credential that reaches `git` is now an *installation token* that
@@ -102,7 +103,12 @@ is optional because the two callers are a collector on the compose network and a
 developer laptops, and requiring it would break both with no migration path; it travels as
 `X-Factory-Ingest-Token`, never as a query parameter, which would land in every access log. It is an
 *authenticity* check rather than an authorization one: `metric_point` has no `org_id` by design, so a
-shared token cannot bind an export to an organization either. **Keep
+shared token cannot bind an export to an organization either. **`POST /api/sessions/branch` is the
+one ingest write that outgrew that stance** — it records into `session_branch`, whose `org_id` is
+real, and a shared token there would let any holder attribute sessions to any organization by
+naming its repositories (CWE-862). In github mode it therefore demands an org-bound credential: the
+runner's job-id + lease-token pair, or a member's personal token. The deployment-wide ingest token
+deliberately does not open it. **Keep
 `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES` and `OTEL_LOG_TOOL_DETAILS` off** — set
 to `0` in `.claude/settings.json`. Enabling any of them puts prompt text and source code into the
 database, and the attribute allowlist does not save you: that content arrives as the log record

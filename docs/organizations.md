@@ -45,11 +45,15 @@ immediately (see [auth.md](auth.md)).
   `migrate()` adopts only in AUTH_MODE=none (into the local org), and `npm run adopt --
   --installation <id> [--from <legacy-org-id>]` is the one-off upgrade step for everything else. A
   missed run reads as an empty dashboard; the upgrade docs say to run it.
-- **Ingest attribution is heuristic, on purpose.** A branch report carries a repo, never an org —
-  the reporter holds no session. Github mode matches the repo's owner against the installation
-  orgs' account logins; zero or an ambiguous match parks the row in `__unclaimed__` (legal since
-  005, invisible on dashboards, visible in SQL), because attributing a session to the wrong
-  organization is the one mistake this path must never make.
+- **Ingest attribution is the credential's, not the report's.** A branch report carries a repo,
+  never an org — the reporter holds no session — so the org used to be guessed by matching the
+  repo's owner against the installation orgs' account logins. That was a cross-tenant write
+  (CWE-862): the `repo` field is caller-controlled payload, and a report naming another
+  organization's repository poisoned that org's telemetry. The route now records with the org of
+  the credential verified at the ingest boundary — the runner's job-id + lease-token pair (the
+  live attempt's own org) or the laptop plugin's personal token (the membership's org) — and the
+  repo is just data. `__unclaimed__` survives only for rows written before credentials existed
+  (legal since 005, invisible on dashboards, visible in SQL).
 - **`session_branch_slice` partitions its `lead()` window by `org_id`, not merely projects it.**
   Otherwise the clamp runs across organizations and one org's slice is truncated by another's start,
   silently dropping the datapoints in between. Guarded by "does not attribute one organization's

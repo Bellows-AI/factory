@@ -87,7 +87,8 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, passed to both runners as `OTEL_EXPORTER_OTLP_ENDPOINT`. The default names the compose collector, so the endpoint is always provided — a runner's telemetry reaches the collector whether or not the compose network is there to make the baked image default resolve. The chart overrides it with the in-chart collector. |
 | `RUNNER_STATS_URL` | `JOB_BOARD_URL` | Where the runner's branch reporter posts its `session → (repo, branch)` samples — the board's own `/api/sessions/branch`. Defaults to the board URL, which a runner can already reach on compose and in the chart; override for a split topology (host driver, containerized runners) where only a host-gateway address names the API. |
-| `RUNNER_INGEST_TOKEN` | unset | The board's optional ingest token, forwarded so the reporter's reports authenticate on a board that requires one. A credential: it travels the env file (docker) or the per-attempt Secret (kubernetes), never an argv — and never under Remote Control, which receives no forwarded credentials at all. |
+| `RUNNER_JOB_ID` | set by the loop | The job this attempt runs for. Half of the runner's branch-ingest credential, with `RUNNER_LEASE_TOKEN` below: the reporter sends the pair as `x-factory-job-id` + `x-factory-job-lease-token`, and the board resolves the report's organization from the live attempt — never from the report's `repo` field, which is caller-controlled payload. Forwarded always (there is no branch reporting without it), but it is still a credential channel: it rides the env file (docker) or the per-attempt Secret (kubernetes), never an argv — and never under Remote Control, which receives no forwarded credentials at all. |
+| `RUNNER_LEASE_TOKEN` | set by the loop | That attempt's lease token, from the claim. The half that makes the pair attempt-scoped: a reclaim rotates the token, so a superseded attempt's reports stop authenticating, while `complete()` retains it so the reporter's final `--once` sample — landing after the verdict — still resolves. Same carriage rules as `RUNNER_JOB_ID`. |
 | `DRIVER_CONCURRENCY` | `2` | |
 | `DRIVER_POLL_MS` | `5000` | |
 | `DRIVER_LEASE_SECONDS` | `300` | Heartbeat is a third of this. |
@@ -321,8 +322,10 @@ the driver mints it; on opencode, only a follow-up, which must keep naming the S
 conversation) or, for a fresh opencode run, discovered live from the session database with the
 close-time readout's exact query. The names are reserved from member configuration on both
 sides, exactly like the gate credentials: a member value in `FACTORY_STATS_URL`,
-`INGEST_TOKEN` or `BELLOWS_SESSION_ID` would be a cross-tenant write into the telemetry store
-(see [env.md](env.md)). Discovery reads the member's NEWEST root session RECORDED IN THE RUN'S
+`RUNNER_JOB_ID`, `RUNNER_LEASE_TOKEN` or `BELLOWS_SESSION_ID` would be a cross-tenant write into
+the telemetry store — the middle two by forging the attempt credential the board resolves the
+report's organization from (see [env.md](env.md)). Discovery reads the member's NEWEST root
+session RECORDED IN THE RUN'S
 OWN WORKING DIRECTORY — the same directory-scoped query the shipped readout runs, without which
 two concurrent fresh runs of one member would cross-report each other's session id; a follow-up
 avoids the residual window entirely by carrying the id.

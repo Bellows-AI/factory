@@ -202,21 +202,17 @@ expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.
 render | grep -q 'value: "7200000"' && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
 
-# The driver forwards the branch reporter's credential by reference — the same Secret key the
-# dashboard and collector read — so the value never lands in the driver's own pod spec. The env
-# entry is extracted whole and pinned field by field, so a wrong Secret name or a wrong key cannot
-# pass on the strength of some other env entry's `key: ingest-token`.
+# The runner's branch attribution credential is attempt-scoped: the driver mints nothing here and
+# forwards no deployment-wide ingest token — the runner presents the job id and lease token of the
+# attempt it runs for, forwarded at runtime into the per-attempt runner Secret. The chart must not
+# wire RUNNER_INGEST_TOKEN: the driver does not read it, and a deployment-wide ingest token has no
+# org binding, which is exactly what branch attribution may not run on.
 driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' "$work/rendered.yaml")"
-token="$(awk 'f && /- name: /{exit} /- name: RUNNER_INGEST_TOKEN/{f=1} f' <<<"$driver")"
-if [ -n "$token" ]; then
-    expect_contains 'RUNNER_INGEST_TOKEN travels by secretKeyRef'        "$token" 'valueFrom:'
-    expect_contains 'the travel is a secretKeyRef, not a literal'        "$token" 'secretKeyRef:'
-    expect_contains 'RUNNER_INGEST_TOKEN names the shared dashboard Secret' "$token" \
-        "name: $RELEASE-factory-dashboard"
-    expect_contains 'the driver reads the ingest token for its runners'  "$token" 'key: ingest-token'
+if grep -q 'RUNNER_INGEST_TOKEN' <<<"$driver"; then
+    bad 'the driver forwards no ingest token' \
+        'RUNNER_INGEST_TOKEN is still wired in the rendered driver deployment'
 else
-    bad 'the driver forwards RUNNER_INGEST_TOKEN' \
-        'no RUNNER_INGEST_TOKEN env in the rendered driver deployment'
+    ok 'the driver forwards no ingest token'
 fi
 
 # The dashboard pod must not start its server until the in-chart database accepts connections: the

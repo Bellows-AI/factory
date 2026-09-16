@@ -3,13 +3,11 @@ import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
 import { LOCAL_ORG_ID, resolveConfig, type GitHubConfig } from './config.js';
+import { createOrgOfLease } from './db/job-store.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { createOrgRegistry } from './orgs.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
-
-/** The ingest-side parking namespace: sessions no installation org claims land here. */
-const UNCLAIMED_ORG = '__unclaimed__';
 
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
@@ -54,13 +52,11 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     ready.catch((e: Error) => console.error(`[migrate] giving up: ${e.message}`));
 
     // The ingest route's write side exists whenever there is somewhere to put an export — which is
-    // always, unless telemetry is switched off outright. The store resolves the org per report: the
-    // reporter cannot name one, so github mode matches the repo's owner against the installation
-    // orgs' account logins; AUTH_MODE=none is the constant local org.
-    const store =
-        config.telemetrySource === 'postgres'
-            ? createPostgresStore({ sql, orgFor: orgForRepo(sql, ready, config) })
-            : undefined;
+    // always, unless telemetry is switched off outright. The store takes the org per report from
+    // the credential verified at the auth hook — never from the report's repo, which is
+    // caller-controlled payload and used to be a cross-tenant write into another installation's
+    // telemetry (CWE-862).
+    const store = config.telemetrySource === 'postgres' ? createPostgresStore({ sql }) : undefined;
 
     console.log(`[persist] ${config.databaseUrl.replace(/\/\/[^@]*@/, '//')}`);
 
@@ -99,6 +95,10 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         orgs,
         store,
         auth: authStore,
+        // The branch route's runner credential: the job id + lease token pair a reporter presents
+        // resolves to the org whose attempt it is. Built from the job store's SQL — the one
+        // org-less job query, because the pair's answer IS the org.
+        orgOfLease: createOrgOfLease({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         logger: true,
@@ -109,31 +109,4 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     void ready.then(() => orgs.warmAll()).catch(() => {});
 
     await app.listen({ port: config.port, host: config.host });
-}
-
-/**
- * The ingest side's org attribution: which organization does a branch report belong to?
- *
- * A branch report carries a repo, never an org — the reporter is a plugin on somebody's laptop or
- * a collector on the compose network, and neither holds a session. Github mode therefore matches
- * the repo's OWNER against the installation orgs' account logins (the label sign-in stores in
- * `organization.name`, compared case-insensitively because GitHub logins are): exactly one match
- * is that org. Zero, or an ambiguity, is parked in `__unclaimed__` — a legal org_id since 005,
- * outside every dashboard — because attributing a session to the wrong organization is the one
- * mistake this path must never make. AUTH_MODE=none is simply the local org.
- */
-function orgForRepo(sql: postgres.Sql, ready: Promise<unknown>, config: ReturnType<typeof resolveConfig>['config']) {
-    return async (repo: string): Promise<string> => {
-        if (config.auth.mode === 'none') return LOCAL_ORG_ID;
-        await ready;
-        const owner = repo.split('/')[0]?.toLowerCase() ?? '';
-        if (!owner) return UNCLAIMED_ORG;
-        const rows = await sql<{ id: string }[]>`
-            select id from organization
-            where installation_id is not null and lower(name) = ${owner}
-        `;
-        // Exactly one match is that org. Zero, or an ambiguity (two installations whose accounts
-        // share a login should not exist, but the database does not prevent it), is unclaimed.
-        return rows.length === 1 ? rows[0]!.id : UNCLAIMED_ORG;
-    };
 }

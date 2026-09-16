@@ -116,15 +116,6 @@ describe('the driver config', () => {
         expect(() => loadDriverConfig({ RUNNER_STATS_URL: 'stats:8080' })).toThrow(/RUNNER_STATS_URL/);
     });
 
-    // The credential the reporter presents to the board's ingest route. A value, not a name list
-    // like RUNNER_ENV: there is exactly one consumer. Empty is unset, so compose can pass it
-    // through unconditionally.
-    it('takes RUNNER_INGEST_TOKEN trimmed, empty meaning unset', () => {
-        expect(loadDriverConfig({}).ingestToken).toBe('');
-        expect(loadDriverConfig({ RUNNER_INGEST_TOKEN: '  tok  ' }).ingestToken).toBe('tok');
-        expect(loadDriverConfig({ RUNNER_INGEST_TOKEN: '' }).ingestToken).toBe('');
-    });
-
     // The kubernetes executor forwards runner credentials the way the docker one forwards `-e NAME`:
     // the NAMES travel, the values live in a Secret the cluster already holds. Off unless named.
     it('leaves RUNNER_CREDENTIALS_SECRET off unless set', () => {

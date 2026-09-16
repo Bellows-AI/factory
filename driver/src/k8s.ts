@@ -218,14 +218,17 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // can read; the same default-and-override the docker runner forwards.
     env.push({ name: 'FACTORY_STATS_URL', value: config.statsUrl });
 
-    // The ingest token is a CREDENTIAL: the name travels in the pod spec, the value rides the
-    // per-attempt Secret by reference — never a value here, and absent entirely when unconfigured.
-    if (config.ingestToken) {
-        env.push({
-            name: 'INGEST_TOKEN',
-            valueFrom: { secretKeyRef: { name: secretName(job), key: 'INGEST_TOKEN' } },
-        });
-    }
+    // The runner's branch-ingest credential — the attempt it runs for, as a job id + lease
+    // token pair. Both are CREDENTIALS (the lease token most of all: it is what makes the pair
+    // attempt-scoped), so the names travel in the pod spec and the values ride the per-attempt
+    // Secret by reference — never a value here, which anyone who can `get pods` can read.
+    env.push(
+        { name: 'RUNNER_JOB_ID', valueFrom: { secretKeyRef: { name: secretName(job), key: 'RUNNER_JOB_ID' } } },
+        {
+            name: 'RUNNER_LEASE_TOKEN',
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'RUNNER_LEASE_TOKEN' } },
+        }
+    );
 
     // opencode persists its session database under XDG_DATA_HOME, and a fresh container starts
     // with an empty one — pointing it at the member's own tree on the workspaces PVC is what
@@ -1455,20 +1458,18 @@ export function createKubernetesRunner(
         );
 
     /**
-     * The Secret's contents: the claim env, the loop's minted gate credentials, and the
-     * reporter's ingest token. The reserved-name rule means the first two sets are disjoint, and
-     * the gate names must reach the runner for the same reason they ride docker's env file —
+     * The Secret's contents: the claim env, the loop's minted gate credentials, and the runner's
+     * own attempt pair — the branch-ingest credential, always present, because it is how the
+     * reporter authenticates at all. The reserved-name rule means the first two sets are disjoint,
+     * and the gate names must reach the runner for the same reason they ride docker's env file —
      * the agent's ad-hoc gate calls land mid-run, against an endpoint this driver advertises.
      */
     const runnerEnv = (job: BoardJob): Record<string, string> => ({
         ...claimEnv(job),
         ...(job.gateEnv ?? {}),
-        ...(config.ingestToken ? { INGEST_TOKEN: config.ingestToken } : {}),
+        RUNNER_JOB_ID: job.id,
+        RUNNER_LEASE_TOKEN: job.leaseToken,
     });
-
-    /** Only a job whose Secret was ever created touches it — not even to delete one. */
-    const forgetSecretIfAny = (job: BoardJob): Promise<void> =>
-        Object.keys(runnerEnv(job)).length ? forgetSecret(job) : Promise.resolve();
 
     /**
      * This attempt's service fleet — every pod and headless Service carrying this attempt's
@@ -2254,7 +2255,7 @@ export function createKubernetesRunner(
              * would hand the checkout over with a live writer on it. The held claim needs no other
              * cleanup: acquireClaim's stale-holder takeover is the documented self-healing route
              * (the next claimant releases it, uid-preconditioned, and sweeps every `factory.job`
-             * Job before posting its own). `forgetSecretIfAny` stays unconditional — the Secret is
+             * Job before posting its own). `forgetSecret` runs unconditionally — the Secret is
              * attempt-scoped and a running pod read its env at container start, which
              * `restartPolicy: Never` + `backoffLimit: 0` mean no restart can need again. The state
              * is a fresh cell per run, never a closure field: the runner object is reused across
@@ -2269,7 +2270,7 @@ export function createKubernetesRunner(
                 // The service fleet's whole purpose is the run — it goes when the run does,
                 // whatever the run came back with. Same close-time teardown docker.ts runs.
                 await teardownServices(job);
-                await forgetSecretIfAny(job);
+                await forgetSecret(job);
             }
         },
 

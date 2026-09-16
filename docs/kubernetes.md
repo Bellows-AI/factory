@@ -187,12 +187,13 @@ kind walkthrough. Decisions that look like cruft and are not:
   `http://<release>-factory-collector:4318`. `collector.enabled=false` removes the collector;
   runners then keep the driver's default `http://collector:4318`, which resolves nowhere unless
   `RUNNER_OTEL_ENDPOINT` points elsewhere — the "off the network"
-  mode, documented as "the CLI still works, the sessions just go unrecorded". The dashboard
-  ingest token, when one is set, reaches the collector as `INGEST_TOKEN` from the same Secret key
-  the dashboard reads and lands in the exporter's header via `${env:INGEST_TOKEN}` — a reference
-  in the ConfigMap, never a value in it. The driver reads the same key as `RUNNER_INGEST_TOKEN`
-  and forwards it to every runner pod's per-attempt Secret, so the branch reporter's
-  attribution reports authenticate the way the OTLP export does.
+   mode, documented as "the CLI still works, the sessions just go unrecorded". The dashboard
+   ingest token, when one is set, reaches the collector as `INGEST_TOKEN` from the same Secret key
+   the dashboard reads and lands in the exporter's header via `${env:INGEST_TOKEN}` — a reference
+   in the ConfigMap, never a value in it. The branch reporter's credential no longer rides that
+   key: the driver puts the attempt pair itself — `RUNNER_JOB_ID` and `RUNNER_LEASE_TOKEN`, the
+   job and the lease it claimed — into every runner pod's per-attempt Secret, so the reports
+   authenticate as the attempt rather than as the deployment.
 
 ## Variables
 

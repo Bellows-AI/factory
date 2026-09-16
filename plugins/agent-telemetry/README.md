@@ -65,6 +65,29 @@ host paths. No prompts, no file contents, no diff, no identity.
 
 Endpoint defaults to `http://127.0.0.1:8080`; override with `FACTORY_STATS_URL`.
 
+## Authentication
+
+On a dashboard running `AUTH_MODE=github`, every branch report needs a credential, and the
+organization the session is attributed to comes from that credential — never from the repo the
+report names. Set `FACTORY_STATS_TOKEN` to a **personal access token** (`fat_…`, minted from the
+dashboard's settings page) and the plugin sends it as `authorization: Bearer`:
+
+```bash
+# in ~/.claude/settings.json (user scope, like the plugin), or the repo's .claude/settings.json
+{
+  "env": {
+    "FACTORY_STATS_URL": "https://factory.example.com",
+    "FACTORY_STATS_TOKEN": "fat_…"
+  }
+}
+```
+
+The token dies the moment its membership does, exactly like a session. Organization tokens
+(`oat_…`) are not accepted: they are a read-only allowlist credential, and this is a write.
+Unset, the reports go unauthenticated — which is all a local `AUTH_MODE=none` dashboard asks
+for, and a board that requires a credential simply declines them in silence, the same as any
+other report failure. The token is never logged and never written anywhere.
+
 ## Behaviour
 
 Enabled at user scope, this runs in every repo on the machine, so it is built to be

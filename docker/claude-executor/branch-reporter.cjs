@@ -14,10 +14,13 @@
  * Environment (set by the driver; FACTORY_STATS_URL is the switch):
  *   FACTORY_STATS_URL    the board's base URL. Unset means inert — a hand-run container
  *                        reports nothing rather than guessing an endpoint.
+ *   RUNNER_JOB_ID        the job this attempt runs for. With the lease token below, the pair
+ *                        is the credential the board resolves the report's organization from.
+ *   RUNNER_LEASE_TOKEN   that attempt's lease token. The pair rides as headers; the board
+ *                        accepts it while the attempt is the job's live one.
  *   BELLOWS_SESSION_ID   the session to report. The claude runner is always told (the driver
  *                        mints the uuid); the opencode runner is told only on a follow-up, and
  *                        otherwise discovers the id live from opencode's session database.
- *   INGEST_TOKEN         the board's optional ingest token, sent as a header when set.
  *   WORKDIR              the checkout to sample. Defaults to the current directory.
  *   XDG_DATA_HOME        where opencode keeps its session database (opencode/opencode.db).
  *
@@ -97,15 +100,22 @@ async function report(sessionId) {
     if (!repo) return;
     const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
     const headers = { 'content-type': 'application/json' };
-    const token = (process.env.INGEST_TOKEN ?? '').trim();
-    if (token) headers['x-factory-ingest-token'] = token;
+    // The attempt pair is the credential, and it goes only when BOTH halves were forwarded: the
+    // board resolves the report's organization from the live attempt itself, never from the repo
+    // this payload carries. A hand-run container presents no pair rather than a half one.
+    const jobId = (process.env.RUNNER_JOB_ID ?? '').trim();
+    const leaseToken = (process.env.RUNNER_LEASE_TOKEN ?? '').trim();
+    if (jobId && leaseToken) {
+        headers['x-factory-job-id'] = jobId;
+        headers['x-factory-job-lease-token'] = leaseToken;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
         await fetch(`${ENDPOINT}/api/sessions/branch`, {
             method: 'POST',
-            // This request may carry the ingest token, and a redirect must not forward it:
-            // Node strips only selected headers cross-origin, so the token stays eligible.
+            // This request may carry the attempt pair, and a redirect must not forward it:
+            // Node strips only selected headers cross-origin, so the credential stays eligible.
             redirect: 'error',
             headers,
             signal: controller.signal,

@@ -149,6 +149,13 @@ export interface AppConfig {
      */
     readonly workspaceRoot: string | null;
     readonly auth: AuthConfig;
+    /**
+     * The GitHub App webhook's HMAC secret (GITHUB_WEBHOOK_SECRET), or null — and with it the
+     * webhook route that secret enables. Mode-independent, like the route: the deployment that
+     * receives webhooks is the github one, but the webhook's credential is the signature it
+     * verifies, not the session machinery, so this does not live inside `[auth]`.
+     */
+    readonly webhookSecret: string | null;
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -508,6 +515,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         );
     }
 
+    // Parsed like INGEST_TOKEN: trim, empty meaning unset. Unset, the installation webhook route
+    // does not exist and a GitHub-side removal waits for the removed account's next sign-in.
+    const webhookSecret = env.GITHUB_WEBHOOK_SECRET?.trim() || null;
+
     // The App, unless the caller injected the code-only none arm — the offline tooling's seam.
     const github = injectedGitHub ?? loadGitHub(env);
 
@@ -544,6 +555,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         telemetryTtlMs: telemetryTtlSeconds * 1000,
         workspaceRoot,
         auth: loadAuth(env, host, port),
+        webhookSecret,
     });
 }
 

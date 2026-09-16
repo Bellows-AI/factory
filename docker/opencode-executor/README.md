@@ -159,8 +159,9 @@ claude-code's Remote Control id, which opencode does not have. Its runs still em
 POSTs it to `FACTORY_STATS_URL` (`/api/sessions/branch`) — the side channel that lets the board
 attribute a run's tokens to the PR its branch became, which OTLP metrics alone cannot (they
 carry a session id and nothing else). The driver supplies the endpoint (`RUNNER_STATS_URL`,
-defaulted to the board) and, when the board requires one, the ingest token
-(`RUNNER_INGEST_TOKEN`). The session id is the one thing opencode will not take in advance: on a
+defaulted to the board) and the attempt it runs for — `RUNNER_JOB_ID` + `RUNNER_LEASE_TOKEN`,
+sent as `x-factory-job-id` + `x-factory-job-lease-token`, the pair the board resolves the
+report's organization from. The session id is the one thing opencode will not take in advance: on a
 fresh run the reporter discovers it live from the session database under `XDG_DATA_HOME` — the
 newest root session, the exact query the driver's close-time readout uses — and on a follow-up
 the driver hands the id over (`BELLOWS_SESSION_ID`) so both runs name the same conversation.

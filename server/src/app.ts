@@ -14,6 +14,7 @@ import { jobRoutes } from './routes/jobs.js';
 import { repoRoutes } from './routes/repos.js';
 import { statsRoutes } from './routes/stats.js';
 import { tokenRoutes } from './routes/tokens.js';
+import { webhookRoutes } from './routes/webhook.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
@@ -40,6 +41,11 @@ export interface AppDeps {
      * hook still runs and still resolves a caller, so there is one code path rather than two.
      */
     auth?: AuthStore | undefined;
+    /**
+     * The branch route's lease-pair verifier, threaded through to the auth hook. main.ts builds it
+     * from the job store's SQL; the tests that exercise the runner credential stub it.
+     */
+    orgOfLease?: ((jobId: string, leaseToken: string) => Promise<string | null>) | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -73,6 +79,7 @@ export async function buildApp({
     orgs,
     store,
     auth,
+    orgOfLease,
     identity,
     appSlug,
     now = Date.now,
@@ -90,7 +97,7 @@ export async function buildApp({
     // Before every route, so nothing can be registered ahead of the wall by accident. Without a
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
     // being absent in one configuration and null in another.
-    if (auth) await registerAuth(app, { config, store: auth });
+    if (auth) await registerAuth(app, { config, store: auth, orgOfLease });
     else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes());
@@ -102,6 +109,11 @@ export async function buildApp({
         // sections for exactly this reason; the API matches it.
         if (config.auth.mode !== 'none') {
             await app.register(tokenRoutes({ store: auth }));
+        }
+        // The installation webhook exists exactly when its secret does — its credential IS the
+        // HMAC signature, so without one there is nothing to verify and no route may answer.
+        if (config.webhookSecret) {
+            await app.register(webhookRoutes({ store: auth, secret: config.webhookSecret }));
         }
     }
     await app.register(statsRoutes(config, orgs, auth, now));

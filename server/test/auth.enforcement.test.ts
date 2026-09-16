@@ -8,6 +8,7 @@ import type { AuthConfig } from '../src/config.js';
 import type { Claim, Job, JobStore } from '../src/db/job-store.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
+import type { AppDeps } from '../src/app.js';
 import type { MemoryAuthStore } from './helpers.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -69,13 +70,17 @@ const telemetryStub = (): TelemetryStore => ({
     async recordBranch() {},
 });
 
-async function build(auth: AuthConfig, store: MemoryAuthStore) {
+async function build(auth: AuthConfig, store: MemoryAuthStore, orgOfLease?: AppDeps['orgOfLease']) {
     const config = testConfig({ auth });
     app = await buildApp({
         config,
         orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
         store: telemetryStub(),
         auth: store,
+        // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
+        // attempt the constants below describe; a test passes its own to model a lost lease.
+        orgOfLease:
+            orgOfLease ?? (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? ORG : null)),
     });
     return app;
 }
@@ -92,6 +97,9 @@ describe('the route table', () => {
     it.each([
         ['/api/health', 'open'],
         ['/api/auth/github', 'open'],
+        // The installation webhook answers to the HMAC signature over its body — a credential the
+        // route verifies itself — so the session hook must not demand a cookie of it.
+        ['/api/github/webhook', 'open'],
         ['/api/auth/github/callback', 'open'],
         ['/api/auth/me', 'open'],
         ['/', 'open'],
@@ -143,7 +151,10 @@ describe('the route table', () => {
         // lease-guarded complete response as `threadDone` instead.
         [`/api/jobs/${JOB_ID}/thread`, 'user'],
         ['/api/otlp/v1/logs', 'ingest'],
-        ['/api/sessions/branch', 'ingest'],
+        // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
+        // repo must never choose the org it lands in, so the credential does. Its own requirement,
+        // between worker and ingest — the pair is the attempt's, the bearer a member's.
+        ['/api/sessions/branch', 'branch'],
         // Both fall through to `user` rather than being listed anywhere, which is the point: the
         // default is the safe one, so a new route is walled unless somebody deliberately opens it.
         ['/api/repos', 'user'],
@@ -368,8 +379,8 @@ describe('telemetry ingest', () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const response = await server.inject({
             method: 'POST',
-            url: '/api/sessions/branch',
-            payload: { agent: 'claude', sessionId: 'abc', repo: 'a/b', branch: 'dev' },
+            url: '/api/otlp/v1/logs',
+            payload: { resourceLogs: [] },
         });
         expect(response.statusCode).not.toBe(401);
     });
@@ -379,18 +390,116 @@ describe('telemetry ingest', () => {
 
         const without = await server.inject({
             method: 'POST',
-            url: '/api/sessions/branch',
-            payload: { agent: 'claude', sessionId: 'abc', repo: 'a/b', branch: 'dev' },
+            url: '/api/otlp/v1/logs',
+            payload: { resourceLogs: [] },
         });
         expect(without.statusCode).toBe(401);
 
         const with_ = await server.inject({
             method: 'POST',
+            url: '/api/otlp/v1/logs',
+            payload: { resourceLogs: [] },
+            headers: { 'x-factory-ingest-token': 'ingest-secret' },
+        });
+        expect(with_.statusCode).not.toBe(401);
+
+        // The OTLP routes are the ONLY thing the ingest token still reaches. It is a deployment
+        // -wide authenticity check for machine exports, never an org binding — which is exactly
+        // why it must not authorize a branch write (see the branch describe below).
+        const branch = await server.inject({
+            method: 'POST',
             url: '/api/sessions/branch',
             payload: { agent: 'claude', sessionId: 'abc', repo: 'a/b', branch: 'dev' },
             headers: { 'x-factory-ingest-token': 'ingest-secret' },
         });
-        expect(with_.statusCode).not.toBe(401);
+        expect(branch.statusCode).toBe(401);
+    });
+});
+
+describe('the branch route needs an org-bound credential in github mode', () => {
+    const report = { agent: 'claude', sessionId: 'abc', repo: 'a/b', branch: 'dev', at: '2026-08-21T10:40:00Z' };
+
+    // The runner's reporter presents the attempt it runs for — the job it claimed and that
+    // attempt's lease token — and the server's verifier answers the org the pair belongs to.
+    // A failed pair is a 401 with no fall-through: a caller presenting a credential that does
+    // not resolve must not be able to ride a weaker one standing behind it, the same rule a
+    // failed bearer gets on the person routes.
+    it('resolves the org from the attempt’s job id + lease token pair', async () => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            payload: report,
+            headers: { 'x-factory-job-id': JOB_ID, 'x-factory-job-lease-token': LEASE },
+        });
+        expect(response.statusCode).toBe(202);
+    });
+
+    it('401s a pair that does not resolve, even with a bearer behind it', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const caller = store.seedMember(ORG, 'octocat');
+        const token = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            payload: report,
+            headers: {
+                'x-factory-job-id': JOB_ID,
+                'x-factory-job-lease-token': '99999999-9999-4999-8999-999999999999',
+                authorization: `Bearer ${token}`,
+            },
+        });
+        expect(response.statusCode).toBe(401);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
+    });
+
+    it('401s a missing pair', async () => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({ method: 'POST', url: '/api/sessions/branch', payload: report });
+        expect(response.statusCode).toBe(401);
+    });
+
+    it('accepts a personal access token — the laptop plugin’s credential', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const caller = store.seedMember(ORG, 'octocat');
+        const token = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            payload: report,
+            headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.statusCode).toBe(202);
+    });
+
+    // 403, not 401, and deliberately so: the oat_ DID authenticate — findOrgToken resolved it —
+    // and the refusal is the route needing a human-or-lease credential behind it, the exact
+    // shape orgTokenAllowed already answers with on the person routes. org tokens are a
+    // read-only allowlist; branch ingest is a write.
+    it('403s an organization token — the read-only allowlist must not reach a write', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const token = store.seedAccessToken(ORG, 'org');
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            payload: report,
+            headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.statusCode).toBe(403);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
+    it('stays open in none mode, like every other route in it', async () => {
+        const store = memoryAuthStore();
+        store.seedLocalUser('default');
+        const server = await build({ mode: 'none', ingestToken: null }, store, async () => {
+            throw new Error('none mode must not consult the lease');
+        });
+        const response = await server.inject({ method: 'POST', url: '/api/sessions/branch', payload: report });
+        expect(response.statusCode).toBe(202);
     });
 });
 

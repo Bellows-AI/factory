@@ -59,6 +59,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         // Matches loadConfig's default. Note that this is only what the *config* says: the app is
         // built with no auth store at all unless a test passes one, so by default no hook runs.
         auth: { mode: 'none', ingestToken: null },
+        // No webhook secret, so no installation webhook route — the tests that want one set it.
+        webhookSecret: null,
         ...overrides,
     };
 }
@@ -480,7 +482,8 @@ export interface MemoryAuthStore extends AuthStore {
     /**
      * Removes one membership directly, standing in for the sign-in-time propagation a real
      * deployment gets from GitHub no longer reporting an installation. A test utility, not a
-     * store method: nothing in production deletes a membership except signIn.
+     * store method: production deletes memberships through the webhook's removeMember and
+     * signIn's sweep, never this.
      */
     removeMembership(orgId: string, userId: string): void;
     /** Every live session's user id, so a test can assert one was created — or was not. */
@@ -673,6 +676,17 @@ export function memoryAuthStore(): MemoryAuthStore {
         removeMembership(orgId, userId) {
             const index = members.findIndex((m) => m.orgId === orgId && m.userId === userId);
             if (index !== -1) members.splice(index, 1);
+        },
+
+        async removeMember(orgId, githubUserId) {
+            // The webhook deletes by the numeric id — THE identity — so the lookup goes through
+            // the account, exactly as the SQL joins app_user on github_user_id.
+            const user = users.find((u) => u.githubUserId === githubUserId);
+            if (!user) return false;
+            const index = members.findIndex((m) => m.orgId === orgId && m.userId === user.id);
+            if (index === -1) return false;
+            members.splice(index, 1);
+            return true;
         },
 
         sessions: () => [...sessions.values()].map((s) => s.userId),

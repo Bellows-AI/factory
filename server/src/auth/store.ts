@@ -97,6 +97,15 @@ export interface AuthStore {
     findOrg(orgId: string): Promise<{ id: string; name: string } | null>;
     /** Every organization the account is a member of — the selector's available[] and the switch check. */
     membershipsOf(userId: string): Promise<{ id: string; name: string }[]>;
+    /**
+     * Deletes one membership by the GitHub numeric id — THE identity; the membership keys on
+     * user_id since 029, so the lookup joins through app_user — and reports whether a row was
+     * deleted. The webhook's whole act of revocation: findSession and findPersonalToken
+     * inner-join through org_membership, so the removed account's every credential dies on its
+     * next request. What this buys over the sign-in sweep is the timing — GitHub's report, not
+     * the account's next sign-in.
+     */
+    removeMember(orgId: string, githubUserId: number): Promise<boolean>;
     /** The stand-in account AUTH_MODE=none attributes every request to. */
     localCaller(orgId: string): Promise<Caller | null>;
     findWorkerToken(tokenHash: Buffer): Promise<WorkerIdentity | null>;
@@ -114,7 +123,10 @@ export interface AuthStore {
     }): Promise<{ id: string }>;
     /** The caller behind a live personal token, through the same join findSession uses. */
     findPersonalToken(tokenHash: Buffer): Promise<Caller | null>;
-    /** The organization token behind a hash, or null when unknown or revoked. */
+    /**
+     * The organization token behind a hash, or null when unknown, revoked — or its issuer's
+     * membership is gone, which is the join that bounds a mintable-by-any-member credential.
+     */
     findOrgToken(tokenHash: Buffer): Promise<OrgTokenIdentity | null>;
     listPersonalTokens(orgId: string, userId: string): Promise<AccessTokenView[]>;
     listOrgTokens(orgId: string): Promise<AccessTokenView[]>;
@@ -327,6 +339,17 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             return rows;
         },
 
+        async removeMember(orgId, githubUserId) {
+            await gate();
+            const rows = await sql<{ user_id: string }[]>`
+                delete from org_membership
+                where org_id = ${orgId}
+                  and user_id in (select id from app_user where github_user_id = ${githubUserId})
+                returning user_id
+            `;
+            return rows.length > 0;
+        },
+
         async localCaller(orgId) {
             await gate();
             const rows = await sql<CallerRow[]>`
@@ -400,16 +423,28 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
 
         async findOrgToken(tokenHash) {
             await gate();
+            // The same throttled touch findPersonalToken runs — and the same membership
+            // predicate, so a token whose authority is gone never looks used.
             await sql`
-                update access_token set last_used_at = now()
-                where token_hash = ${tokenHash} and kind = 'org'
-                  and revoked_at is null
-                  and (last_used_at is null or last_used_at < now() - interval '60 seconds')
+                update access_token t set last_used_at = now()
+                where t.token_hash = ${tokenHash} and t.kind = 'org'
+                  and t.revoked_at is null
+                  and (t.last_used_at is null or t.last_used_at < now() - interval '60 seconds')
+                  and exists (
+                      select 1 from org_membership m
+                      where m.org_id = t.org_id and m.user_id = t.created_by
+                  )
             `;
             const rows = await sql<{ org_id: string; id: string; label: string }[]>`
-                select org_id, id, label from access_token
-                where token_hash = ${tokenHash} and kind = 'org'
-                  and revoked_at is null
+                select t.org_id, t.id, t.label from access_token t
+                -- The org comes from the row (worker-token-shaped: no user stands behind it), but
+                -- the ISSUER's live membership is the token's authority: this inner join is what
+                -- makes sign-in propagation end an org token's reach on the very next request,
+                -- the same immediacy a session and a personal token have. A row with no creator
+                -- (on delete set null) joins nothing and resolves null.
+                join org_membership m on m.org_id = t.org_id and m.user_id = t.created_by
+                where t.token_hash = ${tokenHash} and t.kind = 'org'
+                  and t.revoked_at is null
             `;
             const row = rows[0];
             return row ? { orgId: row.org_id, id: row.id, label: row.label } : null;

@@ -66,12 +66,14 @@ collector config.
   it cost. `branch-reporter.cjs` (one copy per image, byte-identical but for the agent constant)
   samples `session → (repo, branch)` from the task worktree and POSTs the plugin's wire shape to the
   board's `/api/sessions/branch` — `FACTORY_STATS_URL` (`RUNNER_STATS_URL`, defaulted to the board
-  URL), authenticated by `INGEST_TOKEN` (`RUNNER_INGEST_TOKEN`) when the board requires one. The
-  reporter's rules are the plugin's, and the entrypoint discards its stdio on top: never fail a
-  run, never lag it, never speak. A refused report (no token on a token board, a board that is
-  down) is a silent no-op — hook-less, not failed. Remote Control runners get the reporter's
-  URL and session id but, receiving no forwarded credentials of any kind, stay hook-less on a
-  board that requires the token.
+  URL), authenticated by the attempt it runs for: the driver forwards `RUNNER_JOB_ID` +
+  `RUNNER_LEASE_TOKEN`, and the reporter sends them as `x-factory-job-id` +
+  `x-factory-job-lease-token`, the pair the board resolves the report's organization from — never
+  from the report's `repo` field (CWE-862). The reporter's rules are the plugin's, and the
+  entrypoint discards its stdio on top: never fail a run, never lag it, never speak. A refused
+  report (no pair on a board that requires a credential, a board that is down) is a silent no-op —
+  hook-less, not failed. Remote Control runners get the reporter's URL and session id but,
+  receiving no forwarded credentials of any kind, stay hook-less on a board that requires one.
 - **`ON CONFLICT DO NOTHING` on `metric_point`, never `DO UPDATE`.** OTLP delivery is
   at-least-once, so an identical retry must be a no-op; an update would move `received_at` and
   destroy the only way to tell a retry from a genuine second export.

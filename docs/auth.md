@@ -54,13 +54,20 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   `organization` row (id = the installation id, name = the account login) and one membership per
   reported installation. There is no invite, no auto-join flag, no bootstrap admin, and no roster
   sweep: what GitHub reported at the last sign-in IS the materialized fact.
-- **Removal is sign-in-propagation, and that is the security property.** Memberships of
-  installation orgs the account no longer sees are deleted at the next sign-in — and because
-  `findSession` and `findPersonalToken` join through `org_membership`, every credential's reach
-  ends right there. Propagation is therefore one sign-in late by design (the issue's chosen
-  trade-off): one `GET /user/installations` per sign-in, not a per-request GitHub call and not a
-  polling sweep against the installation's rate limit. Existing sessions of a removed member keep
-  working until they touch nothing — no: until their *next sign-in* nothing re-checks them; this
+- **Removal is GitHub's own report first, sign-in second — and the join is still the security
+  property.** GitHub delivers `organization.member_removed` to `POST /api/github/webhook`, whose
+  credential is the `GITHUB_WEBHOOK_SECRET` HMAC over the raw body; the route deletes the
+  membership by the numeric id on the spot — and because `findSession` and `findPersonalToken`
+  join through `org_membership`, every credential's reach ends right there. What the webhook buys
+  over the sweep is the bound: revocation runs when GitHub says so, not when the removed account
+  next signs in. The sweep stays, because a webhook is at-most-once from where this deployment
+  stands — a delivery missed while the board was down is repaired at the next sign-in, which is
+  what the propagation has always been for. Honest limitation: org events fire for organization
+  installations only, so an installation owned by a personal account reports nothing here and
+  stays one-sign-in-late. No new permission buys any of this — the webhook authenticates by
+  signature, which is why the installation stays at `Metadata: read` + `Contents: read`
+  (docs/security.md). Operator step: App settings → webhook URL `<PUBLIC_URL>/api/github/webhook`,
+  secret `GITHUB_WEBHOOK_SECRET`, subscribed to `organization` events.
 
 - **`github_user_id` is the identity; `github_login` is a label.** GitHub permits renames and then
   lets the freed login be claimed by somebody else. Nothing here keys on the login: the account
@@ -88,8 +95,9 @@ A random 32-byte token in a signed, httpOnly cookie, with a row keyed by its **s
 
 - **Rows, not self-contained tokens, because revocation has to be immediate.** Losing the
   membership must stop the session on a deployment where `POST /api/jobs` runs shell commands.
-  `findSession` joins through `org_membership`, so the membership's end — at the next sign-in,
-  when GitHub stops reporting the installation — ends the session's usefulness on the spot. A
+  `findSession` joins through `org_membership`, so the membership's end — the webhook's report of
+  the removal, or the next sign-in, when GitHub stops reporting the installation — ends the
+  session's usefulness on the spot. A
   stateless token reaches that only with a denylist, and a denylist is this table with worse
   ergonomics.
 - **The row carries its organization (`session.org_id`, 028), and that is what the caller reads
@@ -200,12 +208,18 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   re-resolution is what makes these mintable from the settings page while the worker token is
   CLI-only — minting is still a credential-issuing act, so it belongs behind the session cookie
   and HTTPS on anything but a loopback deployment.
-- **An org token is the ORG's credential, not its minter's.** `findOrgToken` resolves the org
-  from the row and no user — deliberately the same shape as a worker token: its authority is the
-  organization's existence plus the revocation list, never the continuing membership of whoever
-  minted it. The cost of mintability by any member is that a departed member's org token
-  outlives them; it stays on the read-only allowlist, and any current member can revoke it from
-  the same page.
+- **An org token is the ORG's credential, not its minter's — and its authority is bounded by the
+  minter's live membership.** `findOrgToken` resolves the org from the row and no user —
+  deliberately the same shape as a worker token: no person stands behind it, and the org it acts
+  in comes from the row. What it does not share with the worker token is independence from the
+  minter: the lookup joins the creator's `org_membership`, so the token's reach ends exactly when
+  a session's or a personal token's does — sign-in propagation deletes the membership, and the
+  next request resolves nothing (the row survives unrevoked, history with no reach, the same
+  contract the personal kind states). This file used to argue the opposite — that the token's
+  authority was "never the continuing membership of whoever minted it", and that a departed
+  member's org token outlives them; that was a hole, not a design, since any member could mint a
+  credential that survived their own removal. The join is what makes mintability by any member
+  defensible, and any current member can still revoke what remains from the same page.
 - **`POST /api/jobs` keeps a real author.** A personal token carries its user's id through
   `callerOf` untouched, so `created_by` stays populated on the route that runs shell commands.
 - **An organization token names no person, so it stays off every route that needs one.** What an
@@ -239,7 +253,8 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
 | `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove`, `/api/tokens` with its org and revoke variants | session cookie, or `Bearer fat_…` — an `oat_` bearer passes on this row's reads plus the `POST /api/refresh` cache poke, and is `403` on the rest (see [Access tokens](#access-tokens)) |
 | `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `/publish-token`, `/api/reclaims/claim`, `/api/reclaims/:id/ack` | `Bearer fwt_…` worker token |
-| OTLP + `POST /api/sessions/branch` | optional `X-Factory-Ingest-Token` |
+| OTLP | optional `X-Factory-Ingest-Token` |
+| `POST /api/sessions/branch` | github mode: the runner's attempt pair (`x-factory-job-id` + `x-factory-job-lease-token`) or `Bearer fat_…`; none mode: open. The deployment-wide ingest token does **not** authorize this write — see the ingest bullet below. |
 
 - **There is no overlap between the three credential *kinds*, and a request carries one.** A session accepted on
   `/claim` would let any member steal another worker's lease; a worker token accepted on
@@ -282,17 +297,33 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   an `authorization` header in `board.ts`. It stays that way because that package depends on nothing
   — see `AGENTS.md`. The header is **omitted** rather than sent empty against an open board: an empty
   Bearer is a credential that failed, where no header is one that was never offered.
-- **The ingest token is optional, and unset means today's behaviour.** Three callers, and the
-  second is
-  the awkward one: a collector on the compose network, and the `agent-telemetry` plugin installed at
-  user scope on developer laptops. The third is the branch reporter baked into both executor
-  images, which presents the same optional credential from `INGEST_TOKEN` — forwarded by the
-  driver (`RUNNER_INGEST_TOKEN`, from the chart's `ingest-token` Secret key) through the env file
-  or the per-attempt Secret, never an argv. Requiring the token would break all three with no
-  migration path. Header only,
-  never a query parameter, which would land in every access log. Honest limitation: `metric_point`
-  has no `org_id` by design (`docs/organizations.md`), so this is an *authenticity* check, not an
-  authorization one.
+- **The ingest token is optional, and unset means today's behaviour — but the branch write left
+  that world.** The optional token's callers are two now: a collector on the compose network, and
+  the `agent-telemetry` plugin installed at user scope on developer laptops — which authenticates
+  its branch reports with a **personal access token** (`Bearer fat_…`) instead, because the token
+  that used to carry them is exactly what the finding (CWE-862) removed. A deployment-wide shared
+  secret cannot bind a report to an organization: anyone holding it could name another
+  installation's repository and poison that org's telemetry, so branch attribution now comes from
+  an org-bound credential, never from a shared one. The third former caller, the branch reporter
+  baked into both executor images, presents the **attempt it runs for** — the driver forwards
+  `RUNNER_JOB_ID` + `RUNNER_LEASE_TOKEN` (the claim and that attempt's lease), the reporter sends
+  them as `x-factory-job-id` + `x-factory-job-lease-token`, and one org-less query (`select org_id
+  from job where id = $1 and lease_token = $2 and (finished_at is null or finished_at > now() -
+  interval '1 hour')`) resolves the org from the live attempt itself. The pair is attempt-scoped
+  without a status check: `complete()` retains the lease token so the reporter's final `--once`
+  sample — landing after the verdict — still authenticates, while a reclaim rotates the token, so a
+  superseded attempt's pair is dead and cannot write into the winner's org; suspend and the dead
+  retirement clear it, because those attempts end without a verdict whose tail matters. The hour of
+  retention grace is what keeps that honest: the pair resolves from the job row alone — no
+  membership join, because the runner is not a person — so a pair captured from a runner's env
+  could otherwise outlive its author's removal from the org forever (nothing prunes completed
+  jobs). The tail sample needs seconds; the captured credential expires like every other
+  credential here. An `oat_` bearer is refused on the branch
+  route as everywhere off the read allowlist — `orgTokenAllowed` is read-only, and this is a
+  write. Header only, never a query parameter, which would land in every access log. Honest
+  limitation: `metric_point` has no `org_id` by design (`docs/organizations.md`), so the OTLP
+  token remains an *authenticity* check, not an authorization one — the branch route no longer
+  has that problem, which is the point.
 
 ## What this does not do
 
@@ -302,10 +333,12 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   against *their own* checkouts. GitHub repo permissions are NOT projected into Factory (the
   per-user repo scoping of #66 retired with the auto-join it was built on): any member of an
   installation sees every repo it reports. This still does not make the job board safe to hand out.
-- **A GitHub-side removal bites one sign-in late.** Propagation runs at session creation only —
-  see Membership — so a member who never signs in again holds a working session until its TTL
-  expires. Decide per deployment whether that window is acceptable; the alternative is re-checking
-  installations on an interval, at the installation's rate limit.
+- **A GitHub-side removal bites when GitHub reports it, or one sign-in late.** The webhook deletes
+  the membership the moment `organization.member_removed` arrives — see Membership — so for
+  organization installations the window is bounded by GitHub's own delivery. What is left: a
+  delivery missed while the board was down, and user-account installations, whose org events do
+  not fire — those fall back to the sign-in sweep, so a member who never signs in again holds a
+  working session until its TTL expires.
 - **Signing in now has a side effect on disk.** `ensureUserWorkspace` creates
   `<root>/<orgId>/<userId>/` in the callback — a `mkdir`, nothing more. It cannot block the sign-in:
   a failure logs, and `GET /api/workspace` calls the same function, so a session that got in without

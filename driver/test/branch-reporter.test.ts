@@ -149,34 +149,42 @@ describe('the branch reporter', () => {
         }
     });
 
-    it('authenticates with the ingest token in a header, only when one is configured', async () => {
-        const withToken = await board();
-        const withoutToken = await board();
+    // The runner's credential for the branch route: the attempt it runs for, forwarded by the
+    // driver as RUNNER_JOB_ID / RUNNER_LEASE_TOKEN. Only when both are set — a hand-run container
+    // presents no pair rather than a half one, and the report simply goes unauthenticated.
+    it('sends the attempt pair as headers, only when both are configured', async () => {
+        const withPair = await board();
+        const withoutPair = await board();
         const dir = gitRepo();
         try {
             await run(CLAUDE_REPORTER, {
-                FACTORY_STATS_URL: withToken.url,
+                FACTORY_STATS_URL: withPair.url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
-                INGEST_TOKEN: ' tok ',
+                RUNNER_JOB_ID: '11111111-1111-4111-8111-111111111111',
+                RUNNER_LEASE_TOKEN: ' 22222222-2222-4222-8222-222222222222 ',
             });
-            expect(withToken.requests[0].headers['x-factory-ingest-token']).toBe('tok');
+            expect(withPair.requests[0].headers['x-factory-job-id']).toBe('11111111-1111-4111-8111-111111111111');
+            expect(withPair.requests[0].headers['x-factory-job-lease-token']).toBe(
+                '22222222-2222-4222-8222-222222222222'
+            );
             // A credential never travels as a query parameter — it lands in access logs.
-            expect(withToken.requests[0].path).toBe('/api/sessions/branch');
+            expect(withPair.requests[0].path).toBe('/api/sessions/branch');
 
             await run(CLAUDE_REPORTER, {
-                FACTORY_STATS_URL: withoutToken.url,
+                FACTORY_STATS_URL: withoutPair.url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
             });
-            expect(withoutToken.requests[0].headers['x-factory-ingest-token']).toBeUndefined();
+            expect(withoutPair.requests[0].headers['x-factory-job-id']).toBeUndefined();
+            expect(withoutPair.requests[0].headers['x-factory-job-lease-token']).toBeUndefined();
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
     });
 
     // A redirect must not become a second hop for the credential-bearing request: Node strips
-    // only selected headers cross-origin, so the token would stay eligible for forwarding to
+    // only selected headers cross-origin, so the pair would stay eligible for forwarding to
     // whatever the Location points at. The request is refused, not followed.
     it('does not follow a redirect, and never sends the credential to the redirect target', async () => {
         const { url, requests } = await board(200, [
@@ -188,7 +196,8 @@ describe('the branch reporter', () => {
                 FACTORY_STATS_URL: url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
-                INGEST_TOKEN: 'tok',
+                RUNNER_JOB_ID: '11111111-1111-4111-8111-111111111111',
+                RUNNER_LEASE_TOKEN: '22222222-2222-4222-8222-222222222222',
             });
             expect(status).toBe(0);
             expect(stdout).toBe('');
@@ -196,7 +205,7 @@ describe('the branch reporter', () => {
             // Exactly the one request, and no GET to /api/sessions/branch-target after it.
             expect(requests).toHaveLength(1);
             expect(requests[0].path).toBe('/api/sessions/branch');
-            expect(requests[0].headers['x-factory-ingest-token']).toBe('tok');
+            expect(requests[0].headers['x-factory-job-lease-token']).toBe('22222222-2222-4222-8222-222222222222');
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }

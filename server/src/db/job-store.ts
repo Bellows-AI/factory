@@ -657,6 +657,46 @@ export function withMintedToken(
 }
 
 /**
+ * The branch-ingest credential's verifier, and the ONE job query in this module that is org-less —
+ * deliberately, because its whole purpose is to say which org a request is speaking for: the
+ * runner's reporter presents the job it claimed and that attempt's lease token, and the pair's
+ * answer IS the org. `createJobStore` binds the org at construction; this resolver must run before
+ * any org is known, which is why it is a factory of its own and not a store method.
+ *
+ * No status filter, but not unbounded either: the reporter's final `--once` sample lands seconds
+ * after the verdict, and `complete` retains the lease token for exactly that reason (the only
+ * settle point that does — dead and suspend clear theirs, because those attempts end without a
+ * verdict whose tail matters). The pair is attempt-scoped regardless: a reclaim rotates the token
+ * on the row (`gen_random_uuid`), so a superseded attempt's pair stops resolving the moment the
+ * job is handed to its replacement and cannot write into the winner's org.
+ *
+ * The grace window is the bound that keeps retention honest. The pair resolves from the job row
+ * alone — no membership join, because the runner is not a person — so a pair captured from a
+ * runner's env would otherwise outlive its author's removal from the org indefinitely: nothing
+ * prunes completed jobs. An hour past the verdict covers the tail sample with orders of magnitude
+ * to spare and turns the pair into what every other credential here is — a thing that expires.
+ */
+export const LEASE_TAIL_GRACE = '1 hour';
+
+export function createOrgOfLease({
+    sql,
+    ready,
+}: {
+    sql: Sql;
+    ready?: Promise<unknown>;
+}): (jobId: string, leaseToken: string) => Promise<string | null> {
+    return async (jobId, leaseToken) => {
+        if (ready) await ready;
+        const rows = await sql<{ org_id: string }[]>`
+            select org_id from job
+            where id = ${jobId} and lease_token = ${leaseToken}
+              and (finished_at is null or finished_at > now() - ${LEASE_TAIL_GRACE}::interval)
+        `;
+        return rows[0]?.org_id ?? null;
+    };
+}
+
+/**
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
  *
@@ -1565,7 +1605,14 @@ export function createJobStore({
                         exit_code   = ${exitCode},
                         output      = ${output},
                         finished_at = now(),
-                        lease_token = null,
+                        -- The lease token is RETAINED, deliberately — the only settle point that
+                        -- keeps it (dead and suspend clear theirs). The reporter's final --once
+                        -- tail sample lands after this verdict, and it authenticates with the
+                        -- attempt's job-id + lease-token pair; clearing the token here would
+                        -- 401 that sample into silence and lose the run's last branch state. The
+                        -- pair stays attempt-scoped anyway: a reclaim rotates the token on the
+                        -- row, so a superseded attempt's pair stops resolving the moment the
+                        -- job is handed out again.
                         -- The verdict is the last settle point of the attempt: bank its segment,
                         -- so the task's clock covers the run that just ended.
                         wall_clock_ms = ${wallTick},

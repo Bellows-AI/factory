@@ -49,11 +49,12 @@ real value.
   (`transcriptDir` in driver/src/docker.ts): it is where the headless transcript store lives, and
   the runner entrypoint redirects `CLAUDE_CONFIG_DIR` onto it — a member value would steer
   transcripts, and with them the CLI's whole configuration directory, somewhere else
-  ([jobs.md](jobs.md)). `FACTORY_STATS_URL`, `INGEST_TOKEN` and `BELLOWS_SESSION_ID` are reserved
-  for the branch reporter (see [jobs.md](jobs.md)): a member value in the first tells the
-  runner's attribution reports to post somewhere else, the second forges their credential, and
-  the third claims the report is somebody else's session — a cross-tenant write into the
-  telemetry store, refused the same way. `OPENCODE_CONFIG_CONTENT` is the one name the board
+   ([jobs.md](jobs.md)). `FACTORY_STATS_URL`, `RUNNER_JOB_ID`, `RUNNER_LEASE_TOKEN` and
+   `BELLOWS_SESSION_ID` are reserved for the branch reporter (see [jobs.md](jobs.md)): a member
+   value in the first tells the runner's attribution reports to post somewhere else, the middle
+   two forge the attempt credential the board resolves those reports' organization from, and the
+   last claims the report is somebody else's session — a cross-tenant write into the telemetry
+   store, refused the same way. `OPENCODE_CONFIG_CONTENT` is the one name the board
   reserves that the driver does not: the claim SYNTHESIZES it from the author's own executor row
   when the task was stamped with an `opencode` executor ([workspace.md](workspace.md)), applied
   after the resolved scopes so the synthesized value wins any collision, and a member var of the

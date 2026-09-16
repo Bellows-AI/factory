@@ -16,25 +16,19 @@ export interface SessionBranchReport {
  */
 export interface TelemetryStore {
     insertMetrics(rows: MetricRow[]): Promise<number>;
-    recordBranch(report: SessionBranchReport): Promise<void>;
+    recordBranch(report: SessionBranchReport, orgId: string): Promise<void>;
 }
 
 /**
- * The ingest side has no caller to carry an org — a collector or a laptop plugin reports
- * sessions, not membership — so the store asks a resolver per report instead of binding one
- * process-wide org (#99). Under AUTH_MODE=none the resolver is a constant; in github mode it
- * matches the report's repo owner against the installation orgs' account logins.
- *
- * Note that `insertMetrics` needs no org at all. metric_point has no org column on purpose — a
- * datapoint's organization is resolved through session_branch, exactly as its repo is.
+ * WHERE THE ORG COMES FROM — the credential verified at the ingest boundary, never the report's
+ * repo. A report's `repo` is caller-controlled payload, and matching its owner against the
+ * installation orgs let any caller write telemetry into another organization by naming its
+ * repository (CWE-862). The route now records with `orgOf(request)`: the attempt's org for the
+ * runner's job-id + lease-token pair, the membership's org for the laptop plugin's personal
+ * bearer. `metric_point` keeps no org of its own — a datapoint's organization is still resolved
+ * through `session_branch`, exactly as its repo is.
  */
-export function createPostgresStore({
-    sql,
-    orgFor,
-}: {
-    sql: Sql;
-    orgFor: (repo: string) => Promise<string>;
-}): TelemetryStore {
+export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
     return {
         async insertMetrics(rows) {
             if (!rows.length) return 0;
@@ -61,9 +55,8 @@ export function createPostgresStore({
             return inserted.count;
         },
 
-        async recordBranch(report) {
+        async recordBranch(report, orgId) {
             const { agent, sessionId, repo, branch, headSha, at } = report;
-            const orgId = await orgFor(repo);
             const when = new Date(at);
             // Widen the interval rather than overwrite it: each report is one sample of a
             // branch that was held for some span, and the span is what the attribution join

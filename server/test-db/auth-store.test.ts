@@ -64,6 +64,11 @@ beforeEach(async () => {
               on conflict (id) do nothing`;
     await sql`delete from worker_token where org_id in (${ORG}, ${SECOND_ORG})`;
     await sql`delete from access_token where org_id in (${ORG}, ${SECOND_ORG})`;
+    // The adoption test plants session_branch rows, and org_id on that table is a plain column
+    // (005 added it without a foreign key), so the organization delete above cannot cascade to
+    // them — against the shared database this suite shares with the other db files, one adopted
+    // `acme/web` row would survive every cleanup and the count assertions would drift per run.
+    await sql`delete from session_branch where org_id in (${ORG}, ${SECOND_ORG}) or session_id like 'adopt-%'`;
     // Sessions whose org is gone would already be; this catches rows of deleted accounts.
     await sql`delete from session where user_id in (select id from app_user where github_user_id >= ${ID_BASE})`;
     await sql`delete from app_user where github_user_id >= ${ID_BASE}`;
@@ -424,6 +429,47 @@ describe.skipIf(!enabled)('access tokens', () => {
         expect(await store.findOrgToken(hashToken('oat_h'))).toEqual({ orgId: ORG, id: org.id, label: 'ci' });
     });
 
+    it('resolves an org token only while its minter is still a member', async () => {
+        // The issuer's membership is the org token's authority, the same join a session and a
+        // personal token run: sign-in propagation deleting the membership kills the token's reach
+        // on the next request, while the row itself survives unrevoked — history with no reach,
+        // the same contract the personal kind states.
+        const minter = await member(12, 'org-leaver');
+        const org = await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: minter.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_i'),
+        });
+        expect(await store.findOrgToken(hashToken('oat_i'))).toEqual({ orgId: ORG, id: org.id, label: 'ci' });
+
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${minter.user.id}`;
+
+        expect(await store.findOrgToken(hashToken('oat_i'))).toBeNull();
+        const [row] = await sql<{ revoked_at: Date | null }[]>`
+            select revoked_at from access_token where org_id = ${ORG} and id = ${org.id}
+        `;
+        expect(row?.revoked_at).toBeNull();
+    });
+
+    it('does not resolve an org token whose minter is a member of a DIFFERENT org', async () => {
+        // The join is on (org, creator) together: membership elsewhere is not authority here, so
+        // a row minted into ORG by someone whose membership is only in SECOND_ORG is dead.
+        const minter = await member(13, 'org-outsider', [{ id: SECOND_ORG, name: SECOND_ORG }]);
+        await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: minter.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_j'),
+        });
+
+        expect(await store.findOrgToken(hashToken('oat_j'))).toBeNull();
+    });
+
     it('stamps last_used_at, then holds it within the throttle window', async () => {
         // The dashboard polls every two seconds, so the touch is throttled to one rewrite a
         // minute — minute-granular "last used" in exchange for a read path that is not a write.
@@ -505,6 +551,23 @@ describe.skipIf(!enabled)('access tokens', () => {
         for (const view of [...personal, ...org]) {
             expect(JSON.stringify(view)).not.toContain('hash');
         }
+    });
+});
+
+describe.skipIf(!enabled)('removeMember (the webhook)', () => {
+    it('deletes the membership by the GitHub numeric id, and says so', async () => {
+        // The webhook carries the numeric id — THE identity — while org_membership keys on
+        // user_id since 029, so the lookup joins through app_user.
+        const caller = await member();
+        expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(true);
+        expect(await store.membershipsOf(caller.user.id)).toEqual([]);
+    });
+
+    it('answers false once the row is gone, and for a github id that is nobody here', async () => {
+        const caller = await member();
+        expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(true);
+        expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(false);
+        expect(await store.removeMember(ORG, ID_BASE + 777)).toBe(false);
     });
 });
 

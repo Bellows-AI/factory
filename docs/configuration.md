@@ -59,7 +59,10 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   fall-back-to-something value: a mode you can fall into by
   typo is worse than one that refuses. Full reasoning in [auth.md](auth.md). `AuthConfig` is a
   discriminated union rather than a record of optionals, so "half-configured" is unrepresentable
-  rather than merely rejected.
+  rather than merely rejected. `GITHUB_WEBHOOK_SECRET` is the sibling that is optional in both
+  modes, parsed like `INGEST_TOKEN` (trim, empty meaning unset): set, it enables the installation
+  webhook (`POST /api/github/webhook`), which deletes a membership the moment GitHub reports the
+  member gone; unset, the route does not exist and removals wait for the next sign-in.
 - **`GITHUB_OAUTH_AUTHORIZE_URL` / `_TOKEN_URL` / `_USER_URL` are a test seam**, not documented
   configuration — a configurable authorize URL that reached a real deployment would be a phishing
   vector, and `main.ts` logs loudly when one is in use. `AUTH_ALLOW_PUBLIC_BIND` is restricted for a
