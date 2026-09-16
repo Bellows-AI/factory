@@ -49,6 +49,23 @@ export function subscribeUnauthenticated(listener: () => void): () => void {
     };
 }
 
+/**
+ * Signs the caller out: POSTs the logout route — never GET, which the server refuses as CSRF-able —
+ * then fires the same broadcast a 401 does, so every mounted `useSession` re-checks `/api/auth/me`,
+ * hears "nobody", and the gate returns. Fired even when the POST itself fails: the re-check is what
+ * decides what the screen shows, and a dead network re-checks into an error, not a stale session.
+ */
+export async function signOut(): Promise<void> {
+    try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+        // The POST only fails when the network itself is down; the re-check below reports that as
+        // an error rather than this promise rejecting into an unhandled one.
+    } finally {
+        reportUnauthenticated();
+    }
+}
+
 export interface UseSession {
     session: Session | null;
     /** True only before the first answer; a re-check does not blank the screen. */
