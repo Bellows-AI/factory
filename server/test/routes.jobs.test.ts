@@ -30,13 +30,14 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
-    listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
+    listed: { status?: JobStatus | 'terminal'; repo?: string | undefined; limit: number }[];
     completed: {
         id: string;
         output: string | null;
         contextTokens: number | null;
         contextCostUsd: number | null;
         agentTurns: number | null;
+        summary: string | null;
     }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
@@ -1480,6 +1481,14 @@ describe('GET /api/jobs', () => {
         const response = await instance.inject({ method: 'GET', url: '/api/jobs?status=succeeded' });
         expect(response.statusCode).toBe(200);
         expect(response.json().jobs).toHaveLength(1);
+    });
+
+    it("passes the 'terminal' pseudo-status to the store — every settled verdict at once", async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: '/api/jobs?status=terminal&limit=30' });
+        expect(response.statusCode).toBe(200);
+        expect(store.listed).toEqual([{ status: 'terminal', repo: undefined, limit: 30 }]);
     });
 
     it('passes a repository filter to the store', async () => {

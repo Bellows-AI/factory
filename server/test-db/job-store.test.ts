@@ -562,6 +562,20 @@ describe.skipIf(!enabled)('job store', () => {
         expect((await store.list({ status: 'queued', limit: 10 }))[0]?.id).toBe(id);
     });
 
+    it("filters the list by the 'terminal' pseudo-status — every settled verdict at once", async () => {
+        const done = await queue('one');
+        await queue('two');
+        const claim = await store.claim('w1', 300);
+        await store.complete(done.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+
+        const terminal = await store.list({ status: 'terminal', limit: 10 });
+        expect(terminal).toHaveLength(1);
+        expect(terminal[0]?.id).toBe(done.id);
+        // The still-queued row never appears: the filter is exactly the settled-verdict set
+        // the thread-done computation uses.
+        expect(await store.list({ limit: 10 })).toHaveLength(2);
+    });
+
     it('stores the repo and executor a job was queued with', async () => {
         const labelled = await store.create('drive me', null, { repo: 'acme/web', executor: 'main' });
         const unlabelled = await queue('echo hi');

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isTerminal } from './useJobs.js';
 import type { Job } from './useJobs.js';
 import { reportUnauthenticated } from './useSession.js';
 
@@ -8,9 +7,11 @@ const LIST_LIMIT = 30;
 /**
  * The board's finished runs, for the dashboard's recently-completed view.
  *
- * A second, slower poll of the same list the tasks pages use — slower because the dashboard is
- * a report, not a chat: a quiet board's answer barely changes in thirty seconds. The completed
- * subset is the hook's answer, so the panel renders exactly what its title says. The same
+ * A second, slower poll of the list the tasks pages use — slower because the dashboard is a
+ * report, not a chat: a quiet board's answer barely changes in thirty seconds. The
+ * `status=terminal` filter is the SERVER's (the same set the thread-done computation uses),
+ * so the limit bounds exactly the rows this hook returns — a busy queue cannot hide finished
+ * runs behind queued ones the way a client-side filter over a newest-N window would. The same
  * discipline as `useJobs`: one abortable chain, the last good answer survives a failed tick,
  * 401s go to the gate, and leaving the dashboard tears the chain down.
  */
@@ -23,7 +24,7 @@ export function useCompletedJobs(): { jobs: Job[] | null; error: string | null }
     const poll = useCallback(async (signal: AbortSignal) => {
         if (signal.aborted) return;
         try {
-            const response = await fetch(`/api/jobs?limit=${LIST_LIMIT}`, { signal });
+            const response = await fetch(`/api/jobs?status=terminal&limit=${LIST_LIMIT}`, { signal });
             if (response.status === 401) {
                 reportUnauthenticated();
                 return;
@@ -37,7 +38,7 @@ export function useCompletedJobs(): { jobs: Job[] | null; error: string | null }
             }
             const body = (await response.json()) as { jobs: Job[] };
             if (signal.aborted) return;
-            setJobs(body.jobs.filter((job) => isTerminal(job.status)));
+            setJobs(body.jobs);
             setError(null);
             timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 60_000 : 30_000);
         } catch (e) {

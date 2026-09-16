@@ -851,8 +851,15 @@ export const jobRoutes =
 
         app.get('/api/jobs', async (request, reply) => {
             const query = request.query as { status?: string; limit?: string; repo?: string };
-            if (query.status !== undefined && !STATUSES.includes(query.status as JobStatus)) {
-                return bad(reply, 'BAD_STATUS', `status must be one of ${STATUSES.join(', ')}`);
+            // 'terminal' is the one pseudo-status: every settled verdict at once, so a
+            // completed-jobs view can bound its request instead of filtering a newest-N window
+            // client-side and losing finished runs behind a busy queue.
+            if (
+                query.status !== undefined &&
+                query.status !== 'terminal' &&
+                !STATUSES.includes(query.status as JobStatus)
+            ) {
+                return bad(reply, 'BAD_STATUS', `status must be one of ${STATUSES.join(', ')} or 'terminal'`);
             }
             const limit = query.limit === undefined ? LIST_LIMIT_DEFAULT : Number(query.limit);
             if (!Number.isInteger(limit) || limit < 1 || limit > LIST_LIMIT_MAX) {
@@ -869,7 +876,7 @@ export const jobRoutes =
             const jobs = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job list failed'),
-                () => store.list({ status: query.status as JobStatus | undefined, repo, limit })
+                () => store.list({ status: query.status as JobStatus | 'terminal' | undefined, repo, limit })
             );
             if (!jobs.ok) return reply;
             return reply.code(200).send({ jobs: jobs.value });

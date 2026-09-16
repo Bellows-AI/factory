@@ -567,8 +567,18 @@ export interface JobStore {
      * Newest first. `output` is not selected — it is unbounded and no list view shows it — and
      * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose
      * `activity` line is the live summary the nav and task view render (issue #61).
+     *
+     * `status: 'terminal'` is the one pseudo-value: every settled verdict at once
+     * (`succeeded`/`failed`/`dead`/`stopped` — the same set the thread-done computation
+     * uses), so the recently-completed view can bound its request to rows it will actually
+     * show, instead of filtering a newest-N window client-side and losing finished runs
+     * behind a busy queue.
      */
-    list(filter: { status?: JobStatus | undefined; repo?: string | undefined; limit: number }): Promise<Job[]>;
+    list(filter: {
+        status?: JobStatus | 'terminal' | undefined;
+        repo?: string | undefined;
+        limit: number;
+    }): Promise<Job[]>;
 }
 
 interface JobRow {
@@ -1652,7 +1662,13 @@ export function createJobStore({
                        summary, wall_clock_ms
                        ${authorColumns}
                 from job ${authorJoin}
-                where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}
+                where org_id = ${orgId} ${
+                    status === 'terminal'
+                        ? sql`and status in ('succeeded', 'failed', 'dead', 'stopped')`
+                        : status
+                          ? sql`and status = ${status}`
+                          : sql``
+                }
                   ${repo ? sql`and repo = ${repo}` : sql``}
                 order by job.created_at desc, job.id
                 limit ${limit}
