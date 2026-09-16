@@ -70,6 +70,7 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
         setRows((current) => current.filter((_, i) => i !== index));
     };
 
+    /** Raw on: seed the editor from the draft. Raw off: parse, and replace the draft or report. */
     const toggleRaw = () => {
         if (!rawOpen) {
             // Entering the editor is a context switch: seed once from the current draft and clear

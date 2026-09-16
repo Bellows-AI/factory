@@ -152,6 +152,7 @@ export function serializeEnv(rows: readonly EnvVarRow[]): string {
         .join('\n');
 }
 
+/** Whether the value is itself one matched pair of quotes, which the parser would strip. */
 function isQuotePair(value: string): boolean {
     return value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[0] === value[value.length - 1];
 }
