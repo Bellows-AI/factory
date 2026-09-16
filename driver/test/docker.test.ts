@@ -2998,6 +2998,17 @@ describe('publishing the produced work', () => {
         });
     });
 
+    it('rejects lookalike and impossible issue numbers', () => {
+        // A trailing word character means the digits were the prefix of a longer token.
+        expect(publishPlan({ ...job, command: '/fix 44oops' }, NOW).issueNumber).toBeNull();
+        expect(publishPlan({ ...job, command: 'see #44oops' }, NOW).issueNumber).toBeNull();
+        // Zero is no issue, and past the safe-integer range the number is not honest.
+        expect(publishPlan({ ...job, command: '/fix 0' }, NOW).issueNumber).toBeNull();
+        expect(publishPlan({ ...job, command: '/fix 99999999999999999999' }, NOW).issueNumber).toBeNull();
+        // A sentence period after the reference is punctuation, not a longer number.
+        expect(publishPlan({ ...job, command: 'fix #44.' }, NOW).issueNumber).toBe(44);
+    });
+
     it('builds the checkout path from the workspace and repo label, asserting both', () => {
         expect(repoPath(loadDriverConfig({}), ISSUE_JOB)).toBe(`/workspaces/bellows/${USER}/factory`);
         expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, workspacePath: null })).toBeNull();

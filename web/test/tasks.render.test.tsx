@@ -1040,6 +1040,14 @@ describe('thread derivations', () => {
             expect(threadIssue([withCommand('/fix 44 but really #9')])).toBe(44);
         });
 
+        it('rejects lookalike and impossible issue numbers', () => {
+            expect(threadIssue([withCommand('/fix 44oops')])).toBeNull();
+            expect(threadIssue([withCommand('see #44oops')])).toBeNull();
+            expect(threadIssue([withCommand('/fix 0')])).toBeNull();
+            expect(threadIssue([withCommand('/fix 99999999999999999999')])).toBeNull();
+            expect(threadIssue([withCommand('fix #44.')])).toBe(44);
+        });
+
         it('prefers the issues/ form over a bare #, like the driver does', () => {
             expect(threadIssue([withCommand('see #7, from issues/44')])).toBe(44);
         });

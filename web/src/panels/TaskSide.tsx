@@ -10,21 +10,32 @@ import type { Job, RuntimeVitals } from '../api/useJobs.js';
  */
 
 /**
+ * The issue a command names, in the driver's `publishPlan` precedence order (below) — copied,
+ * not imported: web is an independent workspace, the same rule the driver follows toward the
+ * server. A match counts only when the digits end the token (a trailing word character means
+ * they were a prefix) and the number is one GitHub could have issued: positive, within the
+ * safe-integer range.
+ */
+const commandIssue = (command: string): number | null => {
+    for (const pattern of [/issues\/(\d+)/, /\/fix\s+#?(\d+)/, /#(\d+)/]) {
+        const match = pattern.exec(command);
+        if (!match || /[\w]/.test(command[match.index + match[0].length] ?? '')) continue;
+        const issue = Number(match[1]);
+        if (Number.isSafeInteger(issue) && issue > 0) return issue;
+    }
+    return null;
+};
+
+/**
  * The issue the task names, with the driver's `publishPlan` precedence (`issues/\d+` before a
- * `/fix <n>` command, before a bare `#\d+`) — copied, not imported: web is an independent
- * workspace, the same rule the driver follows toward the server. The driver reads this same
- * reference to name the task branch and close the issue from the PR, so the sidebar shows the
- * reader what the run is about.
+ * `/fix <n>` command, before a bare `#\d+`) — the validation lives in `commandIssue` above, the
+ * driver reads this same reference to name the task branch and close the issue from the PR, so
+ * the sidebar shows the reader what the run is about.
  */
 export function threadIssue(jobs: Job[]): number | null {
     for (let i = jobs.length - 1; i >= 0; i--) {
-        const command = jobs[i]!.command;
-        const issue =
-            /issues\/(\d+)/.exec(command)?.[1] ??
-            /\/fix\s+#?(\d+)/.exec(command)?.[1] ??
-            /#(\d+)/.exec(command)?.[1] ??
-            null;
-        if (issue !== null) return Number(issue);
+        const issue = commandIssue(jobs[i]!.command);
+        if (issue !== null) return issue;
     }
     return null;
 }
