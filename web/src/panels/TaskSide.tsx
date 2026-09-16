@@ -11,14 +11,19 @@ import type { Job, RuntimeVitals } from '../api/useJobs.js';
 
 /**
  * The issue the task names, with the driver's `publishPlan` precedence (`issues/\d+` before a
- * bare `#\d+`) — copied, not imported: web is an independent workspace, the same rule the driver
- * follows toward the server. The driver reads this same reference to name the task branch and
- * close the issue from the PR, so the sidebar shows the reader what the run is about.
+ * `/fix <n>` command, before a bare `#\d+`) — copied, not imported: web is an independent
+ * workspace, the same rule the driver follows toward the server. The driver reads this same
+ * reference to name the task branch and close the issue from the PR, so the sidebar shows the
+ * reader what the run is about.
  */
 export function threadIssue(jobs: Job[]): number | null {
     for (let i = jobs.length - 1; i >= 0; i--) {
         const command = jobs[i]!.command;
-        const issue = /issues\/(\d+)/.exec(command)?.[1] ?? /#(\d+)/.exec(command)?.[1] ?? null;
+        const issue =
+            /issues\/(\d+)/.exec(command)?.[1] ??
+            /\/fix\s+#?(\d+)/.exec(command)?.[1] ??
+            /#(\d+)/.exec(command)?.[1] ??
+            null;
         if (issue !== null) return Number(issue);
     }
     return null;
@@ -66,13 +71,13 @@ const threadContext = (jobs: Job[]): ReactNode => {
         const tokens = jobs[i]!.runtime?.contextTokens;
         if (tokens != null) return `${tokenCount.format(tokens)} tok`;
     }
-    return '—';
+    return null;
 };
 
 /**
  * The thread's cost: every turn's scraped cost summed. Zero-dollar turns contribute nothing (a
  * zero-dollar run is not billed, and $0.0000 is noise), and a chain where nothing scraped a cost
- * stays silent — the honest dash, a claude-code thread's ordinary answer today.
+ * renders nothing — the honest blank, a claude-code thread's ordinary answer today.
  */
 const threadCost = (jobs: Job[]): ReactNode => {
     let sum = 0;
@@ -80,7 +85,7 @@ const threadCost = (jobs: Job[]): ReactNode => {
         const cost = job.runtime?.costUsd;
         if (cost != null && cost > 0) sum += cost;
     }
-    return sum > 0 ? `$${sum.toFixed(4)}` : '—';
+    return sum > 0 ? `$${sum.toFixed(4)}` : null;
 };
 
 /**
@@ -88,11 +93,13 @@ const threadCost = (jobs: Job[]): ReactNode => {
  * and cost, the newest run's activity and services — while per-turn numbers stay on the turns
  * they describe. Older runs are history, and their verdicts stay inline on their own messages.
  *
- * Everything here is either what the board reports or an explicit dash. The two honest gaps are
- * deliberate: the PR is read off the publish line the driver appends to the output (the only
- * place the board carries one today), and no source at all records a PR's state, so that row
- * always says '—' rather than inventing one. A structured PR field would be a contract change —
- * route, store, driver — and is a follow-up, not part of this panel.
+ * Everything here is either what the board reports or a blank. A value the board does not carry
+ * renders nothing rather than a dash (issue #100) — a dash reads as a measurement, and nothing
+ * was measured. The two honest gaps are deliberate: the PR is read off the publish line the
+ * driver appends to the output (the only place the board carries one today), and no source at
+ * all records a PR's state, so that row keeps its dash rather than inventing one. A structured
+ * PR field would be a contract change — route, store, driver — and is a follow-up, not part of
+ * this panel.
  */
 export function TaskSide({ jobs }: { jobs: Job[] }) {
     const latest = jobs[jobs.length - 1] as Job;
@@ -131,13 +138,13 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
                             'unknown'
                         ),
                     ],
-                    ['Workspace', latest.workspacePath ?? '—'],
+                    ['Workspace', latest.workspacePath],
                     ['Context', threadContext(jobs)],
                     ['Cost', threadCost(jobs)],
                     // The agent's current activity line, while there is one: a stale line beside a
                     // finished verdict lies about a run that is no longer going.
-                    ['Task', latest.status === 'running' && runtime?.activity != null ? runtime.activity : '—'],
-                    ['Running time', parked ? '—' : runDuration(latest.startedAt, latest.finishedAt)],
+                    ['Task', latest.status === 'running' && runtime?.activity != null ? runtime.activity : null],
+                    ['Running time', parked ? null : runDuration(latest.startedAt, latest.finishedAt)],
                 ]}
             />
             {latest.runtime?.services?.length ? (
@@ -159,7 +166,7 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
             </div>
             <KeyValues
                 pairs={[
-                    ['Issue', issue !== null ? `#${issue}` : '—'],
+                    ['Issue', issue !== null ? `#${issue}` : null],
                     [
                         'PR',
                         published !== null ? (
@@ -168,9 +175,7 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
                             ) : (
                                 published.branch
                             )
-                        ) : (
-                            '—'
-                        ),
+                        ) : null,
                     ],
                     ['PR state', '—'],
                 ]}

@@ -57,7 +57,11 @@ export interface PublishPlan {
  * argv (execFile, no shell), never a fragment of one.
  */
 export function publishPlan(job: BoardJob, now: Date = new Date()): PublishPlan {
-    const issue = /issues\/(\d+)/.exec(job.command)?.[1] ?? /#(\d+)/.exec(job.command)?.[1] ?? null;
+    const issue =
+        /issues\/(\d+)/.exec(job.command)?.[1] ??
+        /\/fix\s+#?(\d+)/.exec(job.command)?.[1] ??
+        /#(\d+)/.exec(job.command)?.[1] ??
+        null;
     const firstLine = (job.command.trim().split('\n')[0] ?? '').trim().slice(0, 72);
     const title = issue ? `${firstLine} (#${issue})` : firstLine;
     const branch = issue ? `fix/${issue}` : `task/${now.toISOString().slice(0, 10).replace(/-/g, '')}`;

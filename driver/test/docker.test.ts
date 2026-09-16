@@ -2970,6 +2970,34 @@ describe('publishing the produced work', () => {
         expect(plain.title).toBe('tidy the docs');
     });
 
+    it('plans the same branch and closure from the bare /fix <number> form', () => {
+        expect(publishPlan({ ...job, command: '/fix 100' }, NOW)).toEqual({
+            branch: 'fix/100',
+            title: '/fix 100 (#100)',
+            issueNumber: 100,
+        });
+        const hashed = publishPlan({ ...job, command: '/fix #44' }, NOW);
+        expect(hashed.branch).toBe('fix/44');
+        expect(hashed.issueNumber).toBe(44);
+        expect(publishPlan({ ...job, command: '/fix https://github.com/o/r/issues/44' }, NOW).issueNumber).toBe(44);
+    });
+
+    it('does not name an issue from a command that merely looks like /fix', () => {
+        expect(publishPlan({ ...job, command: '/fix-a 100' }, NOW)).toEqual({
+            branch: 'task/20260909',
+            title: '/fix-a 100',
+            issueNumber: null,
+        });
+    });
+
+    it('prefers the /fix target over an incidental #mention', () => {
+        expect(publishPlan({ ...job, command: '/fix 44 but really #9' }, NOW)).toEqual({
+            branch: 'fix/44',
+            title: '/fix 44 but really #9 (#44)',
+            issueNumber: 44,
+        });
+    });
+
     it('builds the checkout path from the workspace and repo label, asserting both', () => {
         expect(repoPath(loadDriverConfig({}), ISSUE_JOB)).toBe(`/workspaces/bellows/${USER}/factory`);
         expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, workspacePath: null })).toBeNull();

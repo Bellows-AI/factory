@@ -659,7 +659,7 @@ describe('TaskDetail', () => {
     /**
      * The status sidebar: one column beside the conversation, fed by the NEWEST run — the same
      * run the composer and Done verdict belong to. Everything it shows is either what the board
-     * reports or an honest dash; nothing is inferred.
+     * reports or a blank where nothing was; nothing is inferred.
      */
     describe('sidebar', () => {
         const runtime = {
@@ -679,10 +679,10 @@ describe('TaskDetail', () => {
             expect(html).toContain('<span class="pill">main</span>');
         });
 
-        it('shows the workspace directory the board reports, and a dash when there is none', () => {
+        it('shows the workspace directory the board reports, and blank when there is none', () => {
             const named = renderDetail({ jobs: [job({ workspacePath: 'org-1/user-2' })] });
             expect(named).toContain('<dt>Workspace</dt><dd>org-1/user-2</dd>');
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Workspace</dt><dd>—</dd>');
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Workspace</dt><dd></dd>');
         });
 
         /**
@@ -743,11 +743,11 @@ describe('TaskDetail', () => {
                 jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
             });
             expect(free).toContain('<dt>Context</dt><dd>1,200 tok</dd>');
-            expect(free).toContain('<dt>Cost</dt><dd>—</dd>');
+            expect(free).toContain('<dt>Cost</dt><dd></dd>');
             expect(free).not.toContain('$0.0000');
 
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd>—</dd>');
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Cost</dt><dd>—</dd>');
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd></dd>');
+            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Cost</dt><dd></dd>');
         });
 
         /**
@@ -799,15 +799,15 @@ describe('TaskDetail', () => {
             // A queued job has no attempt yet, and a parked one is not running: either way a
             // ticking clock would lie.
             const queued = renderDetail({ jobs: [job({ status: 'queued', startedAt: null, finishedAt: null })] });
-            expect(queued).toContain('<dt>Running time</dt><dd>—</dd>');
+            expect(queued).toContain('<dt>Running time</dt><dd></dd>');
             const parked = renderDetail({ jobs: [job({ status: 'standby' })] });
-            expect(parked).toContain('<dt>Running time</dt><dd>—</dd>');
+            expect(parked).toContain('<dt>Running time</dt><dd></dd>');
         });
 
         it('shows the current task while the run is going, and nothing once it is not', () => {
             const live = renderDetail({ jobs: [job({ status: 'running', runtime })] });
             expect(live).toContain('<dt>Task</dt><dd>→ Bash npm test</dd>');
-            expect(renderDetail({ jobs: [job({ runtime })] })).toContain('<dt>Task</dt><dd>—</dd>');
+            expect(renderDetail({ jobs: [job({ runtime })] })).toContain('<dt>Task</dt><dd></dd>');
             expect(renderDetail({ jobs: [job()] })).not.toContain('chat-activity');
         });
 
@@ -827,10 +827,10 @@ describe('TaskDetail', () => {
             expect(unsafe).toContain('fix/44');
         });
 
-        it('shows dashes for a thread with no issue and no PR', () => {
+        it('renders blanks for a thread with no issue and no PR', () => {
             const html = renderDetail({ jobs: [job()] });
-            expect(html).toContain('<dt>Issue</dt><dd>—</dd>');
-            expect(html).toContain('<dt>PR</dt><dd>—</dd>');
+            expect(html).toContain('<dt>Issue</dt><dd></dd>');
+            expect(html).toContain('<dt>PR</dt><dd></dd>');
         });
 
         it('shows a dash for the PR state, which nothing records on the job', () => {
@@ -1024,6 +1024,20 @@ describe('thread derivations', () => {
         it('parses an issues/ URL and a bare #number', () => {
             expect(threadIssue([withCommand('fix https://github.com/o/r/issues/44 please')])).toBe(44);
             expect(threadIssue([withCommand('fix #44 please')])).toBe(44);
+        });
+
+        it('parses the /fix command forms — bare number, #number, and a full url after /fix', () => {
+            expect(threadIssue([withCommand('/fix 100')])).toBe(100);
+            expect(threadIssue([withCommand('/fix #44')])).toBe(44);
+            expect(threadIssue([withCommand('/fix https://github.com/o/r/issues/44')])).toBe(44);
+        });
+
+        it('does not read an issue from a command that merely looks like /fix', () => {
+            expect(threadIssue([withCommand('/fix-a 100')])).toBeNull();
+        });
+
+        it('prefers the /fix target over an incidental #mention', () => {
+            expect(threadIssue([withCommand('/fix 44 but really #9')])).toBe(44);
         });
 
         it('prefers the issues/ form over a bare #, like the driver does', () => {
