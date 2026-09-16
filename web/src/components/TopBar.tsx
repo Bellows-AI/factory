@@ -56,13 +56,20 @@ export function TopBar({
                     <OrgSelector
                         organization={meta.organization}
                         onSwitch={(orgId) => {
-                            // Fire-and-reload: the switch is a server-side session change, and
-                            // every org-scoped read below re-probes from scratch afterwards.
+                            // The switch is a server-side session change; on success the reload
+                            // makes every org-scoped read re-probe from scratch. A refusal
+                            // (403/400 — the membership moved under the selector) leaves the
+                            // page untouched: the select's value is bound to the payload, so
+                            // the next poll renders it back on the org the session still holds.
                             void fetch('/api/auth/org', {
                                 method: 'POST',
                                 headers: { 'content-type': 'application/json' },
                                 body: JSON.stringify({ orgId }),
-                            }).then(() => window.location.reload());
+                            })
+                                .then((response) => {
+                                    if (response.ok) window.location.reload();
+                                })
+                                .catch(() => {});
                         }}
                     />
                 ) : null}

@@ -55,13 +55,26 @@ try {
     await adoptOrg(sql, installation, (m) => console.log(`[adopt] ${m}`));
 
     if (from) {
-        // History written under the legacy configured id is re-keyed. session_branch is the only
-        // org-owned table left (005's list shrank with 023), so this one update moves everything
-        // the dashboard reads.
-        const moved = await sql`
-            update session_branch set org_id = ${installation} where org_id = ${from}
+        // History written under the legacy configured id is merged into the installation's org.
+        // session_branch is the only org-owned table left (005's list shrank with 023).
+        //
+        // MERGE, not an update: the unique key (org_id, agent, session_id, repo, branch) may
+        // already hold the same session under the new org — a sign-in after the installation
+        // appeared writes exactly that row. UPDATE would violate it on the first collision and
+        // abort the adoption partway; upserting widens the span instead, and only a successful
+        // merge deletes the legacy rows.
+        const mergedBranches = await sql`
+            insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
+            select ${installation}, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples
+            from session_branch where org_id = ${from}
+            on conflict (org_id, agent, session_id, repo, branch) do update set
+                head_sha   = coalesce(excluded.head_sha, session_branch.head_sha),
+                first_seen = least(session_branch.first_seen, excluded.first_seen),
+                last_seen  = greatest(session_branch.last_seen, excluded.last_seen),
+                samples    = session_branch.samples + excluded.samples
         `;
-        console.log(`[adopt] re-keyed ${moved.count} session_branch rows from "${from}" to "${installation}"`);
+        await sql`delete from session_branch where org_id = ${from}`;
+        console.log(`[adopt] merged ${mergedBranches.count} session_branch rows from "${from}" into "${installation}"`);
 
         // Members merge, never duplicate: a person already reported by a sign-in into the
         // installation keeps that row untouched.

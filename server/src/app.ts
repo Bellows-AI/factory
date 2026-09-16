@@ -105,15 +105,14 @@ export async function buildApp({
         }
     }
     await app.register(statsRoutes(config, orgs, auth, now));
-    await app.register(repoRoutes({ config, orgs, store: auth }));
+    await app.register(repoRoutes({ config, orgs }));
     if (store) await app.register(ingestRoutes(store));
-    await app.register(jobRoutes({ config, orgs, store: auth }));
-    await app.register(envRoutes({ config, orgs, store: auth }));
+    await app.register(jobRoutes({ orgs }));
+    await app.register(envRoutes({ config, orgs }));
     await app.register(
         workspaceRoutes({
             config,
             orgs,
-            store: auth,
             // One cache per app, not per request: the whole point of it is that a poll every
             // two seconds does not become a `git log` and a directory walk every two seconds.
             facts: createFactsCache(now),

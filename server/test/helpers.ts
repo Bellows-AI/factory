@@ -17,7 +17,7 @@ import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { CloneStatus, UserRepo, UserRepoStore } from '../src/db/user-repo-store.js';
-import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
+import type { OrgRuntime } from '../src/orgs.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryClient, TelemetryHealth } from '../src/telemetry/client.js';
@@ -744,7 +744,12 @@ export function memoryAuthStore(): MemoryAuthStore {
             // One installation = one organization: every reported installation gets an org row and
             // a membership for this account (label re-derived, first claim stamped).
             for (const install of installations) {
+                // The SQL store upserts `name = excluded.name, installation_id = excluded...` on
+                // every sign-in — a renamed installation relabels the org here the same way.
                 ensureOrg(install.id, install.name, install.id);
+                const org = orgs.get(install.id)!;
+                org.name = install.name;
+                org.installationId = install.id;
                 const existing = members.find((m) => m.orgId === install.id && m.userId === user!.id);
                 if (existing) {
                     existing.login = login;
@@ -1090,20 +1095,18 @@ export async function harness({
         now: () => clock,
     });
     const executors = userRepos ? (userExecutors ?? memoryUserExecutorStore()) : undefined;
-    const runtime: OrgRuntime = {
-        orgId: LOCAL_ORG_ID,
+    // The same factory the route tests use directly — one registry shape, not two that drift.
+    // `service` rides in so the runtime shares the harness's controllable clock.
+    const orgs = staticRegistry({
+        config,
         repos,
         telemetry,
         service,
         envVars,
         userRepos,
         userExecutors: executors,
-    };
-    const orgs: OrgRegistry = {
-        for: async (orgId) => (orgsFor && !orgsFor.includes(orgId) ? null : runtime),
-        list: async () => [{ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID, installationId: null }],
-        warmAll: async () => {},
-    };
+        ...(orgsFor ? { orgsFor } : {}),
+    });
     const app = await buildApp({
         config,
         orgs,

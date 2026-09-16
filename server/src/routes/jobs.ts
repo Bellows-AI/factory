@@ -1,17 +1,12 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
-import type { AuthStore } from '../auth/store.js';
-import type { AppConfig } from '../config.js';
 import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals, ServiceStatus } from '../db/job-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
 export interface JobRouteDeps {
-    config: AppConfig;
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
     orgs: OrgRegistry;
-    /** Present in the live server; absent in the route-test mode with no auth. */
-    store?: AuthStore | undefined;
 }
 
 /**
@@ -191,7 +186,7 @@ function leaseSeconds(raw: unknown): number | null {
 }
 
 export const jobRoutes =
-    ({ config: _config, orgs, store: _auth }: JobRouteDeps): FastifyPluginAsync =>
+    ({ orgs }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         /**
          * The job board a request lands on is its caller's org's (#99): the session, the personal

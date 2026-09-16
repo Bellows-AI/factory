@@ -179,11 +179,12 @@ Plus `GET /api/auth/github/setup` (the App's Setup URL target), `POST /api/auth/
 - **An OAuth App for sign-in, and a SEPARATE GitHub App for repo-read.** Two registrations to set
   up, deliberately. This file used to say "an OAuth App, not a GitHub App"; that was about not
   conflating the two credentials, and the conclusion still holds now that both exist. Signing
-  somebody in needs zero scopes and reads only their numeric id and login. Reading repositories
-  needs installation permissions and is nothing to do with the person in front of the browser — one
-  credential doing both would mean every sign-in grants repository access, and would tie the
-  dashboard's ability to fetch to whoever happened to log in last. See
-  [configuration.md](configuration.md) for the App credential.
+  somebody in asks exactly one scope — `read:org`, because listing installations IS the membership
+  decision — and reads only the numeric id, the login and that installation list; it reads no
+  repository data. Reading repositories needs installation permissions and is nothing to do with
+  the person in front of the browser — one credential doing both would mean every sign-in grants
+  repository access, and would tie the dashboard's ability to fetch to whoever happened to log in
+  last. See [configuration.md](configuration.md) for the App credential.
 
 ## Access tokens
 
@@ -196,7 +197,15 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   comes back FROM the row: the token acts in its mint org and nowhere else. The membership join
   gives the same immediacy as a session's: when sign-in propagation deletes the membership, the
   token dies on the spot (its row survives unrevoked, as history with no reach). That live
-  re-resolution is what makes these safe to mint over HTTP while the worker token is CLI-only.
+  re-resolution is what makes these mintable from the settings page while the worker token is
+  CLI-only — minting is still a credential-issuing act, so it belongs behind the session cookie
+  and HTTPS on anything but a loopback deployment.
+- **An org token is the ORG's credential, not its minter's.** `findOrgToken` resolves the org
+  from the row and no user — deliberately the same shape as a worker token: its authority is the
+  organization's existence plus the revocation list, never the continuing membership of whoever
+  minted it. The cost of mintability by any member is that a departed member's org token
+  outlives them; it stays on the read-only allowlist, and any current member can revoke it from
+  the same page.
 - **`POST /api/jobs` keeps a real author.** A personal token carries its user's id through
   `callerOf` untouched, so `created_by` stays populated on the route that runs shell commands.
 - **An organization token names no person, so it stays off every route that needs one.** What an

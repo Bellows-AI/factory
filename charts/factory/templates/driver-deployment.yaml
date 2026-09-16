@@ -79,9 +79,9 @@ spec:
                         value: {{ $.Values.driver.imagePullPolicy | quote }}
                       # The claim the checkouts live on — the same one the dashboard writes to.
                       - name: WORKSPACE_VOLUME
-                        value: {{ include "factory.workspaceClaim" . | quote }}
+                        value: {{ include "factory.workspaceClaim" $ | quote }}
                       - name: WORKSPACE_MOUNT
-                        value: {{ .Values.dashboard.workspaceRoot | quote }}
+                        value: {{ $.Values.dashboard.workspaceRoot | quote }}
                       - name: DRIVER_CONCURRENCY
                         value: {{ $.Values.driver.concurrency | quote }}
                       - name: DRIVER_POLL_MS
@@ -123,7 +123,7 @@ spec:
                       - name: RUNNER_INGEST_TOKEN
                         valueFrom:
                             secretKeyRef:
-                                name: {{ include "factory.secretName" . }}
+                                name: {{ include "factory.secretName" $ }}
                                 key: ingest-token
                       {{- if or $.Values.runner.credentialsExistingSecret $.Values.secret.create }}
                       - name: RUNNER_CREDENTIALS_SECRET

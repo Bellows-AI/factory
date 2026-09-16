@@ -196,20 +196,17 @@ describe('installations are the membership decision', () => {
     });
 });
 
-/** The one user id the single-account tests produce. */
-async function findFirstUser(_auth: MemoryAuthStore): Promise<string> {
-    return '';
-}
-
 describe('the setup callback', () => {
-    it('restarts sign-in after an installation was created', async () => {
+    it('restarts sign-in after an installation was created, naming it as the org preference', async () => {
         const { app } = await setup();
         const response = await app.inject({
             method: 'GET',
             url: '/api/auth/github/setup?setup_action=install&installation_id=999999',
         });
         expect(response.statusCode).toBe(302);
-        expect(response.headers.location).toBe('/api/auth/github');
+        // The id rides along: the sign-in that follows lands the session in the installation
+        // that was JUST created, not whichever GitHub happens to report first.
+        expect(response.headers.location).toBe('/api/auth/github?org=999999');
         // The restart is a fresh login entry, which sets its own state cookie when followed.
     });
 

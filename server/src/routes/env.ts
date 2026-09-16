@@ -138,8 +138,6 @@ export interface EnvRoutesDeps {
     readonly config: AppConfig;
     /** The per-org runtimes; the env store and repo list a request touches are the caller's org's. */
     readonly orgs: OrgRegistry;
-    /** Present in the live server; absent in the route-test mode with no auth. */
-    readonly store?: import('../auth/store.js').AuthStore | undefined;
 }
 
 export const envRoutes =

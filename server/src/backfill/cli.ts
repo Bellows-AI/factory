@@ -30,7 +30,20 @@ try {
     // Imported sessions land in one organization, so a backfill run against the wrong one is
     // worth naming before it writes anything.
     console.log(`[org] importing into ${orgId}`);
-    await migrate(sql, { log: (m) => console.log(`[migrate] ${m}`) });
+    // The none-mode default: migrating with the local org, exactly as the server boots, so the
+    // default target exists. Github mode seeds nothing — its orgs come from sign-in.
+    await migrate(sql, { localUser: config.auth.mode === 'none', log: (m) => console.log(`[migrate] ${m}`) });
+    // The org must exist before the first row: session_branch's foreign key would otherwise
+    // fail partway through the import, leaving a partial write behind. Github mode's orgs are
+    // materialized at sign-in (#99) — boot created none, so a typo'd or too-early --org aborts
+    // here instead of halfway through the transcripts.
+    const orgs = await sql`select id from organization where id = ${orgId}`;
+    if (!orgs.length) {
+        console.error(
+            `"${orgId}" is not an organization in this database. Sign in once to materialize the installation's org, or run: npm run adopt -- --installation <id>.`
+        );
+        process.exit(1);
+    }
     const summary = await backfillTranscripts(sql, {
         orgId,
         log: (m) => console.log(`[backfill] ${m}`),

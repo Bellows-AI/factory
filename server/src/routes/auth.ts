@@ -226,7 +226,9 @@ export const authRoutes =
         app.get('/api/auth/github/setup', async (request, reply) => {
             const query = request.query as { installation_id?: string };
             if (query.installation_id && INSTALLATION_ID.test(query.installation_id)) {
-                return reply.redirect('/api/auth/github', 302);
+                // The org rides along as the sign-in's preference, so the session lands in the
+                // installation that was JUST created rather than whichever GitHub reports first.
+                return reply.redirect(`/api/auth/github?org=${query.installation_id}`, 302);
             }
             return reply.redirect('/?auth_error=install_cancelled', 302);
         });

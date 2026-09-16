@@ -97,8 +97,10 @@ async function resolveOrg(
         return { error: `Unknown organization '${requested}'`, code: 'UNKNOWN_ORG' };
     }
     // Known, but not this caller's: the org decides WHICH data set, and the membership join —
-    // not the parameter — decides whose. "Trust the parameter" is how a cross-tenant read is born.
-    if (!caller || !(await store!.membershipsOf(caller.user.id)).some((m) => m.id === requested)) {
+    // not the parameter — decides whose. "Trust the parameter" is how a cross-tenant read is
+    // born. Read ONCE: this route is the dashboard's two-second poll, and ?org= is on it.
+    const memberships = caller ? await store!.membershipsOf(caller.user.id) : [];
+    if (!caller || !memberships.some((m) => m.id === requested)) {
         return { error: `Not a member of '${requested}'`, code: 'FORBIDDEN' };
     }
     return {
@@ -106,7 +108,7 @@ async function resolveOrg(
         meta: {
             mode: 'directory',
             current: org,
-            available: await store!.membershipsOf(caller.user.id),
+            available: memberships,
         },
     };
 }

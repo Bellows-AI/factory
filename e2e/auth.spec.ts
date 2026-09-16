@@ -57,7 +57,7 @@ test('first sign-in materializes the installation as the member\'s organization'
     });
 });
 
-test('POST /api/auth/org switches the session, and refuses what the member cannot see', async ({ page }) => {
+test('POST /api/auth/org switches the session, refusing what is unknown or anonymous', async ({ page }) => {
     await page.goto('/');
     await signIn(page).click();
     await expect(cards(page)).toHaveCount(5, { timeout: 60_000 });
@@ -67,16 +67,17 @@ test('POST /api/auth/org switches the session, and refuses what the member canno
     expect(unknown.status()).toBe(400);
     expect((await unknown.json()).code).toBe('UNKNOWN_ORG');
 
-    // Known org, but the member's installations do not include it: the boundary, not a typo.
-    await page.request.post('/api/auth/org', { data: { orgId: '999999' } }).then(async (planted) => {
-        expect(planted.status()).toBe(200);
-    });
+    // The member's own org: the switch lands, and /me reports the moved session.
+    const planted = await page.request.post('/api/auth/org', { data: { orgId: '999999' } });
+    expect(planted.status()).toBe(200);
     const me = await page.request.get('/api/auth/me');
     expect((await me.json()).organization).toEqual({ id: '999999', name: 'stub-org-999999' });
 
-    // An anonymous caller has no session to move.
-    const fresh = await page.context().browser().newContext();
-    const anonymous = await fresh.request.post('http://127.0.0.1:8124/api/auth/org', {
+    // An anonymous caller has no session to move. (Known-but-not-a-member is the 403 FORBIDDEN
+    // case; the stub reports one installation, so the browser-level pin for it lives in the
+    // route tests — server/test/routes.stats.test.ts.)
+    const fresh = await page.context().browser()!.newContext();
+    const anonymous = await fresh.request.post(`${test.info().project.use.baseURL}/api/auth/org`, {
         data: { orgId: '999999' },
     });
     expect(anonymous.status()).toBe(401);

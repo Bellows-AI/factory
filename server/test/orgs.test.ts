@@ -91,7 +91,7 @@ describe('createOrgRegistry', () => {
     });
 
     it('lists the organizations and warms each runtime', async () => {
-        const { sql } = fakeSql([
+        const { sql, calls } = fakeSql([
             // list()
             {
                 rows: [
@@ -99,16 +99,28 @@ describe('createOrgRegistry', () => {
                     { id: 'b', name: 'b', installation_id: null },
                 ],
             },
-            // for('a')
+            // warmAll's list()
+            {
+                rows: [
+                    { id: 'a', name: 'a', installation_id: null },
+                    { id: 'b', name: 'b', installation_id: null },
+                ],
+            },
+            // warmAll -> for('a')
             orgRows([{ id: 'a', installation_id: null }]),
-            // for('b')
+            // warmAll -> for('b')
             orgRows([{ id: 'b', installation_id: null }]),
+            // the post-warming for('a') — served from cache, no row read left in the script
         ]);
         const registry = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: false });
 
         await expect(registry.list()).resolves.toHaveLength(2);
         await registry.warmAll();
-        // No throw, and both runtimes are cached (a third list() is not needed to prove it — the
-        // fake would have failed a second for('a') read past its script's benefit of the doubt).
+
+        // Both runtimes came up warm: for() after warmAll resolves WITHOUT another organization
+        // read — the script has none left, so a cache miss would reject rather than pass.
+        await expect(registry.for('a')).resolves.toMatchObject({ orgId: 'a' });
+        await expect(registry.for('b')).resolves.toMatchObject({ orgId: 'b' });
+        expect(calls.filter((c) => c.includes('from organization'))).toHaveLength(4);
     });
 });

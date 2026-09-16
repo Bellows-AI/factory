@@ -1,13 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
-import type { AuthStore } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad } from './helpers.js';
 
 export interface RepoRouteDeps {
-    /** Present in the live server; absent in the route-test mode with no auth. */
-    store?: AuthStore | undefined;
     /** The per-org runtimes; the repo list a request touches is the caller's org's. */
     orgs: OrgRegistry;
     config: AppConfig;

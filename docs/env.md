@@ -11,9 +11,9 @@ Issue #17 called the org scope "Core secrets" and asked that everything "stack u
 
 | Scope | Row shape | Who writes it | Reaches |
 | --- | --- | --- | --- |
-| Core (organization) | `user_id` and repo columns null | an admin | every runner in the deployment |
+| Core (organization) | `user_id` and repo columns null | any member | every runner in the organization |
 | Workspace | `user_id` set | the member, their own rows | their runners |
-| Repository | `repo_owner`/`repo_name` set | an admin | every member's runners in that repository |
+| Repository | `repo_owner`/`repo_name` set | any member | every member's runners in that repository |
 
 One table, `env_var`, three sibling scopes, enforced by `env_var_scope_ck`: exactly one of the three
 is set per row. A table per scope would put the stacking rule in three places and a union; here the
@@ -23,15 +23,14 @@ scope columns cannot sit in a primary key (a PK column must be NOT NULL), so uni
 real value.
 
 - **"Org level" is a database scope, not server configuration.** The issue asked for UI editing,
-  which a `ORG_*` environment variable cannot offer; and this deployment has exactly one
-  organization (a row of the `organization` table — the App's installations since #99), so rows
-  with null `user_id` and null repo ARE
-  the org scope without a third identifier.
+  which an environment variable cannot offer; `org_id` names the partition — the App's
+  installation a member signed into (#99) — so rows with null `user_id` and null repo ARE the org
+  scope without a third identifier.
 - **Repository scope is org-wide, not per member.** One configuration per repository, applied to
   every member's runs in it — the Actions precedent, and the reading of the issue's listing of
-  org/workspace/repo as siblings. Admin-gated for the same reason: an admin's repo var influences
-  other members' runs, which is acceptable under "membership is not a sandbox"
-  ([jobs.md](jobs.md)) but is not a decision a member should make for somebody else.
+  org/workspace/repo as siblings. Any member writes it: installation access is membership (#99),
+  one trust level with no admin tier, and "membership is not a sandbox" ([jobs.md](jobs.md))
+  already accepts that a member's runners share the organization's ground.
 - **Precedence is org < workspace < repo, most specific wins.** The issue's own listed order, and
   the Actions rule. `stackEnv` is `{...org, ...workspace, ...repo}` — exported and pinned by the
   offline suite, because a rule this load-bearing must not live only where a database is.
@@ -196,8 +195,8 @@ sentence saying why (the `root: null` posture).
 - **`server/test-db/env-var-store.test.ts`** — the SQL: whole-scope replace, the keep-a-null-secret
   rule, the write-only echo vs `resolveFor`, the stacking order, and the check constraints at the
   row. Needs a `*_test` database.
-- **`server/test/routes.env.test.ts`** — offline, against the in-memory double: sessions, the
-  admin/member split, validation codes, `UNKNOWN_REPO`, the 503 path.
+- **`server/test/routes.env.test.ts`** — offline, against the in-memory double: sessions,
+  member-writable scopes, validation codes, `UNKNOWN_REPO`, the 503 path.
 - **`server/test/job-store.env.test.ts`** — offline, the base-layer merge rule (`withMintedToken`):
   a configured `GITHUB_TOKEN` wins in any scope, the mint fills the gap, and no mint changes
   nothing.

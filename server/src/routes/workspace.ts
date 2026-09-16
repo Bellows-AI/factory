@@ -2,7 +2,6 @@ import { join } from 'node:path';
 import type { FastifyPluginAsync } from 'fastify';
 import { EXECUTOR_TYPES } from '@factory-ai/core';
 import { callerOf, orgOf } from '../auth/plugin.js';
-import type { AuthStore } from '../auth/store.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import type { UserExecutor, UserExecutorStore } from '../db/user-executor-store.js';
 import type { UserRepoStore } from '../db/user-repo-store.js';
@@ -105,8 +104,6 @@ export interface WorkspaceRoutesDeps {
     readonly config: AppConfig;
     /** The per-org runtimes; the stores, repo list and clone queue are the caller's org's. */
     readonly orgs: OrgRegistry;
-    /** Present in the live server; absent in the route-test mode with no auth. */
-    readonly store?: AuthStore | undefined;
     readonly facts: FactsCache;
 }
 

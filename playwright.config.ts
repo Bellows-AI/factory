@@ -13,7 +13,7 @@ const PORT = 8123;
  * also keeps a boot with AUTH_MODE=none under test, which is the mode `npm run seed`, the route
  * harness and scripts/test-jobs.sh all depend on.
  */
-const AUTH_PORT = 8124;
+export const AUTH_PORT = 8124;
 const IDP_PORT = 8125;
 const E2E_LOGIN = 'e2e-user';
 

@@ -549,11 +549,17 @@ describe.skipIf(!enabled)('the migration runner and adoption', () => {
         });
 
         expect(moved).toContain('pre-organization rows');
+        // Nothing unclaimed survives, and the row reads from the target org now.
         const [left] = await sql<{ count: number }[]>`
             select count(*)::int as count from session_branch where org_id = '__unclaimed__'
             and agent = 'claude-code'
         `;
-        void left;
+        expect(left?.count).toBe(0);
+        const [adopted] = await sql<{ count: number }[]>`
+            select count(*)::int as count from session_branch
+            where org_id = ${ORG} and agent = 'claude-code' and repo = 'acme/web'
+        `;
+        expect(adopted?.count).toBe(1);
 
         // Second run: nothing left to claim, no line.
         let again = '';

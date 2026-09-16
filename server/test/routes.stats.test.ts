@@ -253,17 +253,26 @@ describe('GET /api/stats organization', () => {
     };
 
     /** A signed-in member of test-org, with the org planted for the membership checks. */
-    const memberOfTestOrg = async (extraSeed?: (store: ReturnType<typeof memoryAuthStore>) => void) => {
+    const memberOfTestOrg = async (
+        extraSeed?: (store: ReturnType<typeof memoryAuthStore>) => void,
+        options: { telemetry?: ReturnType<typeof stubTelemetryClient>; skipWarm?: boolean } = {}
+    ) => {
         const auth = memoryAuthStore();
         extraSeed?.(auth);
         const caller = auth.seedMember('test-org', 'octocat');
         const cookie = await signedIn(auth, caller);
-        const h = await harness({ auth, config: { auth: githubAuth() } });
+        const h = await harness({
+            auth,
+            config: { auth: githubAuth() },
+            ...(options.telemetry ? { telemetry: options.telemetry } : {}),
+        });
         app = h.app;
         // Warm WITH the cookie: a github-mode board 401s the anonymous probe, and the cold
-        // cache would 202 the assertions below.
-        await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
-        await h.settle();
+        // cache would 202 the assertions below. Skippable for the tests that PIN the cold 202.
+        if (!options.skipWarm) {
+            await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
+            await h.settle();
+        }
         return { h, cookie };
     };
 
@@ -323,12 +332,13 @@ describe('GET /api/stats organization', () => {
 
     it('rejects an unknown organization before the cold-start 202', async () => {
         // A bad request is a bad request whatever the cache is doing. Answering 202 here would
-        // have the client poll forever for a request that can never succeed.
+        // have the client poll forever for a request that can never succeed. The telemetry stub
+        // never resolves and the cache is left cold on purpose: a 400 can then only have come
+        // from the guard running ahead of the fetch.
         const telemetry = stubTelemetryClient({ rollups: () => new Promise(() => {}) });
-        const { cookie } = await memberOfTestOrg();
-        void telemetry;
+        const { cookie } = await memberOfTestOrg(undefined, { telemetry, skipWarm: true });
 
-        const res = await app.inject({ method: 'GET', url: '/api/stats?org=nope', headers: { cookie } });
+        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=nope', headers: { cookie } });
         expect(res.statusCode).toBe(400);
         expect(res.json().code).toBe('UNKNOWN_ORG');
     });
