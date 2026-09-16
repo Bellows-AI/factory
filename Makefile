@@ -99,7 +99,7 @@ start:
 	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local
 	@echo 'waiting for the deployments (a cold node pulls the database image for minutes)'
 	kubectl wait --for=condition=available \
-		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver \
+		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local \
 		deployment/$(K8S_RELEASE)-factory-timescale deployment/$(K8S_RELEASE)-factory-collector \
 		--timeout=600s
 	@echo
