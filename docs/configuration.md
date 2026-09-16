@@ -37,16 +37,12 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   cannot be a boot-time field. A configured copy beside it would be a second roster to keep in step
   with the credential. `AppConfig` therefore has no `repos`; the offline `none` arm derives the list
   from the `session_branch` rows the database already holds.
-- **The App needs Organization members: read once auth auto-join is on.** That permission is what
-  `auto_join_github_org`'s sign-in check (`GET /user/memberships/orgs/{org}`, via the member's own
-  `read:org`-scoped token) and the per-user repo scoping + roster sweep (#66: teams, team repos,
-  direct collaborators, the member roster — all read with the installation token) ask GitHub for.
-  The OAuth consent screen is untouched by any of it: the App's permissions are granted by an org
-  admin at install time, not re-requested per sign-in, which is why scoping bought no second token
-  and no scope change on the sign-in flow.
-- **`ORG_ID` and `ORG_NAME` are empty-defaulted in `docker-compose.yml`**, unlike most of that
-  block. Every other variable there is a real value, but the org id leads every stored primary key —
-  a literal default would repartition the database under the operator on every start.
+- **`ORG_ID`, `ORG_NAME`, `GITHUB_APP_INSTALLATION_ID`, `AUTH_AUTO_JOIN_GITHUB_ORG` and
+  `AUTH_BOOTSTRAP_ADMIN` are FATAL rather than ignored (#99).** Each used to decide who the
+  deployment served or who could sign in; an ignored one boots a deployment that silently serves a
+  different set of organizations. The orgs are the App's installations now, materialized at
+  sign-in — the App's Setup URL should point at `<publicUrl>/api/auth/github/setup` so the install
+  round trip returns. Legacy data is re-homed with `npm run adopt -- --installation <id>.
 - **`resolveConfig` reads `GITHUB_APP_PRIVATE_KEY_FILE`, and `loadConfig` never learns a file
   exists.** The whole `describe('loadConfig')` suite depends on the validator being a pure function
   of its argument, and an App private key normally arrives as a path — so the read happens in

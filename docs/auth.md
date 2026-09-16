@@ -3,11 +3,11 @@
 Read before: touching `server/src/auth/*`, `server/migrations/010_auth.sql`, the `AUTH_*`
 environment variables, the session cookie, or anything that decides which routes need a credential.
 
-**A caller is a GitHub account that somebody invited to this organization.** Membership is Factory's,
-not GitHub's; a session is a row, not a token; and the driver gets a different credential from the
-one a browser gets. Before this existed, `docs/security.md`'s opening sentence was that the
-`127.0.0.1` bind *is* the access control — which on a port serving `POST /api/jobs` meant an
-unauthenticated request was remote code execution.
+**A caller is a GitHub account that can see one of this deployment's GitHub App installations.**
+Installation access IS membership (#99); a session is a row, not a token; and the driver gets a
+different credential from the one a browser gets. Before any of this existed, `docs/security.md`'s
+opening sentence was that the `127.0.0.1` bind *is* the access control — which on a port serving
+`POST /api/jobs` meant an unauthenticated request was remote code execution.
 
 - **`AUTH_MODE` is an explicit enum, never inferred from whether a client id happens to be set.**
   A mode reached by typo is exactly what `docs/persistence.md` warns about, where the service "used
@@ -47,88 +47,56 @@ unauthenticated request was remote code execution.
   nothing — anyone who can reach the port can already queue a command an agent runs — while breaking
   `npm run driver` against a local board and `scripts/test-jobs.sh`, which drives the whole lease
   protocol with no credential at all. The two credentials are disjoint when there *are* credentials.
-- **`bootstrapAdmin` exists because an upgrade is otherwise a lockout.** After 010 an existing
-  database has rows, zero users and zero memberships; turn auth on and every route 401s forever with
-  nothing in the log, which reads as "auth is broken" rather than "nobody has been invited". Exactly
-  the class of silent failure `adoptOrg()` exists to prevent, one level up — and it lives beside it
-  in `db/migrate.ts` for the same reason: a `.sql` file cannot see the config. It fires **only when
-  the organization has no real members**, so an admin who removes themselves is not reinstated on the
-  next restart, and it ignores the `__local__` membership — otherwise booting once without auth
-  would suppress the bootstrap forever.
-
 ## Membership
 
-- **A Factory organization is not a GitHub organization** (`docs/organizations.md`), so there is
-  nothing to read from GitHub to find out who belongs here. An admin invites a login; the account is
-  bound the first time that person signs in. Consequence: an invite exists **before** the account
-  does, which is why `org_membership`'s primary key is `(org_id, github_login)` and `user_id` is
-  nullable, and why nothing can validate that the login exists.
-- **`auth.auto_join_github_org` borrows a GitHub organization as the boundary instead**, and is the
-  one thing that admits somebody nobody named in advance. It does not make a Factory organization a
-  GitHub one: the membership row is still Factory's, and an invite still admits people outside the
-  org — which is what keeps `bootstrap_admin` and outside collaborators working. What it removes is
-  the second roster that had to be kept in step by hand.
-  - **The store never decides it.** `signIn` takes an `autoJoin` flag, and the callback passes it
-    only after GitHub has confirmed the org. A store that could admit anyone on its own authority
-    would be one bad default away from an open deployment.
-  - **`pending` is refused, and that is the security property here.** An unaccepted GitHub
-    invitation means somebody was *offered* a seat; treating it as membership would let a GitHub org
-    admin add a login to Factory without that person ever agreeing to it.
-  - **A row auto-join created stays GitHub's; a row an invite created stays Factory's.** The row
-    records how it was born (`org_membership.auto_joined`), and the answer decides who maintains it.
-    An auto-joined row is re-checked at EVERY sign-in of its member: gone from the GitHub org means
-    the Factory row, its sessions and its personal tokens go with it (`removeMemberById`'s own
-    semantics), and the org's role maps onto Factory's (`admin` → `admin`, anything else →
-    `member`) on every sign-in — promotion happens in GitHub and Factory follows. Both maintenance
-    moves are keyed by the numeric GitHub id, never the login: the login is the label the row
-    happened to record at claim time, and a member who renamed would otherwise survive their own
-    removal or be false-removed by a sweep that matched the stale label. A 15-minute roster sweep
-    (`GET /orgs/{org}/members`, two paginated calls against the installation token, matched on the
-    same ids) applies the same removals and re-roles to members who never sign in again, because a
-    session TTL of two weeks is otherwise a two-week grace period for somebody who left. An invited
-    row is never checked: an admin named that person here, so GitHub is not consulted, cannot
-    remove them, and cannot re-role them — a role an invite granted survives every org change by
-    construction, and the store's id-keyed methods carry an `and auto_joined` guard so a bug
-    upstream could not change that.
-  - **It costs the zero-scopes property**: `read:org` is requested whenever it is set, because an
-    unscoped token reports every organization absent, which would refuse every sign-in with
-    `no_membership` and nothing to say why. Off, no scope is requested at all.
-  - **The empty-roster warning is suppressed while it is on.** Zero members is the *expected* state
-    there — the first person to sign in creates their own row — so the lockout warning would be
-    noise that trains people to ignore it.
+- **The GitHub App's installations are the member roster.** At every sign-in the callback asks
+  `GET /user/installations` with the signing-in person's own token, and `store.signIn` upserts one
+  `organization` row (id = the installation id, name = the account login) and one membership per
+  reported installation. There is no invite, no auto-join flag, no bootstrap admin, and no roster
+  sweep: what GitHub reported at the last sign-in IS the materialized fact.
+- **Removal is sign-in-propagation, and that is the security property.** Memberships of
+  installation orgs the account no longer sees are deleted at the next sign-in — and because
+  `findSession` and `findPersonalToken` join through `org_membership`, every credential's reach
+  ends right there. Propagation is therefore one sign-in late by design (the issue's chosen
+  trade-off): one `GET /user/installations` per sign-in, not a per-request GitHub call and not a
+  polling sweep against the installation's rate limit. Existing sessions of a removed member keep
+  working until they touch nothing — no: until their *next sign-in* nothing re-checks them; this
+
 - **`github_user_id` is the identity; `github_login` is a label.** GitHub permits renames and then
-  lets the freed login be claimed by somebody else, so a schema keyed on the login is an
-  account-takeover path rather than a convenience.
-- **The claim carries `and user_id is null`, and that predicate is the whole security property.**
-  Without it: A is invited as `alice` and claims it; A renames away, freeing the login; B registers
-  `alice`, signs in, and the update hands them A's membership *including its admin role*. Guarded by
-  "does NOT let a new account claim a membership by taking a freed login" in both
-  `auth.oauth.test.ts` and `test-db/auth-store.test.ts`.
-- **It also carries a `not exists` guard**, skipping any organization the account is already a
-  member of. Somebody invited under both an old and a new login would otherwise claim both rows,
-  violate `org_membership_user_uk`, and turn a legitimate sign-in into a 500.
-- **Residual risk, not fixable in schema:** an invite created *after* somebody renamed away is a live
-  invite for whoever takes that login next. Inherent to inviting by login.
-- **`github_login` is stored lowercase, where `ORG_ID_PATTERN` is rejected-never-normalised.** Not an
-  inconsistency: an org id is operator-chosen and lives in three places that have to agree, so
-  silently lowercasing it would let them disagree invisibly; a GitHub login is chosen by GitHub,
-  which is itself case-insensitive, so normalising is the only way an invite matches what the
-  identity endpoint reports back.
+  lets the freed login be claimed by somebody else. Nothing here keys on the login: the account
+  upsert keys on the numeric id, the membership's primary key is `(org_id, user_id)` (029 moved it
+  off the login), and sign-in rewrites the login label wherever it appears. A different numeric id
+  registering a freed login is simply a new account.
+- **`read:org` is requested unconditionally in github mode**, because listing installations IS the
+  membership decision and an unscoped token reports none — every sign-in would be bounced to the
+  install page with nothing to say why. The scope is org-level only: sign-in still reads no
+  repository data, which is what the OAuth-vs-App split below is for.
+- **Roles survive as a column, unused.** GitHub's org role is not mapped onto Factory's, so every
+  membership is `member`; the `role` column and the `admin` value remain for the day something
+  needs them. Consequently the org-token mint and the env-wide scopes carry no admin gate —
+  installation access is one trust level.
+- **`github_login` is stored lowercase**, because GitHub logins are case-insensitive and a match
+  must survive case differences between what a report says and what the identity endpoint returned.
 - **`app_user` and `session` are global; only `org_membership` leads with `org_id`.**
-  `005_organizations.sql` states the rule as "exactly those tables that already carry `repo`", and an
-  identity carries none. Keying an account by organization would give one human two ids — and the
-  per-user Claude credential planned on top of that id is the person's, not the organization's.
+  `005_organizations.sql` states the rule as "exactly those tables that already carry `repo`", and
+  an identity carries none. Keying an account by organization would give one human two ids — and
+  the per-user Claude credential planned on top of that id is the person's, not the organization's.
 
 ## Sessions
 
 A random 32-byte token in a signed, httpOnly cookie, with a row keyed by its **sha-256**.
 
-- **Rows, not self-contained tokens, because revocation has to be immediate.** Removing somebody
-  must stop their next request, not their next fortnight, on a deployment where `POST /api/jobs` runs
-  shell commands. `findSession` joins through `org_membership`, so losing the membership ends the
-  session on the very next request; `removeMember` deletes their sessions outright as well. A
+- **Rows, not self-contained tokens, because revocation has to be immediate.** Losing the
+  membership must stop the session on a deployment where `POST /api/jobs` runs shell commands.
+  `findSession` joins through `org_membership`, so the membership's end — at the next sign-in,
+  when GitHub stops reporting the installation — ends the session's usefulness on the spot. A
   stateless token reaches that only with a denylist, and a denylist is this table with worse
   ergonomics.
+- **The row carries its organization (`session.org_id`, 028), and that is what the caller reads
+  through.** Stamped at sign-in (first reported installation, or the `?org=` deep link), moved by
+  `POST /api/auth/org` — only ever to an org the user is a member of, which is what makes the
+  switch safe. NULL on rows predating 028, and the read joins on it, so an upgrade signs everybody
+  out rather than guessing an org for anybody: fail closed.
 - **The table holds the hash, never the token.** The row is a bearer credential at rest — anyone with
   a read on it would otherwise hold every live session. Same reasoning as the `chmod 600` warning in
   `docs/security.md`.
@@ -160,28 +128,37 @@ A random 32-byte token in a signed, httpOnly cookie, with a row keyed by its **s
 
 ## The OAuth flow
 
-`GET /api/auth/github` → GitHub → `GET /api/auth/github/callback` → session → redirect.
-Plus `POST /api/auth/logout` and `GET /api/auth/me`.
+`GET /api/auth/github?returnTo=&org=` → GitHub → `GET /api/auth/github/callback` →
+`GET /user/installations` → organizations + memberships upserted → session (org-bound) → redirect.
+Plus `GET /api/auth/github/setup` (the App's Setup URL target), `POST /api/auth/org` (switch),
+`POST /api/auth/logout` and `GET /api/auth/me`.
 
-- **Zero scopes are requested, unless `auth.auto_join_github_org` is set.** `read:org` is
-  unnecessary by construction under invite-based membership, and `user:email` is unnecessary because
-  nothing keys on an email. An unscoped token still reads `/user` for the id and login. Documented
-  side effect: GitHub's consent screen then says the app "will not be able to access your data",
-  which reads as broken to some people — that is the honest description of a login that reads
-  nothing. With auto-join on, `read:org` is the whole membership decision and is requested; the
-  org lookup derives its URL from `userUrl`, so the one environment seam that redirects `/user`
-  redirects it too and the stub IdP needs no second knob.
+- **`read:org` is requested unconditionally** — see Membership. The installations lookup derives
+  its URL from `userUrl`, so the one environment seam that redirects `/user` redirects it too and
+  the stub IdP needs no second knob.
 - **The state lives in a short-lived signed cookie, not a row.** No table, no reaper, and the login
   entry point keeps working while the migrations are still retrying — the same instinct that keeps
   `/api/health` off the database. Single-use, because the callback clears it either way.
-- **The return path travels *inside* the signed state**, so one signature covers both the nonce and
-  the destination, and it is validated as a same-origin absolute path. `//evil.test` is the subtle
-  case: a URL to another origin that merely looks like a path. Without that check the callback is an
-  open redirect for anyone who can craft a login link.
+- **The return path — and any requested organization — travel *inside* the signed state**, so one
+  signature covers the nonce, the destination and the org, and the destination is validated as a
+  same-origin absolute path. `//evil.test` is the subtle case: a URL to another origin that merely
+  looks like a path. Without that check the callback is an open redirect for anyone who can craft a
+  login link. The `?org=` deep link is only a preference: the callback validates it against the
+  installations GitHub actually reported and falls back to the first.
+- **Zero installations is the install page, not a refusal.** The callback redirects to
+  `https://github.com/apps/<slug>/installations/new` — the slug from `GET /app`, JWT-authenticated
+  and cached for the process's life. Offline (no App client) or on a slug failure it reports
+  `?auth_error=install` instead of dead-ending on a redirect to nowhere. The App's **Setup URL**
+  must be configured to `<publicUrl>/api/auth/github/setup`: an install returns there and the flow
+  restarts; a return without an installation id reports `install_cancelled` on the sign-in screen.
+- **`POST /api/auth/org` is the selector's write.** It verifies membership, moves the session row's
+  org, and answers `{organization}`; unknown org is `400 UNKNOWN_ORG`, a known org the caller
+  cannot see is `403 FORBIDDEN`, and an anonymous caller is `401`.
 - **Failures redirect with `?auth_error=`; they do not return JSON.** The callback is reached by a
   top-level browser navigation, and a `403 {"error":…}` body is a dead end for the human in front of
-  it. `no_membership` is its own reason because "your login failed" and "you are not a member here"
-  send the reader to completely different places.
+  it. The reasons are `denied`, `state`, `github` (the exchange failed), `install` (nobody can be
+  sent to the install page) and `install_cancelled`; "your login failed" and "you have no
+  installation here" send the reader to completely different places.
 - **`POST` for logout.** A GET logout is CSRF-able by any third-party image tag, and link prefetchers
   fire it on hover. It answers 204 for an already-dead session, because "already signed out" is the
   desired end state.
@@ -214,11 +191,12 @@ Plus `POST /api/auth/logout` and `GET /api/auth/me`.
 page, shown once, only the sha-256 stored, revoked from the same page. The credential for callers
 that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 
-- **A personal token acts as its user, through the same join a session uses.** `findPersonalToken`
-  is `findSession` with the token row swapped for the cookie: same membership join, same immediacy.
-  Removing a member ends their tokens' reach on the very next request — `removeMember` marks them
-  revoked as well. That live re-resolution is what makes these safe to mint over HTTP while the
-  worker token is CLI-only.
+- **A personal token acts as its user, through the same join a session uses — in the org it was
+  minted for.** The row carries `org_id`, the lookup is by the globally-unique hash, and the org
+  comes back FROM the row: the token acts in its mint org and nowhere else. The membership join
+  gives the same immediacy as a session's: when sign-in propagation deletes the membership, the
+  token dies on the spot (its row survives unrevoked, as history with no reach). That live
+  re-resolution is what makes these safe to mint over HTTP while the worker token is CLI-only.
 - **`POST /api/jobs` keeps a real author.** A personal token carries its user's id through
   `callerOf` untouched, so `created_by` stays populated on the route that runs shell commands.
 - **An organization token names no person, so it stays off every route that needs one.** What an
@@ -230,8 +208,7 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   paths and member lists as a person who does not exist.
 - **Revocation keeps the row.** `revoked_at`, like every other revocation here. Sessions are the
   exception (logout deletes) because a dead session row is worthless; "what tokens existed" is
-  history the list is there to show. A removed member's personal tokens are marked, not deleted,
-  for the same reason.
+  history the list is there to show.
 - **`last_used_at` is minute-granular, on purpose.** The touch is throttled to one rewrite a minute
   per token: an access token rides the dashboard's two-second poll, and a write on every read is
   exactly what the session's write-free read path exists to avoid. The list must not promise more
@@ -277,7 +254,8 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   `threadDone` in the same transaction as the verdict, and the driver reclaims on that. The
   task detail page keeps its session-cookie read, which was the read's original and remaining
   purpose.
-- **The worker token is minted by CLI only.** `npm run worker-token -- --name driver-1`, printed
+- **The worker token is minted by CLI only.** `npm run worker-token -- --org <installation-id>
+  --name driver-1`, printed
   once, hash stored. No HTTP route mints a credential: everything else a member can do is bounded by
   the organization, whereas this issues something that claims work and reports results with no human
   anywhere. (The one precision since #28: the claim route mints a GitHub App installation token onto
@@ -309,20 +287,16 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 
 ## What this does not do
 
-- **Membership is not a sandbox — but repo visibility now is, where scoping is on.** When the
-  deployment runs a GitHub App with auto-join, the server computes, per member, which of the
-  installation's repos their GitHub account can actually reach (team grants plus direct
-  collaborator status, enumerated with the installation token — no new OAuth scope, no consent
-  screen change), and `/api/stats`, `/api/repos`, `POST /api/jobs` and `PUT /api/workspace/repos`
-  are intersected with that set. The board's READS stay open to every member — `GET /api/jobs` and
-  the thread are the org's audit trail, and `job.created_by` records who did rather than limiting
-  what they may do — and any member can still queue a command that an agent runs against *their
-  own* checkouts. This narrows "any member sees every repo" to "any member sees their repos"; it
-  still does not make the job board safe to hand out. See [repos.md](repos.md) for the scoping
-  mechanics.
-- **There is still one organization per deployment.** `meta.organization.mode` remains the literal
-  `'config'` and the topbar selector stays disabled — see `docs/organizations.md`. Sign-in checks a
-  caller's membership against that one organization rather than selecting between several.
+- **Membership is not a sandbox.** The board's READS stay open to every member of an installation
+  — `GET /api/jobs` and the thread are the org's audit trail, and `job.created_by` records who did
+  rather than limiting what they may do — and any member can queue a command that an agent runs
+  against *their own* checkouts. GitHub repo permissions are NOT projected into Factory (the
+  per-user repo scoping of #66 retired with the auto-join it was built on): any member of an
+  installation sees every repo it reports. This still does not make the job board safe to hand out.
+- **A GitHub-side removal bites one sign-in late.** Propagation runs at session creation only —
+  see Membership — so a member who never signs in again holds a working session until its TTL
+  expires. Decide per deployment whether that window is acceptable; the alternative is re-checking
+  installations on an interval, at the installation's rate limit.
 - **Signing in now has a side effect on disk.** `ensureUserWorkspace` creates
   `<root>/<orgId>/<userId>/` in the callback — a `mkdir`, nothing more. It cannot block the sign-in:
   a failure logs, and `GET /api/workspace` calls the same function, so a session that got in without

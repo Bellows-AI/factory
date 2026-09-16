@@ -24,7 +24,8 @@ real value.
 
 - **"Org level" is a database scope, not server configuration.** The issue asked for UI editing,
   which a `ORG_*` environment variable cannot offer; and this deployment has exactly one
-  organization (`ORG_ID`, the `organization` table), so rows with null `user_id` and null repo ARE
+  organization (a row of the `organization` table — the App's installations since #99), so rows
+  with null `user_id` and null repo ARE
   the org scope without a third identifier.
 - **Repository scope is org-wide, not per member.** One configuration per repository, applied to
   every member's runs in it — the Actions precedent, and the reading of the issue's listing of

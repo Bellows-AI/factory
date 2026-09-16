@@ -115,7 +115,8 @@ nothing to that daemon, and there is no host path to give either — the dashboa
 checkouts into a named volume precisely to avoid one.
 
 **`WORKDIR` comes from the board, not from the driver's configuration.** The claim carries
-`workspacePath` — a root-relative `<orgId>/<userId>` — and the runner starts at the task
+`workspacePath` — a root-relative `<orgId>/<userId>` (the org id is the installation id since
+#99) — and the runner starts at the task
 worktree: `<workspaceMount>/<workspacePath>/.worktrees/<rootJobId>`, one `git worktree` of the
 job's repository per task THREAD, branched off the remote default (issue #35). The root id is
 the claim's `rootJobId` — the job itself, or the chain's first job for a follow-up — so every

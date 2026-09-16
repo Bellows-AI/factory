@@ -24,7 +24,8 @@ variable no user could change.
 - **`docker-compose.yml` is the one exception: it defaults `ORG_WORKSPACE_ROOT` to `/workspaces`
   and mounts a named volume there.** The paragraph above is about defaulting a *host* path, which
   compose is not doing — `/workspaces` exists only inside the container it also provisions. It is a
-  literal rather than empty-defaulted like `ORG_ID` / `ORG_NAME` for the same reason as before:
+  literal rather than empty-defaulted like `ORG_WORKSPACE_ROOT`'s neighbours used to be, for the
+  same reason as before:
   those are host-independent identifiers, while this is a path — and a host value from `.env` is a
   path on the host that cannot exist in the container.
   **Consequence changed:** `docker compose up` no longer clones anything. Boot checks nothing out;

@@ -37,6 +37,12 @@ workspaces:
 timescale:
     enabled: true
 
+secret:
+    # One driver, no token: the local board runs AUTH_MODE=none, and an entry with an empty value
+    # is what keeps the driver Deployment rendering with an optional Secret key (#99).
+    jobBoardTokens:
+        local: ''
+
 driver:
     image: factory-driver
     executorImage: echo-executor

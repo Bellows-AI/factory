@@ -5,15 +5,20 @@ the driver POD's address, and the port the driver appends to GATE_ADVERTISE_URL 
 runner's own business. Nothing needs a load-balanced VIP for a one-replica peer-to-peer call.
 The name is what GATE_ADVERTISE_URL points at, and there is no other ingress to the driver.
 */}}
+{{- range $org, $token := .Values.secret.jobBoardTokens }}
+---
 apiVersion: v1
 kind: Service
 metadata:
-    name: {{ include "factory.fullname" . }}-driver
+    name: {{ include "factory.fullname" $ }}-driver-{{ $org }}
     labels:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "factory.labels" $ | nindent 8 }}
         app.kubernetes.io/component: driver
+        app.kubernetes.io/org: {{ $org | quote }}
 spec:
     clusterIP: None
     selector:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "factory.labels" $ | nindent 8 }}
         app.kubernetes.io/component: driver
+        app.kubernetes.io/org: {{ $org | quote }}
+{{- end }}

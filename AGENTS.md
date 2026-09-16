@@ -127,18 +127,21 @@ npm run test:jobs
 # queued job come back succeeded through real pods. Needs helm; --cluster additionally needs kind.
 npm run test:k8s
 
-# Accounts. AUTH_MODE defaults to `none`, where every route is open and the bind address is the
-# access control — that is what `npm run dev`, seed, verify:ui and test-jobs run. `docker compose`
-# is the exception and pins `github`, uncontestable by .env, because that stack holds the
-# checkouts. Somebody has to be invited before they can sign in — and after 010 an existing database
-# has nobody in it, which presents as "auth is broken" rather than "nobody has been invited".
-# auth.bootstrap_admin covers the first person.
-npm run invite -- --login <github-login> [--role admin|member] [--remove]
-npm run invite -- --list
+# Organizations are the GitHub App's installations (#99): anyone who can see an installation signs
+# in, and sign-in materializes the org, the membership and the session's binding. AUTH_MODE defaults
+# to `none` — one local org, every route open, the bind address the access control — which is what
+# `npm run dev`, seed, verify:ui and test-jobs run. `docker compose` pins `github`, uncontestable by
+# .env, because that stack holds the checkouts. Set the App's Setup URL to
+# <PUBLIC_URL>/api/auth/github/setup so the install round trip returns.
+#
+# One-off: adopt an upgraded database's legacy rows into an installation's org. A missed run reads
+# as an empty dashboard.
+DATABASE_URL=... npm run adopt -- --installation <id> [--from <legacy-org-id>]
 
 # The driver's credential, printed once — only its hash is stored. A CLI and not a route, because it
-# issues something that claims work and reports results with no human anywhere.
-npm run worker-token -- --name driver-1 [--revoke]
+# issues something that claims work and reports results with no human anywhere. One token per org:
+# the token IS the org binding.
+npm run worker-token -- --org <installation-id> --name driver-1 [--revoke]
 
 # Import history from ~/.claude/projects/*/*.jsonl. Idempotent; safe to re-run.
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_dev npm run backfill

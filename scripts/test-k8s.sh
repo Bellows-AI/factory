@@ -174,13 +174,18 @@ service_selector="$(awk '/^# Source: factory\/templates\/service.yaml/,/^---/' "
 expect_contains    'the service selects the dashboard component' "$service_selector" 'component: dashboard'
 expect_not_contains 'the service never selects the driver'       "$service_selector" 'component: driver'
 
-# The DRIVER has its own headless Service: the ad-hoc gate endpoint binds an ephemeral port, and
-# a headless Service is the only DNS that resolves to the pod without a port list to name it with.
+# The DRIVER has its own headless Service per organization (#99) — the worker token is the org
+# binding, so the chart renders one driver (Deployment + gate Service) per jobBoardTokens entry.
+# values-local pins exactly one, keyed `local`, and its name carries the org suffix.
 driver_service="$(awk '/^# Source: factory\/templates\/driver-service.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains 'the driver service is headless'        "$driver_service" 'clusterIP: None'
 expect_contains 'the driver service selects the driver' "$driver_service" 'component: driver'
+expect_contains 'the driver service selects its own org' "$driver_service" 'app.kubernetes.io/org: "local"'
 expect_contains 'the runner is told the driver service name' "$(cat "$work/rendered.yaml")" \
-    "value: http://$RELEASE-factory-driver"
+    "value: http://$RELEASE-factory-driver-local"
+# The Secret carries one key per org, not one global token.
+expect_contains 'the secret renders a per-org worker-token key' "$(cat "$work/rendered.yaml")" \
+    'job-board-token-local:'
 # The URL is useless against the default loopback bind: inside the pod, nothing else can reach
 # 127.0.0.1. Compose makes the same pairing.
 expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.yaml")" 'value: 0.0.0.0'
@@ -350,7 +355,7 @@ installed=1
 # kind node the database image is still being pulled through containerd in that window, so
 # queueing before it is available fails every POST no matter how long the queue step polls.
 kubectl wait --for=condition=available \
-    "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
+    "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver-local" \
     "deployment/$RELEASE-factory-timescale" "deployment/$RELEASE-factory-collector" \
     -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
     ok 'the dashboard, driver, database and collector come up' || \

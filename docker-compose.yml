@@ -46,18 +46,14 @@ services:
             # There is no mode to select: the id and the key are required, and a stack without them
             # refuses to boot saying which one is missing.
             GITHUB_APP_ID: ${GITHUB_APP_ID:-}
-            # Optional: discovered from the App when the App is installed in exactly one place.
-            GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
             # The PEM, or its base64 — a one-line value survives .env far better than a PEM does.
             # Alternatively mount the .pem and point GITHUB_APP_PRIVATE_KEY_FILE at it.
             GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
             GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
-            # Empty-defaulted, unlike most of this block, so an unset value stays unset: that id
-            # leads every stored primary key, and a literal default here would silently point an
-            # existing database's dashboard at a different, empty partition on every start.
-            ORG_ID: ${ORG_ID:-}
-            ORG_NAME: ${ORG_NAME:-}
-            # A literal default, unlike the ORG_* pair above, and the volume below is mounted to
+            # The organizations are the App's installations, materialized at sign-in (#99): no
+            # org env exists. Install the App on every account this stack should serve. To adopt
+            # an existing database's history into an installation's org: npm run adopt.
+            # A literal default, and the volume below is mounted to
             # match: this is a path INSIDE the container, so a host value from .env would be a path
             # on the host that cannot exist here, and clobbering it is the correct outcome. Those
             # two are host-independent identifiers; this one is not.
@@ -85,10 +81,6 @@ services:
             SESSION_SECRET: ${SESSION_SECRET:-}
             PUBLIC_URL: ${PUBLIC_URL:-}
             COOKIE_SECURE: ${COOKIE_SECURE:-}
-            AUTH_BOOTSTRAP_ADMIN: ${AUTH_BOOTSTRAP_ADMIN:-}
-            # Members of this GitHub organization admit themselves on first sign-in. Empty keeps
-            # invite-only membership, where an admin names every login in advance.
-            AUTH_AUTO_JOIN_GITHUB_ORG: ${AUTH_AUTO_JOIN_GITHUB_ORG:-}
             INGEST_TOKEN: ${INGEST_TOKEN:-}
             # No AUTH_ALLOW_PUBLIC_BIND. It used to be required here: the Dockerfile sets
             # HOST=0.0.0.0, and loadConfig refuses `none` on a non-loopback host, so an open stack
@@ -162,9 +154,11 @@ services:
             dockerfile: docker/driver.Dockerfile
         environment:
             JOB_BOARD_URL: http://dashboard:8080
-            # The worker token, from `npm run worker-token -- --name driver-1`. Only needed when the
-            # dashboard runs AUTH_MODE=github; against an open board it stays empty and the header
-            # is omitted entirely rather than sent blank.
+            # The worker token, from `npm run worker-token -- --org <installation-id> --name
+            # driver-1` — one per org (#99), so a driver working for two organizations is two of
+            # this service with two tokens. Only needed when the dashboard runs AUTH_MODE=github;
+            # against an open board it stays empty and the header is omitted entirely rather than
+            # sent blank.
             JOB_BOARD_TOKEN: ${JOB_BOARD_TOKEN:-}
             # No ORG_ID. It only ever built the runner's WORKDIR as /workspaces/<org>, and the board
             # sends `workspacePath` on the claim now: checkouts are per member, so only the board —
