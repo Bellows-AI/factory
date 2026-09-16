@@ -52,16 +52,34 @@ export interface PublishPlan {
 }
 
 /**
+ * The issue a command names, in `publishPlan`'s precedence order: a full `issues/\d+` URL, then
+ * a `/fix <n>` command, then a bare `#\d+` mention. A match counts only when the digits end the
+ * token — a trailing word character means they were a prefix (`44oops` is prose, not #44, while
+ * `#44.` ends a sentence and still counts) — and the number is one GitHub could have issued:
+ * positive, within the safe-integer range (`#0` is no issue, and past 2^53-1 `Number` stops
+ * being a number at all).
+ */
+const commandIssue = (command: string): number | null => {
+    for (const pattern of [/issues\/(\d+)/, /\/fix\s+#?(\d+)/, /#(\d+)/]) {
+        const match = pattern.exec(command);
+        if (!match || /[\w]/.test(command[match.index + match[0].length] ?? '')) continue;
+        const issue = Number(match[1]);
+        if (Number.isSafeInteger(issue) && issue > 0) return issue;
+    }
+    return null;
+};
+
+/**
  * The plan for one job. The command is the author's own prompt — an audit record, not
  * attacker-controlled content, but it still only ever becomes a `-m`/`--title` VALUE in direct
  * argv (execFile, no shell), never a fragment of one.
  */
 export function publishPlan(job: BoardJob, now: Date = new Date()): PublishPlan {
-    const issue = /issues\/(\d+)/.exec(job.command)?.[1] ?? /#(\d+)/.exec(job.command)?.[1] ?? null;
+    const issue = commandIssue(job.command);
     const firstLine = (job.command.trim().split('\n')[0] ?? '').trim().slice(0, 72);
     const title = issue ? `${firstLine} (#${issue})` : firstLine;
     const branch = issue ? `fix/${issue}` : `task/${now.toISOString().slice(0, 10).replace(/-/g, '')}`;
-    return { branch, title, issueNumber: issue ? Number(issue) : null };
+    return { branch, title, issueNumber: issue };
 }
 
 /** What a probe of the checkout found, and what every later step branches on. */
