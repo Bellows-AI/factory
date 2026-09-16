@@ -8,7 +8,8 @@ const docPath = fileURLToPath(new URL('../../docs/design-system.md', import.meta
 
 // Functional color syntaxes join hex and rgb/hsl; CSS named colors are deliberately out —
 // prose like "white-space" would collide with a value scan, and no rule writes one today.
-const COLOR_RE = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|okl(ch|ab)\([^)]*\)|color(-mix)?\([^)]*\)/g;
+const COLOR_RE =
+    /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|okl(ch|ab)\([^)]*\)|hwb\([^)]*\)|(lab|lch|light-dark|color(-mix)?)\([^)]*\)/g;
 
 /** Block comments removed, so prose cannot mint phantom tokens, classes or color mentions. */
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -96,9 +97,7 @@ describe('the design-system inventory', () => {
 
     it('inventories every UI unit under web/src', () => {
         const units = ['components', 'panels', 'pages', 'charts'].flatMap((dir) =>
-            readdirSync(join(webSrc, dir), { withFileTypes: true })
-                .filter((entry) => entry.isFile())
-                .map((entry) => entry.name)
+            walkFiles(join(webSrc, dir)).map((path) => path.split('/').pop()!)
         );
         expect(units.filter((name) => !doc.includes(name))).toEqual([]);
     });
@@ -111,6 +110,8 @@ describe('the design-system inventory', () => {
         for (const prelude of css.matchAll(/([^{}]*)\{/g)) {
             for (const match of prelude[1].matchAll(/\.([a-zA-Z][\w-]*)/g)) defined.add(match[1]);
         }
+        // A presence check, not a parse: doc.includes matches substrings, so the guard catches an
+        // undocumented class, not an undocumented rule about it.
         expect([...defined].filter((name) => !doc.includes(name))).toEqual([]);
     });
 });
