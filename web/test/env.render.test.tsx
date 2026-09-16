@@ -90,12 +90,15 @@ describe('the env vars panel', () => {
         expect(html).not.toContain('<form');
     });
 
-    it('renders both tabs with Variables active and the paste affordance', () => {
+    it('renders both tabs with Variables active and the raw toggle', () => {
         const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />);
         expect(html).toContain('Variables');
         expect(html).toContain('Secrets');
         expect(html).toContain('aria-pressed="true"');
-        expect(html).toContain('Paste .env');
+        expect(html).toContain('>raw</button>');
+        expect(html).toContain('aria-pressed="false"');
+        // Raw defaults off: the table view renders, the editor does not.
+        expect(html).not.toContain('<textarea');
         expect(html).toContain('Add variable');
     });
 
@@ -119,7 +122,7 @@ describe('the env vars panel', () => {
         const html = renderToStaticMarkup(
             <EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} disabled />
         );
-        expect(html).toContain('Paste .env');
+        expect(html).toContain('>raw</button>');
         expect(html).toContain('Add variable');
         expect(html).toContain('disabled');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
