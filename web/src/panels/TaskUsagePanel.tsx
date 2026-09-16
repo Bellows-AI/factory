@@ -59,10 +59,7 @@ export function TaskUsagePanel({ tasks, meta }: { tasks: TaskUsageStats | null; 
             meta={meta}
         >
             {empty ? (
-                <p className="muted">
-                    No attributed tasks in this range yet. Sessions the board cannot tie to a task never appear here —
-                    they stay in the unattributed count below.
-                </p>
+                <p className="muted">No attributed tasks in this range yet.</p>
             ) : (
                 <div className="cards">
                     <Distribution label="Tokens per task" d={tasks.tokensPerTask} format={(v) => tokens(v)} />

@@ -17,18 +17,12 @@ export function ByUserPanel({ telemetry, meta }: { telemetry: TelemetryStats; me
             blurb={
                 <>
                     Sessions and tokens per user, resolved by joining each session to the board task it ran under.
-                    Sessions with no matching task stay unattributed and are counted, never guessed.
                 </>
             }
             meta={meta}
         >
-            {rows.length === 0 && telemetry.unattributedSessions === 0 ? (
+            {rows.length === 0 ? (
                 <p className="muted">No sessions in the coverage window yet.</p>
-            ) : rows.length === 0 ? (
-                <p className="muted">
-                    {telemetry.unattributedSessions} session{telemetry.unattributedSessions === 1 ? '' : 's'} ran with
-                    no matching board task, so none can be attributed to a user.
-                </p>
             ) : (
                 <div className="chart-wrap">
                     <table className="by-user">
@@ -56,12 +50,6 @@ export function ByUserPanel({ telemetry, meta }: { telemetry: TelemetryStats; me
                             ))}
                         </tbody>
                     </table>
-                    {telemetry.unattributedSessions > 0 ? (
-                        <p className="muted">
-                            {telemetry.unattributedSessions} session{telemetry.unattributedSessions === 1 ? '' : 's'}{' '}
-                            ran with no matching board task.
-                        </p>
-                    ) : null}
                 </div>
             )}
         </TelemetryFrame>

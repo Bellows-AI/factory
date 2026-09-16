@@ -58,7 +58,7 @@ describe('telemetry panels render', () => {
         expect(html).not.toContain('undefined');
     });
 
-    it('renders the by-user table with the attributed users and the unattributed line', () => {
+    it('renders the by-user table with the attributed users', () => {
         const html = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={meta()} />);
         expect(html).toContain('Usage by user');
         expect(html).toContain('alice');
@@ -66,7 +66,9 @@ describe('telemetry panels render', () => {
         expect(html).toContain('bob');
         // The avatar renders only when the account carries one; bob's has none.
         expect(html).toContain('https://example.com/alice.png');
-        expect(html).toContain('4 sessions ran with no matching board task');
+        // Off-board usage is not surfaced at all (#109): the payload keeps the count, the page
+        // does not speak it.
+        expect(html).not.toContain('no matching board task');
         expect(html).not.toContain('NaN');
     });
 
