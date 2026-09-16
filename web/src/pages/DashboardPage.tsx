@@ -41,9 +41,13 @@ export function DashboardPage() {
                                 <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                             </>
                         ) : null}
-                        <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
                     </>
                 ) : null}
+                {/* Outside the stats branch on purpose: completed jobs poll their own endpoint,
+                    so the recent-tasks view is exactly the degraded-mode surface when the
+                    statistics read is cold or failing — hiding it behind `data` would hide it
+                    in the one state it exists for. */}
+                <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
             </main>
         </>
     );

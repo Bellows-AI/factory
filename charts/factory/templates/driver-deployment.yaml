@@ -64,6 +64,11 @@ spec:
                         valueFrom:
                             fieldRef:
                                 fieldPath: metadata.namespace
+                      # Names this release on every runner Job's labels, so a shared namespace's
+                      # bulk cleanups (`make stop`, kubectl delete jobs -l instance=<name>) never
+                      # sweep a neighbor release's runners.
+                      - name: K8S_RELEASE
+                        value: {{ $.Release.Name | quote }}
                       - name: EXECUTOR
                         value: kubernetes
                       # Which CLI the runner image speaks — claude-code, or opencode's headless

@@ -242,11 +242,13 @@ describe.skipIf(!enabled)('job store', () => {
         // The verdict banks the attempt's segment, so the row's own clock is no longer null.
         const listed = await store.list({ limit: 10 });
         const row = listed.find((entry) => entry.id === first.id);
-        expect(row?.wallClockMs).not.toBeNull();
+        expect(row).toBeDefined();
+        expect(row!.wallClockMs).toEqual(expect.any(Number));
         // The thread total rides the thread read alone.
         expect(row?.taskWallClockMs ?? null).toBeNull();
         const thread = await store.thread(first.id);
-        expect(thread?.[0]?.taskWallClockMs).not.toBeNull();
+        expect(thread).not.toBeNull();
+        expect(thread![0]!.taskWallClockMs).toEqual(expect.any(Number));
     });
 
     it('streams a rolling output tail while the run is going', async () => {

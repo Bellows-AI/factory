@@ -301,7 +301,13 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             // factory.job=<id>` finds a runner that outlived its driver by, and what the re-claim
             // fence sweeps by. factory.lease is this attempt's alone — the label form of the
             // naming contract that scopes every per-attempt operation to its own objects.
-            labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+            // app.kubernetes.io/instance scopes bulk cleanup to THIS release: `make stop` and a
+            // shared-namespace neighbor must not delete each other's runners.
+            labels: {
+                'factory.job': job.id,
+                'factory.lease': job.leaseToken,
+                ...(config.k8sRelease ? { 'app.kubernetes.io/instance': config.k8sRelease } : {}),
+            },
         },
         spec: {
             // A failed runner pod is never re-run by the cluster — a kubelet retry would re-send
@@ -406,8 +412,8 @@ const GATE_KEY =
     /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
-/** Eight hex characters naming one attempt-scoped run: readable in `kubectl get jobs`, unique by construction. */
-const hash8 = (input: string): string => createHash('sha256').update(input).digest('hex').slice(0, 8);
+/** Sixteen hex characters naming one attempt-scoped run: readable in `kubectl get jobs`, and — at 64 bits — collision-proof at any real concurrency. Eight characters (32 bits) let two simultaneous attempts collide on one Job name, and the apiserver rejects the loser with AlreadyExists. */
+const hash16 = (input: string): string => createHash('sha256').update(input).digest('hex').slice(0, 16);
 
 /**
  * The raw gate name is repo content, so it never joins a k8s name directly: lowercased, every
@@ -424,7 +430,7 @@ const sanitizeNamePart = (value: string): string =>
 
 /** One gate run's Job name. The run counter keeps a second ad-hoc call of the same gate off the first's name. */
 export const gateJobName = (job: BoardJob, gateName: string, run: number): string =>
-    `factory-gate-${sanitizeNamePart(gateName)}-${hash8(`${job.id}|${job.leaseToken}|${gateName}|${run}`)}`;
+    `factory-gate-${sanitizeNamePart(gateName)}-${hash16(`${job.id}|${job.leaseToken}|${gateName}|${run}`)}`;
 
 /**
  * The gated attempt's Secret carrying the gate environment. Per ATTEMPT, not per run — the env
@@ -432,7 +438,7 @@ export const gateJobName = (job: BoardJob, gateName: string, run: number): strin
  * Secret created at acquire serves them all, and a driver crash leaks at most one, the same
  * accepted-leak posture (and the same `factory.job` cleanup label) the runner's env Secret has.
  */
-export const gateEnvSecretName = (job: BoardJob): string => `factory-gate-${hash8(`${job.id}|${job.leaseToken}`)}-env`;
+export const gateEnvSecretName = (job: BoardJob): string => `factory-gate-${hash16(`${job.id}|${job.leaseToken}`)}-env`;
 
 /**
  * One gate run, as a Job. Pure and exported for the pinning, exactly like `runnerJobSpec`:
@@ -504,7 +510,7 @@ export function gateJobSpec(
                         {
                             // A container name is a 63-char DNS label — the Job name's roomy
                             // subdomain bound does not apply to it, so the short hash stands in.
-                            name: `gate-${hash8(`${jobName}|${command}`)}`,
+                            name: `gate-${hash16(`${jobName}|${command}`)}`,
                             image,
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['sh', '-c', command],
@@ -548,7 +554,7 @@ export const envBodyToData = (body: string): Record<string, string> => {
  */
 const BELLOWS_READ_DEADLINE_SECONDS = 120;
 
-export const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash8(`${job.id}|${job.leaseToken}`)}`;
+export const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 /**
  * The runner Job's name, hashed like the readout's rather than `containerName(job)`'s raw
@@ -562,7 +568,7 @@ export const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash
  * collide. Addressing is by label everywhere it can be (the fence's sweep, the pod log); the
  * name is only ever spoken by this process, which minted it.
  */
-export const runnerJobName = (job: BoardJob): string => `factory-runner-${hash8(`${job.id}|${job.leaseToken}`)}`;
+export const runnerJobName = (job: BoardJob): string => `factory-runner-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
@@ -627,7 +633,7 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
 const OPENCODE_READOUT_DEADLINE_SECONDS = 120;
 
 export const opencodeReadoutJobName = (job: BoardJob): string =>
-    `factory-ocread-${hash8(`${job.id}|${job.leaseToken}`)}`;
+    `factory-ocread-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 /**
  * The close-time claude-code turn count under kubernetes: the same script docker runs
@@ -638,7 +644,7 @@ export const opencodeReadoutJobName = (job: BoardJob): string =>
  * executor, and two variants of it would be two shapes to keep coherent. A Job that fails or
  * overspends its deadline answers through the caller's null contract — unmeasured, never zero.
  */
-export const claudeTurnsJobName = (job: BoardJob): string => `factory-cturns-${hash8(`${job.id}|${job.leaseToken}`)}`;
+export const claudeTurnsJobName = (job: BoardJob): string => `factory-cturns-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 export function claudeTurnsJobSpec(
     config: DriverConfig,
@@ -753,7 +759,7 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
  */
 const SYNC_DEADLINE_SECONDS = 600;
 
-export const syncJobName = (job: BoardJob): string => `factory-sync-${hash8(`${job.id}|${job.leaseToken}`)}`;
+export const syncJobName = (job: BoardJob): string => `factory-sync-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 /**
  * The per-attempt Secret carrying the claim env for the sync's fetch — the credential travels
@@ -763,7 +769,7 @@ export const syncJobName = (job: BoardJob): string => `factory-sync-${hash8(`${j
  * Secret at all, because a pod that references a missing Secret sits in
  * `CreateContainerConfigError`, and an env-less claim is a supported board configuration.
  */
-export const syncEnvSecretName = (job: BoardJob): string => `factory-sync-${hash8(`${job.id}|${job.leaseToken}`)}-env`;
+export const syncEnvSecretName = (job: BoardJob): string => `factory-sync-${hash16(`${job.id}|${job.leaseToken}`)}-env`;
 
 export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: string | null): AuxJobSpec {
     if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
@@ -841,7 +847,7 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
  */
 const RECLAIM_DEADLINE_SECONDS = 600;
 
-export const reclaimJobName = (job: BoardJob): string => `factory-reclaim-${hash8(`${job.id}|${job.leaseToken}`)}`;
+export const reclaimJobName = (job: BoardJob): string => `factory-reclaim-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
     if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
@@ -909,11 +915,11 @@ const PUBLISH_STEP_DEADLINE_SECONDS = 600;
 
 /** The publish steps' per-attempt env Secret — same name discipline as the sync's. */
 export const publishEnvSecretName = (job: BoardJob): string =>
-    `factory-publish-${hash8(`${job.id}|${job.leaseToken}`)}-env`;
+    `factory-publish-${hash16(`${job.id}|${job.leaseToken}`)}-env`;
 
 /** One step's Job name: attempt-scoped by the hash, sequential by the counter. */
 export const publishStepJobName = (job: BoardJob, step: number): string =>
-    `factory-pub-${hash8(`${job.id}|${job.leaseToken}`)}-${step}`;
+    `factory-pub-${hash16(`${job.id}|${job.leaseToken}`)}-${step}`;
 
 export function publishStepJobSpec(
     config: DriverConfig,

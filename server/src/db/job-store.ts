@@ -1670,7 +1670,14 @@ export function createJobStore({
                           : sql``
                 }
                   ${repo ? sql`and repo = ${repo}` : sql``}
-                order by job.created_at desc, job.id
+                order by ${
+                    // The recently-completed panel asks for terminal jobs: newest COMPLETION
+                    // first. `created_at` order permanently buries an old job that finished
+                    // after many newer ones — the row is past the limit before it is done.
+                    status === 'terminal'
+                        ? sql`job.finished_at desc, job.created_at desc, job.id`
+                        : sql`job.created_at desc, job.id`
+                }
                 limit ${limit}
             `;
             return rows.map(toJob);

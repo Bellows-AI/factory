@@ -96,8 +96,11 @@ describe('telemetry panels render', () => {
     });
 
     it('says so when nothing can be attributed', () => {
+        // 'attributed', not just 'sessions': the by-user rollup carries only attributed
+        // sessions, while unattributed ones are counted separately — the window can hold
+        // sessions and still render this empty state.
         const html = renderToStaticMarkup(<ByUserPanel telemetry={empty} meta={meta()} />);
-        expect(html).toContain('No sessions in the coverage window yet.');
+        expect(html).toContain('No attributed sessions in the coverage window yet.');
     });
 
     it('renders five usage cards', () => {

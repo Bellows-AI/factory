@@ -818,7 +818,7 @@ export const jobRoutes =
                         // cap never splits a surrogate pair.
                         summary:
                             typeof summary === 'string' && summary.trim()
-                                ? [...summary].slice(0, SUMMARY_LIMIT).join('')
+                                ? [...summary.trim()].slice(0, SUMMARY_LIMIT).join('')
                                 : null,
                     })
             );

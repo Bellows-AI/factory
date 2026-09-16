@@ -4360,7 +4360,7 @@ describe('the gate job spec', () => {
 
     it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
         expect(gateSpec().apiVersion).toBe('batch/v1');
-        expect(gateSpec().metadata.name).toMatch(/^factory-gate-test-[0-9a-f]{8}$/);
+        expect(gateSpec().metadata.name).toMatch(/^factory-gate-test-[0-9a-f]{16}$/);
         // A second run of the same gate is a different object — ad-hoc calls land mid-run, and
         // two runs of one gate must never race for one name.
         expect(gateSpec(2).metadata.name).not.toBe(gateSpec(1).metadata.name);
@@ -4434,7 +4434,7 @@ describe('the gate job spec', () => {
             null,
             30_000
         );
-        expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{8}$/);
+        expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{16}$/);
         expect(s.metadata.name).not.toContain('UPPER');
         expect(s.metadata.name).not.toContain('Case');
     });
@@ -4473,7 +4473,7 @@ describe('the gate env body', () => {
 
 describe('the kubernetes gate manager', () => {
     const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
-    const GATE_JOB = /^factory-gate-test-[0-9a-f]{8}$/;
+    const GATE_JOB = /^factory-gate-test-[0-9a-f]{16}$/;
 
     /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
     const gateFake = (

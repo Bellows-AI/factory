@@ -133,6 +133,12 @@ export interface DriverConfig {
      */
     k8sNamespace: string;
     /**
+     * The Helm release this driver was installed by, when the chart set one. Labels every runner
+     * Job `app.kubernetes.io/instance`, so a shared namespace's bulk cleanups scope to one
+     * release's runners. Null (bare `npm run driver` against a cluster) labels nothing extra.
+     */
+    k8sRelease: string | null;
+    /**
      * The name of a Secret holding the runner credentials under the kubernetes executor — one key
      * per RUNNER_ENV name. The k8s form of `-e NAME`: the names travel, the values live in a Secret
      * the cluster already holds, and nothing readable lands in the pod spec. Null forwards nothing.
@@ -397,6 +403,11 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             .filter(Boolean),
         executor,
         k8sNamespace: text(env.K8S_NAMESPACE, 'K8S_NAMESPACE', 'default'),
+        // The Helm release this driver was installed by, when the chart set one. It labels every
+        // runner Job `app.kubernetes.io/instance`, so an operator cleaning up one release
+        // (`make stop`, `kubectl delete jobs -l ...instance=<name>`) cannot sweep another
+        // release's runners sharing the namespace.
+        k8sRelease: (env.K8S_RELEASE ?? '').trim() || null,
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw as (typeof PULL_POLICIES)[number],
         gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', 600_000, 0, 24 * 3600_000),
