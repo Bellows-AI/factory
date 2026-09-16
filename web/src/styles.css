@@ -1260,14 +1260,14 @@ button.primary {
     color: var(--primary);
 }
 
-.env-paste {
+.env-raw {
     display: flex;
     flex-direction: column;
     gap: 8px;
     margin-bottom: 12px;
 }
 
-.env-paste textarea {
+.env-raw textarea {
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -1279,11 +1279,6 @@ button.primary {
     width: 100%;
 }
 
-.env-paste-actions {
-    display: flex;
-    gap: 8px;
-}
-
-.env-paste-errors {
+.env-errors {
     white-space: pre-wrap;
 }
