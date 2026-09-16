@@ -76,8 +76,6 @@ export default defineConfig({
                 ...shared,
                 PORT: String(PORT),
                 DATABASE_URL: 'postgres://factory:factory@127.0.0.1:5432/factory_e2e',
-                ORG_ID: 'e2e-org',
-                ORG_NAME: 'E2E Org',
             },
             timeout: 180_000,
             // Never reuse: a server left over from a previous edit would verify stale code, which
@@ -105,8 +103,6 @@ export default defineConfig({
                 ...shared,
                 PORT: String(AUTH_PORT),
                 DATABASE_URL: 'postgres://factory:factory@127.0.0.1:5432/factory_auth_e2e',
-                ORG_ID: 'auth-e2e-org',
-                ORG_NAME: 'Auth E2E Org',
                 AUTH_MODE: 'github',
                 GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
                 GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',
@@ -118,9 +114,8 @@ export default defineConfig({
                 GITHUB_OAUTH_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/authorize`,
                 GITHUB_OAUTH_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/access_token`,
                 GITHUB_OAUTH_USER_URL: `http://127.0.0.1:${IDP_PORT}/user`,
-                // An UNCLAIMED invite. First sign-in binds it, which is the half of the flow most
-                // worth driving in a browser.
-                SEED_INVITE_LOGIN: E2E_LOGIN,
+                // First sign-in materializes the installation the stub reports as the member's
+                // organization — the half of the flow most worth driving in a browser (#99).
                 // A REAL workspace root, so signing in provisions a real directory and the
                 // Workspace page has something to report. Under artifacts/ and never under $HOME:
                 // this run creates directories, and it must not do that anywhere a developer

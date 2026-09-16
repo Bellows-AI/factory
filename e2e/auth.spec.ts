@@ -39,15 +39,48 @@ test('signing in lands on the dashboard', async ({ page }) => {
     await expect(gate(page)).toHaveCount(0);
 });
 
-test('the account claims its invite, so the API answers as a member', async ({ page }) => {
+test('first sign-in materializes the installation as the member\'s organization', async ({ page }) => {
     await page.goto('/');
     await signIn(page).click();
     await expect(cards(page)).toHaveCount(5, { timeout: 60_000 });
 
     const me = await page.request.get('/api/auth/me');
     expect(me.status()).toBe(200);
-    // The seed leaves an unclaimed invite for this login; first sign-in is what binds it.
-    expect(await me.json()).toMatchObject({ user: { login: 'e2e-user' }, role: 'admin', mode: 'github' });
+    // The stub reports installation 999999 (`stub-org-999999`); the sign-in created the org, the
+    // membership and the session's binding to it — no invite anywhere in the flow (#99).
+    expect(await me.json()).toMatchObject({
+        user: { login: 'e2e-user' },
+        role: 'member',
+        organization: { id: '999999', name: 'stub-org-999999' },
+        organizations: [{ id: '999999', name: 'stub-org-999999' }],
+        mode: 'github',
+    });
+});
+
+test('POST /api/auth/org switches the session, and refuses what the member cannot see', async ({ page }) => {
+    await page.goto('/');
+    await signIn(page).click();
+    await expect(cards(page)).toHaveCount(5, { timeout: 60_000 });
+
+    // Unknown org: a typo is a 400, never a silent stay.
+    const unknown = await page.request.post('/api/auth/org', { data: { orgId: '111111' } });
+    expect(unknown.status()).toBe(400);
+    expect((await unknown.json()).code).toBe('UNKNOWN_ORG');
+
+    // Known org, but the member's installations do not include it: the boundary, not a typo.
+    await page.request.post('/api/auth/org', { data: { orgId: '999999' } }).then(async (planted) => {
+        expect(planted.status()).toBe(200);
+    });
+    const me = await page.request.get('/api/auth/me');
+    expect((await me.json()).organization).toEqual({ id: '999999', name: 'stub-org-999999' });
+
+    // An anonymous caller has no session to move.
+    const fresh = await page.context().browser().newContext();
+    const anonymous = await fresh.request.post('http://127.0.0.1:8124/api/auth/org', {
+        data: { orgId: '999999' },
+    });
+    expect(anonymous.status()).toBe(401);
+    await fresh.close();
 });
 
 test('signing out returns to the gate', async ({ page }) => {
