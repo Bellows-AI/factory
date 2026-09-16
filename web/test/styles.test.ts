@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const webSrc = fileURLToPath(new URL('../src', import.meta.url));
+const docPath = fileURLToPath(new URL('../../docs/design-system.md', import.meta.url));
 
 const COLOR_RE = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/g;
 
@@ -78,5 +79,31 @@ describe('the stylesheet', () => {
             ':root { --a: #111; }\n.panel { background: var(--a); }\n@media (min-width: 1px) { .b { color: #222; } }';
         const [start, end] = rootSpan(css);
         expect(css.slice(start, end)).toBe(':root { --a: #111; }');
+    });
+});
+
+describe('the design-system inventory', () => {
+    // Both assertions read docs/design-system.md, so the inventory is enforced, not aspirational:
+    // a new UI unit or a new class fails the suite until the document names it.
+    const doc = readFileSync(docPath, 'utf8');
+
+    it('inventories every UI unit under web/src', () => {
+        const units = ['components', 'panels', 'pages', 'charts'].flatMap((dir) =>
+            readdirSync(join(webSrc, dir), { withFileTypes: true })
+                .filter((entry) => entry.isFile())
+                .map((entry) => entry.name)
+        );
+        expect(units.filter((name) => !doc.includes(name))).toEqual([]);
+    });
+
+    it('documents every class the stylesheet defines', () => {
+        // Comments are stripped first: prose in styles.css may mention file names and other
+        // dotted text without putting those "classes" on the inventory's books.
+        const css = readFileSync(join(webSrc, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+        const defined = new Set<string>();
+        for (const rule of css.match(/[^{}]+\{[^}]*\}/g) ?? []) {
+            for (const match of rule.split('{')[0].matchAll(/\.([a-zA-Z][\w-]*)/g)) defined.add(match[1]);
+        }
+        expect([...defined].filter((name) => !doc.includes(name))).toEqual([]);
     });
 });
