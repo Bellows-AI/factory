@@ -36,8 +36,9 @@ describe('OrgSelector', () => {
     it('says why it is inactive, not only that it is', () => {
         // A disabled control with no explanation reads as a bug or as a permissions problem.
         const html = render(CONFIG);
-        expect(html).toContain('ORG_ID');
         expect(html).toContain('one organization');
+        // The ORG_ID phrasing is gone with the variable itself (#99).
+        expect(html).not.toContain('ORG_ID');
     });
 
     it('marks the current organization as selected', () => {
@@ -114,6 +115,10 @@ describe('TopBar', () => {
             membership: { invitedAt: null, claimedAt: null },
             account: { createdAt: null, lastLoginAt: null },
             organization: { id: 'bellows', name: 'Bellows AI' },
+            organizations: [
+                { id: 'bellows', name: 'Bellows AI' },
+                { id: 'acme', name: 'Acme Inc' },
+            ],
             workspacePath: null,
             mode: 'github',
         };

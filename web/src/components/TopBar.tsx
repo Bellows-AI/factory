@@ -52,7 +52,20 @@ export function TopBar({
                  * tell you that, and repos living under [organization] in the config file does not
                  * make its name a summary of the list.
                  */}
-                {meta ? <OrgSelector organization={meta.organization} /> : null}
+                {meta ? (
+                    <OrgSelector
+                        organization={meta.organization}
+                        onSwitch={(orgId) => {
+                            // Fire-and-reload: the switch is a server-side session change, and
+                            // every org-scoped read below re-probes from scratch afterwards.
+                            void fetch('/api/auth/org', {
+                                method: 'POST',
+                                headers: { 'content-type': 'application/json' },
+                                body: JSON.stringify({ orgId }),
+                            }).then(() => window.location.reload());
+                        }}
+                    />
+                ) : null}
                 <span className="muted">
                     {meta
                         ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}${meta.stale ? ' (stale)' : ''}`

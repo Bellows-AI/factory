@@ -1,18 +1,24 @@
 import type { OrganizationMeta } from '@factory-ai/core';
 
 /**
- * The organization these figures belong to.
+ * The organization these figures belong to — and, since #99, the one the caller can switch to.
  *
- * One organization and no accounts yet, so the control is real but inert: a native
- * `<select disabled>` rather than a plain label, because the day a second organization exists the
- * only changes here are that `disabled` goes false and an `onChange` arrives. A label would have to
- * be replaced instead — and the upper-right slot would move on that day, in front of everyone who
- * had already learned where it was, rather than on this one.
+ * `mode` unlocks the control: 'config' (AUTH_MODE=none's single local org) keeps it disabled,
+ * 'directory' — the caller is a member of the orgs the server listed — turns it on. `available`
+ * drives the options in both modes, so there is no mode-specific branch in the markup; in config
+ * mode the server sends a one-element list equal to `current`.
  *
- * `available` drives the options in both modes, so there is no mode-specific branch in the markup;
- * in config mode the server sends a one-element list equal to `current`.
+ * The switch is a full page reload, not a state update: every org-scoped cache in the client is
+ * keyed to nothing, so the honest move is to re-probe everything rather than stale-proof each hook.
  */
-export function OrgSelector({ organization }: { organization: OrganizationMeta }) {
+export function OrgSelector({
+    organization,
+    onSwitch,
+}: {
+    organization: OrganizationMeta;
+    /** Absent only where nothing can switch — the AUTH_MODE=none single-org shape. */
+    onSwitch?: (orgId: string) => void;
+}) {
     // Keyed on `mode`, never on `available.length < 2`. A directory user who belongs to one
     // organization today can be granted a second tomorrow with no deploy; disabling by list length
     // would be right today by accident and silently wrong then.
@@ -21,7 +27,7 @@ export function OrgSelector({ organization }: { organization: OrganizationMeta }
     // WHY it is inactive, not merely that it is. A disabled control with no explanation reads as a
     // bug or as a permissions problem; this says it is a property of the deployment.
     const reason = locked
-        ? 'This deployment reports on one organization, set by ORG_ID. Switching becomes available when accounts can belong to more than one.'
+        ? 'This deployment reports on one organization. Sign in with GitHub to see the installations you belong to.'
         : 'Switch organization';
 
     return (
@@ -32,9 +38,7 @@ export function OrgSelector({ organization }: { organization: OrganizationMeta }
             <select
                 className="org-select"
                 value={organization.current.id}
-                // Also what suppresses React's "value without onChange" warning — the controlled
-                // -value check passes on `disabled` as well as on `readOnly` — so this needs no
-                // no-op handler.
+                onChange={(event) => onSwitch?.(event.target.value)}
                 disabled={locked}
                 aria-label={`Organization: ${organization.current.name}`}
             >
