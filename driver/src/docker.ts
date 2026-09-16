@@ -1290,10 +1290,17 @@ type Spawn = typeof spawn;
  */
 type ExecDocker = (args: string[], options?: { timeout?: number }) => Promise<{ stdout: string }>;
 
+/** The fs verbs the runner's env files need — injectable for the same reason spawn is. */
+export interface RunnerFiles {
+    writeFile: typeof writeFile;
+    rm: typeof rm;
+}
+
 export function createDockerRunner(
     config: DriverConfig,
     spawnFn: Spawn = spawn,
-    execDocker: ExecDocker = (args, options) => run('docker', args, { ...options, encoding: 'utf8' })
+    execDocker: ExecDocker = (args, options) => run('docker', args, { ...options, encoding: 'utf8' }),
+    files: RunnerFiles = { writeFile, rm }
 ): Runner {
     /*
      * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
@@ -1516,7 +1523,7 @@ export function createDockerRunner(
             if (!restore) {
                 try {
                     file = envFilePath(job);
-                    await writeFile(file, envFileBody(job), { mode: 0o600 });
+                    await files.writeFile(file, envFileBody(job), { mode: 0o600 });
                 } catch (e) {
                     return { ok: false, reason: `could not write the sync env file: ${(e as Error).message}` };
                 }
@@ -1568,7 +1575,7 @@ export function createDockerRunner(
                     (err.message ?? 'failed');
                 return { ok: false, reason: `the worktree sync container failed: ${detail.slice(0, 300)}` };
             } finally {
-                if (file) await rm(file).catch(() => undefined);
+                if (file) await files.rm(file).catch(() => undefined);
             }
         },
 
@@ -1636,7 +1643,7 @@ export function createDockerRunner(
             let file: string | null = null;
             try {
                 file = envFilePath(job);
-                await writeFile(file, envFileBody(withPublishToken(job, publishToken)), { mode: 0o600 });
+                await files.writeFile(file, envFileBody(withPublishToken(job, publishToken)), { mode: 0o600 });
             } catch (e) {
                 return publishFailed(`could not write the publish env file: ${(e as Error).message}`);
             }
@@ -1675,7 +1682,7 @@ export function createDockerRunner(
                     }
                 });
             } finally {
-                if (file) await rm(file).catch(() => undefined);
+                if (file) await files.rm(file).catch(() => undefined);
             }
         },
 
@@ -1842,7 +1849,7 @@ export function createDockerRunner(
              */
             const body = config.remoteControl ? '' : envFileBody(job, config);
             const file = body ? envFilePath(job) : null;
-            if (file) await writeFile(file, body, { mode: 0o600 });
+            if (file) await files.writeFile(file, body, { mode: 0o600 });
             // The write above is an await, so the kill-check must run once more: a lease lost
             // while the write was pending would otherwise reach spawnFn — a runner started over
             // a dead lease, its job-derived container name colliding with the replacement's.
@@ -1851,7 +1858,7 @@ export function createDockerRunner(
             try {
                 await assertNotKilled();
             } catch (abort) {
-                if (file) await rm(file).catch(() => undefined);
+                if (file) await files.rm(file).catch(() => undefined);
                 throw abort;
             }
 
@@ -2105,7 +2112,7 @@ export function createDockerRunner(
             try {
                 return await outcome;
             } finally {
-                if (file) await rm(file).catch(() => undefined);
+                if (file) await files.rm(file).catch(() => undefined);
             }
         },
     };

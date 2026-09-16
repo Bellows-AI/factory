@@ -1,6 +1,7 @@
 import { describe, expect, it, vitest } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
+import { rm, writeFile } from 'node:fs/promises';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
@@ -47,25 +48,6 @@ import {
     worktreeDir,
     worktreeRelDir,
 } from '../src/publish.js';
-
-/*
- * The env-file write is the one await between the setup's final kill-check and the spawn, and a
- * test below needs the kill to land INSIDE it — deterministically. The mock passes every call
- * through to the real fs and only parks when a test has armed the gate; every other test in
- * this file is unaffected.
- */
-const fsHook = vitest.hoisted(() => ({ gate: null as null | ((path: string) => Promise<void>) }));
-
-vitest.mock('node:fs/promises', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('node:fs/promises')>();
-    return {
-        ...actual,
-        writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
-            if (fsHook.gate) await fsHook.gate(String(args[0]));
-            return actual.writeFile(...args);
-        },
-    };
-});
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -1809,41 +1791,50 @@ describe('the docker runner', () => {
     // more check, the runner spawns over a dead lease — its job-derived container name colliding
     // with the replacement's. On that abort the just-written file must go too: the cleanup around
     // the outcome only covers a settled run, and this throw precedes it.
+    //
+    // The env-file write is INJECTED here (the constructor's `files` seam) rather than observed
+    // through a node:fs/promises mock: under isolate:false that mock only binds when docker.js
+    // first executes in a worker, and a copy cached by scripts.test.ts's import once bypassed
+    // this park entirely — the run completed, and the test waited on a write that never came.
     it('spawns nothing when the lease is lost during the env-file write, and leaves no file behind', async () => {
-        try {
-            let releaseWrite: (() => void) | null = null;
-            const writeReleased = new Promise<void>((resolve) => {
-                releaseWrite = resolve;
-            });
-            let markWrite: (() => void) | null = null;
-            const writeUnderway = new Promise<void>((resolve) => {
-                markWrite = resolve;
-            });
-            let writtenTo: string | null = null;
-            fsHook.gate = async (path: string) => {
-                fsHook.gate = null; // only this test's write is ever parked
-                writtenTo = path;
+        let releaseWrite: (() => void) | null = null;
+        const writeReleased = new Promise<void>((resolve) => {
+            releaseWrite = resolve;
+        });
+        let markWrite: (() => void) | null = null;
+        const writeUnderway = new Promise<void>((resolve) => {
+            markWrite = resolve;
+        });
+        let writtenTo: string | null = null;
+        const files = {
+            writeFile: async (path: string, data: string, options?: { mode?: number }) => {
+                writtenTo = String(path);
                 markWrite!();
                 await writeReleased;
-            };
+                return writeFile(path, data, options);
+            },
+            rm,
+        };
 
-            const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
-            const runner = createDockerRunner(loadDriverConfig({}), spawnSpy as unknown as typeof spawn, noContainer);
+        const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            spawnSpy as unknown as typeof spawn,
+            noContainer,
+            files
+        );
 
-            const pending = runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
-            await writeUnderway; // the run is parked inside the env-file write
+        const pending = runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
+        await writeUnderway; // the run is parked inside the env-file write
 
-            await runner.kill(job); // the lease dies while the write is pending
-            releaseWrite!(); // the write lands; the run now learns its lease is gone
+        await runner.kill(job); // the lease dies while the write is pending
+        releaseWrite!(); // the write lands; the run now learns its lease is gone
 
-            await expect(pending).rejects.toThrow(/killed while setting up services/);
-            expect(spawnSpy).not.toHaveBeenCalled();
-            // No leak: the file the write just created is removed on the abort path.
-            expect(writtenTo).toBeTruthy();
-            expect(existsSync(writtenTo!)).toBe(false);
-        } finally {
-            fsHook.gate = null;
-        }
+        await expect(pending).rejects.toThrow(/killed while setting up services/);
+        expect(spawnSpy).not.toHaveBeenCalled();
+        // No leak: the file the write just created is removed on the abort path.
+        expect(writtenTo).toBeTruthy();
+        expect(existsSync(writtenTo!)).toBe(false);
     });
 });
 
