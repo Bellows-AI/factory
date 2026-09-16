@@ -320,12 +320,10 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                 ) : null}
             </div>
 
-            <button
-                type="button"
-                onClick={() => void save()}
-                disabled={locked || rawOpen}
-                title={rawOpen ? 'Toggle raw off to apply the text to the draft first' : undefined}
-            >
+            {rawOpen ? (
+                <p className="muted">Raw editor open — the text becomes the draft when you toggle raw off.</p>
+            ) : null}
+            <button type="button" onClick={() => void save()} disabled={locked || rawOpen}>
                 {saving ? 'Saving…' : 'Save'}
             </button>
         </section>
