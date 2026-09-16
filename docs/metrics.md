@@ -66,7 +66,9 @@ from the agent-turn distribution only, while its tokens and job turns still coun
   is counted in `sessionsWithoutHook`; a session whose board task no longer exists (or never
   existed) is counted in `unattributedSessions`. Four different states must stay distinguishable —
   a repo removed from the installation, a broken plugin, a removed task, and genuinely no AI usage
-  must not render identically, which is why the data-quality panel lists each on its own line.
+  must not render identically. The figures live in the payload; the dashboard does not render the
+  breakdown (#109 removed the data-quality panel), but the counters are contract — tests and the
+  telemetry client both speak them.
 - **`TelemetryStats.totals` comes only from in-scope sessions.** `otherRepoSessions` and
   `sessionsWithoutHook` contribute to no total. Pinning that is what stops a future "count
   everything" refactor from rendering figures over an unnamed subset of sessions.
@@ -95,7 +97,12 @@ from the agent-turn distribution only, while its tokens and job turns still coun
   exactly the kind of thing that returns via a "small addition".
 - **Per-task distributions exclude, they never zero.** A task whose sessions measured no tokens is
   excluded from the token distribution (not counted as a 0-token task); a task with any unmeasured
-  in-range run is excluded from the agent-turn distribution only. Percentiles are nearest-rank
+  in-range run is excluded from the agent-turn and wall-clock distributions only — a never-executed
+  run would make either sum a quiet undercount — while its tokens and job turns still count in
+  theirs. A task with no in-range run banks zero of both, which is measured: nothing of it executed
+  in the range. Percentiles are nearest-rank
   (`ceil(p·N)`-th of the ascending sort) because they must recompute by hand in the independent
   suites. Every distribution carries its task count N — a p95 over five tasks renders beside its
-  count or it masquerades as a settled statistic.
+  count or it masquerades as a settled statistic. Wall clock is the board's banked EXECUTION time
+  (`job.wall_clock_ms`, 024) summed over the task's in-range runs — never the time a queued row sat
+  waiting, and null is the contract for a run that never executed.

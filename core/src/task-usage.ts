@@ -44,9 +44,10 @@ function distribution(values: number[]): TaskUsageDistribution {
 }
 
 /**
- * What a task costs, as three distributions over the job threads in scope: tokens per task
+ * What a task costs, as four distributions over the job threads in scope: tokens per task
  * (input + output over the attributed sessions), job turns per task (run rows — the board's
- * own count), and agent turns per task (the runs' close-time counts, summed).
+ * own count), agent turns per task (the runs' close-time counts, summed), and wall clock per
+ * task (the execution time the board banked for those runs).
  *
  * The caller range-filters BOTH inputs first — sessions through the overlap rule, runs
  * through `filterJobRuns` — so this function sees only what the selected range keeps. A task
@@ -127,9 +128,28 @@ export function taskUsageStats(
         agentTurnValues.push(entry?.sum ?? 0);
     }
 
+    // Wall clock: the execution time the board banked, summed over the task's in-range runs.
+    // The same exclude-don't-zero shape as agent turns — one never-executed (null) run would
+    // make any sum a quiet undercount, so the task leaves THIS distribution only. A task with
+    // no in-range run banked nothing in the range, and that zero is a measurement.
+    const wallClock = new Map<string, { sum: number; unmeasured: boolean }>();
+    for (const run of visibleRuns) {
+        const entry = wallClock.get(run.rootJobId) ?? { sum: 0, unmeasured: false };
+        if (run.wallClockMs === null) entry.unmeasured = true;
+        else entry.sum += run.wallClockMs;
+        wallClock.set(run.rootJobId, entry);
+    }
+    const wallClockValues: number[] = [];
+    for (const task of tasks) {
+        const entry = wallClock.get(task);
+        if (entry?.unmeasured) continue;
+        wallClockValues.push(entry?.sum ?? 0);
+    }
+
     return {
         tokensPerTask: distribution(tokenValues),
         jobTurnsPerTask: distribution(jobTurnValues),
         agentTurnsPerTask: distribution(agentTurnValues),
+        wallClockPerTask: distribution(wallClockValues),
     };
 }

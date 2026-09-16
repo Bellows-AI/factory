@@ -200,7 +200,9 @@ export interface Board {
      * scraped them out of the session database — the context the run reached and what it cost,
      * stored beside the attempt's vitals on the board. `agentTurns` rides when the runner
      * counted the run's root-conversation assistant response cycles at close — a number only:
-     * an unmeasured read is omitted, and the board stores null, never zero. The answer carries
+     * an unmeasured read is omitted, and the board stores null, never zero. `summary` rides
+     * when the close-time read lifted the run's last words — what the run did, for the
+     * recently-completed view; omitted stays null on the board. The answer carries
      * `threadDone` — whether
      * EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead') AND the user has
      * closed the thread (a `done_at` on some member), computed by the board in the SAME
@@ -219,6 +221,7 @@ export interface Board {
             contextTokens?: number | null;
             contextCostUsd?: number | null;
             agentTurns?: number | null;
+            summary?: string | null;
         }
     ): Promise<{ state: LeaseState; threadDone: boolean }>;
 }
@@ -370,7 +373,7 @@ export function createBoard({
             return response.status === 409 ? 'lost' : 'held';
         },
 
-        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd, agentTurns }) {
+        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary }) {
             const response = await post(`/api/jobs/${job.id}/complete`, {
                 leaseToken: job.leaseToken,
                 status,
@@ -381,6 +384,7 @@ export function createBoard({
                 // A number only: null and absent both stay off the wire, and the board stores
                 // unmeasured — the never-zero contract is the driver's to keep too.
                 ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
+                ...(summary ? { summary } : {}),
             });
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — the done answer is false, not unknown.

@@ -1,0 +1,13 @@
+-- The run summary: what the run did, in the agent's own last words.
+--
+-- Reported by the executor at close, lifted from the same session records the close-time read
+-- already walks (opencode: the session database the readout queries, the last assistant text
+-- part; claude-code: the transcript, the last assistant entry's text blocks). The board's list
+-- reads select it for the recently-completed panel; nothing derives it from the command, which
+-- records what was ASKED, never what was done.
+--
+-- Nullable, and null is UNMEASURED, never empty: the read failed, the run ended mid-tool-call
+-- with no final text, the mode keeps no record, or the row predates this migration. The driver
+-- truncates to a one-line summary; the completing route re-bounds it. Plain text — the agent's
+-- final message is prose, and no markup is rendered.
+alter table job add column if not exists summary text;

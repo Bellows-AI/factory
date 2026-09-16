@@ -514,6 +514,58 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
         const { answer } = run(dbPath, MINE);
         expect(answer.error).toBeNull();
     });
+
+    it('lifts the run summary: the last assistant text part, collapsed to one line', () => {
+        // The text lives in `part` rows keyed by message_id — one row per block. The LAST
+        // assistant message carrying text wins; a tool-only trailing turn does not erase it.
+        const db = new DatabaseSync(dbPath);
+        db.exec('create table part (id integer primary key, message_id text, session_id text, data text)');
+        const insert = db.prepare('insert into message (session_id, data) values (?, ?)');
+        const m1 = insert.run('ses_mine', JSON.stringify({ role: 'assistant', finish: 'stop' }));
+        const m2 = insert.run('ses_mine', JSON.stringify({ role: 'assistant', finish: 'stop' }));
+        const insertPart = db.prepare('insert into part (message_id, session_id, data) values (?, ?, ?)');
+        insertPart.run(String(m1.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'text', text: 'earlier' }));
+        insertPart.run(String(m2.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'tool', tool: 'bash' }));
+        insertPart.run(
+            String(m2.lastInsertRowid),
+            'ses_mine',
+            JSON.stringify({ type: 'text', text: '  done —  tests\npass.  ' })
+        );
+        db.close();
+
+        const { answer } = run(dbPath, MINE);
+        expect(answer.summary).toBe('done — tests pass.');
+    });
+
+    it('answers a null summary when the schema predates the part table — the summary degrades alone', () => {
+        // An older opencode keeps no `part` rows: the summary read throws inside its own guard
+        // and costs the summary, never the turns or the finish reason beside it.
+        const db = new DatabaseSync(dbPath);
+        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
+        db.close();
+
+        const { answer } = run(dbPath, MINE);
+        expect(answer.turns).toBe(1);
+        expect(answer.summary).toBeNull();
+    });
+
+    it('bounds the summary to this run, like the turn count', () => {
+        // A follow-up's summary is ITS last words, never the resumed conversation's older text.
+        // The older-created message is the transcript's LAST: without the bound it wins on
+        // position, with the bound it is skipped for being before the run started.
+        const db = new DatabaseSync(dbPath);
+        db.exec('create table part (id integer primary key, message_id text, session_id text, data text)');
+        const insert = db.prepare('insert into message (session_id, data) values (?, ?)');
+        const fresh = insert.run('ses_mine', JSON.stringify({ role: 'assistant', time: { created: 9000 } }));
+        const old = insert.run('ses_mine', JSON.stringify({ role: 'assistant', time: { created: 1000 } }));
+        const insertPart = db.prepare('insert into part (message_id, session_id, data) values (?, ?, ?)');
+        insertPart.run(String(fresh.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'text', text: 'new words' }));
+        insertPart.run(String(old.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'text', text: 'old words' }));
+        db.close();
+
+        expect(run(dbPath, MINE, '8000').answer.summary).toBe('new words');
+        expect(run(dbPath, MINE).answer.summary).toBe('old words');
+    });
 });
 
 /**
@@ -718,6 +770,50 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
         expect(answer.turns).toBe(2);
         // Without the bound the whole transcript counts, as before.
         expect(run(dir).answer.turns).toBe(4);
+    });
+
+    it('lifts the run summary: the last assistant entry carrying text blocks', () => {
+        // The transcript's content is a string or a block array; text blocks join and
+        // collapse. A trailing tool-only entry does not erase the last words before it.
+        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(
+            join(project, `${SESSION_ID}.jsonl`),
+            [
+                JSON.stringify({
+                    type: 'assistant',
+                    message: { content: [{ type: 'text', text: 'first\nattempt' }] },
+                }),
+                JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+                JSON.stringify({
+                    type: 'assistant',
+                    message: {
+                        content: [
+                            { type: 'text', text: '  all  green.' },
+                            { type: 'text', text: 'pushed.' },
+                        ],
+                    },
+                }),
+            ].join('\n')
+        );
+
+        const { answer } = run(dir);
+        expect(answer.summary).toBe('all green. pushed.');
+    });
+
+    it('answers a null summary when no assistant entry carries text', () => {
+        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(
+            join(project, `${SESSION_ID}.jsonl`),
+            [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } })].join(
+                '\n'
+            )
+        );
+
+        const { answer } = run(dir);
+        expect(answer.turns).toBe(1);
+        expect(answer.summary).toBeNull();
     });
 
     it('answers null when the transcript is missing — the container died first, the run never spoke', () => {
