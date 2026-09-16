@@ -1,8 +1,9 @@
-// The close-time claude-code turn count: how many assistant response cycles the run's ROOT
-// conversation took, read from the transcript the run wrote onto the workspaces volume while it
-// lived (FACTORY_TRANSCRIPT_DIR is the runner's CLAUDE_CONFIG_DIR, so the transcript is on disk
-// the moment the CLI writes it — nothing dies with the container). One JSON line on stdout; any
-// failure prints `{ "turns": null }` with the reason — unmeasured, never zero.
+// The close-time claude-code read: how many assistant response cycles the run's ROOT
+// conversation took, and what the run's last words were — both read from the transcript the run
+// wrote onto the workspaces volume while it lived (FACTORY_TRANSCRIPT_DIR is the runner's
+// CLAUDE_CONFIG_DIR, so the transcript is on disk the moment the CLI writes it — nothing dies
+// with the container). One JSON line on stdout; any failure prints `{ "turns": null }` with the
+// reason — unmeasured, never zero.
 //
 // Environment (set by the driver; paths, never credentials):
 //   CLAUDE_TRANSCRIPT_DIR — the thread's transcript directory: the path the runner passed as
@@ -13,17 +14,20 @@
 //                           their own session ids (and, in older layouts, marks isSidechain on
 //                           the entries — excluded here too, the same root-only rule either way).
 //   RUN_STARTED_AT        — the run's start as an ISO instant. A follow-up RESUMES this
-//                           transcript, so the count is bounded to entries written at or after
-//                           the run began — its own delta, never the earlier runs' turns again.
-//                           Absent, the whole transcript is counted (the pre-delta shape).
+//                           transcript, so the count and the summary are bounded to entries
+//                           written at or after the run began — its own delta, never the earlier
+//                           runs' turns again. Absent, the whole transcript is counted (the
+//                           pre-delta shape).
 //
 // The parse is pinned to the shapes below: a JSONL file where each line is an event object and
-// an assistant response is a `type: "assistant"` entry. A parse miss is null, not a wrong
-// number — a CLI that changes its transcript shape costs its turn figure, never corrupts it.
+// an assistant response is a `type: "assistant"` entry whose message content carries the text
+// blocks. A parse miss is null, not a wrong number — a CLI that changes its transcript shape
+// costs its turn figure and its summary, never corrupts either.
 const fs = require('node:fs');
 const path = require('node:path');
 
 const RUN_STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
+const SUMMARY_MAX_CHARS = 400;
 
 try {
     const dir = process.env.CLAUDE_TRANSCRIPT_DIR;
@@ -41,6 +45,7 @@ try {
     if (!found) throw new Error(`no transcript for session ${sessionId} under ${projects}`);
 
     let turns = 0;
+    let summary = null;
     for (const line of fs.readFileSync(found, 'utf8').split('\n')) {
         if (!line.trim()) continue;
         const entry = JSON.parse(line);
@@ -56,8 +61,22 @@ try {
             if (at === null || Number.isNaN(at) || at < RUN_STARTED_MS) continue;
         }
         turns += 1;
+        // The run's summary: the LAST assistant entry that carries text blocks — the agent's
+        // final words, collapsed to one line. A run cut off mid-tool-call has none here, and
+        // answers null rather than a fabricated line.
+        const content = entry.message && entry.message.content;
+        const text =
+            typeof content === 'string'
+                ? content
+                : Array.isArray(content)
+                  ? content
+                        .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+                        .map((block) => block.text)
+                        .join(' ')
+                  : '';
+        if (text && text.trim()) summary = text.replace(/\s+/g, ' ').trim().slice(0, SUMMARY_MAX_CHARS);
     }
-    console.log(JSON.stringify({ turns }));
+    console.log(JSON.stringify({ turns, summary }));
 } catch (e) {
-    console.log(JSON.stringify({ turns: null, error: e instanceof Error ? e.message : String(e) }));
+    console.log(JSON.stringify({ turns: null, summary: null, error: e instanceof Error ? e.message : String(e) }));
 }

@@ -29,13 +29,14 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
-    listed: { status?: JobStatus; repo?: string | undefined; limit: number }[];
+    listed: { status?: JobStatus | 'terminal'; repo?: string | undefined; limit: number }[];
     completed: {
         id: string;
         output: string | null;
         contextTokens: number | null;
         contextCostUsd: number | null;
         agentTurns: number | null;
+        summary: string | null;
     }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
@@ -169,7 +170,7 @@ function stubStore(
             stub.progressed.push({ id, output, runtime });
             return options.verdict ?? 'ok';
         },
-        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd, agentTurns }) {
+        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd, agentTurns, summary }) {
             boom();
             stub.completed.push({
                 id,
@@ -177,6 +178,7 @@ function stubStore(
                 contextTokens: contextTokens ?? null,
                 contextCostUsd: contextCostUsd ?? null,
                 agentTurns: agentTurns ?? null,
+                summary: summary ?? null,
             });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
@@ -1237,8 +1239,36 @@ describe('POST /api/jobs/:id/complete', () => {
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
         expect(store.completed).toEqual([
-            { id: ID, output: 'hello', contextTokens: null, contextCostUsd: null, agentTurns: null },
+            { id: ID, output: 'hello', contextTokens: null, contextCostUsd: null, agentTurns: null, summary: null },
         ]);
+    });
+
+    // The close-time summary: what the run did, in the agent's own words — rides the verdict,
+    // truncated at the route, and a non-string is refused before the store can be told.
+    it('records the run summary beside the verdict, bounded', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            summary: 'x'.repeat(600),
+        });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]?.summary).toBe('x'.repeat(512));
+    });
+
+    it('refuses a non-string summary with BAD_SUMMARY', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, summary: 42 });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_SUMMARY');
+    });
+
+    it('stores null for an empty summary — null is unmeasured, never an empty string', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, summary: '   ' });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]?.summary).toBeNull();
     });
 
     // The verdict-moment done-ness of the job's whole thread — every member terminal AND the
@@ -1358,6 +1388,7 @@ describe('GET /api/jobs', () => {
         remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
         exitCode: 0,
         output: 'hello',
+        summary: null,
         repo: 'acme/web',
         executor: 'main',
         followUpTo: null,
@@ -1368,6 +1399,7 @@ describe('GET /api/jobs', () => {
         createdAt: '2026-08-21T12:00:00.000Z',
         startedAt: '2026-08-21T12:00:01.000Z',
         finishedAt: '2026-08-21T12:00:09.000Z',
+        wallClockMs: null,
         taskWallClockMs: null,
     };
 
@@ -1449,6 +1481,14 @@ describe('GET /api/jobs', () => {
         const response = await instance.inject({ method: 'GET', url: '/api/jobs?status=succeeded' });
         expect(response.statusCode).toBe(200);
         expect(response.json().jobs).toHaveLength(1);
+    });
+
+    it("passes the 'terminal' pseudo-status to the store — every settled verdict at once", async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: '/api/jobs?status=terminal&limit=30' });
+        expect(response.statusCode).toBe(200);
+        expect(store.listed).toEqual([{ status: 'terminal', repo: undefined, limit: 30 }]);
     });
 
     it('passes a repository filter to the store', async () => {

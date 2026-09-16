@@ -15,7 +15,7 @@ import {
     opencodeDbPath,
     opencodeReadoutScript,
     OUTPUT_LIMIT,
-    parseClaudeTurns,
+    parseClaudeCloseRead,
     parseOpencodeRunOutcome,
     reportTail,
     runWorkingDir,
@@ -1588,6 +1588,7 @@ export function createKubernetesRunner(
             contextTokens: null,
             costUsd: null,
             agentTurns: null,
+            summary: null,
             error,
         });
         let spec: AuxJobSpec;
@@ -1682,26 +1683,31 @@ export function createKubernetesRunner(
         );
 
     /**
-     * The close-time claude-code turn count: one aux Job over the PVC, its one answer parsed to
-     * a number or null. Every failure on the way — a spec the board's ids do not satisfy, a
-     * create that was refused, a Job that deadlined or failed, an unparseable line — answers
-     * null: unmeasured, never zero, exactly the contract the docker twin's failed exec keeps.
+     * The close-time claude-code read: one aux Job over the PVC, its one answer parsed to the
+     * turn count and the run's last words, or nulls. Every failure on the way — a spec the
+     * board's ids do not satisfy, a create that was refused, a Job that deadlined or failed, an
+     * unparseable line — answers nulls: unmeasured, never zero, exactly the contract the docker
+     * twin's failed exec keeps.
      */
-    const scrapeClaudeTurns = async (job: BoardJob, sessionId: string, startedAt: string): Promise<number | null> => {
+    const scrapeClaudeCloseRead = async (
+        job: BoardJob,
+        sessionId: string,
+        startedAt: string
+    ): Promise<{ turns: number | null; summary: string | null }> => {
         let spec: AuxJobSpec;
         try {
             spec = claudeTurnsJobSpec(config, job, sessionId, startedAt);
         } catch {
-            return null;
+            return { turns: null, summary: null };
         }
         const jobName = spec.metadata.name;
         try {
             const created = await request('POST', jobsPath(config.k8sNamespace), spec);
-            if (created.status >= 300) return null;
+            if (created.status >= 300) return { turns: null, summary: null };
             const verdict = await auxVerdict(jobName);
-            return parseClaudeTurns(verdict.output);
+            return parseClaudeCloseRead(verdict.output);
         } catch {
-            return null;
+            return { turns: null, summary: null };
         } finally {
             void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
                 () => undefined,
@@ -2528,6 +2534,7 @@ export function createKubernetesRunner(
                     contextTokens: null,
                     costUsd: null,
                     agentTurns: null,
+                    summary: null,
                     error: null,
                 };
                 let reason: string | null = null;
@@ -2541,6 +2548,10 @@ export function createKubernetesRunner(
                     if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
                     if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
                     if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+                    // The turn count rides the same line — merged here as the docker twin
+                    // merges it, so an opencode run's agent turns survive either executor.
+                    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
+                    if (scraped.summary) outcome.summary = scraped.summary;
                     // With a session scraped, the line's error is the RUN's last provider error,
                     // not the read's failure — carried as its own field so the verdict can name
                     // the cause of a premature stop, exactly as the docker runner does.
@@ -2551,15 +2562,18 @@ export function createKubernetesRunner(
             }
 
             /*
-             * The claude-code turn count, the twin of docker's: one throwaway Job over the PVC
+             * The claude-code close read, the twin of docker's: one throwaway Job over the PVC
              * reading the transcript the CLI wrote onto the volume, after the runner exited. A
              * failed read — the Job refused, deadlined, or answered nothing parseable — costs
-             * the task its agent-turn figure, never its verdict: null, never zero. Remote
-             * Control is refused at config under this executor, so there is no interactive
-             * conversation to freeze; the guard exists only to say so beside docker's.
+             * the task its agent-turn figure and its summary, never its verdict: null, never
+             * zero. Remote Control is refused at config under this executor, so there is no
+             * interactive conversation to freeze; the guard exists only to say so beside
+             * docker's.
              */
             if (config.cli === 'claude-code' && session) {
-                outcome.agentTurns = await scrapeClaudeTurns(job, session.id, startedAt);
+                const read = await scrapeClaudeCloseRead(job, session.id, startedAt);
+                outcome.agentTurns = read.turns;
+                if (read.summary) outcome.summary = read.summary;
             }
             return outcome;
         },

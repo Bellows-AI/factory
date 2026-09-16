@@ -80,6 +80,11 @@ const CONTEXT_TOKENS_MAX = 100_000_000;
 const CONTEXT_COST_MAX = 1_000_000;
 /** `job.agent_turns` is an int4 column: the route is the boundary that keeps the verdict writable. */
 const AGENT_TURNS_MAX = 2_147_483_647;
+/**
+ * The close-time summary is one line of prose, not a log — the driver truncates to a line and
+ * the route is the boundary past which a stream cannot enter the list payload.
+ */
+const SUMMARY_LIMIT = 512;
 
 /** The workspace's ten-service cap, and the name/state shapes the driver's parser enforces. */
 const SERVICES_MAX = 10;
@@ -750,7 +755,7 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd, agentTurns } = body(
+            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary } = body(
                 request.body
             );
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -798,6 +803,9 @@ export const jobRoutes =
             ) {
                 return bad(reply, 'BAD_AGENT_TURNS', `agentTurns must be an integer 0..${AGENT_TURNS_MAX}`);
             }
+            if (summary !== undefined && summary !== null && typeof summary !== 'string') {
+                return bad(reply, 'BAD_SUMMARY', 'summary must be a string or null');
+            }
 
             const result = await guard(
                 reply,
@@ -810,6 +818,13 @@ export const jobRoutes =
                         contextTokens: (contextTokens as number | undefined) ?? null,
                         contextCostUsd: (contextCostUsd as number | undefined) ?? null,
                         agentTurns: (agentTurns as number | undefined) ?? null,
+                        // Empty is none, the same contract the store and the docs state: null
+                        // is unmeasured, never an empty string. Bounded by codepoint, so the
+                        // cap never splits a surrogate pair.
+                        summary:
+                            typeof summary === 'string' && summary.trim()
+                                ? [...summary].slice(0, SUMMARY_LIMIT).join('')
+                                : null,
                     })
             );
             if (!result.ok) return reply;
@@ -861,8 +876,15 @@ export const jobRoutes =
             const store = await storeOf(request);
             if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const query = request.query as { status?: string; limit?: string; repo?: string };
-            if (query.status !== undefined && !STATUSES.includes(query.status as JobStatus)) {
-                return bad(reply, 'BAD_STATUS', `status must be one of ${STATUSES.join(', ')}`);
+            // 'terminal' is the one pseudo-status: every settled verdict at once, so a
+            // completed-jobs view can bound its request instead of filtering a newest-N window
+            // client-side and losing finished runs behind a busy queue.
+            if (
+                query.status !== undefined &&
+                query.status !== 'terminal' &&
+                !STATUSES.includes(query.status as JobStatus)
+            ) {
+                return bad(reply, 'BAD_STATUS', `status must be one of ${STATUSES.join(', ')} or 'terminal'`);
             }
             const limit = query.limit === undefined ? LIST_LIMIT_DEFAULT : Number(query.limit);
             if (!Number.isInteger(limit) || limit < 1 || limit > LIST_LIMIT_MAX) {
@@ -879,7 +901,7 @@ export const jobRoutes =
             const jobs = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job list failed'),
-                () => store.list({ status: query.status as JobStatus | undefined, repo, limit })
+                () => store.list({ status: query.status as JobStatus | 'terminal' | undefined, repo, limit })
             );
             if (!jobs.ok) return reply;
             return reply.code(200).send({ jobs: jobs.value });

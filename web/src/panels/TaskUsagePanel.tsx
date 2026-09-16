@@ -1,6 +1,6 @@
 import type { TaskUsageDistribution, TaskUsageStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../api/useStats.js';
-import { num, tokens } from '../format.js';
+import { duration, num, tokens } from '../format.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
 
 /**
@@ -53,16 +53,14 @@ export function TaskUsagePanel({ tasks, meta }: { tasks: TaskUsageStats | null; 
                 <>
                     Average, median and 95th percentile per task — a task is one board thread, first run and follow-ups
                     together. Tokens are input + output over the task's sessions; runs count the task's board runs;
-                    agent turns count assistant responses in each run's own conversation.
+                    agent turns count assistant responses in each run's own conversation; wall clock is the execution
+                    time the board banked for those runs.
                 </>
             }
             meta={meta}
         >
             {empty ? (
-                <p className="muted">
-                    No attributed tasks in this range yet. Sessions the board cannot tie to a task never appear here —
-                    they stay in the unattributed count below.
-                </p>
+                <p className="muted">No attributed tasks in this range yet.</p>
             ) : (
                 <div className="cards">
                     <Distribution label="Tokens per task" d={tasks.tokensPerTask} format={(v) => tokens(v)} />
@@ -77,6 +75,12 @@ export function TaskUsagePanel({ tasks, meta }: { tasks: TaskUsageStats | null; 
                         d={tasks.agentTurnsPerTask}
                         format={(v) => num(v, 1)}
                         note="a task with any unmeasured run is left out, never counted as zero"
+                    />
+                    <Distribution
+                        label="Wall clock per task"
+                        d={tasks.wallClockPerTask}
+                        format={(v) => duration(v / 3_600_000)}
+                        note="execution time the board banked — a task with any never-executed run is left out"
                     />
                 </div>
             )}

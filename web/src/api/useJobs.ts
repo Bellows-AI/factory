@@ -82,6 +82,12 @@ export interface Job {
     exitCode: number | null;
     output: string | null;
     /**
+     * What the run did, in the agent's own last words — lifted from the session records at
+     * close and reported with the verdict. Null is unmeasured, never empty; the command above
+     * records what was asked, this records what was done.
+     */
+    summary: string | null;
+    /**
      * The checks this run has run or is running, from the job's `.bellows.yaml`. Absent on list
      * responses (the list select omits it, like `output`) and null on any run whose repository
      * declares none.
@@ -116,6 +122,12 @@ export interface Job {
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
+    /**
+     * The wall clock THIS run's own attempts banked — the executed segments the board
+     * accumulated at its settle points. Null where nothing was ever banked for the row (a run
+     * that never executed); the thread's total is `taskWallClockMs` below.
+     */
+    wallClockMs: number | null;
     /**
      * The wall clock the task's whole thread has banked — every executed segment of every run,
      * accumulated by the board and served on the thread read. Null where nothing has

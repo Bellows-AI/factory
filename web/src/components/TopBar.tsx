@@ -66,11 +66,7 @@ export function TopBar({
                         }}
                     />
                 ) : null}
-                <span className="muted">
-                    {meta
-                        ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}${meta.stale ? ' (stale)' : ''}`
-                        : ''}
-                </span>
+                <span className="muted">{meta ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}` : ''}</span>
                 <button type="button" onClick={onRefresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh'}
                 </button>

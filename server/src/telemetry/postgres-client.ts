@@ -23,6 +23,8 @@ interface RunRow {
     created_by: string | null;
     created_at: Date;
     agent_turns: number | null;
+    /** bigint reads back as a string; converted where the rows map to JobRun. */
+    wall_clock_ms: string | null;
 }
 
 interface FieldRow {
@@ -137,7 +139,7 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                         // same snapshot and the same TTL, which is what lets every range AND scope
                         // be served without a second fetch.
                         tx<RunRow[]>`
-                                select root_job_id, repo, created_by, created_at, agent_turns
+                                select root_job_id, repo, created_by, created_at, agent_turns, wall_clock_ms
                                 from job
                                 where org_id = ${orgId}
                             `,
@@ -178,6 +180,7 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                         createdBy: r.created_by,
                         createdAt: r.created_at.toISOString(),
                         agentTurns: r.agent_turns,
+                        wallClockMs: r.wall_clock_ms == null ? null : Number(r.wall_clock_ms),
                     }));
                     return {
                         input: {
