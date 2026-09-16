@@ -1262,6 +1262,14 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(response.json().code).toBe('BAD_SUMMARY');
     });
 
+    it('stores null for an empty summary — null is unmeasured, never an empty string', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, summary: '   ' });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]?.summary).toBeNull();
+    });
+
     // The verdict-moment done-ness of the job's whole thread — every member terminal AND the
     // user's done — computed in the store's complete transaction and relayed verbatim: the
     // driver's worktree reclaim (issue #47) decides on this instead of reading the thread back.
@@ -1379,6 +1387,7 @@ describe('GET /api/jobs', () => {
         remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
         exitCode: 0,
         output: 'hello',
+        summary: null,
         repo: 'acme/web',
         executor: 'main',
         followUpTo: null,

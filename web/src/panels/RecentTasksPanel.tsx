@@ -18,8 +18,9 @@ export function RecentTasksPanel({ jobs, error }: { jobs: Job[] | null; error: s
         <section className="panel">
             <h2>Recently completed</h2>
             <p className="muted">
-                The board's finished runs, newest first — the agent's own closing words beside the run's cost. A run the
-                board never held (a local session, a backfilled transcript) has no row here.
+                The board's finished runs among its most recent rows, newest first — the agent's own closing words
+                beside the run's cost. A run the board never held (a local session, a backfilled transcript) has no row
+                here.
             </p>
             {error !== null ? (
                 <p className="alert">The board could not be read — {error}.</p>
