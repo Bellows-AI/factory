@@ -53,4 +53,16 @@ describe('UserMenu', () => {
         expect(html).toContain('avatar-fallback');
         expect(html).not.toContain('src=""');
     });
+
+    it('offers sign out when there is a session to end', () => {
+        const html = render(session);
+        expect(html).toContain('Sign out');
+    });
+
+    it('offers no sign out under AUTH_MODE=none — there is no session to end', () => {
+        // The mode ignores every credential, so a button here could never work. Not disabled —
+        // absent, like the settings page's token sections under the same mode.
+        const html = render({ ...session, mode: 'none' });
+        expect(html).not.toContain('Sign out');
+    });
 });
