@@ -25,7 +25,7 @@ import {
 } from './docker.js';
 import { composeRuntimeSample } from './docker.js';
 import type { OpencodeRunOutcome, RunOutcome, RunSession, Runner, RuntimeSample, ServiceStatus } from './docker.js';
-import { CONTAINER_GONE } from './gates.js';
+import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
 import {
     CREDENTIAL_HELPER,

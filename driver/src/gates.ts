@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName, gateExecArgs, reportTail } from './docker.js';
+import { CONTAINER_GONE } from './exec-codes.js';
 
 const run = promisify(execFile);
 
@@ -41,9 +42,10 @@ const defaultExec: ExecDocker = (args, options) =>
  * container is gone or was never there. It is a HARNESS failure, never a gate verdict, and it
  * travels as a rejection carrying this code so the two consumers can tell it from an exit 3.
  * Exported because the kubernetes manager rejects with the same code for the same meaning —
- * "the harness could not run the gate", which the loop reports as the failed gate it is.
+ * "the harness could not run the gate", which the loop reports as the failed gate it is. The
+ * constant lives in exec-codes.ts (a leaf) — see its comment for why gates.ts must not be the
+ * module others import it from.
  */
-export const CONTAINER_GONE = 125;
 
 interface Entry {
     name: string;

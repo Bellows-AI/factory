@@ -125,7 +125,7 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Env | `env-tab`, `env-tabs`, `env-paste`, `env-paste-actions`, `env-paste-errors`, `env-raw`, `env-errors` | The Variables/Secrets tab strip, the `.env` paste box, and the raw-editor toggle state (`env-raw`) with its parse-error line (`env-errors`) |
+| Env | `env-tab`, `env-tabs`, `env-raw`, `env-errors` | The Variables/Secrets tab strip and the `.env` raw editor |
 
 ### One-offs
 
@@ -160,8 +160,7 @@ Components:
 | `TopBar.tsx` | topbar |
 | `UserMenu.tsx` | user-menu, avatar |
 
-Panels (`env-paste.ts` and `env-raw.ts` are the paste-box parsers the env panel imports — helpers,
-not panels):
+Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a helper, not a panel):
 
 | File | Primitives |
 | --- | --- |
@@ -180,7 +179,6 @@ not panels):
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
 | `WorkspaceReposPanel.tsx` | panel, table |
-| `env-paste.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |
 
 Pages:
