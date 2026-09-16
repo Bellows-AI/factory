@@ -23,6 +23,14 @@ export default defineConfig({
                 maxWorkers: 2,
             },
         },
+        // The suite is spawn-heavy — real git fixtures, node children, loopback listeners, a
+        // tree-wide biome pass — and vitest's 5s default assumes a quiet box. Two runs sharing
+        // one machine (an agent's suite beside the gate's) starve the workers enough to tip
+        // tests that pass in isolation, and the failures rotated across files run to run.
+        // 30s bounds a genuinely hung test while absorbing contention; hooks get the same
+        // headroom, since the git fixture builders are the heaviest spawns of all.
+        testTimeout: 30_000,
+        hookTimeout: 30_000,
         // Suites inject their own state, so sharing one worker costs nothing.
         isolate: false,
         // A core watch build rewrites core/dist while vitest watches; re-running
