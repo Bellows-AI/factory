@@ -1198,14 +1198,24 @@ button.primary {
     z-index: 10;
 }
 
-.user-menu-panel a {
+.user-menu-panel a,
+.user-menu-panel button {
     display: block;
+    width: 100%;
     padding: 6px 10px;
     border-radius: 4px;
     text-decoration: none;
+    /* Button resets, so the sign-out item reads exactly like the Settings link beside it. */
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
 }
 
-.user-menu-panel a:hover {
+.user-menu-panel a:hover,
+.user-menu-panel button:hover {
     background: #21262d;
 }
 
