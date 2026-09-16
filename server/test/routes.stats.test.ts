@@ -347,6 +347,21 @@ describe('GET /api/stats organization', () => {
         expect(res.json().code).toBe('UNKNOWN_ORG');
     });
 
+    it('answers 503 when the org runtime failed to build — never a 400 for a proven org', async () => {
+        // resolveOrg just proved the org exists (membership), so null from the registry is a
+        // failed build: a 503 like every other unavailable backing service, not a client error.
+        const auth = memoryAuthStore();
+        const caller = auth.seedMember('test-org', 'octocat');
+        const cookie = await signedIn(auth, caller);
+        const h = await harness({ auth, config: { auth: githubAuth() }, orgsFor: ['never-this-org'] });
+        app = h.app;
+
+        const res = await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
+
+        expect(res.statusCode).toBe(503);
+        expect(res.json().code).toBe('ORG_UNAVAILABLE');
+    });
+
     it('answers the no-caller case in the none-mode shape it serves', async () => {
         // No auth hook at all — the route-test mode. The bound org is the local one, and any
         // requested org other than it is unknown by definition: there is no store to know others.

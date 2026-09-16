@@ -167,13 +167,15 @@ export const statsRoutes =
             }
 
             // The runtime for the resolved org: its repo source, telemetry and stats cache are
-            // all the org's own. Unknown at this point means the row vanished between the check
-            // above and here — the same 400.
+            // all the org's own. Null here is not "unknown" — resolveOrg just proved the row —
+            // but the runtime failed to build, which is a 503 like every other unavailable
+            // backing service, never a client error.
             const rt = await orgs.for(org.serviceOrg.id);
             if (!rt) {
-                return reply
-                    .code(400)
-                    .send({ error: `Unknown organization '${org.serviceOrg.id}'`, code: 'UNKNOWN_ORG' });
+                return reply.code(503).send({
+                    error: `The runtime for '${org.serviceOrg.id}' could not be built; retry`,
+                    code: 'ORG_UNAVAILABLE',
+                });
             }
             const service = rt.service;
 
