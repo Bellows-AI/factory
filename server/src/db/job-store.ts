@@ -113,6 +113,13 @@ export interface Job {
     exitCode: number | null;
     output: string | null;
     /**
+     * What the run did, in the agent's own last words — lifted from the session records the
+     * executor's close-time read already walks, and reported with the verdict. Null is
+     * UNMEASURED (no read, a run cut off before any final text, a row predating the column) —
+     * the command above records what was ASKED; this records what was done.
+     */
+    summary: string | null;
+    /**
      * The verification gates this run has run or is running — the checks the job's checkout
      * declares in `.bellows.yaml` and the driver executes in the declared environment image.
      * Current/last state only, replaced on every worker report: the UI deliberately shows no
@@ -173,6 +180,14 @@ export interface Job {
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
+    /**
+     * The wall clock THIS row's own attempts banked (024) — the executed segments accumulated
+     * at the settle points, never the time a queued row sat waiting. The thread's total is
+     * `taskWallClockMs` below; this is the run's own figure, served on every read so the
+     * recently-completed view can show what one run cost. Null where nothing was ever banked
+     * for the row — never zero, which would claim a measurement that was never made.
+     */
+    wallClockMs: number | null;
     /**
      * The wall clock the task's WHOLE thread has banked — every executed segment of every run,
      * accumulated by the board at the settle points (claim, the dead retirement, the verdict,
@@ -532,6 +547,12 @@ export interface JobStore {
              * reported as 0. The task statistics treat an unmeasured run as excluded, not empty.
              */
             agentTurns?: number | null;
+            /**
+             * What the run did, in the agent's own last words — lifted by the same close-time
+             * read that counts the turns. Null is UNMEASURED, never empty; a string is the
+             * agent's final text, already truncated by the driver and re-bounded by the route.
+             */
+            summary?: string | null;
         }
     ): Promise<{ result: 'ok'; threadDone: boolean } | { result: 'lost' | 'missing' }>;
     /**
@@ -577,6 +598,8 @@ interface JobRow {
     remote_session_id: string | null;
     exit_code: number | null;
     output?: string | null;
+    /** Absent from reads before 028 filled it; null is unmeasured, never empty. */
+    summary?: string | null;
     /** Absent from the list() select — a list view shows no checks, and bounded is not free. */
     gates?: GateReport[] | null;
     /**
@@ -596,6 +619,8 @@ interface JobRow {
     created_at: Date;
     started_at: Date | null;
     finished_at: Date | null;
+    /** Only thread() sums it; bigint reads back as a string, converted in toJob. */
+    wall_clock_ms?: string | null;
     /** Only thread() selects it; bigint (and the sum over it) read back as a string. */
     task_wall_clock_ms?: string | null;
 }
@@ -767,6 +792,7 @@ export function createJobStore({
         remoteSessionId: row.remote_session_id,
         exitCode: row.exit_code,
         output: row.output ?? null,
+        summary: row.summary ?? null,
         gates: row.gates ?? null,
         runtime: row.runtime ?? null,
         repo: row.repo,
@@ -781,6 +807,7 @@ export function createJobStore({
         createdAt: row.created_at.toISOString(),
         startedAt: iso(row.started_at),
         finishedAt: iso(row.finished_at),
+        wallClockMs: row.wall_clock_ms == null ? null : Number(row.wall_clock_ms),
         taskWallClockMs: row.task_wall_clock_ms == null ? null : Number(row.task_wall_clock_ms),
     });
 
@@ -1498,7 +1525,11 @@ export function createJobStore({
             return present[0] ? 'lost' : 'missing';
         },
 
-        async complete(id, leaseToken, { status, exitCode, output, contextTokens, contextCostUsd, agentTurns }) {
+        async complete(
+            id,
+            leaseToken,
+            { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary }
+        ) {
             await gate();
             // The context stats ride the verdict and merge into the runtime vitals — the row keeps
             // its last CPU sample AND gains the context the run reached. The stats are stored
@@ -1535,6 +1566,9 @@ export function createJobStore({
                         -- to null — the report is the attempt's whole verdict, and a retried
                         -- report that lost its read must not inherit the killed attempt's count.
                         agent_turns = ${typeof agentTurns === 'number' ? agentTurns : null},
+                        -- The close-time summary, same overwrite rule: the verdict replaces
+                        -- whatever the attempt left, it never merges with one.
+                        summary = ${typeof summary === 'string' ? summary : null},
                         runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
                     where org_id = ${orgId} and id = ${id}
                       and status = 'running' and lease_token = ${leaseToken}
@@ -1579,7 +1613,8 @@ export function createJobStore({
                        -- The task's overall wall clock, summed over the thread the WHERE already
                        -- scoped: every member carries the total, so the view reads it off any of
                        -- them. A sum over all-null banks is null — nothing measurable, never zero.
-                       sum(wall_clock_ms) over () as task_wall_clock_ms
+                       sum(wall_clock_ms) over () as task_wall_clock_ms,
+                       wall_clock_ms, summary
                        ${authorColumns}
                 from job ${authorJoin}
                 where org_id = ${orgId}
@@ -1595,7 +1630,8 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+                       summary, wall_clock_ms
                        ${authorColumns}
                 from job ${authorJoin}
                 where org_id = ${orgId} and job.id = ${id}
@@ -1609,7 +1645,11 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at
+                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+                       -- The recently-completed view is the list's new surface: the run's own
+                       -- banked clock and the close-time summary ride beside the vitals, both
+                       -- bounded where output is not (#109).
+                       summary, wall_clock_ms
                        ${authorColumns}
                 from job ${authorJoin}
                 where org_id = ${orgId} ${status ? sql`and status = ${status}` : sql``}

@@ -79,6 +79,11 @@ const CONTEXT_TOKENS_MAX = 100_000_000;
 const CONTEXT_COST_MAX = 1_000_000;
 /** `job.agent_turns` is an int4 column: the route is the boundary that keeps the verdict writable. */
 const AGENT_TURNS_MAX = 2_147_483_647;
+/**
+ * The close-time summary is one line of prose, not a log — the driver truncates to a line and
+ * the route is the boundary past which a stream cannot enter the list payload.
+ */
+const SUMMARY_LIMIT = 512;
 
 /** The workspace's ten-service cap, and the name/state shapes the driver's parser enforces. */
 const SERVICES_MAX = 10;
@@ -731,7 +736,7 @@ export const jobRoutes =
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
-            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd, agentTurns } = body(
+            const { leaseToken, status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary } = body(
                 request.body
             );
             if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -779,6 +784,9 @@ export const jobRoutes =
             ) {
                 return bad(reply, 'BAD_AGENT_TURNS', `agentTurns must be an integer 0..${AGENT_TURNS_MAX}`);
             }
+            if (summary !== undefined && summary !== null && typeof summary !== 'string') {
+                return bad(reply, 'BAD_SUMMARY', 'summary must be a string or null');
+            }
 
             const result = await guard(
                 reply,
@@ -791,6 +799,7 @@ export const jobRoutes =
                         contextTokens: (contextTokens as number | undefined) ?? null,
                         contextCostUsd: (contextCostUsd as number | undefined) ?? null,
                         agentTurns: (agentTurns as number | undefined) ?? null,
+                        summary: typeof summary === 'string' ? summary.slice(0, SUMMARY_LIMIT) : null,
                     })
             );
             if (!result.ok) return reply;

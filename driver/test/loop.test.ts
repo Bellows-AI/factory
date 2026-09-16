@@ -420,6 +420,20 @@ describe('the poll loop', () => {
         expect(board.board.completed[1]).not.toHaveProperty('agentTurns');
     });
 
+    it('reports the run summary with the verdict, and nothing when the read lifted none', async () => {
+        const board = stubBoard([job(1), job(2)]);
+        let ran = 0;
+        const runner = stubRunner(async () => (ran++ === 0 ? ok({ summary: 'Fixed the failing gates' }) : ok()));
+
+        await drive({ ...board, runner });
+
+        // A summary rides the report: what the run did, in the agent's own words.
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', summary: 'Fixed the failing gates' });
+
+        // No summary read — the field stays off the wire, and the board stores null.
+        expect(board.board.completed[1]).not.toHaveProperty('summary');
+    });
+
     // An opencode run always leaves a session, so an empty scrape is a failed readout — said out
     // loud, because a silently-lost session presents later as "this run cannot take a follow-up"
     // with nothing anywhere naming why.

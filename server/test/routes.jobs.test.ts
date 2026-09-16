@@ -170,7 +170,7 @@ function stubStore(
             stub.progressed.push({ id, output, runtime });
             return options.verdict ?? 'ok';
         },
-        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd, agentTurns }) {
+        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd, agentTurns, summary }) {
             boom();
             stub.completed.push({
                 id,
@@ -178,6 +178,7 @@ function stubStore(
                 contextTokens: contextTokens ?? null,
                 contextCostUsd: contextCostUsd ?? null,
                 agentTurns: agentTurns ?? null,
+                summary: summary ?? null,
             });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
@@ -1237,8 +1238,28 @@ describe('POST /api/jobs/:id/complete', () => {
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
         expect(store.completed).toEqual([
-            { id: ID, output: 'hello', contextTokens: null, contextCostUsd: null, agentTurns: null },
+            { id: ID, output: 'hello', contextTokens: null, contextCostUsd: null, agentTurns: null, summary: null },
         ]);
+    });
+
+    // The close-time summary: what the run did, in the agent's own words — rides the verdict,
+    // truncated at the route, and a non-string is refused before the store can be told.
+    it('records the run summary beside the verdict, bounded', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            summary: 'x'.repeat(600),
+        });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]?.summary).toBe('x'.repeat(512));
+    });
+
+    it('refuses a non-string summary with BAD_SUMMARY', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, summary: 42 });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_SUMMARY');
     });
 
     // The verdict-moment done-ness of the job's whole thread — every member terminal AND the

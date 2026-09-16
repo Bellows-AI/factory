@@ -212,6 +212,43 @@ describe.skipIf(!enabled)('job store', () => {
         expect(rows2[0]?.agent_turns).toBeNull();
     });
 
+    it('stores the close-time summary, and unmeasured when the report carries none', async () => {
+        const first = await queue('echo hi');
+        const one = await store.claim('w1', 300);
+        await store.complete(first.id, one!.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'done',
+            summary: 'Fixed the failing gates and pushed',
+        });
+        // The summary rides every read, list included — it is the recently-completed view's text.
+        expect(await store.get(first.id)).toMatchObject({ summary: 'Fixed the failing gates and pushed' });
+        const listed = await store.list({ limit: 10 });
+        expect(listed.find((row) => row.id === first.id)).toMatchObject({
+            summary: 'Fixed the failing gates and pushed',
+        });
+
+        // A report without a summary overwrites to null, exactly like the turn count.
+        const second = await queue('echo hi');
+        const two = await store.claim('w2', 300);
+        await store.complete(second.id, two!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        expect(await store.get(second.id)).toMatchObject({ summary: null });
+    });
+
+    it('carries the run banked wall clock on list rows, and the thread sum only on the thread read', async () => {
+        const first = await queue('echo hi');
+        const one = await store.claim('w1', 300);
+        await store.complete(first.id, one!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        // The verdict banks the attempt's segment, so the row's own clock is no longer null.
+        const listed = await store.list({ limit: 10 });
+        const row = listed.find((entry) => entry.id === first.id);
+        expect(row?.wallClockMs).not.toBeNull();
+        // The thread total rides the thread read alone.
+        expect(row?.taskWallClockMs ?? null).toBeNull();
+        const thread = await store.thread(first.id);
+        expect(thread?.[0]?.taskWallClockMs).not.toBeNull();
+    });
+
     it('streams a rolling output tail while the run is going', async () => {
         const { id } = await queue('echo hi');
         const claim = await store.claim('w1', 300);
