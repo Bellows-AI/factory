@@ -181,9 +181,14 @@ each is answered in place:
 
 `/env` on the SPA: three editors (Core, My workspace, Per repository) fed by one `GET /api/env` on
 mount and after each save — **no polling**, because the list only changes when somebody edits it,
-and a poll would race the editors' draft state. Whole-list PUTs, the repos/executors idiom. A
-secret row renders its input blank with placeholder "set — leave blank to keep"; a member sees the
-org and repo editors read-only with a sentence saying why (the `root: null` posture).
+and a poll would race the editors' draft state. Whole-list PUTs, the repos/executors idiom. The
+Variables tab edits through a `raw` toggle: on, the table is replaced by a textarea holding the
+scope's non-secret variables one `NAME=value` per line, and toggling off parses it with the same
+strict rules the server enforces — valid text replaces the draft's variable rows (a deleted line
+deletes the variable), invalid text shows the line errors and stays in the editor. Save is the only
+write path. Secrets never round-trip through text: a secret row renders its input blank with
+placeholder "set — leave blank to keep"; a member sees the org and repo editors read-only with a
+sentence saying why (the `root: null` posture).
 
 ## Tests
 

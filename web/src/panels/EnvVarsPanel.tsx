@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { parseEnvPaste } from './env-paste.js';
+import { parseEnvRaw, serializeEnv } from './env-raw.js';
 
 /**
  * One editable row. `value: null` is what the server sends for a secret — the write-only echo —
@@ -25,11 +25,15 @@ export interface EnvVarsPanelProps {
 /**
  * The editor for one environment scope: org ("core"), the member's workspace, or one repository.
  *
- * Two tabs split the scope's rows by `isSecret`. Variables holds the bulk path — paste a whole
- * `.env` and it is parsed client-side (env-paste.ts, strictly, all lines or nothing) into the
- * draft table. Secrets keeps the old masked flow verbatim: no paste, blank means keep what is
- * stored, and the flag of a stored secret stays locked because its value was never sent here.
- * Draft state spans tabs; Save submits one merged list exactly as before.
+ * Two tabs split the scope's rows by `isSecret`. Variables edits through a `raw` toggle: on, the
+ * table is replaced by a textarea holding the scope's non-secret variables one `NAME=value` per
+ * line (env-raw.ts), and toggling off parses it with the same strict rules the server enforces —
+ * valid text replaces the draft's variable rows (a deleted line deletes the variable), invalid
+ * text shows the line errors and stays in the editor. Secrets keeps the old masked flow verbatim:
+ * no raw editor, blank means keep what is stored, and the flag of a stored secret stays locked
+ * because its value was never sent here. Draft state spans tabs; Save submits one merged list
+ * exactly as before — and is disabled while raw mode holds text that has not been applied to the
+ * draft, since saving then would PUT the stale rows under a false "Saved.".
  *
  * The whole list is the unit of save — the PUT replaces the scope's rows, so a retried request
  * changes nothing. A row whose name is cleared is dropped from the payload entirely, which is how
@@ -48,8 +52,8 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
     const [saved, setSaved] = useState(false);
     const [saving, setSaving] = useState(false);
     const [tab, setTab] = useState<'variables' | 'secrets'>('variables');
-    const [pasteOpen, setPasteOpen] = useState(false);
-    const [pasteText, setPasteText] = useState('');
+    const [rawOpen, setRawOpen] = useState(false);
+    const [rawText, setRawText] = useState('');
 
     const update = (index: number, patch: Partial<EnvVarDraft>) => {
         setSaved(false);
@@ -66,23 +70,32 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
         setRows((current) => current.filter((_, i) => i !== index));
     };
 
-    const applyPaste = () => {
-        const result = parseEnvPaste(pasteText, rows);
+    /** Raw on: seed the editor from the draft. Raw off: parse, and replace the draft or report. */
+    const toggleRaw = () => {
+        if (!rawOpen) {
+            // Entering the editor is a context switch: seed once from the current draft and clear
+            // a stale error, exactly as the old cancel did. Secrets are never serialized — their
+            // values are write-only and cannot round-trip through text.
+            setError(null);
+            setRawText(serializeEnv(rows));
+            setRawOpen(true);
+            return;
+        }
+        const result = parseEnvRaw(
+            rawText,
+            rows.filter((row) => row.isSecret).map((row) => row.name)
+        );
         if (!result.ok) {
+            // Invalid text is never silently discarded: the errors render and the panel stays in
+            // raw mode with the entered text intact.
             setError(result.errors.join('\n'));
             return;
         }
         setSaved(false);
         setError(null);
-        setRows(result.vars);
-        setPasteOpen(false);
-        setPasteText('');
-    };
-
-    const cancelPaste = () => {
-        setPasteOpen(false);
-        setPasteText('');
-        setError(null);
+        setRows([...result.vars, ...rows.filter((row) => row.isSecret)]);
+        setRawOpen(false);
+        setRawText('');
     };
 
     const save = async () => {
@@ -120,14 +133,19 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                 <div className="panel-actions">
                     {tab === 'variables' ? (
                         <>
-                            {!pasteOpen ? (
-                                <button type="button" onClick={() => setPasteOpen(true)} disabled={locked}>
-                                    Paste .env
+                            <button type="button" aria-pressed={rawOpen} onClick={() => toggleRaw()} disabled={locked}>
+                                raw
+                            </button>
+                            {!rawOpen ? (
+                                <button
+                                    type="button"
+                                    className="primary"
+                                    onClick={() => addRow(false)}
+                                    disabled={locked}
+                                >
+                                    Add variable
                                 </button>
                             ) : null}
-                            <button type="button" className="primary" onClick={() => addRow(false)} disabled={locked}>
-                                Add variable
-                            </button>
                         </>
                     ) : (
                         <button type="button" className="primary" onClick={() => addRow(true)} disabled={locked}>
@@ -137,7 +155,7 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                 </div>
             </div>
             {hint ? <p className="muted">{hint}</p> : null}
-            {error ? <p className="status env-paste-errors">{error}</p> : null}
+            {error ? <p className="status env-errors">{error}</p> : null}
             {saved ? <p className="muted">Saved.</p> : null}
 
             <div className="env-tabs">
@@ -160,74 +178,72 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
             </div>
 
             <div hidden={tab !== 'variables'}>
-                {pasteOpen ? (
-                    <div className="env-paste">
+                {rawOpen ? (
+                    <div className="env-raw">
                         <textarea
-                            aria-label="Paste .env content"
-                            placeholder={'KEY=value\n# one pair per line; secrets go on the Secrets tab'}
-                            value={pasteText}
+                            aria-label="Raw .env editor"
+                            placeholder={'KEY=value\n# one pair per line; a deleted line deletes the variable'}
+                            value={rawText}
                             disabled={locked}
-                            onChange={(e) => setPasteText(e.target.value)}
+                            onChange={(e) => {
+                                setSaved(false);
+                                setRawText(e.target.value);
+                            }}
                         />
-                        <div className="env-paste-actions">
-                            <button type="button" className="primary" onClick={applyPaste} disabled={locked}>
-                                Apply
-                            </button>
-                            <button type="button" onClick={cancelPaste}>
-                                Cancel
-                            </button>
-                        </div>
                     </div>
-                ) : null}
-                {variableRows.length === 0 ? <p className="muted">No variables configured.</p> : null}
-                {variableRows.length > 0 ? (
-                    <table className="env-vars">
-                        <thead>
-                            <tr>
-                                <th scope="col">Name</th>
-                                <th scope="col">Value</th>
-                                <th scope="col">
-                                    <span className="visually-hidden">Remove</span>
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {rows.map((row, index) =>
-                                row.isSecret ? null : (
-                                    <tr key={index}>
-                                        <td>
-                                            <input
-                                                aria-label="Variable name"
-                                                value={row.name}
-                                                disabled={locked}
-                                                onChange={(e) => update(index, { name: e.target.value })}
-                                            />
-                                        </td>
-                                        <td>
-                                            <input
-                                                aria-label="Value"
-                                                type="text"
-                                                value={row.value ?? ''}
-                                                disabled={locked}
-                                                onChange={(e) => update(index, { value: e.target.value })}
-                                            />
-                                        </td>
-                                        <td>
-                                            <button
-                                                type="button"
-                                                onClick={() => removeRow(index)}
-                                                disabled={locked}
-                                                aria-label={`Remove ${row.name || 'variable'}`}
-                                            >
-                                                ✕
-                                            </button>
-                                        </td>
+                ) : (
+                    <>
+                        {variableRows.length === 0 ? <p className="muted">No variables configured.</p> : null}
+                        {variableRows.length > 0 ? (
+                            <table className="env-vars">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Name</th>
+                                        <th scope="col">Value</th>
+                                        <th scope="col">
+                                            <span className="visually-hidden">Remove</span>
+                                        </th>
                                     </tr>
-                                )
-                            )}
-                        </tbody>
-                    </table>
-                ) : null}
+                                </thead>
+                                <tbody>
+                                    {rows.map((row, index) =>
+                                        row.isSecret ? null : (
+                                            <tr key={index}>
+                                                <td>
+                                                    <input
+                                                        aria-label="Variable name"
+                                                        value={row.name}
+                                                        disabled={locked}
+                                                        onChange={(e) => update(index, { name: e.target.value })}
+                                                    />
+                                                </td>
+                                                <td>
+                                                    <input
+                                                        aria-label="Value"
+                                                        type="text"
+                                                        value={row.value ?? ''}
+                                                        disabled={locked}
+                                                        onChange={(e) => update(index, { value: e.target.value })}
+                                                    />
+                                                </td>
+                                                <td>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeRow(index)}
+                                                        disabled={locked}
+                                                        aria-label={`Remove ${row.name || 'variable'}`}
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        )
+                                    )}
+                                </tbody>
+                            </table>
+                        ) : null}
+                    </>
+                )}
             </div>
 
             <div hidden={tab !== 'secrets'}>
@@ -305,7 +321,10 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                 ) : null}
             </div>
 
-            <button type="button" onClick={() => void save()} disabled={locked}>
+            {rawOpen ? (
+                <p className="muted">Raw editor open — the text becomes the draft when you toggle raw off.</p>
+            ) : null}
+            <button type="button" onClick={() => void save()} disabled={locked || rawOpen}>
                 {saving ? 'Saving…' : 'Save'}
             </button>
         </section>

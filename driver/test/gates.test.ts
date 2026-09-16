@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { createGateManager, createGateServer } from '../src/gates.js';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { createGateManager } from '../src/gates.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
 
@@ -30,6 +30,16 @@ vi.mock('node:http', async (importOriginal) => {
         return created;
     }) as typeof actual.createServer;
     return { ...actual, createServer: wrapped };
+});
+
+let createGateServer: typeof import('../src/gates.js')['createGateServer'];
+
+beforeAll(async () => {
+    // isolate:false shares the module cache across files in a worker: when another file (loop,
+    // k8s) evaluated gates.ts first, its node:http import is bound to the real module and the
+    // wrapper above never sees a server. Reset + re-import binds the source to THIS file's mock.
+    vi.resetModules();
+    ({ createGateServer } = await import('../src/gates.js'));
 });
 
 const KEY = `bellows/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555`;
