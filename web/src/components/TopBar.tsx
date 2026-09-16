@@ -53,9 +53,7 @@ export function TopBar({
                  * make its name a summary of the list.
                  */}
                 {meta ? <OrgSelector organization={meta.organization} /> : null}
-                <span className="muted">
-                    {meta ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}` : ''}
-                </span>
+                <span className="muted">{meta ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}` : ''}</span>
                 <button type="button" onClick={onRefresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh'}
                 </button>

@@ -502,6 +502,7 @@ describe('GET /api/stats task statistics', () => {
                     createdBy: 'u-alice',
                     createdAt: '2026-08-19T00:00:00Z',
                     agentTurns: 9,
+                    wallClockMs: 600_000,
                 },
                 {
                     rootJobId: 't1',
@@ -509,6 +510,7 @@ describe('GET /api/stats task statistics', () => {
                     createdBy: 'u-alice',
                     createdAt: '2026-08-20T05:00:00Z',
                     agentTurns: 4,
+                    wallClockMs: 300_000,
                 },
                 // t2's only run is unmeasured: excluded from the turn distribution only.
                 {
@@ -517,6 +519,7 @@ describe('GET /api/stats task statistics', () => {
                     createdBy: 'u-bob',
                     createdAt: '2026-08-20T06:00:00Z',
                     agentTurns: null,
+                    wallClockMs: null,
                 },
                 // An other-repo task: out of the repo scope the totals apply, so out of here too.
                 {
@@ -525,6 +528,7 @@ describe('GET /api/stats task statistics', () => {
                     createdBy: 'u-bob',
                     createdAt: '2026-08-20T07:00:00Z',
                     agentTurns: 50,
+                    wallClockMs: 60_000,
                 },
             ],
         });
@@ -547,6 +551,8 @@ describe('GET /api/stats task statistics', () => {
         // Agent turns: t1 banks 9 + 4 = 13; t2 for its unmeasured run and t5 for its repo are
         // both out.
         expect(body.tasks.agentTurnsPerTask).toEqual({ avg: 13, p50: 13, p95: 13, tasks: 1 });
+        // Wall clock: t1 banks 600k + 300k ms; t2's never-executed run leaves it out here too.
+        expect(body.tasks.wallClockPerTask).toEqual({ avg: 900_000, p50: 900_000, p95: 900_000, tasks: 1 });
     });
 
     it('answers null figures, not zeros, for a range with nothing in it', async () => {
@@ -561,5 +567,6 @@ describe('GET /api/stats task statistics', () => {
         expect(body.tasks.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
         expect(body.tasks.jobTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
         expect(body.tasks.agentTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(body.tasks.wallClockPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
     });
 });

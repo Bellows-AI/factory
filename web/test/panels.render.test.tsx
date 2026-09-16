@@ -142,19 +142,22 @@ describe('per-task usage panel', () => {
         tokensPerTask: dist(51_200, 43_000, 96_000, 7),
         jobTurnsPerTask: dist(1.9, 1, 4, 7),
         agentTurnsPerTask: dist(18.3, 12, 44, 7),
+        wallClockPerTask: dist(4_212_000, 3_600_000, 10_800_000, 7),
     };
     const emptyStats: TaskUsageStats = {
         tokensPerTask: dist(0, 0, 0, 0),
         jobTurnsPerTask: dist(0, 0, 0, 0),
         agentTurnsPerTask: dist(0, 0, 0, 0),
+        wallClockPerTask: dist(0, 0, 0, 0),
     };
 
-    it('renders the three distributions as distinct, labeled figures with their counts', () => {
+    it('renders the four distributions as distinct, labeled figures with their counts', () => {
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
-        // Three kinds, each named — the terminology rule: never a bare "turns".
+        // Four kinds, each named — the terminology rule: never a bare "turns".
         expect(html).toContain('Tokens per task');
         expect(html).toContain('Runs per task');
         expect(html).toContain('Agent turns per task');
+        expect(html).toContain('Wall clock per task');
         expect(html).not.toMatch(/>\s*turns\s*</);
         // Every distribution renders beside its N.
         expect(html).toContain('7 tasks measured');
@@ -178,6 +181,13 @@ describe('per-task usage panel', () => {
         // excluded. The panel says so instead of rendering a quietly small number.
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
         expect(html).toContain('a task with any unmeasured run is left out, never counted as zero');
+    });
+
+    it('formats the wall clock distribution as a duration, not a raw millisecond count', () => {
+        // avg 4_212_000ms renders as "1.2h" — a millisecond figure beside tokens would be noise.
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        expect(html).toContain('1.2h');
+        expect(html).not.toContain('4212000');
     });
 });
 

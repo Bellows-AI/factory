@@ -25,9 +25,7 @@ describe('BarChart bar width', () => {
     });
 
     it('keeps a single bar a bar, never a filled panel', () => {
-        const svg = renderToStaticMarkup(
-            <BarChart labels={['07']} series={[{ values: [1] }]} width={WIDTH} />
-        );
+        const svg = renderToStaticMarkup(<BarChart labels={['07']} series={[{ values: [1] }]} width={WIDTH} />);
         const [width] = rectWidths(svg);
         expect(width).toBeLessThanOrEqual(innerWidth / 8);
         expect(width).toBeGreaterThan(56);
