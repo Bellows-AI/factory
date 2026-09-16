@@ -105,7 +105,7 @@ const threadCost = (jobs: Job[]): ReactNode => {
  * they describe. Older runs are history, and their verdicts stay inline on their own messages.
  *
  * Everything here is either what the board reports or a blank. A value the board does not carry
- * renders nothing rather than a dash (issue #100) — a dash reads as a measurement, and nothing
+ * renders nothing rather than a dash (issue 100) — a dash reads as a measurement, and nothing
  * was measured. The two honest gaps are deliberate: the PR is read off the publish line the
  * driver appends to the output (the only place the board carries one today), and no source at
  * all records a PR's state, so that row keeps its dash rather than inventing one. A structured
