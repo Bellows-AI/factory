@@ -66,6 +66,11 @@ describe('telemetry panels render', () => {
         expect(html).toContain('bob');
         // The avatar renders only when the account carries one; bob's has none.
         expect(html).toContain('https://example.com/alice.png');
+        // The per-user split: the four token figures as four columns, never summed into one.
+        expect(html).toContain('<th>Input</th>');
+        expect(html).toContain('<th>Output</th>');
+        expect(html).toContain('<th>Cache read</th>');
+        expect(html).toContain('<th>Cache writes</th>');
         // Off-board usage is not surfaced at all (#109): the payload keeps the count, the page
         // does not speak it.
         expect(html).not.toContain('no matching board task');
