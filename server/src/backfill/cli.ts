@@ -11,8 +11,7 @@ import { backfillTranscripts } from './transcripts.js';
  * `source = 'transcript'` and the dedup index makes a second pass a no-op.
  *
  * `--org` names the organization the sessions belong to. It defaults to the local org
- * (AUTH_MODE=none); a github-mode deployment names its installation id — the same id
- * `npm run adopt` printed for the legacy data.
+ * (AUTH_MODE=none); a github-mode deployment names its installation id.
  */
 const { config } = resolveConfig();
 if (!config.databaseUrl) {
@@ -48,7 +47,7 @@ try {
     const orgs = await sql`select id from organization where id = ${orgId}`;
     if (!orgs.length) {
         console.error(
-            `"${orgId}" is not an organization in this database. Sign in once to materialize the installation's org, or run: npm run adopt -- --installation <id>.`
+            `"${orgId}" is not an organization in this database. Sign in once to materialize the installation's org, then retry.`
         );
         process.exit(1);
     }

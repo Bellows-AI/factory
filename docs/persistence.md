@@ -25,12 +25,10 @@ restart with a warm database serves real data on the first request rather than a
   `session_pr` — children listed before their parents, so the drops need no FK juggling. 004 and
   005 stay in place: a fresh database applies them and then drops what they made, which is the
   accepted cost of the filename-tracking rule. The telemetry tables and `002`'s views are untouched.
-- **`migrate()` also adopts pre-organization rows, once, at boot.** Rows backfilled `'__unclaimed__'`
-  are claimed by `adoptOrg()` in `db/migrate.ts`, and `ORG_OWNED` — the tables it updates directly —
-  is now just `session_branch`: it listed the PR tables too, and 023 dropped them. The config-reading
-  parts of the migration (the `AUTH_MODE=none` local org, the stand-in account, the
-  stand-in account) live beside `adoptOrg()` for the same reason it does: a `.sql` file cannot see
-  the config, and guessing wrong is silent.
+- **`migrate()` also seeds the AUTH_MODE=none org and its stand-in account, once, at boot.** The
+  config-reading parts of the migration (the `AUTH_MODE=none` local org, the stand-in account) are
+  TypeScript beside the `.sql` runner for one reason: a `.sql` file cannot see the config, and
+  guessing wrong is silent.
 - **`migrate()` also reaps expired sessions**, at boot only. The read path checks `expires_at`
   regardless, so this is about the table not growing without bound on a deployment whose users never
   log out — not about enforcement.

@@ -17,19 +17,6 @@ export interface Session {
     organization: { id: string; name: string };
     /** Every org the account could switch to — the installations GitHub reported at sign-in. */
     organizations: { id: string; name: string }[];
-    /**
-     * The database's pre-upgrade organizations (issue 123): rows with no installation id that no
-     * sign-in materializes or sweeps. Adoption territory, never switchable — the dashboard
-     * surfaces `npm run adopt` for them instead of listing them a second time.
-     */
-    legacyOrganizations: { id: string; name: string }[];
-    /**
-     * The sole installation org, when exactly one exists — the only case where the deployment
-     * fills in `--installation` for the surfaced adopt command. Null with zero or several:
-     * pairing a legacy org with an installation is the operator's decision, and a guessed one
-     * would re-home another org's history.
-     */
-    adoptInto: { id: string } | null;
     /** The member's checkout root, or null when workspaces are switched off for the deployment. */
     workspacePath: string | null;
     /** 'none' means the server is running open, so there is no session to end and no button. */

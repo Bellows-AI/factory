@@ -849,18 +849,6 @@ export function memoryAuthStore(): MemoryAuthStore {
                 .sort((a, b) => a.name.localeCompare(b.name));
         },
 
-        async legacyOrgs() {
-            return [...orgs.values()]
-                .filter((org) => org.installationId === null)
-                .map((org) => ({ id: org.id, name: org.name }))
-                .sort((a, b) => a.id.localeCompare(b.id));
-        },
-
-        async adoptTarget() {
-            const installed = [...orgs.values()].filter((org) => org.installationId !== null);
-            return installed.length === 1 ? { id: installed[0]!.id } : null;
-        },
-
         async localCaller(orgId) {
             const user = users.find((u) => u.githubUserId === 0);
             return user ? memberOf(user.id, orgId) : null;

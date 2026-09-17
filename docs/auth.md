@@ -52,12 +52,11 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
 - **The GitHub App's installations are the member roster.** At every sign-in the callback asks
   `GET /user/installations` with the signing-in person's own token, and `store.signIn` upserts one
   `organization` row (id = the installation id, name = the account login) and one membership per
-  reported installation. There is no invite, no auto-join flag, no bootstrap admin, and no roster
-  sweep: what GitHub reported at the last sign-in IS the materialized fact — and since #123, that
-  fact covers ANY membership the account holds, not only of installation orgs: sign-in deletes a
-  membership of an org GitHub does not report, whatever kind of org it is. A pre-#99 legacy org is
-  reported by nothing, ever, so leaving it outside the sweep would list the same account under two
-  ids forever; legacy orgs are adoption territory (docs/organizations.md), never switchable ones.
+  reported installation. There is no invite, no auto-join flag, no bootstrap admin: what GitHub
+  reported at the last sign-in IS the materialized fact — and since #123, that fact covers ANY
+  membership the account holds, not only of installation orgs: sign-in deletes a membership of an
+  org GitHub does not report, whatever kind of org it is, so an org row no installation reports
+  (the none-mode local row, a husk in an upgraded database) can never list an account twice.
 - **Removal is GitHub's own report first, sign-in second — and the join is still the security
   property.** GitHub delivers `organization.member_removed` to `POST /api/github/webhook`, whose
   credential is the `GITHUB_WEBHOOK_SECRET` HMAC over the raw body; the route deletes the

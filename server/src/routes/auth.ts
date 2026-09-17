@@ -83,14 +83,6 @@ export const authRoutes =
                 // the selector renders both, and POST /api/auth/org moves between them.
                 organization: caller.org,
                 organizations: await store.membershipsOf(caller.user.id),
-                // The database's pre-upgrade organizations (#123) — adoption territory, not the
-                // directory, so the SPA can surface `npm run adopt` where their symptom shows.
-                // Guarded on the mode: AUTH_MODE=none's local org legitimately has no
-                // installation and must not report itself as legacy. `adoptInto` names the sole
-                // installation org only when exactly one exists — the pairing is filled in by
-                // the deployment only where it cannot be a guess.
-                legacyOrganizations: auth.mode === 'github' ? await store.legacyOrgs() : [],
-                adoptInto: auth.mode === 'github' ? await store.adoptTarget() : null,
                 // Null when workspaces are switched off — "off" is a configuration somebody chose,
                 // the same answer /api/workspace gives. Read-only: computing a path must not
                 // provision the directory, which GET /api/workspace already does idempotently.

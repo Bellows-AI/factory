@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore, type AuthStore } from '../src/auth/store.js';
 import { LOCAL_ORG_ID } from '../src/config.js';
-import { adoptOrg, LOCAL_LOGIN, mergeLegacyOrg, migrate, reapSessions } from '../src/db/migrate.js';
+import { LOCAL_LOGIN, migrate, reapSessions } from '../src/db/migrate.js';
 
 const url = process.env.DATABASE_URL;
 
@@ -39,8 +39,8 @@ let store: AuthStore;
 // organization.installation_id (bigint). Names that are not numbers stopped being org ids.
 const ORG = '911001';
 const SECOND_ORG = '911002';
-/** A pre-#99 legacy org: planted with no installation id, the shape 028 left behind. */
-const LEGACY_ORG = '911003';
+/** An org planted with no installation id — a shape that can exist (the none-mode local row). */
+const UNREPORTED_ORG = '911003';
 /** Every account this file creates is numbered from here, so the cleanup can be precise. */
 const ID_BASE = 90000;
 
@@ -59,31 +59,27 @@ beforeEach(async () => {
     if (!enabled) return;
     // The organization rows go too: signIn materializes them from installations now (#99), so
     // every test starts from no orgs at all. The FKs cascade the memberships and sessions —
-    // and the plain rows are planted straight back, because the token and adoption tests write
-    // rows that need an org to point at without signing in first.
+    // and the plain rows are planted straight back, because the token tests write rows that
+    // need an org to point at without signing in first.
     //
-    // `911%` is this suite's whole id namespace (ORG, SECOND_ORG, LEGACY_ORG, the literals the
-    // tests plant, and residue an interrupted run may have left) — claimed here rather than
-    // listed, because adoptTarget() counts installation orgs across the DATABASE, and a stale
-    // row outside the listed ids would read as a second installation forever. That count is
-    // honest only while this file stays the only db suite that ever sets installation_id —
-    // which holds today; do not plant one elsewhere without revisiting the adoptTarget test.
+    // `911%` is this suite's whole id namespace (ORG, SECOND_ORG, UNREPORTED_ORG, the literals
+    // the tests plant, and residue an interrupted run may have left) — claimed here rather than
+    // listed, because the db files share a database and a stale row outside the listed ids
+    // would leak between runs.
     await sql`delete from organization where id like '911%' or id = '424242'`;
     await sql`insert into organization (id, name) values (${ORG}, ${ORG}), (${SECOND_ORG}, ${SECOND_ORG})
               on conflict (id) do nothing`;
     await sql`delete from worker_token where org_id like '911%'`;
     await sql`delete from access_token where org_id like '911%'`;
     // job and task_reclaim carry org_id as a plain column (no FK), so the organization delete
-    // above cannot cascade to them — the merge tests plant one of each, and the merge moves it
-    // into ORG. Only this suite's org ids are touched: the db files share a database and run in
-    // parallel, so a blanket delete would empty another suite's table mid-run.
+    // above cannot cascade to them. Only this suite's org ids are touched: the db files share a
+    // database and run in parallel, so a blanket delete would empty another suite's table
+    // mid-run.
     await sql`delete from job where org_id like '911%'`;
     await sql`delete from task_reclaim where org_id like '911%'`;
-    // The adoption test plants session_branch rows, and org_id on that table is a plain column
-    // (005 added it without a foreign key), so the organization delete above cannot cascade to
-    // them — against the shared database this suite shares with the other db files, one adopted
-    // `acme/web` row would survive every cleanup and the count assertions would drift per run.
-    await sql`delete from session_branch where org_id like '911%' or session_id like 'adopt-%'`;
+    // org_id on session_branch is a plain column too (005 added it without a foreign key), so
+    // the organization delete above cannot cascade to it either.
+    await sql`delete from session_branch where org_id like '911%'`;
     // Sessions whose org is gone would already be; this catches rows of deleted accounts.
     await sql`delete from session where user_id in (select id from app_user where github_user_id >= ${ID_BASE})`;
     await sql`delete from app_user where github_user_id >= ${ID_BASE}`;
@@ -179,43 +175,28 @@ describe.skipIf(!enabled)('sign-in materializes the installations (#99)', () => 
         expect(await store.findSession(hashToken('sig-x'))).toBeNull();
     });
 
-    it('sweeps a legacy (non-installation) membership at sign-in, so the selector never lists both', async () => {
-        // The pre-#99 rows (#123): an org with no installation id (028 added the column, no
-        // backfill) and the membership the single-org sign-in wrote. The installation is a NEW
-        // row for the same account — nothing matches one back to the other, so the sweep is
+    it('sweeps a membership of an org no installation reports at sign-in, so the selector never lists both', async () => {
+        // An org row can exist without an installation (the none-mode local row, a husk in an
+        // upgraded database). The installation is a NEW row for the same account — nothing
+        // matches one back to the other, so the sweep, which matches any unreported org, is
         // what keeps the selector from listing the same account twice.
-        const caller = await member(14, 'legacy-member');
+        const caller = await member(14, 'unreported-member');
         await sql`
-            insert into organization (id, name) values (${LEGACY_ORG}, 'Legacy')
+            insert into organization (id, name) values (${UNREPORTED_ORG}, 'Unreported')
             on conflict (id) do nothing
         `;
         await sql`
             insert into org_membership (org_id, github_login, user_id, claimed_at)
-            values (${LEGACY_ORG}, 'legacy-member', ${caller.user.id}, now())
+            values (${UNREPORTED_ORG}, 'unreported-member', ${caller.user.id}, now())
         `;
 
-        await store.signIn(identity(14, 'legacy-member'), ORG, [{ id: ORG, name: ORG }]);
+        await store.signIn(identity(14, 'unreported-member'), ORG, [{ id: ORG, name: ORG }]);
 
         expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
         const [count] = await sql<{ count: number }[]>`
-            select count(*)::int as count from org_membership where org_id = ${LEGACY_ORG}
+            select count(*)::int as count from org_membership where org_id = ${UNREPORTED_ORG}
         `;
         expect(count?.count).toBe(0);
-    });
-
-    it('names the adoption target only when exactly one installation exists', async () => {
-        // The adoption notice may fill in `--installation` only when the pairing cannot be a
-        // guess: zero installations name nothing, several leave the choice to the operator.
-        expect(await store.adoptTarget()).toBeNull();
-
-        await member(17, 'single-target', [{ id: ORG, name: ORG }]);
-        expect(await store.adoptTarget()).toEqual({ id: ORG });
-
-        await store.signIn(identity(17, 'single-target'), SECOND_ORG, [
-            { id: ORG, name: ORG },
-            { id: SECOND_ORG, name: SECOND_ORG },
-        ]);
-        expect(await store.adoptTarget()).toBeNull();
     });
 
     it('refuses an orgId outside the reported installations', async () => {
@@ -652,40 +633,7 @@ describe.skipIf(!enabled)('the local org (AUTH_MODE=none)', () => {
     });
 });
 
-describe.skipIf(!enabled)('the migration runner and adoption', () => {
-    it('claims the pre-organization rows into the org it is given, and is a no-op afterwards', async () => {
-        // What adoptOrg exists for, now driven by the adopt CLI instead of every boot (#99):
-        // without it a re-homed deployment reads an empty dashboard that looks like data loss.
-        await sql`
-            insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            values ('__unclaimed__', 'claude-code', ${`adopt-${Date.now()}`}, 'acme/web', 'main', null, now(), now(), 1)
-        `;
-        let moved = '';
-        await adoptOrg(sql, ORG, (m) => {
-            moved += m;
-        });
-
-        expect(moved).toContain('pre-organization rows');
-        // Nothing unclaimed survives, and the row reads from the target org now.
-        const [left] = await sql<{ count: number }[]>`
-            select count(*)::int as count from session_branch where org_id = '__unclaimed__'
-            and agent = 'claude-code'
-        `;
-        expect(left?.count).toBe(0);
-        const [adopted] = await sql<{ count: number }[]>`
-            select count(*)::int as count from session_branch
-            where org_id = ${ORG} and agent = 'claude-code' and repo = 'acme/web'
-        `;
-        expect(adopted?.count).toBe(1);
-
-        // Second run: nothing left to claim, no line.
-        let again = '';
-        await adoptOrg(sql, ORG, (m) => {
-            again += m;
-        });
-        expect(again).toBe('');
-    });
-
+describe.skipIf(!enabled)('the migration runner', () => {
     it('keeps a membership from existing without an account — invites are gone, irrecoverably', async () => {
         // 029 set user_id NOT NULL and re-keyed the table. The row type this suite used to spend
         // most of its time on — an unclaimed invite — can no longer be written at all.
@@ -695,138 +643,8 @@ describe.skipIf(!enabled)('the migration runner and adoption', () => {
         ).rejects.toThrow();
     });
 
-    it('merges a legacy org into the installation: every org-owned row re-homed, the husk retired', async () => {
-        // The adopt --from arm, grown from session_branch to the whole org-owned set (#123): a
-        // husk left behind — the org row itself, or rows the old adopt never touched — keeps
-        // the upgrade visible forever. Every table is planted under LEGACY_ORG so a statement
-        // missing from the merge strands exactly its own rows.
-        const caller = await member(15, 'adopter');
-        const stamp = Date.now();
-        await sql`
-            insert into organization (id, name) values (${LEGACY_ORG}, 'Legacy')
-            on conflict (id) do nothing
-        `;
-        // session_branch: one branch on BOTH sides — its samples must sum — and one legacy-only.
-        await sql`
-            insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            values
-                (${ORG}, 'claude-code', ${`mg-${stamp}-a`}, 'acme/web', 'main', null, now(), now(), 2),
-                (${LEGACY_ORG}, 'claude-code', ${`mg-${stamp}-a`}, 'acme/web', 'main', null, now(), now(), 3),
-                (${LEGACY_ORG}, 'claude-code', ${`mg-${stamp}-b`}, 'acme/web', 'dev', null, now(), now(), 1)
-        `;
-        const [jobRow] = await sql<{ id: string }[]>`
-            insert into job (org_id, command, root_job_id)
-            values (${LEGACY_ORG}, 'echo legacy', gen_random_uuid()) returning id
-        `;
-        await sql`insert into task_reclaim (org_id, root_job_id) values (${LEGACY_ORG}, ${jobRow!.id})`;
-        await sql`
-            insert into worker_token (org_id, name, token_hash)
-            values (${LEGACY_ORG}, 'mg-driver', ${hashToken('fwt-merge')})
-        `;
-        await sql`
-            insert into access_token (org_id, kind, label, token_hash)
-            values (${LEGACY_ORG}, 'org', 'mg-ci', ${hashToken('oat-merge')})
-        `;
-        await sql`
-            insert into session (token_hash, user_id, expires_at, org_id)
-            values (${hashToken('sess-merge')}, ${caller.user.id}, ${live()}, ${LEGACY_ORG})
-        `;
-        await sql`insert into workflow (org_id, name, definition) values (${LEGACY_ORG}, 'mg-flow', '{}')`;
-        await sql`insert into env_var (org_id, name, value) values (${LEGACY_ORG}, 'MG_VAR', 'legacy')`;
-        // A READY clone under the legacy org: its checkout lives at
-        // <workspaceRoot>/<orgId>/<userId>/<name>, keyed by the org id — so a move that kept
-        // status would point the row at a directory that has no clone in it.
-        await sql`
-            insert into user_repo (org_id, user_id, repo_owner, repo_name, status, started_at, ready_at)
-            values (${LEGACY_ORG}, ${caller.user.id}, 'acme', 'web', 'ready', now(), now())
-        `;
-        await sql`
-            insert into user_executor (org_id, user_id, name, type, config)
-            values (${LEGACY_ORG}, ${caller.user.id}, 'mg-exec', 'claude-code', '{}')
-        `;
-        await sql`
-            insert into org_membership (org_id, github_login, user_id, claimed_at)
-            values (${LEGACY_ORG}, 'adopter', ${caller.user.id}, now())
-        `;
-
-        const log: string[] = [];
-        await mergeLegacyOrg(sql, ORG, LEGACY_ORG, (m) => log.push(m));
-
-        // Nothing is stranded under the legacy id — every org-owned table reads empty there.
-        for (const table of [
-            'job',
-            'task_reclaim',
-            'worker_token',
-            'access_token',
-            'session',
-            'workflow',
-            'env_var',
-            'user_repo',
-            'user_executor',
-        ]) {
-            const [legacy] = await sql<{ count: number }[]>`
-                select count(*)::int as count from ${sql(table)} where org_id = ${LEGACY_ORG}
-            `;
-            expect(legacy?.count, table).toBe(0);
-        }
-        // The overlapping branch merged (samples summed), the legacy-only one arrived whole.
-        const branches = await sql<{ branch: string; samples: number }[]>`
-            select branch, samples from session_branch
-            where org_id = ${ORG} and session_id like 'mg-%' order by branch
-        `;
-        expect(branches).toEqual([
-            { branch: 'dev', samples: 1 },
-            { branch: 'main', samples: 5 },
-        ]);
-        // The moved session resolves again — the caller's membership of ORG comes from sign-in,
-        // so the merge re-homed the row onto a live join.
-        expect(await store.findSession(hashToken('sess-merge'))).toMatchObject({ org: { id: ORG, name: ORG } });
-        // The moved clone is re-queued, not carried over 'ready': the on-disk checkout is keyed
-        // by the org id, so the queue must re-clone at the installation org's path. The
-        // selection itself survives — the member picked this repo.
-        const [moved] = await sql<{ status: string; ready_at: Date | null; started_at: Date | null }[]>`
-            select status, ready_at, started_at from user_repo
-            where org_id = ${ORG} and user_id = ${caller.user.id} and repo_name = 'web'
-        `;
-        expect(moved).toMatchObject({ status: 'queued', ready_at: null, started_at: null });
-        // The husk itself is retired: no legacy org row for the selector or the adoption
-        // notice to keep naming.
-        const [org] = await sql<{ count: number }[]>`
-            select count(*)::int as count from organization where id = ${LEGACY_ORG}
-        `;
-        expect(org?.count).toBe(0);
-        expect(log.join('\n')).toContain(`retired legacy organization "${LEGACY_ORG}"`);
-    });
-
-    it("keeps the installation org's own row when a natural key collides", async () => {
-        // env_var is one of the natural-keyed tables (coalesce unique index): the installation
-        // org's value wins, the legacy copy is deleted rather than left behind by do-nothing.
-        await sql`
-            insert into organization (id, name) values (${LEGACY_ORG}, 'Legacy')
-            on conflict (id) do nothing
-        `;
-        await sql`
-            insert into env_var (org_id, name, value)
-            values (${ORG}, 'MG_SHARED', 'kept'), (${LEGACY_ORG}, 'MG_SHARED', 'dropped')
-        `;
-
-        await mergeLegacyOrg(sql, ORG, LEGACY_ORG, () => {});
-
-        const rows = await sql<{ value: string }[]>`
-            select value from env_var where org_id = ${ORG} and name = 'MG_SHARED'
-        `;
-        expect(rows.map((r) => r.value)).toEqual(['kept']);
-    });
-
-    it('refuses a merge whose target is its own source — that pair is a wipe, not an adoption', async () => {
-        // The one argument pair that would upsert every row onto itself and then delete the
-        // "legacy" half: the org's whole history. Same guard the CLI carries, restated at the
-        // database layer because the layer must not trust its caller.
-        await expect(mergeLegacyOrg(sql, ORG, ORG, () => {})).rejects.toThrow();
-    });
-
     it('is a localUser boot away from a usable none-mode database', async () => {
-        // The offline tooling's boot: org row, stand-in account, adoption — all idempotent.
+        // The offline tooling's boot: org row and stand-in account, all idempotent.
         await migrate(sql, { localUser: true, attempts: 1, log: (m) => console.log('[mig]', m) });
 
         expect(await store.findOrg(LOCAL_ORG_ID)).toEqual({ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID });

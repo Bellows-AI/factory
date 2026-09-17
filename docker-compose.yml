@@ -51,8 +51,7 @@ services:
             GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
             GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
             # The organizations are the App's installations, materialized at sign-in (#99): no
-            # org env exists. Install the App on every account this stack should serve. To adopt
-            # an existing database's history into an installation's org: npm run adopt.
+            # org env exists. Install the App on every account this stack should serve.
             # A literal default, and the volume below is mounted to
             # match: this is a path INSIDE the container, so a host value from .env would be a path
             # on the host that cannot exist here, and clobbering it is the correct outcome. Those

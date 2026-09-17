@@ -1,6 +1,6 @@
 # Organizations
 
-Read before: touching `org_id` anywhere, `server/migrations/005_organizations.sql`, `adoptOrg()`,
+Read before: touching `org_id` anywhere, `server/migrations/005_organizations.sql`,
 or the org selector in the topbar.
 
 An **organization owns the repo list and partitions every stored row.** The organizations are the
@@ -21,8 +21,7 @@ immediately (see [auth.md](auth.md)).
   The *name* is derived for free on every sign-in, because nothing keys on a label — signIn's
   upsert rewrites it whenever GitHub reports a rename.
 - **`ORG_ID`/`ORG_NAME` are fatal, not ignored**, in the same register as `ORG_REPOS`: a variable
-  that was meaningful and is now dropped must not silently no-op. `ORG_ID`'s error names
-  `npm run adopt`, the legacy-data escape hatch.
+  that was meaningful and is now dropped must not silently no-op.
 - **`GITHUB_REPOS` and `ORG_REPOS` are fatal, not ignored.** The one deliberate exception to "an
   unknown environment variable is ignored", and for exactly the reason that rule is stated: a
   variable that *was* meaningful and is now dropped reverts a two-repo dashboard to one repo and
@@ -32,33 +31,14 @@ immediately (see [auth.md](auth.md)).
   installation is the boundary now. What survives of the old rule is the *roster* distinction — an
   org is not GitHub's member list beyond what sign-in reports; repo permissions are not projected
   into Factory (per-user repo scoping retired with auto-join).
-- **`org_id` leads every org-owned primary key.** `005` partitioned ten tables; `ORG_OWNED` — the
-  list `adoptOrg()` updates — is down to `session_branch` alone now, because 023 dropped the PR
-  tables that made up the rest (see [persistence.md](persistence.md)). The id leads rather than
-  trails because a query always knows its organization, so the key is a prefix scan of the
+- **`org_id` leads every org-owned primary key.** `005` partitioned ten tables; 023 dropped the PR
+  tables that made up the rest, leaving `session_branch` the only one that ever needs a direct
+  org_id rewrite rather than a cascade (see [persistence.md](persistence.md)). The id leads rather
+  than trails because a query always knows its organization, so the key is a prefix scan of the
   partition rather than a filter applied afterwards.
 - **`metric_point` has no `org_id`, on purpose.** It has no `repo` either, for the reason stated in
   `001_init.sql`: a datapoint's repo is resolved by joining `session_branch`, so there is one source
   of truth rather than two that disagree. Its organization comes through that same join.
-- **Pre-organization rows are parked `'__unclaimed__'` and adopted, not at boot but by the adopt
-  CLI.** Boot cannot know an installation id, so it cannot know an org to claim rows into —
-  `migrate()` adopts only in AUTH_MODE=none (into the local org), and `npm run adopt --
-  --installation <id> [--from <legacy-org-id>]` is the one-off upgrade step for everything else. A
-  missed run reads as an empty dashboard; the upgrade docs say to run it.
-- **A legacy (pre-#99) org is adoption territory, never the directory (#123).** Its row has no
-  `installation_id`, so no sign-in ever materializes or relabels it — and since the #123 sweep,
-  sign-in deletes a membership of ANY org not in the reported installations, not only of
-  installation orgs: a legacy membership would otherwise sit beside the installation's forever,
-  listing the same account twice. Matching a legacy org to an installation automatically was
-  rejected — the only key available is the account login, which is a label (docs/auth.md), and
-  which installation owns which legacy id is an operator decision (`--from` expresses it) that a
-  guessed match would silently destroy. What the deployment owes instead is visibility:
-  `/api/auth/me` reports the orgs still waiting (`legacyOrganizations`), the dashboard surfaces
-  the `npm run adopt` command — filled in with `--installation` only when exactly one
-  installation exists (`adoptInto`), because a guessed pairing would re-home another org's
-  history — and `--from` now re-homes EVERY org-owned table and deletes the legacy org row — so
-  the notice clears exactly when the adoption happened, and nothing is stranded behind a husk
-  the old merge left standing.
 - **Ingest attribution is the credential's, not the report's.** A branch report carries a repo,
   never an org — the reporter holds no session — so the org used to be guessed by matching the
   repo's owner against the installation orgs' account logins. That was a cross-tenant write

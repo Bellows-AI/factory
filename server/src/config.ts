@@ -462,7 +462,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
      */
     if (env.ORG_ID?.trim()) {
         throw new Error(
-            "ORG_ID is no longer supported: organizations are the GitHub App installations now — one installation per org, created at sign-in and named after its account. Remove the line. To adopt an existing database into an installation's org: npm run adopt -- --installation <id>."
+            'ORG_ID is no longer supported: organizations are the GitHub App installations now — one installation per org, created at sign-in and named after its account. Remove the line.'
         );
     }
     if (env.ORG_NAME?.trim()) {

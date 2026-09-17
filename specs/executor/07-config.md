@@ -159,8 +159,7 @@ an hour later.
 
 ## 5. The controller must NOT call `migrate()`
 
-`server/src/index.ts` already warns that two migration runners race each other, and `migrate()` also
-calls `adoptOrg()`, which the executor has no business doing.
+`server/src/index.ts` already warns that two migration runners race each other.
 
 `executor/src/db/ready.ts` instead polls:
 
