@@ -73,7 +73,7 @@ report names. Set `FACTORY_STATS_TOKEN` to a **personal access token** (`fat_…
 dashboard's settings page) and the plugin sends it as `authorization: Bearer`:
 
 ```bash
-# in ~/.claude/settings.json (user scope, like the plugin), or the repo's .claude/settings.json
+# in ~/.claude/settings.json — user scope ONLY, like the plugin itself
 {
   "env": {
     "FACTORY_STATS_URL": "https://factory.example.com",
@@ -86,7 +86,15 @@ The token dies the moment its membership does, exactly like a session. Organizat
 (`oat_…`) are not accepted: they are a read-only allowlist credential, and this is a write.
 Unset, the reports go unauthenticated — which is all a local `AUTH_MODE=none` dashboard asks
 for, and a board that requires a credential simply declines them in silence, the same as any
-other report failure. The token is never logged and never written anywhere.
+other report failure. The plugin never logs the token and never writes it anywhere — but the
+settings file that carries it can: a repo's `.claude/settings.json` is tracked and would
+publish the token to every reader of the repository, so user scope is the only storage this
+README endorses. If a token leaks anyway, revoke it from the dashboard's settings page.
+
+For the same reason a credentialed report is sent only over `https://` or to an explicit
+loopback host — a token carried over remote `http://` would cross the network in cleartext,
+so the plugin drops the report instead. The shipped default (`http://127.0.0.1:8080`) is
+loopback and unaffected.
 
 ## Behaviour
 

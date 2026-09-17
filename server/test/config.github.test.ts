@@ -86,6 +86,22 @@ describe('the API host', () => {
     });
 });
 
+describe('the webhook secret', () => {
+    it('is optional, and unset means the installation webhook route does not exist', () => {
+        expect(loadConfig(app()).webhookSecret).toBeNull();
+        // Compose passes several variables empty, so whitespace-only is unset too.
+        expect(loadConfig(app({ GITHUB_WEBHOOK_SECRET: '   ' })).webhookSecret).toBeNull();
+    });
+
+    it('refuses a secret short enough to enumerate', () => {
+        // The HMAC decides whose memberships get deleted, so the secret is a credential —
+        // timing-safe comparison does not help a key a caller can guess. Same floor, and same
+        // failure shape, as SESSION_SECRET's.
+        expect(() => loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'short' }))).toThrow(/at least 32 characters/);
+        expect(loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'x'.repeat(32) })).webhookSecret).toBe('x'.repeat(32));
+    });
+});
+
 describe('what the App replaced', () => {
     /*
      * All three are fatal rather than ignored, which is the deliberate exception to "an unknown

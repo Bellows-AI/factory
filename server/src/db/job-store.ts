@@ -663,18 +663,20 @@ export function withMintedToken(
  * answer IS the org. `createJobStore` binds the org at construction; this resolver must run before
  * any org is known, which is why it is a factory of its own and not a store method.
  *
- * No status filter, but not unbounded either: the reporter's final `--once` sample lands seconds
- * after the verdict, and `complete` retains the lease token for exactly that reason (the only
- * settle point that does — dead and suspend clear theirs, because those attempts end without a
- * verdict whose tail matters). The pair is attempt-scoped regardless: a reclaim rotates the token
- * on the row (`gen_random_uuid`), so a superseded attempt's pair stops resolving the moment the
- * job is handed to its replacement and cannot write into the winner's org.
+ * No status filter, but nothing unbounded either. The reporter's final `--once` sample lands
+ * seconds after the verdict, and `complete` retains the lease token for exactly that reason (the
+ * only settle point that does — dead and suspend clear theirs, because those attempts end without
+ * a verdict whose tail matters). The pair is attempt-scoped regardless: a reclaim rotates the
+ * token on the row (`gen_random_uuid`), so a superseded attempt's pair stops resolving the moment
+ * the job is handed to its replacement and cannot write into the winner's org.
  *
- * The grace window is the bound that keeps retention honest. The pair resolves from the job row
- * alone — no membership join, because the runner is not a person — so a pair captured from a
- * runner's env would otherwise outlive its author's removal from the org indefinitely: nothing
- * prunes completed jobs. An hour past the verdict covers the tail sample with orders of magnitude
- * to spare and turns the pair into what every other credential here is — a thing that expires.
+ * Two bounds keep retention honest. The pair resolves from the job row alone — no membership
+ * join, because the runner is not a person — so a pair captured from a runner's env would
+ * otherwise outlive its author's removal from the org indefinitely: nothing prunes completed
+ * jobs, and a claimed-but-never-settled row would keep resolving forever too. So a finished job
+ * resolves only within an hour of the verdict (the tail sample needs seconds; this has orders of
+ * magnitude to spare), and an UNFINISHED job resolves only while its lease is live — a lease that
+ * expired without a reclaim is a run that died, and its captured pair dies with it.
  */
 export const LEASE_TAIL_GRACE = '1 hour';
 
@@ -690,7 +692,11 @@ export function createOrgOfLease({
         const rows = await sql<{ org_id: string }[]>`
             select org_id from job
             where id = ${jobId} and lease_token = ${leaseToken}
-              and (finished_at is null or finished_at > now() - ${LEASE_TAIL_GRACE}::interval)
+              and (
+                  (finished_at is not null and finished_at > now() - ${LEASE_TAIL_GRACE}::interval)
+                  or
+                  (finished_at is null and lease_expires_at > now())
+              )
         `;
         return rows[0]?.org_id ?? null;
     };

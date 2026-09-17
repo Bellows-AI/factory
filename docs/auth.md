@@ -308,8 +308,11 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   baked into both executor images, presents the **attempt it runs for** — the driver forwards
   `RUNNER_JOB_ID` + `RUNNER_LEASE_TOKEN` (the claim and that attempt's lease), the reporter sends
   them as `x-factory-job-id` + `x-factory-job-lease-token`, and one org-less query (`select org_id
-  from job where id = $1 and lease_token = $2 and (finished_at is null or finished_at > now() -
-  interval '1 hour')`) resolves the org from the live attempt itself. The pair is attempt-scoped
+  from job where id = $1 and lease_token = $2 and ((finished_at is not null and finished_at > now()
+  - interval '1 hour') or (finished_at is null and lease_expires_at > now()))`) resolves the org
+  from the attempt itself: a finished job keeps the pair alive for a tail-sample grace, an
+  unfinished one only while its lease is live — a run that died with an expired lease and no
+  reclaim takes its captured pair with it. The pair is attempt-scoped
   without a status check: `complete()` retains the lease token so the reporter's final `--once`
   sample — landing after the verdict — still authenticates, while a reclaim rotates the token, so a
   superseded attempt's pair is dead and cannot write into the winner's org; suspend and the dead
@@ -323,7 +326,13 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   write. Header only, never a query parameter, which would land in every access log. Honest
   limitation: `metric_point` has no `org_id` by design (`docs/organizations.md`), so the OTLP
   token remains an *authenticity* check, not an authorization one — the branch route no longer
-  has that problem, which is the point.
+  has that problem, which is the point. A second, deliberate one: the runner's pair crosses the
+  board hop in whatever scheme `JOB_BOARD_URL`/`FACTORY_STATS_URL` names, and the supported
+  topologies (compose, the chart) name plain http on a service network. Encrypting that hop is an
+  operator upgrade (a TLS-terminating ingress in front of the board), not something the reporters
+  can decide per request — the pair is attempt-scoped, dies with the lease or an hour past the
+  verdict, and its only power is branch samples inside its own org, which is what makes that
+  trade-off a documented contract rather than a hole.
 
 ## What this does not do
 

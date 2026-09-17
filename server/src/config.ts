@@ -518,6 +518,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     // Parsed like INGEST_TOKEN: trim, empty meaning unset. Unset, the installation webhook route
     // does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     const webhookSecret = env.GITHUB_WEBHOOK_SECRET?.trim() || null;
+    // The secret IS the webhook's credential — its HMAC decides whose memberships get deleted —
+    // so a short one is an enumerable credential however constant-time the comparison is. The
+    // same floor SESSION_SECRET sits behind, and the same reason.
+    if (webhookSecret !== null && webhookSecret.length < MIN_SESSION_SECRET_LENGTH) {
+        throw new Error(
+            `GITHUB_WEBHOOK_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${webhookSecret.length}. Generate one with: openssl rand -hex 32.`
+        );
+    }
 
     // The App, unless the caller injected the code-only none arm — the offline tooling's seam.
     const github = injectedGitHub ?? loadGitHub(env);

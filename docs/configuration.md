@@ -62,7 +62,9 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   rather than merely rejected. `GITHUB_WEBHOOK_SECRET` is the sibling that is optional in both
   modes, parsed like `INGEST_TOKEN` (trim, empty meaning unset): set, it enables the installation
   webhook (`POST /api/github/webhook`), which deletes a membership the moment GitHub reports the
-  member gone; unset, the route does not exist and removals wait for the next sign-in.
+  member gone; unset, the route does not exist and removals wait for the next sign-in. Set, it is
+  a credential — the HMAC decides whose memberships get deleted — so a value under 32 characters
+  refuses to boot, exactly like a short `SESSION_SECRET` (`openssl rand -hex 32` is the generator).
 - **`GITHUB_OAUTH_AUTHORIZE_URL` / `_TOKEN_URL` / `_USER_URL` are a test seam**, not documented
   configuration — a configurable authorize URL that reached a real deployment would be a phishing
   vector, and `main.ts` logs loudly when one is in use. `AUTH_ALLOW_PUBLIC_BIND` is restricted for a

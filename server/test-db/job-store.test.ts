@@ -190,14 +190,16 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     // The branch-ingest credential: the runner's reporter presents the pair it runs for, and
-    // this resolver answers the org — with no status filter but a grace bound on `finished_at`,
-    // because the reporter's final `--once` sample lands seconds after the verdict, while a pair
-    // captured from a runner's env must not stay a write credential forever: nothing prunes
-    // completed jobs, and the pair resolves from the job row with no membership join. That only
-    // works because complete() RETAINS the lease token; the dead retirement and the suspend park
-    // clear it, because those attempts end without a verdict whose tail matters; and a reclaim
-    // rotates it, which is what makes the pair attempt-scoped — a superseded attempt can no
-    // longer write into the winner's org.
+    // this resolver answers the org — with no status filter but two bounds: the tail grace on
+    // `finished_at` (the reporter's final `--once` sample lands seconds after the verdict, while
+    // a pair captured from a runner's env must not stay a write credential forever — nothing
+    // prunes completed jobs), and a live `lease_expires_at` for UNFINISHED jobs, so a lease that
+    // expired without a reclaim takes its captured pair with it. The pair resolves from the job
+    // row with no membership join, which is exactly why it must expire like every other
+    // credential. That only works because complete() RETAINS the lease token; the dead retirement
+    // and the suspend park clear it, because those attempts end without a verdict whose tail
+    // matters; and a reclaim rotates it, which is what makes the pair attempt-scoped — a
+    // superseded attempt can no longer write into the winner's org.
     describe('orgOfLease', () => {
         it('resolves the org for a live lease pair, and only for the matching lease', async () => {
             const { id } = await queue('echo hi');
@@ -206,6 +208,17 @@ describe.skipIf(!enabled)('job store', () => {
             expect(await orgOfLease(claim!.id, claim!.leaseToken)).toBe(ORG);
             expect(await orgOfLease(id, '99999999-9999-4999-8999-999999999999')).toBeNull();
             expect(await orgOfLease(ABSENT, claim!.leaseToken)).toBeNull();
+        });
+
+        it('stops resolving once an unfinished lease expires — a dead run takes its pair with it', async () => {
+            // Claim, then expire, with no reclaim and no verdict: the row is still 'running', but
+            // the lease is gone, and the pair must not outlive it.
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', 300);
+            await expireLease(id);
+
+            expect((await row(id))[0]?.status).toBe('running');
+            expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
         });
 
         it('keeps resolving after complete — the reporter’s tail sample lands after the verdict', async () => {
