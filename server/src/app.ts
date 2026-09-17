@@ -15,6 +15,7 @@ import { repoRoutes } from './routes/repos.js';
 import { statsRoutes } from './routes/stats.js';
 import { tokenRoutes } from './routes/tokens.js';
 import { webhookRoutes } from './routes/webhook.js';
+import { workflowRoutes } from './routes/workflows.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
@@ -119,7 +120,10 @@ export async function buildApp({
     await app.register(statsRoutes(config, orgs, auth, now));
     await app.register(repoRoutes({ config, orgs }));
     if (store) await app.register(ingestRoutes(store));
+    // The board and the workflow definitions it resolves against: per-org runtimes, the routes
+    // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(jobRoutes({ orgs }));
+    await app.register(workflowRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
     await app.register(
         workspaceRoutes({

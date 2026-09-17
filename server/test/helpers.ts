@@ -16,6 +16,7 @@ import { LOCAL_ORG_ID, type AppConfig, type AuthConfig } from '../src/config.js'
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
+import type { WorkflowStore } from '../src/db/workflow-store.js';
 import type { CloneStatus, UserRepo, UserRepoStore } from '../src/db/user-repo-store.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -1029,6 +1030,7 @@ export function staticRegistry(
         telemetry?: TelemetryStub;
         service?: ReturnType<typeof createStatsService>;
         jobs?: OrgRuntime['jobs'];
+        workflows?: OrgRuntime['workflows'];
         envVars?: OrgRuntime['envVars'];
         userRepos?: OrgRuntime['userRepos'];
         userExecutors?: OrgRuntime['userExecutors'];
@@ -1046,6 +1048,7 @@ export function staticRegistry(
         telemetry,
         service: parts.service ?? createStatsService({ config, repos, telemetry }),
         jobs: parts.jobs,
+        workflows: parts.workflows,
         envVars: parts.envVars,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
@@ -1069,6 +1072,7 @@ export async function harness({
     envVars,
     appSlug,
     orgsFor,
+    workflows,
 }: {
     config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
@@ -1097,6 +1101,8 @@ export async function harness({
      * database: every route reads the org its caller carries, and here every caller resolves.
      */
     orgsFor?: readonly string[];
+    /** Absent by default, which leaves the workflow routes answering 503. */
+    workflows?: WorkflowStore;
 } = {}) {
     const config = testConfig(overrides);
     const telemetry = telemetryOption ?? stubTelemetryClient();
@@ -1117,6 +1123,7 @@ export async function harness({
         telemetry,
         service,
         envVars,
+        workflows,
         userRepos,
         userExecutors: executors,
         ...(orgsFor ? { orgsFor } : {}),

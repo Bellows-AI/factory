@@ -507,6 +507,42 @@ describe('the poll loop', () => {
         );
     });
 
+    // The publish flag is the board's decision: on a workflow task only the graph's publish node
+    // may push, so a mid-loop review's clean run must NOT — no publish containers/Job, and no
+    // credential ask either (docs/workflows.md). Both executors read this one claim field.
+    it('skips the publish when the claim says publish: false', async () => {
+        const claimed = { ...job(1), publish: false };
+        const board = stubBoard([claimed]);
+        const runner = stubRunner(async () => ok(), null, null, {
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+            reason: null,
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.published).toHaveLength(0);
+        expect(board.board.publishTokenAsks).toHaveLength(0);
+        // The run itself still succeeded — the work stays on the task branch in the worktree.
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    // A claim without the flag is a board that predates it: publish exactly as before, so an old
+    // board and a new driver — or a workflow-less task on the new board — behave byte-identically.
+    it('publishes when the claim carries no publish flag at all', async () => {
+        const claimed = { ...job(1) };
+        delete (claimed as Partial<BoardJob>).publish;
+        const board = stubBoard([claimed]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(runner.published).toHaveLength(1);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
     // A runner with no publishGit at all — publishing is an optional capability the loop asks
     // for, not one it assumes; both shipped runners carry it, a third platform need not.
     it('reports a clean run succeeded from a runner that cannot publish', async () => {

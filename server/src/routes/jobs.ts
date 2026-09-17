@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals, ServiceStatus } from '../db/job-store.js';
+import type { WorkflowDefinition } from '../db/workflow-schema.js';
 import type { OrgRegistry } from '../orgs.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
@@ -197,6 +198,11 @@ export const jobRoutes =
             const rt = await orgs.for(orgOf(request));
             return rt?.jobs ?? null;
         };
+        /** The workflow definitions the create may resolve against — the caller's org's (#99). */
+        const workflowsOf = async (request: FastifyRequest) => {
+            const rt = await orgs.for(orgOf(request));
+            return rt?.workflows ?? null;
+        };
         app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const store = await storeOf(request);
             if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
@@ -228,6 +234,60 @@ export const jobRoutes =
             const caller = callerOf(request);
             const createdBy = caller?.user.id ?? null;
 
+            /*
+             * The workflow the task will walk, resolved by the board (docs/workflows.md): a named
+             * workflow within the caller's visible scopes — repo over user over org when the name
+             * exists in several — or, unnamed, the scope stack's default. The resolution is also
+             * what freezes the snapshot: the store's create stamps the resolved definition onto
+             * the root row, and a later edit of the workflow never moves a running thread. A
+             * create that resolves NO workflow calls the store exactly as before 027 — no field,
+             * no read, a byte-identical row and claim.
+             */
+            const workflowsStore = await workflowsOf(request);
+            let workflow: { id: string; node: string; snapshot: WorkflowDefinition } | null = null;
+            if (workflowsStore) {
+                const resolve = async () => {
+                    const target = {
+                        userId: createdBy,
+                        repo: typeof repo === 'string' ? repo : null,
+                    };
+                    if (fields.workflow !== undefined && fields.workflow !== null) {
+                        if (typeof fields.workflow !== 'string' || !fields.workflow.trim()) {
+                            return { bad: 'BAD_WORKFLOW' as const };
+                        }
+                        return {
+                            found: await workflowsStore.findByName(fields.workflow, target),
+                            wanted: fields.workflow,
+                        };
+                    }
+                    return { found: await workflowsStore.resolveDefault(target), wanted: null };
+                };
+                const resolved = await guard(
+                    reply,
+                    (e) => request.log.error({ err: e }, 'workflow resolution failed'),
+                    resolve
+                );
+                if (!resolved.ok) return reply;
+                if ('bad' in resolved.value) {
+                    return bad(reply, 'BAD_WORKFLOW', 'workflow must be a non-empty string');
+                }
+                if (resolved.value.found === null && resolved.value.wanted !== null) {
+                    return bad(
+                        reply,
+                        'UNKNOWN_WORKFLOW',
+                        `"${resolved.value.wanted}" is not a workflow you can use`,
+                        404
+                    );
+                }
+                if (resolved.value.found !== null) {
+                    workflow = {
+                        id: resolved.value.found.id,
+                        node: resolved.value.found.definition.entry,
+                        snapshot: resolved.value.found.definition,
+                    };
+                }
+            }
+
             const created = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job create failed'),
@@ -235,6 +295,7 @@ export const jobRoutes =
                     store.create(command, createdBy, {
                         repo: typeof repo === 'string' ? repo : null,
                         executor: typeof executor === 'string' ? executor : null,
+                        ...(workflow ? { workflow } : {}),
                     })
             );
             if (!created.ok) return reply;

@@ -61,6 +61,9 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     console.log(`[persist] ${config.databaseUrl.replace(/\/\/[^@]*@/, '//')}`);
 
     // Everything per-org is built lazily from here, on the first request that names an org.
+    // The workflow definitions (027) ride the same per-org runtimes: created with the org's id,
+    // and the base `fix-issue` workflow seeds per org on first touch — idempotent, so a task
+    // queued in the seeding's first seconds simply resolves no default yet.
     const orgs = createOrgRegistry({ sql, ready, config, withStores: true });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is

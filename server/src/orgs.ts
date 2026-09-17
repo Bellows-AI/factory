@@ -8,6 +8,7 @@ import { createUserRepoStore, type UserRepoStore } from './db/user-repo-store.js
 import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
+import { createWorkflowStore, type WorkflowStore } from './db/workflow-store.js';
 import { createStatsService, type StatsService } from './stats-service.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
@@ -35,6 +36,8 @@ export interface OrgRuntime {
     service: StatsService;
     /** Present in the live server; absent in route tests that pass no stores. */
     jobs?: JobStore | undefined;
+    /** The workflow definitions (027) this org's tasks may walk; present with the other stores. */
+    workflows?: WorkflowStore | undefined;
     envVars?: EnvVarStore | undefined;
     userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
@@ -138,6 +141,14 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
             runtime.userRepos = userRepos;
             runtime.cloneQueue = cloneQueue;
             runtime.jobs = jobs;
+            // Workflow definitions (027): the process a task walks, stored per scope inside this
+            // org. The base `fix-issue` workflow seeds here too — org-level and the org's
+            // default, idempotent by name and default-slot, fired with the same posture as the
+            // clone queue: not awaited, because no route on the read path needs it, and a task
+            // queued in the seeding's first seconds simply resolves no default yet.
+            const workflows = createWorkflowStore({ sql, orgId, ready });
+            runtime.workflows = workflows;
+            void workflows.seedBase().catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
             // Fired, not awaited: recovering stranded clones is minutes of network no route on
             // the read path needs. The org's queue only starts once — with the org's runtime.
             void cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));

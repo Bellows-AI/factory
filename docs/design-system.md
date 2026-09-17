@@ -170,7 +170,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `DataQualityPanel.tsx` | panel warn |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
-| `RecentTasksPanel.tsx` | panel, alert, by-user, chart-wrap, muted |
+| `RecentTasksPanel.tsx` | panel, alert, muted, chart-wrap, by-user, task-avatar |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |

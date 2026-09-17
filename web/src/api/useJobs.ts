@@ -99,6 +99,11 @@ export interface Job {
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */
     executor: string | null;
+    /**
+     * The workflow node this run walks, when the task runs a workflow — the graph position, and
+     * what the task view labels the turn with. Null on every other row.
+     */
+    workflowNode: string | null;
     /** The finished task this one asks for adjustments on, when it is a follow-up. */
     followUpTo: string | null;
     /**
@@ -158,7 +163,16 @@ export interface QueueResult {
 export interface UseJobs {
     jobs: Job[] | null;
     error: string | null;
-    queue: (command: string, repo: string | null, executor: string | null) => Promise<QueueResult>;
+    /**
+     * `workflow` is the NAME of the workflow the task walks, or null to let the board resolve its
+     * default (repo > user > org > none). The board freezes the resolved definition onto the task.
+     */
+    queue: (
+        command: string,
+        repo: string | null,
+        executor: string | null,
+        workflow: string | null
+    ) => Promise<QueueResult>;
     followUp: (id: string, command: string) => Promise<QueueResult>;
     markDone: (id: string) => Promise<string | null>;
     /**
@@ -263,12 +277,17 @@ export function useJobs(enabled: boolean): UseJobs {
     }, [start, enabled]);
 
     const queue = useCallback(
-        async (command: string, repo: string | null, executor: string | null): Promise<QueueResult> => {
+        async (
+            command: string,
+            repo: string | null,
+            executor: string | null,
+            workflow: string | null
+        ): Promise<QueueResult> => {
             try {
                 const response = await fetch('/api/jobs', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ command, repo, executor }),
+                    body: JSON.stringify({ command, repo, executor, workflow }),
                 });
                 if (response.status === 401) {
                     reportUnauthenticated();

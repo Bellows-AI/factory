@@ -12,6 +12,11 @@ job, runs it in a `claude-executor` container against the AUTHOR's workspace che
 back. The docker socket lives with the driver, never with the dashboard: the dashboard's port is
 unauthenticated, and a socket on that process would make it root on the host.
 
+When a task walks a WORKFLOW — the graph of agent nodes the board itself walks between verdicts —
+that is a separate doc: [docs/workflows.md](docs/workflows.md) covers the definition grammar, the
+edge vocabulary, the claim's `publish` flag and the halt semantics. This file describes the
+one-row pipeline every task still shares, workflow or not.
+
 ## The driver contract
 
 ```
