@@ -967,6 +967,143 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // Issue #126: a stop issued while the dashboard says "Waiting for the executor…" — the claim
+    // and setup phase, before any container exists — must stand the attempt down immediately.
+    // With the flag already set at the first beat (which beats before sleeping, not after), the
+    // attempt ends before the sync even starts: the runner never spawns and the park lands at
+    // once.
+    it('stands a job down before the runner spawns when the stop arrived during setup', async () => {
+        const board = stubBoard([job(1)], { cancelRequested: true });
+        let ran = false;
+        const runner = stubRunner(async () => {
+            ran = true;
+            return ok();
+        });
+
+        await drive({ ...board, runner });
+
+        expect(ran).toBe(false);
+        expect(runner.synced).toEqual([]);
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // The same, MID-SYNC: the checkout sync is the slowest thing an attempt does before the
+    // runner exists (a fresh clone of a large repo), and the stop must not wait out the git. The
+    // abandoned sync finishes on its own — its cleanup is its own — while the attempt parks.
+    it('stands a job down while the checkout sync is still running, without spawning the runner', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.syncCheckout = async () => {
+            // The stop lands while the sync is in flight.
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return { ok: true, reason: null };
+        };
+
+        const started = drive({ ...board, runner });
+        // Let the setup-poll heartbeat carry the stop in while the sync is pending.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await started;
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // A Remove racing the setup is answered the same way — nothing spawned, and nothing parked or
+    // reported: the rows are gone and the tree belongs to the queue's reclaim.
+    it('reports nothing when the thread is removed during setup', async () => {
+        const board = stubBoard([job(1)], { removedOnBeat: true });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // A lease lost during setup leaves the job to its new holder: no verdict, no park.
+    it('reports nothing when the lease is lost during setup', async () => {
+        const board = stubBoard([job(1)], { lease: 'lost' });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // A stop observed AFTER the sync has completed finds the checkout fenced and held — with no
+    // run ever to release it, the fence goes back before the attempt stands down (kubernetes's
+    // checkout claim would otherwise outlive the job).
+    it('hands the checkout fence back when the stop lands after the sync', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        const fenced: string[] = [];
+        runner.releaseFence = async (fencedJob) => {
+            fenced.push(fencedJob.id);
+        };
+        const rawReread = board.board.rereadGates.bind(board.board);
+        board.board.rereadGates = async (claimed) => {
+            // The stop lands after the sync, during the gates re-read — the re-read is slow
+            // enough for the setup poll to carry the verdict in.
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return rawReread(claimed);
+        };
+
+        await drive({ ...board, runner });
+
+        expect(fenced).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // And a stop that lands while the gate environment boots leaves no environment behind: the
+    // release happens inside beginGates (or in the attempt's finally), never leaked.
+    it('releases the gate environment when the stop lands while it boots', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const { stack, gates } = stubGateStack();
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        const rawAcquire = stack.manager.acquire.bind(stack.manager);
+        stack.manager.acquire = async (key, image, envBody, acquiredJob) => {
+            // The stop lands while the gate environment is coming up — slow enough for the
+            // setup poll to carry the verdict in before the attempt can launch.
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            await rawAcquire(key, image, envBody, acquiredJob);
+        };
+
+        const started = drive({ ...board, runner, gates });
+        // Let the setup-poll heartbeat carry the stop in while the acquire is pending.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await started;
+        // The abandoned beginGates settles on its own timer and releases the environment then.
+        await new Promise((resolve) => setTimeout(resolve, 40));
+
+        expect(stack.released).toHaveLength(1);
+        expect(stack.acquired).toHaveLength(1);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
     // Remove's defensive half this side of the fence: the only way a heartbeat sees a 404 is the
     // board having deleted the thread while this attempt ran. The container dies, and nothing is
     // parked or reported — there is no row left to park and nobody left to read a verdict. (The

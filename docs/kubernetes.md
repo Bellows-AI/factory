@@ -296,7 +296,11 @@ handover must be clean. Two terminal pre-run refusals — a `.bellows.yaml` that
 gates this driver cannot run — complete the job without ever reaching the runner, whose
 cleanup is the ordinary release path, so the loop hands the fence back explicitly through the
 Runner's optional `releaseFence` (this executor's ownership-checked claim release; docker
-implements nothing, its sweep leaves nothing behind).
+implements nothing, its sweep leaves nothing behind). A stop that lands mid-sync (issue #126)
+abandons the sync Job to its own cleanup instead: a failed sync releases itself as above, and a
+SUCCESSFUL one has nothing left live, so the loop chains the same `releaseFence` onto the
+sync's answer — until then the claim stays held, which is what keeps a replacement's sync off
+the tree this one may still be writing.
 The
 sync is the worktree script as an aux Job — the executor image (which carries node and git) over
 a read-WRITE PVC mount, the three paths the script needs as literal env, the claim env by a
