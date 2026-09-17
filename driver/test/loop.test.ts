@@ -1104,6 +1104,86 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // The setup-phase kill is best-effort reclamation — no container was ever spawned. Awaited,
+    // a slow or unresponsive daemon holds `beating`, and with it settle() and the stop's park,
+    // past the setup poll period: the row sits `running` with nothing to wait out. The park must
+    // land while the kill is still in flight, not after it.
+    it('parks a stopped setup without waiting out the teardown kill', async () => {
+        const board = stubBoard([job(1)], { cancelRequested: true });
+        let releaseKill = () => {};
+        let killSettled = false;
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        runner.kill = async (killed) => {
+            runner.killed.push(killed.id);
+            // Held until the park has landed: a stand-down that waits on this kill fails here.
+            await new Promise<void>((resolve) => {
+                releaseKill = () => {
+                    killSettled = true;
+                    resolve();
+                };
+            });
+        };
+        let parkedBeforeKill = false;
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            parkedBeforeKill = !killSettled;
+            releaseKill();
+            return rawSuspend(claimed);
+        };
+
+        await drive({ ...board, runner });
+
+        expect(parkedBeforeKill).toBe(true);
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    }, 2_000);
+
+    // A stop that lands after beginGates has handed back a session but before the caller's own
+    // down-check takes the early stand-down return skips the run try's cleanup finally — the
+    // session this caller holds would stay registered and its environment never released. The
+    // localized release must run before the fence goes back and the attempt stands down.
+    it('releases the gate session when the stand-down lands after beginGates returns it', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const { stack, gates } = stubGateStack();
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must not spawn');
+        });
+        // The first beat parks inside the board stub; advertiseUrl resolves it from inside
+        // beginGates' final stretch — queuing the verdict's flag-set between beginGates' own
+        // clean check and the caller's check, the exact window the leak lives in.
+        let landBeat = () => {};
+        const firstBeat = new Promise<void>((resolve) => {
+            landBeat = resolve;
+        });
+        let beat = 0;
+        const rawHeartbeat = board.board.heartbeat.bind(board.board);
+        board.board.heartbeat = async (claimed) => {
+            beat += 1;
+            if (beat === 1) {
+                await firstBeat;
+                return { result: 'held', cancelRequested: true };
+            }
+            return rawHeartbeat(claimed);
+        };
+        gates.advertiseUrl = (port) => {
+            landBeat();
+            return `http://host.docker.internal:${port}`;
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(stack.registered).toBe(1);
+        expect(stack.unregistered).toBe(1);
+        expect(stack.released).toHaveLength(1);
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
     // Remove's defensive half this side of the fence: the only way a heartbeat sees a 404 is the
     // board having deleted the thread while this attempt ran. The container dies, and nothing is
     // parked or reported — there is no row left to park and nobody left to read a verdict. (The

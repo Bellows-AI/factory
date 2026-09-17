@@ -234,7 +234,16 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         // The flag lands before the kill: the setup races read the abort signal,
                         // so a slow teardown never holds the stand-down in place.
                         state.abortNow();
-                        await runner.kill(job);
+                        if (state.launched) {
+                            await runner.kill(job);
+                        } else {
+                            // Before the spawn there is no container — the kill is best-effort
+                            // reclamation, and both executors swallow its rejections. Awaited,
+                            // an unresponsive daemon would hold `beating`, and with it settle()
+                            // and the stop's park, past the setup poll period. Settlement must
+                            // not wait on it; the kill still runs, unobserved.
+                            void runner.kill(job).catch(() => {});
+                        }
                     }
                 }
                 if (state.finished || down(state)) return;
@@ -566,6 +575,17 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             }
         };
 
+        /*
+         * One gate session's teardown: the environment goes back to its cooldown, and the token
+         * dies with the attempt — a follow-up's claim registers its own. Shared by the run's
+         * cleanup finally and the stand-down branch after beginGates, whose early return
+         * bypasses that finally.
+         */
+        const releaseGateSession = (session: GateSession): void => {
+            gates?.server.unregister(session.token);
+            gates?.manager.release(session.key);
+        };
+
         try {
             log(
                 `job ${job.id}: attempt ${job.attempts} ` +
@@ -747,6 +767,14 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 const gateOut = await raceStep(state, beginGates(job, state));
                 gateSession = gateOut === null ? null : gateOut.value;
                 if (down(state)) {
+                    // This return skips the run try's cleanup finally below, so a session the
+                    // caller now holds is released here — the same teardown the finally makes,
+                    // not a duplicate: beginGates' own checks released only what existed before
+                    // it handed the session back.
+                    if (gateSession) {
+                        releaseGateSession(gateSession);
+                        gateSession = null;
+                    }
                     await runner.releaseFence?.(job);
                     return standDown();
                 }
@@ -1000,12 +1028,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''})`
                 );
             } finally {
-                // Either way the environment goes back to its cooldown, and the token dies with the
-                // attempt: a follow-up's claim registers its own.
-                if (gateSession) {
-                    gates?.server.unregister(gateSession.token);
-                    gates?.manager.release(gateSession.key);
-                }
+                if (gateSession) releaseGateSession(gateSession);
             }
         } catch (e) {
             // The container never ran — docker is missing, or the daemon refused. Deliberately NOT
