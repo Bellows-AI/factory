@@ -5,13 +5,16 @@ import { reportUnauthenticated } from './useSession.js';
 const LIST_LIMIT = 30;
 
 /**
- * The board's finished runs, for the dashboard's recently-completed view.
+ * The board's finished TASKS, for the dashboard's recently-completed view — one row per task, not
+ * per run (issue 124): the server groups the terminal rows by thread, so a conversation with
+ * follow-ups is one row whose wall clock is the thread's total and whose summary is the newest
+ * run's.
  *
  * A second, slower poll of the list the tasks pages use — slower because the dashboard is a
  * report, not a chat: a quiet board's answer barely changes in thirty seconds. The
  * `status=terminal` filter is the SERVER's (the same set the thread-done computation uses),
  * so the limit bounds exactly the rows this hook returns — a busy queue cannot hide finished
- * runs behind queued ones the way a client-side filter over a newest-N window would. The same
+ * tasks behind queued ones the way a client-side filter over a newest-N window would. The same
  * discipline as `useJobs`: one abortable chain, the last good answer survives a failed tick,
  * 401s go to the gate, and leaving the dashboard tears the chain down.
  */

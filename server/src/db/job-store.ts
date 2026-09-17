@@ -191,18 +191,18 @@ export interface Job {
     /**
      * The wall clock THIS row's own attempts banked (024) — the executed segments accumulated
      * at the settle points, never the time a queued row sat waiting. The thread's total is
-     * `taskWallClockMs` below; this is the run's own figure, served on every read so the
-     * recently-completed view can show what one run cost. Null where nothing was ever banked
-     * for the row — never zero, which would claim a measurement that was never made.
+     * `taskWallClockMs` below; this is the run's own figure — the row's own on the per-run
+     * reads, the chain head's own on the grouped terminal list. Null where nothing was ever
+     * banked for the row — never zero, which would claim a measurement that was never made.
      */
     wallClockMs: number | null;
     /**
      * The wall clock the task's WHOLE thread has banked — every executed segment of every run,
      * accumulated by the board at the settle points (claim, the dead retirement, the verdict,
      * the suspend park) into `wall_clock_ms` and summed over the thread by the read. Served by
-     * `thread()` only: the task view's head is where the overall clock renders, and the list has
-     * no surface for it. Null where nothing has accumulated — never zero, which would claim a
-     * measurement that was never made.
+     * `thread()` and by the grouped terminal list, whose rows ARE tasks (#124) — the figure the
+     * task view's head clock and the recently-completed panel both render. Null where nothing
+     * has accumulated — never zero, which would claim a measurement that was never made.
      */
     taskWallClockMs: number | null;
 }
@@ -596,11 +596,18 @@ export interface JobStore {
      * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose
      * `activity` line is the live summary the nav and task view render (issue #61).
      *
-     * `status: 'terminal'` is the one pseudo-value: every settled verdict at once
-     * (`succeeded`/`failed`/`dead`/`stopped` — the same set the thread-done computation
-     * uses), so the recently-completed view can bound its request to rows it will actually
-     * show, instead of filtering a newest-N window client-side and losing finished runs
-     * behind a busy queue.
+     * `status: 'terminal'` is the one pseudo-value, and its answer is grouped as one row per
+     * TASK, not per run (#124): the settled verdicts (`succeeded`/`failed`/`dead`/`stopped` —
+     * the same set the thread-done computation uses) are folded by `root_job_id`, so a finished
+     * conversation with follow-ups is one row. Identity fields are the ROOT's (id, command,
+     * author, created), present-tense fields the chain HEAD's (status, summary, runtime,
+     * session, started) — the rule the sidenav's `chainHead` already applies — and the wall
+     * clock and completion stamp are the thread's (sum and max over the members); `doneAt`
+     * comes from whichever member carries the thread's done. A thread with a member still
+     * queued, running or parked is not completed and is excluded whole. Ordering is by the
+     * thread's newest completion, and the limit bounds tasks. The per-run lists (no status,
+     * one named status) keep their row-per-run contract — the tasks pages and sidenav group on
+     * the client.
      */
     list(filter: {
         status?: JobStatus | 'terminal' | undefined;
@@ -661,7 +668,8 @@ interface JobRow {
     finished_at: Date | null;
     /** Selected by every read (the list and detail serve it); bigint reads back as a string. */
     wall_clock_ms?: string | null;
-    /** Only thread() selects it; bigint (and the sum over it) read back as a string. */
+    /** Only thread() and the grouped terminal list select it; bigint (and the sum over it) read
+     * back as a string. */
     task_wall_clock_ms?: string | null;
 }
 
@@ -1922,32 +1930,101 @@ export function createJobStore({
 
         async list({ status, repo, limit }) {
             await gate();
+            // The recently-completed view asks for TASKS, not runs (#124): the terminal set folds
+            // into one row per thread. Identity (id, command, author, created) comes from the
+            // root; the present tense (status, summary, runtime, session, started) from the HEAD
+            // — the newest member, the same resolution `chainHead` renders in the sidenav; the
+            // clock and the completion stamp are the thread's sum and max; the done comes from
+            // whichever member carries it (one done is the thread's). A thread with a member
+            // still queued, running or parked is not completed and is excluded whole — which
+            // also makes the sum exact, because nothing in it is still banking.
+            if (status === 'terminal') {
+                const rows = await sql<JobRow[]>`
+                    with finished_thread as (
+                        -- The rollup rides the terminality scan: one read of the org's history
+                        -- answers both the settled-verdict filter and the per-thread clock and
+                        -- completion stamps. The order+limit below therefore binds to AGGREGATE
+                        -- rows, and the per-thread head and actor resolution afterwards runs for
+                        -- the selected tasks alone — not once per thread the retention keeps.
+                        select root_job_id,
+                               sum(wall_clock_ms) as task_wall_clock_ms,
+                               max(done_at) as done_at,
+                               max(finished_at) as finished_at
+                        from job
+                        where org_id = ${orgId}
+                        group by root_job_id
+                        having count(*) filter (
+                            where status not in ('succeeded', 'failed', 'dead', 'stopped')
+                        ) = 0
+                    ),
+                    picked as (
+                        select finished_thread.root_job_id as root_job_id,
+                               finished_thread.task_wall_clock_ms as task_wall_clock_ms,
+                               finished_thread.done_at as done_at,
+                               finished_thread.finished_at as finished_at
+                        from finished_thread
+                        join job on job.org_id = ${orgId} and job.id = finished_thread.root_job_id
+                        ${repo ? sql`where job.repo = ${repo}` : sql``}
+                        order by finished_thread.finished_at desc, job.created_at desc, job.id
+                        limit ${limit}
+                    )
+                    select job.id as id, job.command as command, head.status as status,
+                           head.attempts as attempts, head.max_attempts as max_attempts,
+                           head.claimed_by as claimed_by, job.created_by as created_by,
+                           head.session_id as session_id, head.remote_session_id as remote_session_id,
+                           head.exit_code as exit_code, head.summary as summary, head.runtime as runtime,
+                           head.wall_clock_ms as wall_clock_ms,
+                           job.repo as repo, job.executor as executor,
+                           job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
+                           job.workflow_node as workflow_node,
+                           picked.done_at as done_at, head.cancel_requested_at as cancel_requested_at,
+                           job.created_at as created_at, head.started_at as started_at,
+                           picked.finished_at as finished_at,
+                           picked.task_wall_clock_ms as task_wall_clock_ms
+                           ${authorColumns}
+                    from picked
+                    join job on job.org_id = ${orgId} and job.id = picked.root_job_id
+                    join lateral (
+                        select h.*
+                        from job h
+                        where h.org_id = ${orgId} and h.root_job_id = job.root_job_id
+                        order by h.created_at desc, h.id desc
+                        limit 1
+                    ) head on true
+                    -- The authorship joins, aimed per member: the author is the thread's (the
+                    -- root's — a follow-up's creator is forced to the parent's), the stopper the
+                    -- head's (the status is the head's verdict), the doner the member carrying
+                    -- the thread's done. The shared authorJoin cannot be reused here: it binds
+                    -- su/du to the row's own stopped_by/done_by, which in this query is the
+                    -- root's.
+                    left join app_user cu on cu.id = job.created_by
+                    left join app_user su on su.id = head.stopped_by
+                    left join app_user du on du.id = (
+                        select d.done_by from job d
+                        where d.org_id = ${orgId} and d.root_job_id = job.root_job_id
+                          and d.done_by is not null
+                        order by d.done_at desc, d.id desc
+                        limit 1
+                    )
+                    order by picked.finished_at desc, job.created_at desc, job.id
+                `;
+                return rows.map(toJob);
+            }
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, runtime, repo, executor,
                        parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
-                       -- The recently-completed view is the list's new surface: the run's own
-                       -- banked clock and the close-time summary ride beside the vitals, both
-                       -- bounded where output is not (#109).
+                       -- The close-time summary and the run's own banked clock ride beside the
+                       -- vitals, both bounded where output is not (#109).
                        summary, wall_clock_ms
                        ${authorColumns}
                 from job ${authorJoin}
                 where org_id = ${orgId} ${
-                    status === 'terminal'
-                        ? sql`and status in ('succeeded', 'failed', 'dead', 'stopped')`
-                        : status
-                          ? sql`and status = ${status}`
-                          : sql``
+                    // The terminal set is the branch above; this query is the per-run lists.
+                    status ? sql`and status = ${status}` : sql``
                 }
                   ${repo ? sql`and repo = ${repo}` : sql``}
-                order by ${
-                    // The recently-completed panel asks for terminal jobs: newest COMPLETION
-                    // first. `created_at` order permanently buries an old job that finished
-                    // after many newer ones — the row is past the limit before it is done.
-                    status === 'terminal'
-                        ? sql`job.finished_at desc, job.created_at desc, job.id`
-                        : sql`job.created_at desc, job.id`
-                }
+                order by job.created_at desc, job.id
                 limit ${limit}
             `;
             return rows.map(toJob);

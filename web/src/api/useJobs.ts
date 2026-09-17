@@ -6,6 +6,12 @@ import { reportUnauthenticated } from './useSession.js';
  * is null until a `useJob` detail poll fills it in. Copied rather than imported: `core` does not
  * know the job board exists, and the pattern `useWorkspace.ts` established is to own the shape the
  * page renders.
+ *
+ * On the grouped terminal rows (`GET /api/jobs?status=terminal`, the recently-completed view) one
+ * row IS one task (issue 124): identity fields are the thread root's (id, command, author,
+ * createdAt), present-tense fields the chain head's (status, summary, runtime, sessionId,
+ * startedAt), and the wall clock and completion stamp are the thread's sum and max. The per-run
+ * lists (tasks pages, sidenav) carry plain per-run rows and group on the client.
  */
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
@@ -130,13 +136,15 @@ export interface Job {
     /**
      * The wall clock THIS run's own attempts banked — the executed segments the board
      * accumulated at its settle points. Null where nothing was ever banked for the row (a run
-     * that never executed); the thread's total is `taskWallClockMs` below.
+     * that never executed); the thread's total is `taskWallClockMs` below. On the grouped
+     * terminal rows this is the chain head run's own clock.
      */
     wallClockMs: number | null;
     /**
      * The wall clock the task's whole thread has banked — every executed segment of every run,
-     * accumulated by the board and served on the thread read. Null where nothing has
-     * accumulated; the head's clock renders a dash there, never a zero.
+     * accumulated by the board and served on the thread read and on the grouped terminal rows
+     * of the recently-completed view. Null where nothing has accumulated; the head's clock
+     * renders a dash there, never a zero.
      */
     taskWallClockMs: number | null;
     sessionId: string | null;

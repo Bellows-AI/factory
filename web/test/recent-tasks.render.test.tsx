@@ -50,6 +50,7 @@ describe('recently completed panel', () => {
                     job({
                         summary: 'Fixed the failing gates and pushed',
                         wallClockMs: 1_200_000,
+                        taskWallClockMs: 1_200_000,
                         runtime: { contextTokens: 90433, costUsd: 0.31, activity: null, sampledAt: '' },
                     }),
                 ]}
@@ -62,6 +63,17 @@ describe('recently completed panel', () => {
         expect(html).toContain('90.4k');
         expect(html).toContain('20m');
         expect(html).not.toContain('NaN');
+    });
+
+    it("renders the thread wall clock, not the head run's own slice", () => {
+        // One row per task (issue 124): the row carries the head run's own banked clock beside the
+        // thread total, and the panel shows the thread figure — what the task view's head clock
+        // shows.
+        const html = renderToStaticMarkup(
+            <RecentTasksPanel jobs={[job({ wallClockMs: 300_000, taskWallClockMs: 1_200_000 })]} error={null} />
+        );
+        expect(html).toContain('20m');
+        expect(html).not.toContain('5m');
     });
 
     it('falls back to the command when the run left no summary', () => {
