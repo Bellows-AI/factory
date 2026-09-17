@@ -243,9 +243,11 @@ instant fake clock cannot see it, so `loop.test.ts` models a period that never e
 
 **The board banks the task's wall clock at its own settle points.** `job.wall_clock_ms` (024)
 accumulates the milliseconds each row actually spent executing, and the task view's head clock is
-the thread's sum of them (`taskWallClockMs`, served by the thread read; `get`/`list` carry the ROW's
-own banked total as `wallClockMs`, which is what the recently-completed view renders — the thread
-sum stays thread-only).
+the thread's sum of them (`taskWallClockMs`, served by the thread read; `get` and the per-run
+lists carry the ROW's own banked total as `wallClockMs`). The terminal list is grouped as one row
+per task (#124), and its wall clock is the thread sum — the figure the recently-completed view
+renders, matching the task view's head clock; the exclusion of threads with a still-moving member
+is what keeps that sum exact, because nothing in it is still banking.
 Every statement that ends or supersedes a running attempt — the claim, the dead retirement, the
 verdict, the suspend park — adds `started_at → now()` to the row's total in the same breath, which
 is the only moment it can: `started_at` resetting on every claim is exactly what would otherwise
@@ -631,7 +633,10 @@ dashboard's recently-completed view; the command records what was asked, never w
 - **The summary is prose, bounded, and null is the contract for none**: a run cut off
   mid-tool-call has no final text, and null means exactly that — never an empty string, never a
   fabricated line. The driver truncates to one line (400 characters) and the completing route
-  re-bounds it; the board's list read carries it for the recently-completed view (#109).
+  re-bounds it; the board's list read carries it for the recently-completed view (#109). Since
+  the terminal list became one row per task (#124), the summary a thread shows there is the HEAD
+  run's — the conversation's last words, the same present-tense rule the sidenav follows — and a
+  null head summary falls back to the root command in the panel, never to an older turn's words.
 - **Null is the contract for unmeasured**: a read that failed, a run killed before it, a
   transcript that is gone — all store null, never zero. A genuine zero-response run stores 0.
   The task statistics exclude a task with any unmeasured in-range run from the agent-turn
@@ -712,6 +717,15 @@ composite is SERVED rather than re-derived — the thread read, the claim's work
 thread-exclusion, the verdict's terminality and remove's whole-thread delete all key off it, and
 the `/api/jobs` list carries it so the UI can resolve any turn to its task even when the poll's
 capped window no longer holds the root row itself.
+
+**The terminal list groups by it too (#124).** `GET /api/jobs?status=terminal` answers one row per
+TASK, not per run: the settled verdicts fold by `root_job_id`, identity fields from the root,
+present-tense fields (status, summary, runtime, session, started) from the chain head — the newest
+member, the `chainHead` rule the sidenav renders — the wall clock and the completion stamp the
+thread's sum and max, and the done from whichever member carries it. A thread with a member still
+queued, running or parked is not completed and is excluded whole; ordering is by the thread's
+newest completion, and the limit bounds tasks. The recently-completed dashboard panel is the
+consumer; the per-run lists the tasks pages poll are unchanged.
 
 **A follow-up is the author's, because of where the resumed session would run.** The child inherits
 the parent's `session_id`, and a session resumes only coherently in the checkout tree it ran in —
