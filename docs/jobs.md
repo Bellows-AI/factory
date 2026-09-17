@@ -29,7 +29,10 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
   follow-up now; there is no park resume
   spawn the runner with the command, as that session
   (claude-code mints and reports a session uuid; opencode reports the id it used, scraped at close — see below)
-  POST /api/jobs/:id/heartbeat {leaseToken}     every leaseSeconds/3, while it runs
+  POST /api/jobs/:id/heartbeat {leaseToken}     every leaseSeconds/3 while the runner runs,
+                                                every ~2s while the attempt is still setting up —
+                                                a stop issued into the setup must not wait out a
+                                                beat period or a checkout sync (see Stop)
      200 {leaseExpiresAt, cancelRequested}: false on an ordinary beat, true when the
      user asked to park this run (see Stop) — the kill order of a different kind
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
@@ -47,8 +50,12 @@ POST /api/jobs/:id/suspend  {leaseToken}        -> the board lands the park by i
 
 **Person-gated routes meet the same loop through the same states.** `POST /api/jobs/:id/stop`
 ends a task's turn — queued or already-parked rows settle `stopped` directly, a moving run answers
-`202 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the beat above,
-kills its runner and suspends, which lands `stopped` under the stamp. `POST /api/jobs/:id/remove`
+`202 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the heartbeat above —
+fast while the attempt is still setting up, at the lease's third once the runner runs — kills its
+runner and suspends, which lands `stopped` under the stamp. A stop issued while the row is between
+claim and spawn — the window the task view renders as "Waiting for the executor…" — is answered by
+that setup-phase poll: the driver stands down without spawning anything, and the row settles
+`stopped` at once (issue #126). `POST /api/jobs/:id/remove`
 deletes the whole thread and hands the driver the worktree to remove through a separate queue (see
 the sections below).
 
@@ -239,7 +246,13 @@ name-uniqueness primitive to build that claim from — one driver per daemon, an
 **The heartbeat is raced against the run finishing, not simply slept.** The beat period is a third
 of the lease — 100s by default — and awaiting it before reporting left every finished job sitting
 in `running` for a minute and a half. Found by running the driver for real; a unit test with an
-instant fake clock cannot see it, so `loop.test.ts` models a period that never elapses.
+instant fake clock cannot see it, so `loop.test.ts` models a period that never elapses. The FIRST
+beat of an attempt fires the moment the attempt exists, not after a period, and the period is ~2s
+until the runner has spawned and a third of the lease afterwards (issue #126): the setup phase —
+the checkout sync, the gate environment, the services network — is exactly where a stop used to sit
+unobserved for minutes. The fast setup poll also renews the lease through a sync that outlives it, which the old heartbeat
+— started only when the run began — never did: a long fetch no longer expires the attempt
+mid-sync.
 
 **The board banks the task's wall clock at its own settle points.** `job.wall_clock_ms` (024)
 accumulates the milliseconds each row actually spent executing, and the task view's head clock is
@@ -762,9 +775,12 @@ talking: the row settles `stopped` — terminal, its session kept — so the fol
 what the member sees next, and the conversation continues from exactly where it was cut. There is
 no resume and no park. A queued row (never started) or an already-parked one settles `stopped`
 directly (the answer is `{ status: 'stopped' }`); a `running` row answers
-`{ status: 'running', cancelRequestedAt }` and the request is delivered by the worker's next
-heartbeat — the `cancelRequested` flag — exactly the way a lost lease is delivered, and by the same
-kill; the `suspend` that honours it lands `stopped` under the stamp. The loading of the `running`
+`{ status: 'running', cancelRequestedAt }` and the request is delivered by the worker's heartbeat —
+the `cancelRequested` flag — exactly the way a lost lease is delivered, and by the same kill. While
+the attempt is still setting up the heartbeat polls at ~2s, so a stop issued into the
+"Waiting for the executor…" window stands the attempt down before the runner spawns and lands
+`stopped` within seconds, not minutes (issue #126); the `suspend` that honours it lands `stopped`
+under the stamp. The loading of the `running`
 answer makes a stop idempotent: asking twice before the worker settles answers the same instant. A
 row that already ended answers `409 NOT_STOPPABLE` — there is no turn left to stop, and the task's
 own verdicts are the ones that outlived the run. The verdict has an actor now (025): `stopped_by`
@@ -954,11 +970,20 @@ and with it the checkout — is still held through the run: no handover, no wind
 Job is deleted on
 every exit path either way — a Job left to its kubelet deadline could overlap a replacement's
 sync on
-the shared tree. Two terminal pre-run refusals never reach `runner.run`, whose cleanup is the
+the shared tree. A STOP that lands mid-sync (issue #126) does not wait out the git either: the
+attempt's slow setup steps are raced against its heartbeat, and a stop that wins abandons the
+sync to its own cleanup and stands the attempt down before anything spawns — the row settles
+`stopped` while the fetch may still be running, and there is no container to wait out. The
+abandoned sync's own arms own the checkout: a failure takes the Job down and releases the claim
+inside the runner (above); a success has nothing left live, so the loop's chained release hands
+the checkout back once the answer is in — ownership-checked, never touching a claim that moved
+on. Two terminal pre-run refusals never reach `runner.run`, whose cleanup is the
 ordinary release path — a gates file that cannot be read, and gates this driver cannot run —
 so the loop hands the fence back explicitly (kubernetes's ownership-checked claim release;
 docker holds nothing) before failing the job: a refusal that never runs must not hold the
-checkout forever. Two conflicts
+checkout forever. The same handback covers every other no-run exit the loop gained — a stop, a
+lost lease or a Remove observed after an ok sync: the claim would otherwise sit on the checkout
+with no attempt ever to release it. Two conflicts
 still dead-end the attempt, with the work preserved and named: a rebase whose COMMITS conflict
 aborts itself (the worktree must never sit mid-rebase), and a rebase whose reapplied STASH
 conflicts leaves the markers and the retained autostash in the tree and refuses — a tree with

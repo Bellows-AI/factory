@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Board, BoardJob, LeaseState, Reclaim, ReclaimAck, RuntimeReport } from './board.js';
+import type { Board, BoardJob, HeartbeatVerdict, LeaseState, Reclaim, ReclaimAck, RuntimeReport } from './board.js';
 import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
@@ -44,6 +44,16 @@ const REMOTE_LOOKUPS = 40;
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;
 
+/**
+ * How often the heartbeat polls while the attempt is still SETTING UP — before the runner exists.
+ * The run phase paces its beats at a third of the lease (100s at the default), which would leave a
+ * Stop issued while the dashboard says "Waiting for the executor…" unobserved for a minute and a
+ * half — through the whole checkout sync and gate-environment boot (issue #126). The setup phase
+ * polls at this pace instead, so a stop there is answered — the attempt stands down without
+ * spawning — within one period, and the row settles `stopped` right away.
+ */
+const SETUP_POLL_MS = 2_000;
+
 interface JobState {
     finished: boolean;
     lost: boolean;
@@ -59,9 +69,22 @@ interface JobState {
      * belongs to the queue's reclaim.
      */
     removed: boolean;
+    /**
+     * True once `runner.run` has been called. The heartbeat paces itself at `SETUP_POLL_MS` until
+     * this turns — a verdict arriving during the setup phase must be answered in seconds, not a
+     * beat period — and at the lease's third afterwards (issue #126).
+     */
+    launched: boolean;
     /** Resolves the moment the run ends, so the heartbeat can stop waiting out its period. */
     woken: Promise<void>;
     wake: () => void;
+    /**
+     * Resolves the moment any verdict ends the attempt where it stands — stop, lost lease, Remove.
+     * The setup races (raceStep) wait on this, so a slow sync or gate boot stops holding a
+     * stand-down in place.
+     */
+    abort: Promise<void>;
+    abortNow: () => void;
 }
 
 /**
@@ -99,7 +122,46 @@ function newJobState(): JobState {
     const woken = new Promise<void>((resolve) => {
         wake = resolve;
     });
-    return { finished: false, lost: false, stopped: false, removed: false, woken, wake };
+    let abortNow = () => {};
+    const abort = new Promise<void>((resolve) => {
+        abortNow = resolve;
+    });
+    return {
+        finished: false,
+        lost: false,
+        stopped: false,
+        removed: false,
+        launched: false,
+        woken,
+        wake,
+        abort,
+        abortNow,
+    };
+}
+
+/** The verdicts that end an attempt where it stands: a stop, a lost lease, a removed thread. */
+const down = (state: JobState): boolean => state.stopped || state.lost || state.removed;
+
+/** The loser side of every setup race: the stand-down resolved, the step did not. */
+const RACE_LOST = Symbol('raceStep: the stand-down won');
+
+/**
+ * Races one slow setup step against the attempt's stand-down, so a Stop (or a lost lease, or a
+ * Remove) observed while the driver is "waiting for the executor" ends the wait within a
+ * heartbeat's setup poll instead of the step's own unbounded duration (issue #126). Answers null
+ * when the stand-down won and the step is STILL RUNNING: the caller stands the attempt down and
+ * the step is abandoned to its own cleanup — which is why a rejection is swallowed here, the
+ * abandoned step's finally is the only cleanup it needs and its verdict is nobody's business
+ * anymore. A step that finished first answers `{ value }` even when the stand-down landed in the
+ * same instant — the caller's own flag check decides.
+ */
+async function raceStep<T>(state: JobState, step: Promise<T>): Promise<{ value: T } | null> {
+    // A side-band subscriber, so the loser of the race can never become an unhandled rejection:
+    // subscribing neither consumes the step from the race nor changes its result.
+    step.catch(() => {});
+    const lost = state.abort.then((): typeof RACE_LOST => RACE_LOST);
+    const outcome: T | typeof RACE_LOST = await Promise.race([step, lost] as const);
+    return outcome === RACE_LOST ? null : { value: outcome };
 }
 
 export function createLoop({ board, runner, config, gates, log = () => {}, sleep = wait }: LoopDeps): Loop {
@@ -109,8 +171,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
     /*
      * In-flight worktree reclaims, keyed by the thread's ROOT id (`rootJobId ?? id`, the same
      * reading worktreeRelDir uses — the key the task worktree itself is filed under). report()
-     * registers the reclaim here before it starts and drops the entry when it settles; the claim
-     * loop awaits a job's root entry before its startup sync, so a follow-up claimed while the
+     * registers the reclaim here before it starts and drops the entry when it settles; the
+     * attempt waits on its root's entry before its startup sync (runJob, issue #126 moved the
+     * wait in from the claim loop), so a follow-up claimed while the
      * thread's tree is being removed waits out the removal instead of syncing against it. This
      * closes the race for reclaims and claims that both leave THIS driver; it cannot close it
      * across drivers — docker's documented bound is one driver per daemon (docs/jobs.md), and
@@ -121,6 +184,11 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
 
     /**
      * Beats until the run finishes.
+     *
+     * The beat comes FIRST, not after a full period: the stop flag is read the moment the attempt
+     * exists, so the first observation never waits out a whole lease third (issue #126). The pace
+     * is `SETUP_POLL_MS` while the runner has not spawned — the phase a stop must interrupt in
+     * seconds — and a third of the lease once it has.
      *
      * A 409 means the lease was reclaimed while this container was still working: the job belongs
      * to another worker now, so this one is killed rather than left to finish and report. The board
@@ -134,35 +202,56 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
     function heartbeat(job: BoardJob, state: JobState): Promise<void> {
         const every = Math.max(1_000, Math.floor((config.leaseSeconds * 1000) / 3));
         return (async () => {
-            while (!state.finished && !state.lost && !state.stopped && !state.removed) {
-                // Raced against the run finishing, not simply awaited. The beat period is a third
-                // of the lease — 100s at the default — and a plain sleep would hold every finished
-                // job for the remainder of it before its result could be reported.
-                await Promise.race([sleep(every), state.woken]);
-                if (state.finished) return;
-                let verdict;
+            let complained = false;
+            while (!state.finished && !down(state)) {
+                let verdict: HeartbeatVerdict | undefined;
                 try {
                     verdict = await board.heartbeat(job);
+                    complained = false;
                 } catch (e) {
                     // A board that is briefly unreachable is not a lost lease. Keep working: the
                     // lease outlives several missed beats, and giving up here would kill a run
-                    // over one failed request.
-                    log(`job ${job.id}: heartbeat failed, continuing: ${(e as Error).message}`);
-                    continue;
+                    // over one failed request. Rate-limited to the first failure in a row — at
+                    // the setup poll's pace a long outage must not write a log line every two
+                    // seconds.
+                    if (!complained) {
+                        complained = true;
+                        log(`job ${job.id}: heartbeat failed, continuing: ${(e as Error).message}`);
+                    }
                 }
-                if (verdict === 'lost') {
-                    state.lost = true;
-                    log(`job ${job.id}: lease lost, killing the runner`);
-                    await runner.kill(job);
-                } else if (verdict === 'removed') {
-                    state.removed = true;
-                    log(`job ${job.id}: removed while it ran, killing the runner`);
-                    await runner.kill(job);
-                } else if (verdict.cancelRequested) {
-                    state.stopped = true;
-                    log(`job ${job.id}: stop requested, killing the runner`);
-                    await runner.kill(job);
+                if (verdict !== undefined) {
+                    if (verdict === 'lost') {
+                        state.lost = true;
+                        log(`job ${job.id}: lease lost, killing the runner`);
+                    } else if (verdict === 'removed') {
+                        state.removed = true;
+                        log(`job ${job.id}: removed while it ran, killing the runner`);
+                    } else if (verdict.cancelRequested) {
+                        state.stopped = true;
+                        log(`job ${job.id}: stop requested, killing the runner`);
+                    }
+                    if (down(state)) {
+                        // The flag lands before the kill: the setup races read the abort signal,
+                        // so a slow teardown never holds the stand-down in place.
+                        state.abortNow();
+                        if (state.launched) {
+                            await runner.kill(job);
+                        } else {
+                            // Before the spawn there is no container — the kill is best-effort
+                            // reclamation, and both executors swallow its rejections. Awaited,
+                            // an unresponsive daemon would hold `beating`, and with it settle()
+                            // and the stop's park, past the setup poll period. Settlement must
+                            // not wait on it; the kill still runs, unobserved.
+                            void runner.kill(job).catch(() => {});
+                        }
+                    }
                 }
+                if (state.finished || down(state)) return;
+                // Raced against the run finishing, not simply awaited. A plain sleep would hold
+                // every finished job for the remainder of the period before its result could be
+                // reported; a settled stop, lease or Remove resolves `abort` for the setup races
+                // and `woken` ends the loop outright.
+                await Promise.race([sleep(state.launched ? every : SETUP_POLL_MS), state.woken]);
             }
         })();
     }
@@ -231,6 +320,10 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             while (!state.finished && !state.lost) {
                 await Promise.race([sleep(PROGRESS_MS), state.woken]);
                 if (state.finished || state.lost) return;
+                // The pump starts with the attempt now, but the runner does not exist until
+                // launch — sampling before that is a daemon lookup per period that can answer
+                // nothing (issue #126 moved the start earlier to cover the setup phase).
+                if (!state.launched) continue;
                 if (!sampling) {
                     sampling = true;
                     runner
@@ -291,7 +384,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * appended after the claim's own lines, where docker's last-wins rule keeps a member-scoped
      * `BELLOWS_GATE_TOKEN` from minting itself a gate credential.
      */
-    async function beginGates(job: BoardJob): Promise<GateSession | null> {
+    async function beginGates(job: BoardJob, state: JobState): Promise<GateSession | null> {
         if (!gates || !job.gates || !job.gates.gates.length || job.gateError) return null;
         // The gates run in the task worktree (issue #35) — the tree the run edits — so the
         // environment is keyed by the worktree path, `<org>/<uuid>/.worktrees/<root id>`. A job
@@ -305,6 +398,12 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         // job and lease labels, and their names are derived from them. The docker manager
         // ignores it.
         await gates.manager.acquire(key, job.gates.image, envBody, job);
+        // A stand-down that landed while the acquire was in flight leaves the environment here:
+        // the caller has stopped waiting and holds no session to release through (issue #126).
+        if (down(state)) {
+            gates.manager.release(key);
+            return null;
+        }
         try {
             const port = await gates.server.listen();
             const token = randomUUID();
@@ -315,6 +414,13 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 BELLOWS_GATE_URL: gates.advertiseUrl(port),
                 BELLOWS_GATE_TOKEN: token,
             };
+            // The same check at the far edge — listen can take its time, and nothing registered
+            // or live may survive a stand-down detected inside this function.
+            if (down(state)) {
+                gates.server.unregister(token);
+                gates.manager.release(key);
+                return null;
+            }
             return { key, token, image: job.gates.image, envBody, declared: job.gates.gates };
         } catch (e) {
             // The container came up but registration did not. Released — not stopped — so the
@@ -401,6 +507,13 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         return null;
     }
 
+    /**
+     * One attempt, end to end: the startup setup (the reclaim barrier, the checkout sync, the
+     * gates re-read, the gate environment) and the run itself. The setup lives here rather than in
+     * the claim loop so the attempt's state — heartbeat, abort signal, cleanup — covers all of it:
+     * a Stop issued while the dashboard says "Waiting for the executor…" interrupts the setup
+     * within one heartbeat poll and stands the attempt down before anything spawns (issue #126).
+     */
     async function runJob(job: BoardJob): Promise<void> {
         const state = newJobState();
         const beating = heartbeat(job, state);
@@ -426,15 +539,51 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                   ? { id: job.resumeSessionId, resume: true }
                   : { id: randomUUID(), resume: false };
 
-        // Only under Remote Control: a headless run registers no bridge, so looking for one would
-        // be forty `docker exec`s that can never find anything. (Remote Control is claude-code
-        // only — the config refuses the combination — and a claude-code job always has a session.)
-        const watching = config.remoteControl && session ? watchRemote(job, session, state) : Promise.resolve();
+        // (Only under Remote Control, assigned at launch — a headless run registers no bridge, so
+        // looking for one would be forty `docker exec`s that can never find anything. Remote
+        // Control is claude-code only — the config refuses the combination — and a claude-code job
+        // always has a session.)
+        let watching: Promise<void> = Promise.resolve();
 
         const settle = async () => {
             state.finished = true;
             state.wake();
             await Promise.all([beating, watching]);
+        };
+
+        /*
+         * Lands a verdict the heartbeat observed before the runner spawned — a Stop, a lost lease
+         * or a Remove that arrived while this attempt was still syncing its checkout or booting
+         * its gate environment (issue #126). A stop parks the row: the board reads its own stop
+         * stamp and settles it `stopped` right away, because there is no container to wait out —
+         * the runner never spawned. A lost lease and a Remove report nothing, exactly as they do
+         * not after a run: the row belongs to its new holder, or to nobody.
+         */
+        const standDown = async (): Promise<void> => {
+            await settle();
+            if (state.stopped) {
+                const verdict = await board.suspend(job);
+                log(
+                    verdict === 'lost'
+                        ? `job ${job.id}: stopped during setup, but the board had already reclaimed it`
+                        : `job ${job.id}: stopped during setup — stood down before the runner spawned, the board has settled the turn`
+                );
+            } else if (state.lost) {
+                log(`job ${job.id}: the lease was lost during setup, leaving the job to its holder`);
+            } else if (state.removed) {
+                log(`job ${job.id}: removed during setup; the queue owns the tree`);
+            }
+        };
+
+        /*
+         * One gate session's teardown: the environment goes back to its cooldown, and the token
+         * dies with the attempt — a follow-up's claim registers its own. Shared by the run's
+         * cleanup finally and the stand-down branch after beginGates, whose early return
+         * bypasses that finally.
+         */
+        const releaseGateSession = (session: GateSession): void => {
+            gates?.server.unregister(session.token);
+            gates?.manager.release(session.key);
         };
 
         try {
@@ -456,6 +605,156 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             }
 
             /*
+             * The reclaim barrier (see `reclaims`): an in-flight removal of THIS thread's
+             * tree is waited out before the sync — the first touch of the task worktree — so
+             * a follow-up claimed while its thread's tree was being deleted never syncs
+             * against, or resurrects work on top of, a tree mid-removal. Raced against the
+             * stand-down like every slow setup step: a removal is unbounded, and a stop
+             * issued into the wait must not wait it out (issue #126).
+             */
+            const inflight = reclaims.get(job.rootJobId ?? job.id);
+            if (inflight) await raceStep(state, inflight);
+            if (down(state)) return standDown();
+
+            /*
+             * Before anything reads the tree — the gates refusal just below, the agent this
+             * run — the task worktree is made ready to run on. A STARTING claim syncs it
+             * with the remote default: fetch, create the worktree branched off
+             * origin/<default> or rebase the existing one onto it, autostashing uncommitted
+             * edits. Clones are created once and otherwise left untouched by the workspace
+             * reconcile, so without this every task after a main update starts from stale
+             * code and a stale gates file. A claim that CONTINUES a session — a follow-up,
+             * or a parked job resumed — RESTORES instead (issue #58): no fetch, no rebase,
+             * the tree kept as the run before it left it or recreated from the surviving
+             * thread branch, because git operations that touch the remote belong to a task's
+             * beginning and end, never its middle. The runners read the claim and pick the
+             * mode. A sync failure fails the
+             * attempt with the reason (the tree's state is unknown enough that running on it
+             * would compound whatever went wrong), the same author's-problem channel the
+             * gates refusal below uses.
+             *
+             * A sync that THROWS is a different outcome and gets the different answer: the
+             * fence each runner now runs inside its sync (docker's sweep, kubernetes's
+             * checkout claim) can refuse this attempt — the claim's stand-down against a
+             * live newer attempt throws by design. That is the fence's verdict, not the
+             * command's, so it is NOT a failed job: the attempt ran nothing, the lease
+             * simply expires and the job is offered again, the same answer a runner that
+             * cannot start gets below.
+             *
+             * The sync is raced against the stand-down (issue #126): it is the slowest thing
+             * an attempt does before the runner exists — a fresh clone of a large repo, a
+             * slow fetch — and a stop issued into it must not wait out the git. A stop that
+             * won the race abandons the sync to its own cleanup and hands the checkout fence
+             * back only once the sync has settled: kubernetes's failure arm releases the
+             * claim inside the runner itself, and a SUCCESSFUL abandoned sync has nothing
+             * left live, so the release chained here is safe — the job's pod is already gone.
+             */
+            const syncing = runner.syncCheckout(job);
+            let syncedOut: { value: SyncResult } | null;
+            try {
+                syncedOut = await raceStep(state, syncing);
+            } catch (e) {
+                await settle();
+                log(`job ${job.id}: checkout sync threw, leaving it to the lease: ${(e as Error).message}`);
+                return;
+            }
+            if (syncedOut === null) {
+                void syncing
+                    .then((result) => {
+                        if (result.ok) return runner.releaseFence?.(job);
+                    })
+                    .catch(() => {});
+                return standDown();
+            }
+            if (down(state)) {
+                // The sync had already finished when the stand-down was observed. An ok sync
+                // holds the checkout (kubernetes's claim) with no run ever to release it, so the
+                // fence goes back here — the same release the terminal refusals below make; a
+                // failed sync released its own claim inside the runner.
+                if (syncedOut.value.ok) await runner.releaseFence?.(job);
+                return standDown();
+            }
+            const synced = syncedOut.value;
+            if (!synced.ok) {
+                await settle();
+                log(`job ${job.id}: checkout sync failed: ${synced.reason}`);
+                await report(job, {
+                    status: 'failed',
+                    exitCode: null,
+                    output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
+                }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                return;
+            }
+
+            /*
+             * The claim's gates decision was read from the tree BEFORE the sync freshened
+             * it — a repository whose `.bellows.yaml` just arrived would run ungated for its
+             * whole first task if the stale answer stood. Re-read now that the tree is
+             * current, and let the refusals below act on what the tree actually holds. Null
+             * (a refused or lost answer) keeps the claim's decision; nothing here is worth a
+             * second writer on the verdict.
+             */
+            const freshOut = await raceStep(state, board.rereadGates(job));
+            if (freshOut === null || down(state)) {
+                // The checkout is fenced and held from here until runner.run's cleanup — every
+                // exit that skips the run hands the fence back first.
+                await runner.releaseFence?.(job);
+                return standDown();
+            }
+            const fresh = freshOut.value;
+            if (fresh) {
+                job.gates = fresh.gates ?? null;
+                job.gateError = fresh.gateError ?? null;
+            } else {
+                log(`job ${job.id}: gates re-read refused, keeping the claim's decision`);
+            }
+
+            /*
+             * A gates file that exists but cannot be honoured is a FAILED job with the reason,
+             * before anything runs. Reading it as "no gates" would run the task and call the
+             * work verified when nothing checked it — the one outcome worse than the failure,
+             * and the reason this is a refusal rather than a fallback.
+             */
+            if (job.gateError) {
+                /*
+                 * The sync took the checkout (kubernetes's claim) and this refusal never
+                 * reaches runner.run, whose cleanup is what releases it — so the fence goes
+                 * back here, ownership-checked inside the runner, before the job is failed
+                 * and the way to a replacement claimant opens. Without this the
+                 * factory-job-<id>-claim ConfigMap would outlive the job indefinitely.
+                 */
+                await runner.releaseFence?.(job);
+                await settle();
+                log(`job ${job.id}: its gates file could not be read, failing`);
+                await report(job, {
+                    status: 'failed',
+                    exitCode: null,
+                    output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
+                }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                return;
+            }
+
+            // Gates need the driver's gate machinery, which exists whenever the stack was
+            // built for the executor — under both executors it is. A driver built without
+            // it gets the honest answer: a named failure, never a run whose declared
+            // checks silently did not happen.
+            if (job.gates?.gates?.length && !gates) {
+                // Same as the gateError refusal above: this branch completes the job without
+                // runner.run, so the checkout the sync fenced is released here, not held
+                // forever by a claim whose attempt never runs.
+                await runner.releaseFence?.(job);
+                await settle();
+                const why = 'this driver was started with no gate environment configured';
+                log(`job ${job.id}: declares gates this driver cannot run, failing`);
+                await report(job, {
+                    status: 'failed',
+                    exitCode: null,
+                    output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
+                }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+                return;
+            }
+
+            /*
              * The gate environment comes up BEFORE the agent does, because the agent's ad-hoc
              * gate calls land mid-run — "partially run tests" happens while the session is
              * working, not after it. A failure here is the author's problem (an image the daemon
@@ -465,7 +764,20 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
              */
             let gateSession: GateSession | null = null;
             try {
-                gateSession = await beginGates(job);
+                const gateOut = await raceStep(state, beginGates(job, state));
+                gateSession = gateOut === null ? null : gateOut.value;
+                if (down(state)) {
+                    // This return skips the run try's cleanup finally below, so a session the
+                    // caller now holds is released here — the same teardown the finally makes,
+                    // not a duplicate: beginGates' own checks released only what existed before
+                    // it handed the session back.
+                    if (gateSession) {
+                        releaseGateSession(gateSession);
+                        gateSession = null;
+                    }
+                    await runner.releaseFence?.(job);
+                    return standDown();
+                }
             } catch (e) {
                 await settle();
                 log(`job ${job.id}: gate environment failed, failing with a reason: ${(e as Error).message}`);
@@ -479,6 +791,17 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 return;
             }
             try {
+                // The last look before the spawn: a verdict landing between the check above and
+                // the runner's own setup would otherwise start a container over a stop the
+                // driver already knows about (issue #126). From here the heartbeat paces itself
+                // at the lease's third — the run phase's rhythm.
+                if (down(state)) {
+                    await runner.releaseFence?.(job);
+                    return standDown();
+                }
+                state.launched = true;
+                watching = config.remoteControl && session ? watchRemote(job, session, state) : Promise.resolve();
+
                 const outcome = await runner.run(job, session, onOutput);
 
                 if (state.lost) {
@@ -705,12 +1028,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                         : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''})`
                 );
             } finally {
-                // Either way the environment goes back to its cooldown, and the token dies with the
-                // attempt: a follow-up's claim registers its own.
-                if (gateSession) {
-                    gates?.server.unregister(gateSession.token);
-                    gates?.manager.release(gateSession.key);
-                }
+                if (gateSession) releaseGateSession(gateSession);
             }
         } catch (e) {
             // The container never ran — docker is missing, or the daemon refused. Deliberately NOT
@@ -944,115 +1262,12 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 }
 
                 /*
-                 * The reclaim barrier (see `reclaims`): an in-flight removal of THIS thread's
-                 * tree is waited out before the sync — the first touch of the task worktree — so
-                 * a follow-up claimed while its thread's tree was being deleted never syncs
-                 * against, or resurrects work on top of, a tree mid-removal.
+                 * The attempt takes it from here — the reclaim barrier, the checkout sync, the
+                 * gates re-read and refusals, the gate environment and the run are all runJob's
+                 * (they moved in from this loop so the attempt's heartbeat and abort signal cover
+                 * the whole setup: a stop issued while the dashboard says "Waiting for the
+                 * executor…" now stands the attempt down within one heartbeat poll, issue #126).
                  */
-                const inflight = reclaims.get(job.rootJobId ?? job.id);
-                if (inflight) await inflight;
-
-                /*
-                 * Before anything reads the tree — the gates refusal just below, the agent this
-                 * run — the task worktree is made ready to run on. A STARTING claim syncs it
-                 * with the remote default: fetch, create the worktree branched off
-                 * origin/<default> or rebase the existing one onto it, autostashing uncommitted
-                 * edits. Clones are created once and otherwise left untouched by the workspace
-                 * reconcile, so without this every task after a main update starts from stale
-                 * code and a stale gates file. A claim that CONTINUES a session — a follow-up,
-                 * or a parked job resumed — RESTORES instead (issue #58): no fetch, no rebase,
-                 * the tree kept as the run before it left it or recreated from the surviving
-                 * thread branch, because git operations that touch the remote belong to a task's
-                 * beginning and end, never its middle. The runners read the claim and pick the
-                 * mode. A sync failure fails the
-                 * attempt with the reason (the tree's state is unknown enough that running on it
-                 * would compound whatever went wrong), the same author's-problem channel the
-                 * gates refusal below uses.
-                 *
-                 * A sync that THROWS is a different outcome and gets the different answer: the
-                 * fence each runner now runs inside its sync (docker's sweep, kubernetes's
-                 * checkout claim) can refuse this attempt — the claim's stand-down against a
-                 * live newer attempt throws by design. That is the fence's verdict, not the
-                 * command's, so it is NOT a failed job: the attempt ran nothing, the lease
-                 * simply expires and the job is offered again, the same answer a runner that
-                 * cannot start gets below.
-                 */
-                let synced: SyncResult;
-                try {
-                    synced = await runner.syncCheckout(job);
-                } catch (e) {
-                    log(`job ${job.id}: checkout sync threw, leaving it to the lease: ${(e as Error).message}`);
-                    continue;
-                }
-                if (!synced.ok) {
-                    log(`job ${job.id}: checkout sync failed: ${synced.reason}`);
-                    await report(job, {
-                        status: 'failed',
-                        exitCode: null,
-                        output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
-                    continue;
-                }
-
-                /*
-                 * The claim's gates decision was read from the tree BEFORE the sync freshened
-                 * it — a repository whose `.bellows.yaml` just arrived would run ungated for its
-                 * whole first task if the stale answer stood. Re-read now that the tree is
-                 * current, and let the refusals below act on what the tree actually holds. Null
-                 * (a refused or lost answer) keeps the claim's decision; nothing here is worth a
-                 * second writer on the verdict.
-                 */
-                const fresh = await board.rereadGates(job);
-                if (fresh) {
-                    job.gates = fresh.gates ?? null;
-                    job.gateError = fresh.gateError ?? null;
-                } else {
-                    log(`job ${job.id}: gates re-read refused, keeping the claim's decision`);
-                }
-
-                /*
-                 * A gates file that exists but cannot be honoured is a FAILED job with the reason,
-                 * before anything runs. Reading it as "no gates" would run the task and call the
-                 * work verified when nothing checked it — the one outcome worse than the failure,
-                 * and the reason this is a refusal rather than a fallback.
-                 */
-                if (job.gateError) {
-                    /*
-                     * The sync took the checkout (kubernetes's claim) and this refusal never
-                     * reaches runner.run, whose cleanup is what releases it — so the fence goes
-                     * back here, ownership-checked inside the runner, before the job is failed
-                     * and the way to a replacement claimant opens. Without this the
-                     * factory-job-<id>-claim ConfigMap would outlive the job indefinitely.
-                     */
-                    await runner.releaseFence?.(job);
-                    log(`job ${job.id}: its gates file could not be read, failing`);
-                    await report(job, {
-                        status: 'failed',
-                        exitCode: null,
-                        output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
-                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
-                    continue;
-                }
-
-                // Gates need the driver's gate machinery, which exists whenever the stack was
-                // built for the executor — under both executors it is. A driver built without
-                // it gets the honest answer: a named failure, never a run whose declared
-                // checks silently did not happen.
-                if (job.gates?.gates?.length && !gates) {
-                    // Same as the gateError refusal above: this branch completes the job without
-                    // runner.run, so the checkout the sync fenced is released here, not held
-                    // forever by a claim whose attempt never runs.
-                    await runner.releaseFence?.(job);
-                    const why = 'this driver was started with no gate environment configured';
-                    log(`job ${job.id}: declares gates this driver cannot run, failing`);
-                    await report(job, {
-                        status: 'failed',
-                        exitCode: null,
-                        output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
-                    }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
-                    continue;
-                }
-
                 track(job);
             }
 
