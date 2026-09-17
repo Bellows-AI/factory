@@ -23,8 +23,8 @@ let store: JobStore;
 /** A second store on the same pool, bound to a different org. Only the org guard uses it. */
 let otherOrgStore: JobStore;
 
-const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
+const ORG = randomUUID();
+const OTHER_ORG = randomUUID();
 
 let AUTHOR: string;
 
@@ -351,5 +351,48 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task', () =
 
         const listed = await store.list({ status: 'terminal', limit: 10 });
         expect(listed.map((task) => task.id)).toEqual([root]);
+    });
+});
+
+describe.skipIf(!enabled)('the terminal list query shape', () => {
+    // The store's sql is a tagged template, so a Proxy around it records the raw statement
+    // text — every \u0000 below marks one interpolated value — without touching the bytes
+    // that reach the database. The shape is the fix for #128's review note: the work the
+    // query does per thread must not grow with retained history when the caller asks for 30.
+    it('rolls the clock and completion up inside the terminality scan and binds the limit before head and actor resolution', async () => {
+        const captured: { strings: string[]; values: unknown[] }[] = [];
+        const recording = new Proxy(sql, {
+            apply(target, _this, args) {
+                const [strings] = args as unknown[];
+                if (Array.isArray(strings) && Array.isArray((strings as { raw?: unknown }).raw)) {
+                    captured.push({ strings: [...(strings as unknown as string[])], values: args.slice(1) });
+                }
+                return Reflect.apply(target as unknown as (...a: unknown[]) => unknown, target, args);
+            },
+            get(target, prop) {
+                const value = Reflect.get(target, prop, target);
+                return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+            },
+        }) as Sql;
+        const recordingStore = createJobStore({ sql: recording, orgId: ORG });
+
+        await recordingStore.list({ status: 'terminal', limit: 30 });
+
+        const query = captured.find((q) => q.strings[0]?.includes('finished_thread'));
+        expect(query).toBeDefined();
+        const text = query!.strings.join('\u0000');
+        const limitIndex = query!.values.findIndex((value) => typeof value === 'number');
+        expect(limitIndex).toBeGreaterThan(-1);
+        const limitPos = query!.strings.slice(0, limitIndex).join('').length + limitIndex;
+        const groupByPos = text.indexOf('group by root_job_id');
+        expect(groupByPos).toBeGreaterThan(-1);
+        // The clock and completion aggregates are computed by the same scan that establishes
+        // terminality — one read of retained history — not by a second per-thread pass over it.
+        expect(text.search(/sum\((\w+\.)?wall_clock_ms\)/)).toBeLessThan(groupByPos);
+        expect(text.search(/max\((\w+\.)?done_at\)/)).toBeLessThan(groupByPos);
+        expect(text.search(/max\((\w+\.)?finished_at\)/)).toBeLessThan(groupByPos);
+        // The limit binds to those aggregate rows, so the per-thread head resolution (and the
+        // actor joins after it) run for the selected tasks alone, never once per kept thread.
+        expect(limitPos).toBeLessThan(text.indexOf(') head on true'));
     });
 });

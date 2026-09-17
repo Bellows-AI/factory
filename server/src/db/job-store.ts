@@ -1941,13 +1941,32 @@ export function createJobStore({
             if (status === 'terminal') {
                 const rows = await sql<JobRow[]>`
                     with finished_thread as (
-                        select root_job_id
+                        -- The rollup rides the terminality scan: one read of the org's history
+                        -- answers both the settled-verdict filter and the per-thread clock and
+                        -- completion stamps. The order+limit below therefore binds to AGGREGATE
+                        -- rows, and the per-thread head and actor resolution afterwards runs for
+                        -- the selected tasks alone — not once per thread the retention keeps.
+                        select root_job_id,
+                               sum(wall_clock_ms) as task_wall_clock_ms,
+                               max(done_at) as done_at,
+                               max(finished_at) as finished_at
                         from job
                         where org_id = ${orgId}
                         group by root_job_id
                         having count(*) filter (
                             where status not in ('succeeded', 'failed', 'dead', 'stopped')
                         ) = 0
+                    ),
+                    picked as (
+                        select finished_thread.root_job_id as root_job_id,
+                               finished_thread.task_wall_clock_ms as task_wall_clock_ms,
+                               finished_thread.done_at as done_at,
+                               finished_thread.finished_at as finished_at
+                        from finished_thread
+                        join job on job.org_id = ${orgId} and job.id = finished_thread.root_job_id
+                        ${repo ? sql`where job.repo = ${repo}` : sql``}
+                        order by finished_thread.finished_at desc, job.created_at desc, job.id
+                        limit ${limit}
                     )
                     select job.id as id, job.command as command, head.status as status,
                            head.attempts as attempts, head.max_attempts as max_attempts,
@@ -1958,13 +1977,13 @@ export function createJobStore({
                            job.repo as repo, job.executor as executor,
                            job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
                            job.workflow_node as workflow_node,
-                           rollup.done_at as done_at, head.cancel_requested_at as cancel_requested_at,
+                           picked.done_at as done_at, head.cancel_requested_at as cancel_requested_at,
                            job.created_at as created_at, head.started_at as started_at,
-                           rollup.finished_at as finished_at,
-                           rollup.task_wall_clock_ms as task_wall_clock_ms
+                           picked.finished_at as finished_at,
+                           picked.task_wall_clock_ms as task_wall_clock_ms
                            ${authorColumns}
-                    from finished_thread
-                    join job on job.org_id = ${orgId} and job.id = finished_thread.root_job_id
+                    from picked
+                    join job on job.org_id = ${orgId} and job.id = picked.root_job_id
                     join lateral (
                         select h.*
                         from job h
@@ -1972,13 +1991,6 @@ export function createJobStore({
                         order by h.created_at desc, h.id desc
                         limit 1
                     ) head on true
-                    join lateral (
-                        select sum(m.wall_clock_ms) as task_wall_clock_ms,
-                               max(m.done_at) as done_at,
-                               max(m.finished_at) as finished_at
-                        from job m
-                        where m.org_id = ${orgId} and m.root_job_id = job.root_job_id
-                    ) rollup on true
                     -- The authorship joins, aimed per member: the author is the thread's (the
                     -- root's — a follow-up's creator is forced to the parent's), the stopper the
                     -- head's (the status is the head's verdict), the doner the member carrying
@@ -1994,9 +2006,7 @@ export function createJobStore({
                         order by d.done_at desc, d.id desc
                         limit 1
                     )
-                    ${repo ? sql`where job.repo = ${repo}` : sql``}
-                    order by rollup.finished_at desc, job.created_at desc, job.id
-                    limit ${limit}
+                    order by picked.finished_at desc, job.created_at desc, job.id
                 `;
                 return rows.map(toJob);
             }
