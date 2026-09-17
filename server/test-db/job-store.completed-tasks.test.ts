@@ -76,13 +76,14 @@ const craft = async (
         wallClockMs?: number;
         summary?: string;
         doneMinutesAgo?: number;
+        stoppedBy?: boolean;
         runtime?: Record<string, unknown>;
         repo?: string;
     } = {}
 ): Promise<string> => {
     const id = randomUUID();
     await sql`
-        insert into job (org_id, id, command, status, parent_job_id, root_job_id, created_by, repo,
+        insert into job (org_id, id, command, status, parent_job_id, root_job_id, created_by, repo, stopped_by,
                          lease_expires_at, created_at, finished_at, wall_clock_ms, summary, done_at, done_by, runtime)
         values (
             ${ORG}, ${id}, ${shape.command ?? 'crafted'},
@@ -91,6 +92,7 @@ const craft = async (
             ${shape.root ?? shape.parent ?? id},
             ${AUTHOR},
             ${shape.repo ?? 'acme/widgets'},
+            ${shape.stoppedBy === true ? AUTHOR : null},
             now() - interval '1 second',
             now() - (${shape.createdMinutesAgo ?? 0} * interval '1 minute'),
             ${
@@ -150,7 +152,7 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task', () =
             summary: 'middle words',
             runtime: { contextTokens: 222, activity: null, sampledAt: '' },
         });
-        const head = await craft({
+        await craft({
             parent: root,
             status: 'succeeded',
             createdMinutesAgo: 20,
@@ -180,7 +182,6 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task', () =
         expect(task.wallClockMs).toBe(10_000);
         // Completion is the thread's newest: the head's finish stamp here.
         expect(Math.abs(minutesAgo(task.finishedAt!) - 10)).toBeLessThan(2);
-        expect(head).toBeDefined();
     });
 
     it("takes the summary from the head run, null included — the fallback is the panel's job", async () => {
@@ -235,15 +236,31 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task', () =
             finishedMinutesAgo: 5,
             doneMinutesAgo: 3,
         });
+        // A stop that landed on the FOLLOW-UP: the head carries the verdict and its actor —
+        // the stopper join aims at the head's stopped_by, not the root row's.
+        const stoppedLate = await craft({
+            status: 'succeeded',
+            createdMinutesAgo: 30,
+            finishedMinutesAgo: 25,
+        });
+        await craft({
+            parent: stoppedLate,
+            status: 'stopped',
+            createdMinutesAgo: 12,
+            finishedMinutesAgo: 8,
+            stoppedBy: true,
+        });
 
         const listed = await store.list({ status: 'terminal', limit: 10 });
-        expect(listed.map((task) => task.id)).toEqual([done, stopped]);
+        expect(listed.map((task) => task.id)).toEqual([done, stoppedLate, stopped]);
         expect(listed[0]?.status).toBe('failed');
         expect(listed[0]?.doneAt).not.toBeNull();
         expect(Math.abs(minutesAgo(listed[0]!.doneAt!) - 3)).toBeLessThan(2);
         expect(listed[0]?.doneBy?.login).toBe('completed-tasks-cat');
         expect(listed[1]?.status).toBe('stopped');
-        expect(listed[1]?.doneAt).toBeNull();
+        expect(listed[1]?.stoppedBy?.login).toBe('completed-tasks-cat');
+        expect(listed[2]?.status).toBe('stopped');
+        expect(listed[2]?.doneAt).toBeNull();
     });
 
     it("orders by each thread's newest completion, not by any member's", async () => {
