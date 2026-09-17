@@ -12,21 +12,36 @@
  * and reaches opencode and claude-code runners alike.
  *
  * Templates interpolate at row-insert time: `{{nodeName.output}}` — the named node's most recent
- * output tail, bounded — and `{{gate.name}}` / `{{gate.output}}` — the completed run's first
- * failed gate. The vocabulary is closed (workflow-schema.ts validates it), so a block's prompt is
- * always fully filled before the row ever reaches a runner.
+ * output tail, bounded — `{{gate.name}}` / `{{gate.output}}` — the completed run's first failed
+ * gate — `{{param.NAME}}` — a declared launch parameter, required at `POST /api/jobs` — and
+ * `{{command}}` at the entry — the member's own words. The vocabulary is closed
+ * (workflow-schema.ts validates it), so a block's prompt is always fully filled before the row
+ * ever reaches a runner.
  */
-import { type WorkflowDefinition } from './workflow-schema.js';
+import { type WorkflowDefinition, type WorkflowParam } from './workflow-schema.js';
 
 /** The final line a review block must emit. The board's marker edges match exactly this. */
 export const REVIEW_VERDICT_MARKER = 'VERDICT: CLEAN';
 export const REVIEW_BLOCKERS_MARKER = 'VERDICT: BLOCKERS';
 
-const fetchIssuePrompt = `Fetch the GitHub issue this task names (URL or number in the task command; if none was
-given, take the issue the task describes as text and skip the fetch). Fetch with full detail,
-comments included — clarifications and changed requirements often live there:
+/**
+ * The issue reference `fix-issue` is launched with — a bare `#123` or a full GitHub issues URL.
+ * The bare form keeps its `#` so the issue reference survives into the interpolated command the
+ * driver parses and the branch/commit messages cite.
+ */
+export const ISSUE_PARAM: WorkflowParam = {
+    name: 'issue',
+    pattern: '#\\d+|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\\d+',
+};
+
+const fetchIssuePrompt = `Fetch GitHub issue {{param.issue}} with full detail, comments included —
+clarifications and changed requirements often live there:
 
     gh issue view <url-or-number> --json number,title,body,labels,comments,state
+
+The member's own words for this task, for context:
+
+    {{command}}
 
 Before touching anything, read the repo's AGENTS.md and the docs/ file that covers the area the
 issue concerns — the "Read before you touch" table maps areas to files. These hold conventions
@@ -139,6 +154,7 @@ export const BASE_WORKFLOW: { name: string; definition: WorkflowDefinition } = {
     name: 'fix-issue',
     definition: {
         entry: 'fetch-issue',
+        params: [ISSUE_PARAM],
         nodes: [
             {
                 name: 'fetch-issue',

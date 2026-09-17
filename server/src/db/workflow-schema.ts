@@ -34,6 +34,18 @@ export const TRUNCATION_MARKER = '\n[…truncated by the board]';
 /** A node name is a lowercase identifier the placeholders can reference: `{{fetch-issue.output}}`. */
 const NODE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/**
+ * A parameter name obeys the same identifier rule a node name does: it is referenced by the
+ * `{{param.NAME}}` placeholder in any node's prompt.
+ */
+const PARAM_NAME = NODE_NAME;
+
+/** A parameter's pattern is a regex SOURCE, bounded where author content crosses into RegExp. */
+const PATTERN_LIMIT = 256;
+
+/** The character cap on one parameter value — bounded author content, like everything interpolated. */
+export const PARAM_VALUE_LIMIT = 512;
+
 /** A marker is a fixed string the node's block must emit as its final line. Bounded, non-empty. */
 const MARKER_LIMIT = 256;
 
@@ -92,6 +104,21 @@ export interface WorkflowEdge {
     max?: number;
 }
 
+/**
+ * One declared workflow parameter. Every declared param is REQUIRED on launch: `POST /api/jobs`
+ * refuses a task whose body does not carry a valid value for each (routes/jobs.ts,
+ * `BAD_WORKFLOW_PARAMS`) — a parametrized workflow must never launch on a guess.
+ */
+export interface WorkflowParam {
+    /** A lowercase identifier the prompts reference: `{{param.issue}}`. Unique in the graph. */
+    name: string;
+    /**
+     * Optional regex SOURCE the value must fully match (`^(?:source)$` — authors write a bare
+     * shape, never anchors). Absent means any non-empty bounded string.
+     */
+    pattern?: string;
+}
+
 export interface WorkflowDefinition {
     /**
      * The node a thread's first run walks. Optional in the JSON (the first declared node is the
@@ -100,6 +127,11 @@ export interface WorkflowDefinition {
     entry: string;
     nodes: WorkflowNode[];
     edges: WorkflowEdge[];
+    /**
+     * The required launch parameters. Optional in the JSON (normalized to [] by the validator),
+     * always resolved on the stored value.
+     */
+    params: WorkflowParam[];
 }
 
 /** Why a definition was refused. The code is the API's name for it; the message names the culprit. */
@@ -114,6 +146,7 @@ export interface DefinitionRefusal {
         | 'UNKNOWN_NODE'
         | 'BAD_RULE'
         | 'BAD_BOUND'
+        | 'BAD_PARAMS'
         | 'UNKNOWN_PLACEHOLDER'
         | 'NO_PUBLISH_PATH'
         | 'TOO_LARGE';
@@ -129,7 +162,7 @@ const refuse = (code: DefinitionRefusal['code'], message: string): DefinitionChe
 
 const KNOWN_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish']);
 const KNOWN_EDGE_KEYS = new Set(['from', 'to', 'when', 'max']);
-const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges']);
+const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges', 'params']);
 
 /** Validates the tail-marker contract: the run's final non-empty line must equal the marker. */
 export function tailMatches(output: string | null, marker: string): boolean {
@@ -143,6 +176,151 @@ export function tailMatches(output: string | null, marker: string): boolean {
 }
 
 /**
+ * The parameter pattern grammar: a STRICT SUBSET of regular expressions, refused on any doubt.
+ * A pattern runs in the board's event loop (the route validates every launch value) and in every
+ * member's browser (the composer mirrors the check per keystroke), so an ambiguous pattern must
+ * never be stored — catastrophic backtracking on a ≤512-character value would hang the whole
+ * board process, not just the request. The subset bounds the work by construction:
+ *
+ * - literals, `.`, the class shorthands (`\d \D \w \W \s \S \b \B`) and punctuation escapes only
+ *   — no backreferences, no `\u`/`\p`/`\c`/`\k`, no anchors (`^`/`$` are implicit in the full
+ *   match), no lookarounds;
+ * - quantifiers (`* + ? {m} {m,} {m,n}`) apply to a single atom only — never to a group, never
+ *   to another quantifier;
+ * - the AMBIGUITY BUDGET: quantified atoms chain into a "run" only when nothing mandatory sits
+ *   between them (groups are transparent to this — `(a+)(a+)` is a run of two, the classic
+ *   blowup shape); a run is capped at MAX_QUANTIFIED_RUN, the whole pattern at
+ *   MAX_QUANTIFIED_ATOMS, and bounded repetitions at MAX_PATTERN_BOUND. The worst backtrack a
+ *   stored pattern can force is therefore C(value-length, MAX_QUANTIFIED_RUN) — ~2×10⁷ cheap
+ *   steps for a 512-character value — instead of unbounded.
+ *
+ * Everything else is refused at create (`BAD_PARAMS`) — the same loud-refusal doctrine as the
+ * rest of the grammar.
+ */
+const MAX_QUANTIFIED_ATOMS = 4;
+const MAX_QUANTIFIED_RUN = 3;
+const MAX_PATTERN_BOUND = 64;
+const CLASS_SHORTHANDS = 'dDwWsSbB';
+
+function isSafePattern(source: string): boolean {
+    let pos = 0;
+    let quantifiedTotal = 0;
+    // The ambiguity budget: quantified atoms currently chained with nothing mandatory between
+    // them. Shared between the sequence and its groups on purpose — `(a+)(a+)` chains THROUGH
+    // the group boundary, which is exactly the shape the cap exists for.
+    let run = 0;
+
+    /** Parses `[...]` from `pos` (at '[') past the closing ']'. */
+    const parseClass = (): boolean => {
+        pos += 1; // past '['
+        if (source[pos] === '^') pos += 1;
+        let items = 0;
+        while (pos < source.length && source[pos] !== ']') {
+            if (source[pos] === '\\') {
+                const next = source[pos + 1];
+                if (next === undefined || !/[dDwWsS]/.test(next)) return false;
+                pos += 2;
+            } else {
+                pos += 1;
+            }
+            items += 1;
+        }
+        if (source[pos] !== ']' || items === 0) return false;
+        pos += 1;
+        return true;
+    };
+
+    /**
+     * Parses a sequence until end-of-source (`eof`) or the closing `)` of its group (`group`).
+     * `prev` is local — quantifier legality only ever looks at the immediately preceding token
+     * — while the counters and the run budget are shared, because ambiguity composes across
+     * group boundaries but not across a mandatory atom, which resets the run.
+     */
+    const parseSequence = (stop: 'eof' | 'group'): boolean => {
+        let prev: 'none' | 'atom' | 'quantified' | 'group' | 'bar' = 'none';
+        // What `run` becomes if the pending atom ends up quantified: a chain continues through
+        // it only when it sits directly after a quantified atom (nothing mandatory between).
+        let chainIfQuantified = run + 1;
+        while (pos < source.length) {
+            const ch = source[pos]!;
+            if (ch === ')') {
+                if (stop !== 'group') return false;
+                if (prev === 'atom') run = 0; // the trailing atom resolved unquantified
+                pos += 1;
+                return true;
+            }
+            if (ch === '|') {
+                run = 0; // a branch boundary breaks any chain
+                prev = 'bar';
+                pos += 1;
+                continue;
+            }
+            if (ch === '*' || ch === '+' || ch === '?') {
+                if (prev !== 'atom') return false;
+                run = chainIfQuantified;
+                quantifiedTotal += 1;
+                if (quantifiedTotal > MAX_QUANTIFIED_ATOMS || run > MAX_QUANTIFIED_RUN) return false;
+                prev = 'quantified';
+                pos += 1;
+                continue;
+            }
+            if (ch === '{') {
+                const bounded = /^\{(\d+)(,(\d+)?)?\}/.exec(source.slice(pos));
+                if (bounded === null) return false; // a literal brace must be escaped
+                if (bounded[2] !== undefined && bounded[3] === undefined) return false; // open-ended {m,}: write {m,64} or +
+                const min = Number(bounded[1]!);
+                const max = bounded[3] === undefined ? min : Number(bounded[3]);
+                if (min > max || max > MAX_PATTERN_BOUND) return false;
+                if (prev !== 'atom') return false;
+                run = chainIfQuantified;
+                quantifiedTotal += 1;
+                if (quantifiedTotal > MAX_QUANTIFIED_ATOMS || run > MAX_QUANTIFIED_RUN) return false;
+                prev = 'quantified';
+                pos += bounded[0].length;
+                continue;
+            }
+            if (ch === '(') {
+                if (prev === 'atom') run = 0; // the pending atom resolved unquantified
+                if (source.startsWith('(?', pos) && !source.startsWith('(?:', pos)) {
+                    return false; // lookarounds and named groups
+                }
+                pos += source.startsWith('(?:', pos) ? 3 : 1;
+                if (!parseSequence('group')) return false;
+                // parseSequence consumed through the ')' and left the group's trailing run
+                prev = 'group';
+                continue;
+            }
+            if (ch === '[') {
+                if (prev === 'atom') run = 0; // the pending atom resolved unquantified
+                if (!parseClass()) return false;
+                chainIfQuantified = run + 1;
+                prev = 'atom';
+                continue;
+            }
+            if (ch === '\\') {
+                const next = source[pos + 1];
+                if (next === undefined) return false;
+                // Class shorthands are atoms; every other alphanumeric escape — backreferences,
+                // \u, \p, \c, \k — is outside the subset. Punctuation escapes are literals.
+                if (/[a-zA-Z0-9]/.test(next) && !CLASS_SHORTHANDS.includes(next)) return false;
+                pos += 2;
+                if (prev === 'atom') run = 0;
+                chainIfQuantified = run + 1;
+                prev = 'atom';
+                continue;
+            }
+            if (ch === '^' || ch === '$' || ch === ']' || ch === '}') return false;
+            pos += 1;
+            if (prev === 'atom') run = 0;
+            chainIfQuantified = run + 1;
+            prev = 'atom';
+        }
+        return stop === 'eof';
+    };
+    return parseSequence('eof');
+}
+
+/**
  * The strict validator. Everything it refuses, it names — the key, the node, the edge, the
  * placeholder — so a bad definition is diagnosable from the API answer alone.
  */
@@ -153,6 +331,59 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
     const def = raw as Record<string, unknown>;
     for (const key of Object.keys(def)) {
         if (!KNOWN_TOP_KEYS.has(key)) return refuse('UNKNOWN_KEY', `unknown definition key "${key}"`);
+    }
+
+    // Params: optional at the JSON, every declared one required at launch. Names are the
+    // placeholder identifiers, patterns are bounded regex sources matched fully.
+    const params: WorkflowParam[] = [];
+    if (def.params !== undefined) {
+        if (!Array.isArray(def.params)) {
+            return refuse('BAD_PARAMS', 'definition.params must be an array');
+        }
+        const paramNames = new Set<string>();
+        for (const [i, item] of def.params.entries()) {
+            if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+                return refuse('BAD_PARAMS', `definition.params[${i}] must be an object`);
+            }
+            const param = item as Record<string, unknown>;
+            for (const key of Object.keys(param)) {
+                if (!['name', 'pattern'].includes(key)) {
+                    return refuse('UNKNOWN_KEY', `unknown key "${key}" in params[${i}]`);
+                }
+            }
+            const name = param.name;
+            if (typeof name !== 'string' || !PARAM_NAME.test(name)) {
+                return refuse('BAD_PARAMS', `params[${i}].name must match ${PARAM_NAME.source}`);
+            }
+            if (paramNames.has(name)) return refuse('BAD_PARAMS', `duplicate param name "${name}"`);
+            paramNames.add(name);
+            let pattern: string | undefined;
+            if (param.pattern !== undefined) {
+                if (
+                    typeof param.pattern !== 'string' ||
+                    !param.pattern.trim() ||
+                    param.pattern.length > PATTERN_LIMIT
+                ) {
+                    return refuse(
+                        'BAD_PARAMS',
+                        `params[${i}].pattern must be a non-empty regex source of at most ${PATTERN_LIMIT} characters`
+                    );
+                }
+                if (!isSafePattern(param.pattern)) {
+                    return refuse(
+                        'BAD_PARAMS',
+                        `params[${i}].pattern is outside the safe subset — see docs/workflows.md "Launch parameters"`
+                    );
+                }
+                try {
+                    new RegExp(param.pattern);
+                } catch {
+                    return refuse('BAD_PARAMS', `params[${i}].pattern does not compile: ${param.pattern}`);
+                }
+                pattern = param.pattern;
+            }
+            params.push({ name, ...(pattern !== undefined ? { pattern } : {}) });
+        }
     }
 
     // Nodes: at least one, every one a declared-shape `agent` node with a unique name.
@@ -172,6 +403,11 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         const name = node.name;
         if (typeof name !== 'string' || !NODE_NAME.test(name)) {
             return refuse('BAD_NODE', `nodes[${i}].name must match ${NODE_NAME.source}`);
+        }
+        if (name === 'param') {
+            // `{{param.NAME}}` is the parameter namespace and wins it — a node literally named
+            // "param" could never have its `{{param.output}}` resolved.
+            return refuse('BAD_NODE', `nodes[${i}].name "param" is reserved`);
         }
         if (names.has(name)) return refuse('DUPLICATE_NODE', `duplicate node name "${name}"`);
         names.add(name);
@@ -260,18 +496,27 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         return refuse('UNKNOWN_NODE', 'definition.entry names no declared node');
     }
 
-    // Prompt placeholders: the closed vocabulary only, and node outputs must name declared nodes —
-    // a template referencing an unknown prior node would interpolate empty forever.
+    // Prompt placeholders: the closed vocabulary only — node outputs, the gate pair, declared
+    // params, and `{{command}}` (the thread root's command). A template referencing an unknown
+    // prior node or an undeclared param would interpolate empty forever.
     for (const node of nodes) {
         for (const match of node.prompt.matchAll(/\{\{([^{}]+)\}\}/g)) {
             const spec = match[1]!.trim();
             const nodeRef = /^([a-z0-9-]+)\.output$/.exec(spec);
-            const known =
-                spec === 'gate.name' || spec === 'gate.output' || (nodeRef !== null && names.has(nodeRef[1]!));
+            const paramRef = /^param\.([a-z0-9-]+)$/.exec(spec);
+            let known: boolean;
+            if (paramRef !== null) {
+                // `param.` wins the namespace: a node literally named `param` cannot shadow it.
+                known = params.some((p) => p.name === paramRef[1]);
+            } else if (spec === 'command') {
+                known = true;
+            } else {
+                known = spec === 'gate.name' || spec === 'gate.output' || (nodeRef !== null && names.has(nodeRef[1]!));
+            }
             if (!known) {
                 return refuse(
                     'UNKNOWN_PLACEHOLDER',
-                    `nodes named "${node.name}" carry placeholder "{{${spec}}}" — expected {{nodeName.output}}, {{gate.name}} or {{gate.output}}`
+                    `nodes named "${node.name}" carry placeholder "{{${spec}}}" — expected {{nodeName.output}}, {{gate.name}}, {{gate.output}}, {{param.NAME}} or {{command}}`
                 );
             }
         }
@@ -297,7 +542,7 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         return refuse('NO_PUBLISH_PATH', 'no publish node is reachable from the entry');
     }
 
-    const definition: WorkflowDefinition = { entry, nodes, edges };
+    const definition: WorkflowDefinition = { entry, nodes, edges, params };
     if (JSON.stringify(definition).length > DEFINITION_LIMIT) {
         return refuse('TOO_LARGE', `definition exceeds ${DEFINITION_LIMIT} characters`);
     }
@@ -329,19 +574,84 @@ export interface InterpolationContext {
     /** The completed run's first failed gate's name and output tail; '' when gates passed. */
     gateName: string;
     gateOutput: string;
+    /** The thread's frozen parameter value, or '' when the name was never declared. */
+    param: (name: string) => string;
+    /** The thread root's command — for a workflow thread, the interpolated entry prompt. */
+    command: string;
 }
 
 /**
  * Fills a node's prompt template at row-insert time. Unknown placeholders would be a validator
  * bug (the snapshot is validated) — a throw is the honest answer, never a silent empty string.
+ *
+ * `{{command}}` is the one UNBOUNDED substitution: it is the member's own words, already capped
+ * at the boundary that accepted them, and a silent 4 KiB cut mid-sentence would mangle the very
+ * text the route let through — the caller's post-interpolation command cap is the guard instead.
  */
 export function interpolate(template: string, context: InterpolationContext): string {
     return template.replace(/\{\{([^{}]+)\}\}/g, (whole, raw: string) => {
         const spec = raw.trim();
+        const paramRef = /^param\.([a-z0-9-]+)$/.exec(spec);
+        if (paramRef) return boundedTail(context.param(paramRef[1]!));
+        if (spec === 'command') return context.command;
         if (spec === 'gate.name') return boundedTail(context.gateName);
         if (spec === 'gate.output') return boundedTail(context.gateOutput);
         const nodeRef = /^([a-z0-9-]+)\.output$/.exec(spec);
         if (nodeRef) return boundedTail(context.nodeOutput(nodeRef[1]!));
         throw new Error(`unknown workflow placeholder "${whole}"`);
     });
+}
+
+/** The launch parameter values a client sends beside the command: a plain object of strings. */
+export type ParamValues = Record<string, string>;
+
+/** Why a launch's parameter values were refused. The route surfaces it as `400 BAD_WORKFLOW_PARAMS`. */
+export type ParamValuesCheck =
+    | { ok: true; values: ParamValues }
+    | { ok: false; refusal: { code: 'BAD_WORKFLOW_PARAMS'; message: string } };
+
+const refuseParams = (message: string): ParamValuesCheck => ({
+    ok: false,
+    refusal: { code: 'BAD_WORKFLOW_PARAMS', message },
+});
+
+/**
+ * Validates the `workflowParams` body field against the resolved definition's declarations. Every
+ * declared param is required; unknown keys are refused (a typo must never read as "already
+ * covered"); values are bounded strings, trimmed, and full-matched against the declared pattern.
+ * Pure — the route calls it at the resolution point, and the composer mirrors it client-side.
+ */
+export function checkWorkflowParams(definition: WorkflowDefinition, raw: unknown): ParamValuesCheck {
+    if (raw === undefined || raw === null) raw = {};
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+        return refuseParams('workflowParams must be an object of string values');
+    }
+    const body = raw as Record<string, unknown>;
+    const values: ParamValues = {};
+    for (const declared of definition.params) {
+        const value = body[declared.name];
+        if (value === undefined) {
+            return refuseParams(`missing required workflow parameter "${declared.name}"`);
+        }
+        if (typeof value !== 'string') {
+            return refuseParams(`workflow parameter "${declared.name}" must be a string`);
+        }
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return refuseParams(`workflow parameter "${declared.name}" must be a non-empty string`);
+        }
+        if (trimmed.length > PARAM_VALUE_LIMIT) {
+            return refuseParams(`workflow parameter "${declared.name}" exceeds ${PARAM_VALUE_LIMIT} characters`);
+        }
+        if (declared.pattern !== undefined && !new RegExp(`^(?:${declared.pattern})$`).test(trimmed)) {
+            return refuseParams(`workflow parameter "${declared.name}" must match ${declared.pattern}`);
+        }
+        values[declared.name] = trimmed;
+    }
+    for (const key of Object.keys(body)) {
+        if (!definition.params.some((p) => p.name === key)) {
+            return refuseParams(`unknown workflow parameter "${key}"`);
+        }
+    }
+    return { ok: true, values };
 }

@@ -343,9 +343,10 @@ describe('POST /api/jobs', () => {
  * called with which arguments, and one resolvable record. The store's real rules live in
  * server/test-db/workflow-store.test.ts.
  */
-function stubWorkflows(options: { found?: WorkflowRecord | null } = {}) {
-    const definition = {
+function stubWorkflows(options: { found?: WorkflowRecord | null; definition?: WorkflowDefinition } = {}) {
+    const definition: WorkflowDefinition = options.definition ?? {
         entry: 'implement',
+        params: [],
         nodes: [{ name: 'implement', kind: 'agent', session: 'resume', prompt: 'work', publish: true }],
         edges: [],
     };
@@ -356,6 +357,7 @@ function stubWorkflows(options: { found?: WorkflowRecord | null } = {}) {
         userId: null,
         repo: null,
         isDefault: false,
+        params: definition.params,
         createdAt: '2026-09-15T00:00:00.000Z',
         updatedAt: '2026-09-15T00:00:00.000Z',
         definition,
@@ -399,8 +401,11 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual(['fix-issue']);
         expect(jobs.workflowTargets).toEqual([
-            { id: 'wf-1', node: 'implement', snapshot: workflows.record.definition },
+            { id: 'wf-1', node: 'implement', snapshot: workflows.record.definition, params: {} },
         ]);
+        // The root command IS the interpolated entry prompt — a workflow task launches its entry
+        // node, not the raw chat line.
+        expect(jobs.commands).toEqual(['work']);
     });
 
     it('refuses an unknown workflow name with a named error and queues nothing', async () => {
@@ -441,6 +446,109 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.resolveDefault).toBe(1);
         expect(jobs.workflowTargets).toEqual([]);
+    });
+});
+
+describe('POST /api/jobs workflow parameters', () => {
+    const parammedDefinition: WorkflowDefinition = {
+        entry: 'fetch',
+        params: [{ name: 'issue', pattern: '#\\d+' }],
+        nodes: [
+            {
+                name: 'fetch',
+                kind: 'agent',
+                session: 'resume',
+                prompt: 'fetch {{param.issue}}\n\nasked: {{command}}',
+            },
+            { name: 'work', kind: 'agent', session: 'resume', prompt: 'work', publish: true },
+        ],
+        edges: [{ from: 'fetch', to: 'work', when: 'succeeded' }],
+    };
+
+    const boot = async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows({ definition: parammedDefinition });
+        const instance = await harnessWith(jobs, workflows);
+        return { jobs, instance };
+    };
+
+    it('refuses a missing required param with BAD_WORKFLOW_PARAMS and queues nothing', async () => {
+        const { jobs, instance } = await boot();
+        // Exactly the issue's repro: "fix the bug" with fix-issue selected used to launch.
+        const response = await post(instance, '/api/jobs', { command: 'fix the login bug', workflow: 'fix-issue' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_WORKFLOW_PARAMS');
+        expect(jobs.created).toEqual([]);
+    });
+
+    it('refuses a malformed param value with BAD_WORKFLOW_PARAMS', async () => {
+        const { jobs, instance } = await boot();
+        const response = await post(instance, '/api/jobs', {
+            command: 'fix the login bug',
+            workflow: 'fix-issue',
+            workflowParams: { issue: '42' },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_WORKFLOW_PARAMS');
+        expect(jobs.created).toEqual([]);
+    });
+
+    it('refuses workflowParams sent with no workflow resolved at all', async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows({ found: null });
+        const instance = await harnessWith(jobs, workflows);
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', workflowParams: { issue: '#42' } });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_WORKFLOW_PARAMS');
+        expect(jobs.created).toEqual([]);
+    });
+
+    it('builds the root command from the entry prompt, carrying the param and the member command', async () => {
+        const { jobs, instance } = await boot();
+        const response = await post(instance, '/api/jobs', {
+            command: 'fix the login bug',
+            workflow: 'fix-issue',
+            workflowParams: { issue: '#127' },
+        });
+        expect(response.statusCode).toBe(201);
+        expect(jobs.commands).toEqual(['fetch #127\n\nasked: fix the login bug']);
+        expect(jobs.workflowTargets).toEqual([
+            { id: 'wf-1', node: 'fetch', snapshot: parammedDefinition, params: { issue: '#127' } },
+        ]);
+    });
+
+    it('refuses an interpolated root command over the cap with BAD_COMMAND', async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows({
+            definition: {
+                entry: 'a',
+                params: [],
+                nodes: [{ name: 'a', kind: 'agent', session: 'resume', prompt: '{{command}}!', publish: true }],
+                edges: [],
+            },
+        });
+        const instance = await harnessWith(jobs, workflows);
+        // The raw command is under the cap; the filled entry prompt is not.
+        const response = await post(instance, '/api/jobs', {
+            command: 'x'.repeat(16_384),
+            workflow: 'fix-issue',
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_COMMAND');
+        expect(jobs.created).toEqual([]);
+    });
+
+    it('refuses a launch whose DEFAULT workflow declares params the body does not carry', async () => {
+        // The composer's exact blind spot this closes: an unnamed task still resolves the scope
+        // stack's default, and a parametrized default must refuse the bare launch.
+        const jobs = stubStore();
+        const workflows = stubWorkflows({ definition: parammedDefinition });
+        const instance = await harnessWith(jobs, workflows);
+        const response = await post(instance, '/api/jobs', { command: 'fix the login bug', repo: 'acme/web' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_WORKFLOW_PARAMS');
+        expect(workflows.calls.resolveDefault).toBe(1);
+        expect(jobs.created).toEqual([]);
     });
 });
 

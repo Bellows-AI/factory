@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
-import { TaskComposer } from '../src/panels/TaskComposer.js';
+import {
+    type WorkflowParamChoice,
+    paramsComplete,
+    paramValueMatches,
+    TaskComposer,
+} from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 
 /**
@@ -51,7 +56,15 @@ interface ComposerArgs {
     workspaceError?: string | null;
     executors?: { name: string; type: string }[];
     /** The workflow choices for the repo context; null hides the select (no workflows served). */
-    workflows?: readonly { id: string; name: string; scope: 'org' | 'user' | 'repo' }[] | null;
+    workflows?:
+        | readonly {
+              id: string;
+              name: string;
+              scope: 'org' | 'user' | 'repo';
+              isDefault?: boolean;
+              params?: WorkflowParamChoice[];
+          }[]
+        | null;
     actionError?: string | null;
     sending?: boolean;
 }
@@ -1151,5 +1164,69 @@ describe('thread derivations', () => {
                 threadPublish([withCommand('x', { output: '[driver] published fix/5 — javascript:alert(1)' })])
             ).toEqual({ branch: 'fix/5', url: 'javascript:alert(1)' });
         });
+    });
+});
+
+describe('composer parameters', () => {
+    /** The fixture mirrors the seeded fix-issue declaration the API now serves. */
+    const parammed = [
+        {
+            id: 'wf-1',
+            name: 'fix-issue',
+            scope: 'org' as const,
+            isDefault: false,
+            params: [{ name: 'issue', pattern: '#\\d+' }],
+        },
+    ];
+
+    it('renders no parameter inputs while no workflow is chosen', () => {
+        // The composer starts unchosen and the list's fix-issue is NOT the default, so nothing
+        // param-shaped may sit in the markup before the member picks a process.
+        const html = renderComposer({ workflows: parammed });
+        expect(html).not.toContain('composer-param');
+        expect(html).toContain('fix-issue');
+    });
+
+    it('renders the default workflow parameter inputs even while nothing is chosen', () => {
+        // The board resolves the scope-stack default for an unnamed workflow and REFUSES a
+        // launch without its declared parameters — so the inputs must be on screen before
+        // submit, labelled with the default's name, or every bare launch 400s unfixably.
+        const html = renderComposer({
+            workflows: [{ id: 'wf-1', name: 'fix-issue', scope: 'org', isDefault: true, params: parammed[0]!.params }],
+        });
+        expect(html).toContain('composer-param');
+        expect(html).toContain('fix-issue · issue');
+    });
+});
+
+describe('composer param validation — the client mirror of the board check', () => {
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+    const free: WorkflowParamChoice = { name: 'notes' };
+
+    it('accepts when every declared param is present and full-matches its pattern', () => {
+        expect(paramsComplete([issue, free], { issue: '#42', notes: 'login page' })).toBe(true);
+        expect(paramsComplete([], {})).toBe(true);
+    });
+
+    it('refuses a missing, empty or whitespace value', () => {
+        expect(paramsComplete([issue], {})).toBe(false);
+        expect(paramsComplete([issue], { issue: '' })).toBe(false);
+        expect(paramsComplete([issue], { issue: '   ' })).toBe(false);
+    });
+
+    it('refuses a value that does not fully match the declared pattern', () => {
+        // Same refusals the server makes: a bare number without the '#', a prefixed one, a
+        // trailing word — a partial match is a guess, and a guess is what this feature removes.
+        expect(paramsComplete([issue], { issue: '42' })).toBe(false);
+        expect(paramsComplete([issue], { issue: 'x#42' })).toBe(false);
+        expect(paramsComplete([issue], { issue: '#42 trailing' })).toBe(false);
+    });
+
+    it('accepts any non-empty value when the param declares no pattern', () => {
+        expect(paramsComplete([free], { notes: 'anything at all' })).toBe(true);
+    });
+
+    it('answers false for a pattern the client cannot compile — the board decides', () => {
+        expect(paramValueMatches({ name: 'x', pattern: '[' }, 'y')).toBe(false);
     });
 });
