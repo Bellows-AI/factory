@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { AppConfig } from '../config.js';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { LOCAL_ORG_ID, type AppConfig } from '../config.js';
 import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity, WorkerIdentity } from './store.js';
@@ -9,7 +9,7 @@ import type { AuthStore, Caller, OrgTokenIdentity, WorkerIdentity } from './stor
 /**
  * Who is making a request.
  *
- * A union, because the job board has two callers with nothing in common and the credentials that
+ * A union, because the job board has callers with nothing in common and the credentials that
  * identify them are deliberately disjoint: a session cookie accepted on `/claim` would let any
  * member steal another worker's lease, and a worker token accepted on `POST /api/jobs` would produce
  * a job with no author on the one route docs/security.md describes as remote code execution. No
@@ -20,11 +20,17 @@ import type { AuthStore, Caller, OrgTokenIdentity, WorkerIdentity } from './stor
  * The third kind is an organization access token (`oat_`): it names the org but no person, so it
  * is not a Caller — `callerOf` keeps returning null for it and every person-gated route refuses it
  * without knowing access tokens exist.
+ *
+ * The fourth kind is an attempt: the job id and lease token pair a runner's branch reporter
+ * presents. It names no person and holds no token row — the org is looked up from the live
+ * attempt itself — which is what keeps a branch write scoped to the org whose job produced it,
+ * never to whatever repo the report happens to carry.
  */
 export type Principal =
     | { kind: 'user'; caller: Caller }
     | { kind: 'worker'; worker: WorkerIdentity }
-    | { kind: 'org'; token: OrgTokenIdentity };
+    | { kind: 'org'; token: OrgTokenIdentity }
+    | { kind: 'job'; orgId: string };
 
 declare module 'fastify' {
     interface FastifyRequest {
@@ -43,8 +49,11 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread|publish-token)$/,
 ];
 
-/** Machine-to-machine telemetry, from the collector and from developer laptops. */
-const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//, /^\/api\/sessions\/branch$/];
+/** Machine-to-machine telemetry, from the collector. The branch route is NOT here — see BRANCH. */
+const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//];
+
+/** The one route a runner's own credential writes: the branch reporter's attribution samples. */
+const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
 
 /**
  * What an organization token may reach, and nothing else — an allowlist, because a refusal list
@@ -86,15 +95,22 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
  * index.html — is open too, and that is not an omission. **If index.html 401s there is nothing left
  * to render a sign-in button in.** The wall is on the API, never on the document.
  */
-const OPEN_ROUTES: readonly RegExp[] = [/^\/api\/health$/, /^\/api\/auth\//];
+const OPEN_ROUTES: readonly RegExp[] = [
+    /^\/api\/health$/,
+    /^\/api\/auth\//,
+    // The installation webhook answers to the HMAC signature over its body — a credential the
+    // route verifies itself — so the session hook must not demand a cookie of it.
+    /^\/api\/github\/webhook$/,
+];
 
-type Requirement = 'open' | 'user' | 'worker' | 'ingest';
+type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
 export function requirementFor(path: string): Requirement {
     if (!path.startsWith('/api/')) return 'open';
     if (OPEN_ROUTES.some((route) => route.test(path))) return 'open';
     if (WORKER_ROUTES.some((route) => route.test(path))) return 'worker';
+    if (BRANCH_ROUTES.some((route) => route.test(path))) return 'branch';
     if (INGEST_ROUTES.some((route) => route.test(path))) return 'ingest';
     return 'user';
 }
@@ -121,6 +137,14 @@ const bearer = (request: FastifyRequest): string | null => {
 export interface AuthPluginDeps {
     config: AppConfig;
     store: AuthStore;
+    /**
+     * The org-less lease resolver for the branch route's runner credential: the job id and lease
+     * token pair a reporter presents resolves to the org whose attempt it is, or null. Built in
+     * main.ts from the job store's SQL (`createOrgOfLease`), because no single org's store can
+     * answer it — the pair's whole point is to say WHICH org is speaking. Absent in tests that
+     * predate it, where no pair resolves and the route falls through to the bearer.
+     */
+    orgOfLease?: ((jobId: string, leaseToken: string) => Promise<string | null>) | undefined;
 }
 
 /**
@@ -139,15 +163,62 @@ export function createUserResolver({ config, store }: AuthPluginDeps) {
 
     return async (request: FastifyRequest): Promise<Caller | null> => {
         if (auth.mode === 'none') {
-            local ??= store.localCaller(config.orgId);
+            local ??= store.localCaller(LOCAL_ORG_ID);
             return local;
         }
         const signed = request.cookies[SESSION_COOKIE];
         // Verified before the database is touched, so a flood of forged cookies costs a hash rather
         // than a query each.
         const token = unsign(signed, auth.sessionSecret);
-        return token ? store.findSession(hashToken(token), config.orgId) : null;
+        // The org comes back FROM the session row (#99) — a property of the caller, re-checked
+        // through the membership join inside.
+        return token ? store.findSession(hashToken(token)) : null;
     };
+}
+
+/**
+ * The access token in the Authorization header — the credential for callers that cannot hold a
+ * cookie, and the laptop plugin's credential on the branch route. Shared by the person routes'
+ * fall-through and the branch arm, because both mean the same two things: a personal token acts as
+ * its member, and an `oat_` is a read-only allowlist credential that a write route refuses with
+ * 403 (it did authenticate — the route just needs a human or a lease behind it).
+ *
+ * Answers true when the request is settled — `request.auth` set, or a refusal already sent — and
+ * false when there was no bearer to look at, so the caller can fall through. A PRESENT bearer that
+ * resolves is the credential for the request: a failed or foreign one is a 401, never a fall-through
+ * to whatever stands behind it.
+ */
+async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store: AuthStore): Promise<boolean> {
+    const accessToken = bearer(request);
+    if (!accessToken) return false;
+    if (!isAccessToken(accessToken)) {
+        await reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+        return true;
+    }
+    const tokenHash = hashToken(accessToken);
+    if (accessToken.startsWith(ORG_TOKEN_PREFIX)) {
+        // The org comes from the token row: an oat_ is minted INTO an organization and
+        // reads only that one, whatever else this database serves.
+        const orgToken = await store.findOrgToken(tokenHash);
+        if (!orgToken) {
+            await reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+            return true;
+        }
+        const path = pathOf(request.url);
+        if (!orgTokenAllowed(request.method, path)) {
+            await reply.code(403).send({ error: 'Organization tokens can only read', code: 'FORBIDDEN' });
+            return true;
+        }
+        request.auth = { kind: 'org', token: orgToken };
+        return true;
+    }
+    const tokenCaller = await store.findPersonalToken(tokenHash);
+    if (!tokenCaller) {
+        await reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+        return true;
+    }
+    request.auth = { kind: 'user', caller: tokenCaller };
+    return true;
 }
 
 /**
@@ -158,11 +229,12 @@ export function createUserResolver({ config, store }: AuthPluginDeps) {
  * exercises, and `job.created_by` would be null in exactly the environment where the feature is
  * developed. One code path downstream, in both modes.
  */
-export async function registerAuth(app: FastifyInstance, { config, store }: AuthPluginDeps): Promise<void> {
+export async function registerAuth(app: FastifyInstance, { config, store, orgOfLease }: AuthPluginDeps): Promise<void> {
     const { auth } = config;
     await app.register(fastifyCookie);
 
     const resolveUser = createUserResolver({ config, store });
+    const leaseOrgOf = orgOfLease ?? (async () => null);
 
     app.decorateRequest('auth', null);
 
@@ -182,6 +254,33 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
             return reply.code(401).send({ error: 'Invalid ingest token', code: 'UNAUTHENTICATED' });
         }
 
+        if (requirement === 'branch') {
+            // Open in `none` mode, exactly the worker routes' stance: the stand-in local org is
+            // the only one there is, and request.auth stays null for it.
+            if (auth.mode === 'none') return;
+
+            // The runner's credential: the attempt it runs for. The deployment-wide ingest token
+            // deliberately does NOT authorize this write — a shared secret cannot bind a report
+            // to an organization, which is the whole finding. A pair that is PRESENT but does not
+            // resolve is a 401 with no fall-through, the same rule a failed bearer gets: a
+            // credential that failed must not ride a weaker one behind it.
+            const jobId = request.headers['x-factory-job-id'];
+            const leaseToken = request.headers['x-factory-job-lease-token'];
+            if (typeof jobId === 'string' && jobId && typeof leaseToken === 'string' && leaseToken) {
+                const orgId = await leaseOrgOf(jobId, leaseToken);
+                if (!orgId) {
+                    return reply.code(401).send({ error: 'Unknown job or lease', code: 'UNAUTHENTICATED' });
+                }
+                request.auth = { kind: 'job', orgId };
+                return;
+            }
+
+            // The laptop plugin's credential: the user's personal access token, through the same
+            // resolution the person routes use. No pair and no bearer → 401.
+            if (await resolveBearer(request, reply, store)) return;
+            return reply.code(401).send({ error: 'Branch ingest needs a credential', code: 'UNAUTHENTICATED' });
+        }
+
         if (requirement === 'worker') {
             // Open in `none` mode, like every other route in it. Requiring a worker token here
             // would buy nothing — anyone who can reach this port can already queue a command that
@@ -192,48 +291,22 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
 
             const token = bearer(request);
             const worker = token ? await store.findWorkerToken(hashToken(token)) : null;
-            // Bound to the organization the token was minted for. In a deployment that serves one
-            // organization this can only ever be config.orgId, but the check is here rather than
-            // assumed so that a token from another database cannot drive this board.
-            if (!worker || worker.orgId !== config.orgId) {
+            // The token IS the org binding (#99): the org_id it leads with scopes everything the
+            // driver does, and any organization in this database is legitimate — a token from
+            // another database simply hashes to nothing here.
+            if (!worker) {
                 return reply.code(401).send({ error: 'Invalid worker token', code: 'UNAUTHENTICATED' });
             }
             request.auth = { kind: 'worker', worker };
             return;
         }
 
-        // An access token in the Authorization header — the credential for callers that cannot hold
-        // a cookie. `none` ignores it like every credential in that mode. The bearer is THE
-        // credential when present: a CLI never sends a cookie and a browser never sends a bearer,
-        // so both at once means something between them is rewriting, and the cookie behind a failed
-        // or foreign bearer must not be consulted — that would let a rewritten header ride
-        // somebody's session in.
+        // The bearer is THE credential when present: a CLI never sends a cookie and a browser
+        // never sends a bearer, so both at once means something between them is rewriting, and
+        // the cookie behind a failed or foreign bearer must not be consulted — that would let a
+        // rewritten header ride somebody's session in.
         if (auth.mode !== 'none') {
-            const accessToken = bearer(request);
-            if (accessToken) {
-                if (!isAccessToken(accessToken)) {
-                    return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
-                }
-                const tokenHash = hashToken(accessToken);
-                if (accessToken.startsWith(ORG_TOKEN_PREFIX)) {
-                    const orgToken = await store.findOrgToken(tokenHash, config.orgId);
-                    if (!orgToken) {
-                        return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
-                    }
-                    const path = pathOf(request.url);
-                    if (!orgTokenAllowed(request.method, path)) {
-                        return reply.code(403).send({ error: 'Organization tokens can only read', code: 'FORBIDDEN' });
-                    }
-                    request.auth = { kind: 'org', token: orgToken };
-                    return;
-                }
-                const tokenCaller = await store.findPersonalToken(tokenHash, config.orgId);
-                if (!tokenCaller) {
-                    return reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
-                }
-                request.auth = { kind: 'user', caller: tokenCaller };
-                return;
-            }
+            if (await resolveBearer(request, reply, store)) return;
         }
 
         const caller = await resolveUser(request);
@@ -251,3 +324,20 @@ export async function registerAuth(app: FastifyInstance, { config, store }: Auth
 /** The signed-in user behind a request, or null when a worker token got it here. */
 export const callerOf = (request: FastifyRequest): Caller | null =>
     request.auth?.kind === 'user' ? request.auth.caller : null;
+
+/**
+ * The organization a request is scoped to — the org each kind of principal carries (#99).
+ *
+ * `LOCAL_ORG_ID` answers for `request.auth === null`, which is only reachable when no auth hook is
+ * registered at all: the route-test mode, where the app is built without a store and every route
+ * would otherwise have nowhere to point. It is the AUTH_MODE=none semantic — one local org —
+ * expressed for the tests that predate accounts.
+ */
+export const orgOf = (request: FastifyRequest): string => {
+    const auth = request.auth;
+    if (!auth) return LOCAL_ORG_ID;
+    if (auth.kind === 'user') return auth.caller.org.id;
+    if (auth.kind === 'worker') return auth.worker.orgId;
+    if (auth.kind === 'job') return auth.orgId;
+    return auth.token.orgId;
+};

@@ -968,15 +968,15 @@ function workspacePath(job: BoardJob): string {
  * reserves for continuations), FACTORY_TRANSCRIPT_DIR is where the headless transcript store
  * lives — the driver composes it (transcriptDir), and a member value would steer transcripts,
  * and through the entrypoint's redirect the CLI's whole config dir, somewhere else — and the
- * three reporter names steer the branch reporter — where it
- * posts, what authenticates it, and which session it claims. A member value in any of them is a
- * cross-tenant write into the telemetry store; CRED_HELPER above all: a member value there is
- * member-controlled code the sync container's git executes as helper code.
- * Mirrored at the board (RESERVED_ENV_NAMES in server/src/routes/env.ts, where a PUT is refused);
- * copied rather than imported, per this package's zero-dependency rule. The board's list is a
- * superset by one name: OPENCODE_CONFIG_CONTENT is reserved THERE — the claim synthesizes it from
- * the author's executor row, and a member env var would be silently shadowed — but deliberately
- * absent here, because `claimEnv` must let that synthesized value flow to reach the runner.
+ * three reporter names steer the branch reporter — where it posts, which attempt it speaks for,
+ * and which session it claims. A member value in any of them is a cross-tenant write into the
+ * telemetry store; CRED_HELPER above all: a member value there is member-controlled code the
+ * sync container's git executes as helper code. Mirrored at the board (RESERVED_ENV_NAMES in
+ * server/src/routes/env.ts, where a PUT is refused); copied rather than imported, per this
+ * package's zero-dependency rule. The board's list is a superset by one name:
+ * OPENCODE_CONFIG_CONTENT is reserved THERE — the claim synthesizes it from the author's
+ * executor row, and a member env var would be silently shadowed — but deliberately absent here,
+ * because `claimEnv` must let that synthesized value flow to reach the runner.
  */
 export const RESERVED_ENV_NAMES = [
     'WORKDIR',
@@ -987,7 +987,8 @@ export const RESERVED_ENV_NAMES = [
     'RESTORE',
     'FACTORY_TRANSCRIPT_DIR',
     'FACTORY_STATS_URL',
-    'INGEST_TOKEN',
+    'RUNNER_JOB_ID',
+    'RUNNER_LEASE_TOKEN',
     'BELLOWS_SESSION_ID',
 ] as const;
 
@@ -1050,9 +1051,10 @@ const envLine = (job: BoardJob, name: string, value: string): string => {
 
 /**
  * The `--env-file` body for the runner: the claim env's lines, then the loop's minted gate
- * credentials, then the reporter's ingest token. Pure and exported for the same pinning as
- * dockerArgs. The config argument is optional and only ever adds the token line — aux containers
- * (sync, publish, gates) are called without it and get no credential that reports telemetry.
+ * credentials, then the runner's own branch-ingest credential. Pure and exported for the same
+ * pinning as dockerArgs. The config argument is optional and only ever adds the attempt pair —
+ * aux containers (sync, publish, gates) are called without it and get no credential, because
+ * none of them reports telemetry.
  */
 export function envFileBody(job: BoardJob, config?: DriverConfig): string {
     const lines = Object.entries(claimEnv(job)).map(([name, value]) => envLine(job, name, value));
@@ -1064,11 +1066,13 @@ export function envFileBody(job: BoardJob, config?: DriverConfig): string {
     for (const [name, value] of Object.entries(job.gateEnv ?? {})) {
         lines.push(envLine(job, name, value));
     }
-    // The token is the one driver-side credential in the file, and it goes after everything:
-    // same precedence rule, and the line a reader audits for "what can authenticate as this
-    // runner" is always the last one.
-    if (config?.ingestToken) {
-        lines.push(envLine(job, 'INGEST_TOKEN', config.ingestToken));
+    // The attempt pair is the one driver-side credential in the file, and it goes after
+    // everything: same precedence rule, and the lines a reader audits for "what can authenticate
+    // as this runner" are always the last ones. The reporter presents them as headers, and the
+    // board resolves the org from the live attempt itself — never from the report's repo.
+    if (config) {
+        lines.push(envLine(job, 'RUNNER_JOB_ID', job.id));
+        lines.push(envLine(job, 'RUNNER_LEASE_TOKEN', job.leaseToken));
     }
     return lines.length ? `${lines.join('\n')}\n` : '';
 }
@@ -1077,9 +1081,10 @@ export function envFileBody(job: BoardJob, config?: DriverConfig): string {
  * Where the run's env file lives — one per ATTEMPT, lease token included, so a re-claimed
  * attempt's write can never race a previous attempt's cleanup on the same path. Both halves of the
  * name are asserted before they join a path: the file write is the one place a board-supplied id
- * becomes a filesystem operation.
+ * becomes a filesystem operation. Exported so the argv pins can name the exact file a real run
+ * passes to `docker run`.
  */
-const envFilePath = (job: BoardJob): string => {
+export const envFilePath = (job: BoardJob): string => {
     if (!UUID.test(job.id)) {
         throw new Error(`refusing to write an env file for a job id that is not a uuid: ${job.id}`);
     }
@@ -1168,8 +1173,8 @@ export function dockerArgs(
         // every `ps` on the host can read — the same distinction the workspace reconcile makes for
         // the git token.
         //
-        // The claim's env does NOT ride that way. Its names are member-controlled, and `-e NAME`
-        // reads the value from this process's own environment — a member-configured PATH,
+        // The claim's env does NOT ride as `-e NAME`. Its names are member-controlled, and `-e
+        // NAME` reads the value from this process's own environment — a member-configured PATH,
         // DOCKER_HOST or HOME there steers the docker CLI the driver executes on the host, which
         // is host code execution rather than a runner environment. So the claim travels in a
         // --env-file (written and removed by createDockerRunner), the values never touching this
@@ -1177,20 +1182,17 @@ export function dockerArgs(
         // `-e` precedence over `--env-file`, so a name the claim also carries is dropped from
         // passEnv — the claim must win.
         const claim = claimEnv(job);
-        const claimNames = Object.keys(claim);
-        // The loop's minted gate credentials ride the same file — envFileBody appends them after
-        // the claim's lines — and so does the reporter's ingest token, so a job whose claim
-        // resolves to nothing still needs one: without it the runner has neither its gate
-        // credentials nor the credential its attribution reports authenticate with.
-        const needsFile =
-            claimNames.length > 0 || Object.keys(job.gateEnv ?? {}).length > 0 || Boolean(config.ingestToken);
-        if (needsFile && !envFile) {
-            throw new Error(`refusing to run job ${job.id}: claim or gate env exists but no env file was given`);
+        // The file is not optional any more, even for a claim that resolves to nothing: the
+        // runner's own branch-ingest credential — this attempt's job id + lease token pair —
+        // rides it (envFileBody appends it after the claim's and gate lines), and a runner
+        // without its file would report 401s into silence.
+        if (!envFile) {
+            throw new Error(`refusing to run job ${job.id}: no env file was given`);
         }
         for (const name of config.passEnv.filter((n) => !Object.prototype.hasOwnProperty.call(claim, n))) {
             args.push('-e', name);
         }
-        if (needsFile && envFile) args.push('--env-file', envFile);
+        args.push('--env-file', envFile);
     }
 
     if (config.network) args.push('--network', config.network);
@@ -1861,9 +1863,10 @@ export function createDockerRunner(
              * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
              * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
              * in argv and never in this process's environment. The body is the claim env PLUS the
-             * loop's minted gate credentials PLUS the reporter's ingest token, so a gated job whose
-             * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN. Skipped under
-             * Remote Control, exactly like every other forwarded credential.
+             * loop's minted gate credentials PLUS the runner's own attempt pair, so a gated job whose
+             * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN and the credential
+             * its attribution reports authenticate with. Skipped under Remote Control, exactly like
+             * every other forwarded credential.
              */
             const body = config.remoteControl ? '' : envFileBody(job, config);
             const file = body ? envFilePath(job) : null;

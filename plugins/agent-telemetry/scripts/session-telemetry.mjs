@@ -23,6 +23,36 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const ENDPOINT = process.env.FACTORY_STATS_URL ?? 'http://127.0.0.1:8080';
+/**
+ * The credential: a Factory personal access token (`fat_…`, minted from the dashboard's settings
+ * page), sent as `authorization: Bearer`. A board running AUTH_MODE=github refuses a branch write
+ * without one — the org the report lands in comes from the token's membership, never from the
+ * repo the payload names. Unset keeps the request unauthenticated, which is all a local
+ * AUTH_MODE=none dashboard ever asks for. Never logged, never written anywhere.
+ */
+const TOKEN = (process.env.FACTORY_STATS_TOKEN ?? '').trim();
+
+/**
+ * Where credentialed reports may go. A bearer token over remote HTTP travels in cleartext, so a
+ * token rides only to https or an explicit loopback host — the local-dashboard default the
+ * plugin ships with. Anything else disables the token's ride and the report is dropped like any
+ * other failed sample: silent by the hard rules above, and the fix is the operator's —
+ * https://, or a loopback URL, or no token.
+ */
+const CREDENTIALED_ENDPOINT = (() => {
+    if (!TOKEN) return ENDPOINT;
+    try {
+        const url = new URL(ENDPOINT);
+        const secure =
+            url.protocol === 'https:' ||
+            url.hostname === 'localhost' ||
+            url.hostname === '[::1]' ||
+            /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
+        return secure ? ENDPOINT : null;
+    } catch {
+        return null;
+    }
+})();
 const REQUEST_TIMEOUT_MS = 200;
 
 /** One sample per session per interval, so a Bash-heavy session does not spawn git per call. */
@@ -84,12 +114,19 @@ async function main() {
     if (!repo) return;
 
     const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    // No credentialed endpoint (no token, or a token a remote http:// URL must not carry) means
+    // nothing to say: on an AUTH_MODE=github board the report would 401 anyway.
+    if (!CREDENTIALED_ENDPOINT) return;
+    const headers = { 'content-type': 'application/json' };
+    if (TOKEN) headers.authorization = `Bearer ${TOKEN}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-        await fetch(`${ENDPOINT}/api/sessions/branch`, {
+        await fetch(`${CREDENTIALED_ENDPOINT}/api/sessions/branch`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            // The request may carry the token, and a redirect must not forward it.
+            redirect: 'error',
+            headers,
             signal: controller.signal,
             body: JSON.stringify({
                 agent: 'claude-code',

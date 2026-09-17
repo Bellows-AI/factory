@@ -96,10 +96,10 @@ start:
 	# The images are side-loaded under one tag and read with IfNotPresent, so an upgrade whose
 	# values did not change rolls nothing out and a re-run would keep the stale pods. Restart both
 	# workloads so every start runs what the build above just loaded.
-	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver
+	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local
 	@echo 'waiting for the deployments (a cold node pulls the database image for minutes)'
 	kubectl wait --for=condition=available \
-		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver \
+		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local \
 		deployment/$(K8S_RELEASE)-factory-timescale deployment/$(K8S_RELEASE)-factory-collector \
 		--timeout=600s
 	@echo
@@ -115,7 +115,7 @@ start:
 stop:
 	helm uninstall $(K8S_RELEASE) || true
 	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_RELEASE)" || true
-	kubectl delete jobs -l factory.job || true
+	kubectl delete jobs -l factory.job,app.kubernetes.io/instance=$(K8S_RELEASE) || true
 
 # The kind cluster itself, `stop` being only the release: this takes the node down with every
 # volume bound to it — checkouts, database, history. Everything `make start` needs it rebuilds

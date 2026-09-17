@@ -62,29 +62,45 @@ export function safeReturnPath(raw: string | undefined | null): string {
 interface StatePayload {
     n: string;
     r: string;
+    /** The organization the sign-in was for, as a decimal installation id. Optional deep link. */
+    o?: string;
 }
 
 /**
- * The CSRF state, with the post-login destination travelling inside it.
+ * The CSRF state, with the post-login destination — and, optionally, the requested organization —
+ * travelling inside it.
  *
  * One signed value rather than a state cookie plus a separate return-path cookie: one signature then
- * covers both, so the destination cannot be swapped for another while the state still verifies.
+ * covers both, so the destination cannot be swapped for another while the state still verifies. The
+ * org rides the same signature for the same reason: a tampered `?org=` is just an unknown org at
+ * callback time, validated against the installations GitHub reported, but signing it keeps the deep
+ * link honest end to end.
  *
  * Held in a short-lived cookie rather than a row, which means no table, no reaper, and — the reason
  * that matters — the login entry point keeps working while migrations are still retrying, the same
  * instinct that keeps /api/health off the database.
  */
-export function encodeState(returnTo: string, secret: string): string {
-    const payload: StatePayload = { n: b64url(randomBytes(16)), r: safeReturnPath(returnTo) };
+export function encodeState(returnTo: string, secret: string, org?: string): string {
+    const payload: StatePayload = {
+        n: b64url(randomBytes(16)),
+        r: safeReturnPath(returnTo),
+        ...(org ? { o: org } : {}),
+    };
     return sign(b64url(Buffer.from(JSON.stringify(payload))), secret);
 }
 
-export function decodeState(signed: string | undefined, secret: string): { returnTo: string } | null {
+export function decodeState(
+    signed: string | undefined,
+    secret: string
+): { returnTo: string; org: string | null } | null {
     const value = unsign(signed, secret);
     if (!value) return null;
     try {
         const payload = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as StatePayload;
-        return { returnTo: safeReturnPath(payload.r) };
+        // The org is a decimal installation id, not a free-form string; anything else decodes as
+        // "no preference" and the callback falls back to the first reported installation.
+        const org = payload.o && /^\d+$/.test(payload.o) ? payload.o : null;
+        return { returnTo: safeReturnPath(payload.r), org };
     } catch {
         return null;
     }

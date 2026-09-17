@@ -52,7 +52,27 @@ export function TopBar({
                  * tell you that, and repos living under [organization] in the config file does not
                  * make its name a summary of the list.
                  */}
-                {meta ? <OrgSelector organization={meta.organization} /> : null}
+                {meta ? (
+                    <OrgSelector
+                        organization={meta.organization}
+                        onSwitch={(orgId) => {
+                            // The switch is a server-side session change; on success the reload
+                            // makes every org-scoped read re-probe from scratch. A refusal
+                            // (403/400 — the membership moved under the selector) leaves the
+                            // page untouched: the select's value is bound to the payload, so
+                            // the next poll renders it back on the org the session still holds.
+                            void fetch('/api/auth/org', {
+                                method: 'POST',
+                                headers: { 'content-type': 'application/json' },
+                                body: JSON.stringify({ orgId }),
+                            })
+                                .then((response) => {
+                                    if (response.ok) window.location.reload();
+                                })
+                                .catch(() => {});
+                        }}
+                    />
+                ) : null}
                 <span className="muted">{meta ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}` : ''}</span>
                 <button type="button" onClick={onRefresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh'}

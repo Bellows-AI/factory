@@ -28,10 +28,6 @@ auth:
     # REQUIRED under mode=github: the origin GitHub redirects back to. loadConfig makes it fatal to
     # boot github auth without one on a non-loopback host.
     publicUrl: ''
-    bootstrapAdmin: ''
-    # Members of this GitHub organization admit themselves on first sign-in; empty keeps it
-    # invite-only.
-    autoJoinGithubOrg: ''
     cookieSecure: ''
     allowPublicBind: ''
     # Not a secret: GitHub's OAuth App client id is public by design.
@@ -41,14 +37,8 @@ github:
     # The id and the key are required: without them the server refuses to boot — there is no
     # no-fetch mode to fall back to.
     appId: ''
-    installationId: ''
     # The PEM (or its base64) lands in the chart's Secret, never in the pod spec or a command line.
     appPrivateKey: ''
-
-# Identifiers, not credentials: empty defers to the server's own defaults.
-org:
-    id: ''
-    name: ''
 
 telemetry:
     source: postgres
@@ -89,9 +79,16 @@ secret:
     existingSecret: ''
     oauthClientSecret: ''
     sessionSecret: ''
-    # The driver's credential, minted by `npm run worker-token -- --name <worker>` — printed once,
-    # only its hash stored. Empty against a board running AUTH_MODE=none.
-    jobBoardToken: ''
+    # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route
+    # does not exist and a GitHub-side removal waits for the removed account's next sign-in.
+    githubWebhookSecret: ''
+    # The drivers' credentials, one per organization (#99): the worker token IS the org binding,
+    # so the chart renders one driver Deployment (and its gate Service) per entry. Keys are the
+    # installation ids sign-in created — `npm run worker-token -- --org <installation-id> --name
+    # <worker>` mints one, printed once, only its hash stored. An EMPTY map renders no driver at
+    # all: there is no org to work for. Empty VALUES render an optional key, which is what an
+    # AUTH_MODE=none board (the local profile) wants.
+    jobBoardTokens: {}
 
 driver:
     # Built from docker/driver.Dockerfile:

@@ -64,13 +64,6 @@ export interface DriverConfig {
      * board, the reporter's reports silently no-op, exactly as its other failures do.
      */
     statsUrl: string;
-    /**
-     * The board's optional ingest token, forwarded so the reporter's reports authenticate on a
-     * board that requires one. Empty forwards nothing. A credential: it travels the env file
-     * (docker) or the per-attempt Secret (kubernetes), never an argv — and never under Remote
-     * Control, where no forwarded credential of any kind rides (docs/jobs.md).
-     */
-    ingestToken: string;
     /** Joins the runner to a docker network, which is what lets its telemetry reach the collector. */
     network: string | null;
     concurrency: number;
@@ -132,6 +125,12 @@ export interface DriverConfig {
      * chart sets it through the downward API, so the driver follows whichever namespace it lands in.
      */
     k8sNamespace: string;
+    /**
+     * The Helm release this driver was installed by, when the chart set one. Labels every runner
+     * Job `app.kubernetes.io/instance`, so a shared namespace's bulk cleanups scope to one
+     * release's runners. Null (bare `npm run driver` against a cluster) labels nothing extra.
+     */
+    k8sRelease: string | null;
     /**
      * The name of a Secret holding the runner credentials under the kubernetes executor — one key
      * per RUNNER_ENV name. The k8s form of `-e NAME`: the names travel, the values live in a Secret
@@ -381,7 +380,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // compose network, so the endpoint is always provided to the runner.
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,
         statsUrl,
-        ingestToken: (env.RUNNER_INGEST_TOKEN ?? '').trim(),
         network: (env.RUNNER_NETWORK ?? '').trim() || null,
         concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, 1, 32),
         pollMs: int(env.DRIVER_POLL_MS, 'DRIVER_POLL_MS', DEFAULTS.pollMs, 250, 300_000),
@@ -397,6 +395,11 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             .filter(Boolean),
         executor,
         k8sNamespace: text(env.K8S_NAMESPACE, 'K8S_NAMESPACE', 'default'),
+        // The Helm release this driver was installed by, when the chart set one. It labels every
+        // runner Job `app.kubernetes.io/instance`, so an operator cleaning up one release
+        // (`make stop`, `kubectl delete jobs -l ...instance=<name>`) cannot sweep another
+        // release's runners sharing the namespace.
+        k8sRelease: (env.K8S_RELEASE ?? '').trim() || null,
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw as (typeof PULL_POLICIES)[number],
         gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', 600_000, 0, 24 * 3600_000),

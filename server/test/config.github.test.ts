@@ -65,13 +65,15 @@ describe('the App private key', () => {
         );
     });
 
-    it('accepts a numeric installation id and rejects anything else', () => {
-        expect(loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '42' })).github).toMatchObject({
-            installationId: '42',
-        });
-        // Null means "discover it", which is fatal on zero or several — see github.app-token.test.
-        expect(loadConfig(app()).github).toMatchObject({ installationId: null });
-        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: 'acme' }))).toThrow(/must be a number/);
+    it('refuses GITHUB_APP_INSTALLATION_ID: the orgs are the installations now (#99)', () => {
+        // Installation tokens mint per organization from organization.installation_id, so a
+        // process-wide one has nothing to point at — and a variable that worked yesterday must
+        // not silently no-op.
+        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '42' }))).toThrow(
+            /GITHUB_APP_INSTALLATION_ID is no longer supported/
+        );
+        expect(() => loadConfig(app({ GITHUB_APP_INSTALLATION_ID: '' }))).not.toThrow();
+        expect('installationId' in (loadConfig(app()).github as object)).toBe(false);
     });
 });
 
@@ -81,6 +83,22 @@ describe('the API host', () => {
         expect(loadConfig(app({ GITHUB_API_URL: 'http://127.0.0.1:8125/' })).github).toMatchObject({
             apiUrl: 'http://127.0.0.1:8125',
         });
+    });
+});
+
+describe('the webhook secret', () => {
+    it('is optional, and unset means the installation webhook route does not exist', () => {
+        expect(loadConfig(app()).webhookSecret).toBeNull();
+        // Compose passes several variables empty, so whitespace-only is unset too.
+        expect(loadConfig(app({ GITHUB_WEBHOOK_SECRET: '   ' })).webhookSecret).toBeNull();
+    });
+
+    it('refuses a secret short enough to enumerate', () => {
+        // The HMAC decides whose memberships get deleted, so the secret is a credential —
+        // timing-safe comparison does not help a key a caller can guess. Same floor, and same
+        // failure shape, as SESSION_SECRET's.
+        expect(() => loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'short' }))).toThrow(/at least 32 characters/);
+        expect(loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'x'.repeat(32) })).webhookSecret).toBe('x'.repeat(32));
     });
 });
 

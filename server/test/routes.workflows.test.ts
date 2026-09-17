@@ -1,11 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import { createStatsService } from '../src/stats-service.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
-import { staticRepoSource } from '../src/github/repo-source.js';
-import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
 /**
  * Offline: the HTTP contract of the workflow routes against an in-memory store double. The store's
@@ -85,8 +83,11 @@ async function boot(workflows: WorkflowStore & { created: unknown[]; removed: st
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
     const config = testConfig({ auth: githubAuth() });
-    const service = createStatsService({ config, telemetry: stubTelemetryClient() });
-    const instance = await buildApp({ config, service, repos: staticRepoSource([]), workflows, auth });
+    const instance = await buildApp({
+        config,
+        orgs: staticRegistry({ config, workflows, telemetry: stubTelemetryClient() }),
+        auth,
+    });
     app = instance;
     return {
         instance,

@@ -1,17 +1,15 @@
-import type { FastifyPluginAsync } from 'fastify';
-import { callerOf } from '../auth/plugin.js';
-import type { RepoAccessScope } from '../github/access-scope.js';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import { callerOf, orgOf } from '../auth/plugin.js';
+import type { OrgRegistry } from '../orgs.js';
 import type { WorkflowStore } from '../db/workflow-store.js';
 import { UUID, bad, badSegment, body } from './helpers.js';
 
 export interface WorkflowRouteDeps {
-    store: WorkflowStore;
     /**
-     * The per-user repo scope, for the repo-context query on the list and the repo-scope create —
-     * the same check `POST /api/jobs` makes on a repo label. Absent, or a caller with no computed
-     * set, and repo labels are not checked against anything but their shape.
+     * The per-org runtimes; the store a request touches is the CALLER's org's. Workflows are
+     * org-scoped rows, so the resolution is the same one every org-scoped route makes.
      */
-    scope?: RepoAccessScope | undefined;
+    orgs: OrgRegistry;
 }
 
 const BODY_LIMIT = 64 * 1024;
@@ -51,9 +49,21 @@ function repoReason(value: string): string | null {
  * was well-formed, the name was gone.
  */
 export const workflowRoutes =
-    ({ store, scope }: WorkflowRouteDeps): FastifyPluginAsync =>
+    ({ orgs }: WorkflowRouteDeps): FastifyPluginAsync =>
     async (app) => {
+        /**
+         * The workflow definitions a request touches are its caller's org's (#99) — the same
+         * resolution the job board makes. Absent in the route-test mode with no stores behind
+         * the registry.
+         */
+        const storeOf = async (request: FastifyRequest): Promise<WorkflowStore | null> => {
+            const rt = await orgs.for(orgOf(request));
+            return rt?.workflows ?? null;
+        };
+
         app.get('/api/workflows', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'WORKFLOWS_UNAVAILABLE', 'No workflow store for this organization', 503);
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
 
@@ -75,6 +85,8 @@ export const workflowRoutes =
         });
 
         app.post('/api/workflows', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'WORKFLOWS_UNAVAILABLE', 'No workflow store for this organization', 503);
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
 
@@ -101,18 +113,6 @@ export const workflowRoutes =
                 const reason = repoReason(fields.repo);
                 if (reason) return bad(reply, 'BAD_SCOPE', reason);
                 repo = fields.repo;
-                if (scope && caller) {
-                    const allowed = await scope.scopedNames(caller.user.id);
-                    const wanted = repo.toLowerCase();
-                    if (allowed !== null && !allowed.some((candidate) => candidate.toLowerCase() === wanted)) {
-                        return bad(
-                            reply,
-                            'REPO_NOT_ACCESSIBLE',
-                            `"${repo}" is not one of the repositories your GitHub account can access`,
-                            403
-                        );
-                    }
-                }
             }
 
             const created = await store.create({
@@ -136,6 +136,8 @@ export const workflowRoutes =
         });
 
         app.delete('/api/workflows/:id', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'WORKFLOWS_UNAVAILABLE', 'No workflow store for this organization', 503);
             const caller = callerOf(request);
             if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
             const { id } = request.params as { id: string };

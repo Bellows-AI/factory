@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { MetricRow } from '../src/telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
-import { stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, stubTelemetryClient, testConfig } from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -12,9 +12,14 @@ afterEach(async () => {
     app = null;
 });
 
+interface Recorded {
+    report: SessionBranchReport;
+    orgId: string;
+}
+
 interface StoreStub extends TelemetryStore {
     metrics: MetricRow[];
-    branches: SessionBranchReport[];
+    branches: Recorded[];
 }
 
 function stubStore(options: { fail?: boolean } = {}): StoreStub {
@@ -26,9 +31,11 @@ function stubStore(options: { fail?: boolean } = {}): StoreStub {
             stub.metrics.push(...rows);
             return rows.length;
         },
-        async recordBranch(report) {
+        // The org is a parameter now, not a resolver's answer: it arrives from the credential
+        // verified at the ingest boundary, and these assertions pin that it did.
+        async recordBranch(report, orgId) {
             if (options.fail) throw new Error('database is down');
-            stub.branches.push(report);
+            stub.branches.push({ report, orgId });
         },
     };
     return stub;
@@ -42,6 +49,38 @@ async function harnessWith(store?: StoreStub) {
         now: () => Date.parse('2026-08-21T12:00:00.000Z'),
     });
     const instance = await buildApp({ config, service, store });
+    app = instance;
+    return instance;
+}
+
+const JOB_ID = '11111111-1111-4111-8111-111111111111';
+const LEASE = '22222222-2222-4222-8222-222222222222';
+const CREDENTIAL_ORG = 'credential-org';
+
+/**
+ * A github-mode build: no credential reaches the route without passing the hook, and the
+ * injected verifier answers exactly one attempt — the constants above. This is the harness
+ * the credential-first ordering is asserted against.
+ */
+async function githubHarnessWith(
+    store?: StoreStub,
+    orgOfLease?: (jobId: string, lease: string) => Promise<string | null>
+) {
+    const config = testConfig({ auth: githubAuth() });
+    const service = createStatsService({
+        config,
+        telemetry: stubTelemetryClient(),
+        now: () => Date.parse('2026-08-21T12:00:00.000Z'),
+    });
+    const instance = await buildApp({
+        config,
+        service,
+        store,
+        auth: memoryAuthStore(),
+        orgOfLease:
+            orgOfLease ??
+            (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? CREDENTIAL_ORG : null)),
+    });
     app = instance;
     return instance;
 }
@@ -180,6 +219,7 @@ describe('POST /api/sessions/branch', () => {
         headSha: 'abc123',
         at: '2026-08-21T10:40:00Z',
     };
+    const pair = { 'x-factory-job-id': JOB_ID, 'x-factory-job-lease-token': LEASE };
 
     it('accepts a valid report', async () => {
         const store = stubStore();
@@ -191,7 +231,52 @@ describe('POST /api/sessions/branch', () => {
             payload: report,
         });
         expect(res.statusCode).toBe(202);
-        expect(store.branches[0]).toEqual(report);
+        expect(store.branches[0]?.report).toEqual(report);
+        // No auth hook in this harness (the route-test mode): the org is the LOCAL_ORG_ID
+        // semantic orgOf answers for a null principal.
+        expect(store.branches[0]?.orgId).toBe('default');
+    });
+
+    it('records with the credential’s org, never one derived from the report’s repo', async () => {
+        // The finding (CWE-862): a caller-controlled repo field used to select session_branch
+        // .org_id by owner match, so reporting a repo owned by another organization poisoned
+        // that org's telemetry. The org now arrives from the verified credential; the repo is
+        // payload, and naming somebody else's changes nothing.
+        const store = stubStore();
+        const instance = await githubHarnessWith(store);
+        const res = await instance.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            headers: { ...json, ...pair },
+            payload: { ...report, repo: 'someone-elses/poisoned-repo' },
+        });
+        expect(res.statusCode).toBe(202);
+        expect(store.branches[0]?.orgId).toBe(CREDENTIAL_ORG);
+        expect(store.branches[0]?.report.repo).toBe('someone-elses/poisoned-repo');
+    });
+
+    it('checks the credential before the body: 401, never 400, for an unauthenticated caller', async () => {
+        // An unauthenticated caller learns nothing — not even which shapes the parser takes.
+        const instance = await githubHarnessWith(stubStore());
+        const res = await instance.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            headers: json,
+            payload: { garbage: true },
+        });
+        expect(res.statusCode).toBe(401);
+        expect(res.json().code).toBe('UNAUTHENTICATED');
+    });
+
+    it('answers 400 on a malformed body from an authenticated caller', async () => {
+        const instance = await githubHarnessWith(stubStore());
+        const res = await instance.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            headers: { ...json, ...pair },
+            payload: { ...report, at: 'not-a-date' },
+        });
+        expect(res.statusCode).toBe(400);
     });
 
     it('accepts a null branch for a detached HEAD', async () => {
@@ -204,7 +289,7 @@ describe('POST /api/sessions/branch', () => {
             payload: { ...report, branch: null, headSha: null },
         });
         expect(res.statusCode).toBe(202);
-        expect(store.branches[0]?.branch).toBeNull();
+        expect(store.branches[0]?.report.branch).toBeNull();
     });
 
     it('rejects the literal HEAD, which is not a branch name', async () => {
@@ -251,7 +336,7 @@ describe('POST /api/sessions/branch', () => {
             headers: json,
             payload: withoutAgent,
         });
-        expect(store.branches[0]?.agent).toBe('claude-code');
+        expect(store.branches[0]?.report.agent).toBe('claude-code');
     });
 });
 

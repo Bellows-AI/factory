@@ -270,12 +270,27 @@ describe('the runner job spec', () => {
         });
     });
 
-    it('forwards no credentials when no secret is configured', () => {
+    // `RUNNER_CREDENTIALS_SECRET` forwards nothing when unset: its names never appear. What the
+    // spec DOES always carry is the runner's own attempt pair — the branch-ingest credential,
+    // referenced into the per-attempt Secret below (its values ride the Secret, never the spec).
+    it('forwards no user-configured credentials when no secret is configured', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(container.env).toEqual([
             { name: 'WORKDIR', value: `/workspaces/bellows/${USER}` },
             { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'http://collector:4318' },
             { name: 'FACTORY_STATS_URL', value: 'http://127.0.0.1:8080' },
+            {
+                name: 'RUNNER_JOB_ID',
+                valueFrom: {
+                    secretKeyRef: { name: `factory-job-${job.id}-${job.leaseToken}-env`, key: 'RUNNER_JOB_ID' },
+                },
+            },
+            {
+                name: 'RUNNER_LEASE_TOKEN',
+                valueFrom: {
+                    secretKeyRef: { name: `factory-job-${job.id}-${job.leaseToken}-env`, key: 'RUNNER_LEASE_TOKEN' },
+                },
+            },
             {
                 name: 'FACTORY_TRANSCRIPT_DIR',
                 value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
@@ -302,9 +317,11 @@ describe('the runner job spec', () => {
         expect(JSON.stringify(container.env)).not.toContain('shh');
     });
 
-    it('carries no claim env entries, and names no Secret, for an env-less claim', () => {
+    it('carries no claim env entries for an env-less claim', () => {
         const container = spec().spec.template.spec.containers[0];
-        expect(JSON.stringify(container.env)).not.toContain('factory-job-');
+        // The attempt pair names the per-attempt Secret now, always — that is the runner's own
+        // credential, not claim env. What must not appear is anything MEMBER-configured.
+        expect(JSON.stringify(container.env)).not.toContain('CORE_TOKEN');
         // The literal values: WORKDIR, the two URLs every runner is pointed somewhere by —
         // the collector for OTLP metrics, the board for the branch reporter's attribution
         // reports — and the transcript store path, all paths/URLs, not credentials, in a spec
@@ -352,18 +369,29 @@ describe('the runner job spec', () => {
         ).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: SESSION });
     });
 
-    // The ingest token is a credential: its NAME travels in the pod spec, its VALUE rides the
-    // per-attempt Secret by reference — the same discipline as every claim env entry. Unset, the
-    // pod names no key at all.
-    it('delivers the ingest token by secret reference, never as a value', () => {
-        const withToken = spec({ RUNNER_INGEST_TOKEN: 'shh-ingest' });
-        const container = withToken.spec.template.spec.containers[0];
+    // The attempt pair is a credential — the lease token most of all — so the NAMES travel in
+    // the pod spec and the VALUES ride the per-attempt Secret by reference, the same discipline
+    // as every claim env entry. There is no opt-out: the pair is how the runner's branch
+    // reporter authenticates at all.
+    it('delivers the attempt pair by secret reference, never as a value', () => {
+        const container = spec().spec.template.spec.containers[0];
         expect(container.env).toContainEqual({
-            name: 'INGEST_TOKEN',
-            valueFrom: { secretKeyRef: { name: secretName(job), key: 'INGEST_TOKEN' } },
+            name: 'RUNNER_JOB_ID',
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'RUNNER_JOB_ID' } },
         });
-        expect(JSON.stringify(withToken)).not.toContain('shh-ingest');
-        expect(spec().spec.template.spec.containers[0].env.some((entry) => entry.name === 'INGEST_TOKEN')).toBe(false);
+        expect(container.env).toContainEqual({
+            name: 'RUNNER_LEASE_TOKEN',
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'RUNNER_LEASE_TOKEN' } },
+        });
+        // No literal pair values in the spec: only valueFrom references.
+        expect(
+            container.env.filter((entry) => entry.name === 'RUNNER_JOB_ID' || entry.name === 'RUNNER_LEASE_TOKEN')
+        ).toEqual(
+            container.env.filter(
+                (entry) =>
+                    (entry.name === 'RUNNER_JOB_ID' || entry.name === 'RUNNER_LEASE_TOKEN') && 'valueFrom' in entry
+            )
+        );
     });
 
     // A failed runner pod must never be re-run by the cluster: a kubelet retry would re-send the
@@ -1722,6 +1750,9 @@ describe('the kubernetes runner', () => {
             `GET ${jobsPath(namespace)}`,
             `GET /api/v1/namespaces/factory/pods`,
             `GET /api/v1/namespaces/factory/services`,
+            // The per-attempt Secret (the runner's attempt pair) is created after the sweep and
+            // before the claim — the credential exists before anything names it.
+            `POST /api/v1/namespaces/factory/secrets`,
             `GET ${claimPathFor(job.id)}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPathFor(job.id)}`,
@@ -1736,6 +1767,8 @@ describe('the kubernetes runner', () => {
             // answers mean nothing was ever started.
             'GET /api/v1/namespaces/factory/pods',
             'GET /api/v1/namespaces/factory/services',
+            // The Secret goes with the attempt.
+            `DELETE /api/v1/namespaces/factory/secrets/${secretName(job)}`,
         ]);
         expect(outcome).toEqual({
             // The fake's log parses as no count at all: unmeasured, never zero.
@@ -1765,7 +1798,11 @@ describe('the kubernetes runner', () => {
             kind: 'Secret',
             type: 'Opaque',
             metadata: { name: secretName(envJob), labels: { 'factory.job': envJob.id } },
-            stringData: { CORE_TOKEN: 'shh' },
+            stringData: {
+                CORE_TOKEN: 'shh',
+                RUNNER_JOB_ID: envJob.id,
+                RUNNER_LEASE_TOKEN: envJob.leaseToken,
+            },
         });
         // The Secret precedes the Job: a pod referencing a Secret that is not there yet is a
         // CreateContainerConfigError and a burned attempt.
@@ -1784,10 +1821,15 @@ describe('the kubernetes runner', () => {
         ).toBe(true);
     });
 
-    it('creates no Secret at all for an env-less claim', async () => {
+    it('creates the per-attempt Secret for every runner — the pair rides it even with no claim env', async () => {
         const { request, calls } = fakeRequest();
         await runner(request).run(job, { id: SESSION, resume: false });
-        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        // The Secret is never empty now: the runner's own branch-ingest credential is always in it.
+        expect(secretPost?.body).toMatchObject({
+            stringData: { RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken },
+        });
     });
 
     /*
@@ -1921,6 +1963,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -1977,6 +2025,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -2044,6 +2098,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2064,10 +2124,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
-            // Round two: all three kinds answer empty.
+            // Round two: all three kinds answer empty. The per-attempt Secret is written after
+            // the sweep, before the claim that precedes the create — and reaped with the attempt.
             'GET',
             'GET',
             'GET',
+            'POST',
             'GET',
             'POST',
             'GET',
@@ -2084,6 +2146,7 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'GET',
+            'DELETE',
         ]);
         expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
         expect(calls[5].path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
@@ -2121,6 +2184,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -2191,6 +2260,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2253,6 +2328,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2276,6 +2357,9 @@ describe('the kubernetes runner', () => {
             `GET ${jobsPath(namespace)}`,
             `GET /api/v1/namespaces/factory/pods`,
             `GET /api/v1/namespaces/factory/services`,
+            // The per-attempt Secret — written after the sweep, before the claim — and reaped
+            // with the attempt, the last call of the run.
+            `POST /api/v1/namespaces/factory/secrets`,
             `GET ${claimPath}`,
             `POST ${jobsPath(namespace)}`,
             `GET ${claimPath}`,
@@ -2289,6 +2373,7 @@ describe('the kubernetes runner', () => {
             `DELETE ${claimPath}`,
             'GET /api/v1/namespaces/factory/pods',
             'GET /api/v1/namespaces/factory/services',
+            `DELETE /api/v1/namespaces/factory/secrets/${secretName(newerJob)}`,
         ]);
     });
 
@@ -2353,6 +2438,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -2419,7 +2510,7 @@ describe('the kubernetes runner', () => {
             if (method === 'POST' && path === jobsPath(namespace)) {
                 return Promise.resolve({ status: 201, body: '{}' });
             }
-            if (path === secretsPath) {
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
                 if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
                 return Promise.resolve({ status: 201, body: '{}' });
             }
@@ -2446,6 +2537,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -2541,6 +2638,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2575,6 +2678,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            'POST',
             'GET',
             'POST',
             'GET',
@@ -2591,6 +2695,7 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'GET',
+            'DELETE',
         ]);
     });
 
@@ -2650,6 +2755,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2687,6 +2798,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            'POST',
             'GET',
             'POST',
             'GET',
@@ -2703,6 +2815,7 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'GET',
+            'DELETE',
         ]);
     });
 
@@ -2740,6 +2853,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2748,10 +2867,12 @@ describe('the kubernetes runner', () => {
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             // Jobs 404s; the sweep goes on to the pods and services lists, both empty — the
-            // round is conclusive and the checkout is free.
+            // round is conclusive and the checkout is free. The per-attempt Secret is written
+            // after the sweep, before the claim that precedes the create — and reaped with it.
             'GET',
             'GET',
             'GET',
+            'POST',
             'GET',
             'POST',
             'GET',
@@ -2768,6 +2889,7 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'GET',
+            'DELETE',
         ]);
     });
 
@@ -2810,6 +2932,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -2822,10 +2950,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
-            // Round two: jobs, pods and services all answer empty — free to create.
+            // Round two: jobs, pods and services all answer empty — free to create. The
+            // per-attempt Secret is written after the sweep, before the claim — reaped with it.
             'GET',
             'GET',
             'GET',
+            'POST',
             'GET',
             'POST',
             'GET',
@@ -2842,6 +2972,7 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'GET',
+            'DELETE',
         ]);
     });
 
@@ -2921,6 +3052,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
@@ -2975,6 +3112,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -3067,6 +3210,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -3124,6 +3273,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -3189,6 +3344,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -3259,6 +3420,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -3326,6 +3493,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -3407,6 +3580,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -3477,6 +3656,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -3557,6 +3742,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -3621,6 +3812,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -3689,6 +3886,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -3767,6 +3970,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -3843,6 +4052,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -3916,6 +4131,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -3938,6 +4159,7 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'GET',
+            'POST',
             'GET',
             'POST',
             'GET',
@@ -3954,6 +4176,7 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'GET',
+            'DELETE',
         ]);
         expect(calls[9]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
     });
@@ -4022,6 +4245,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -4060,6 +4289,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -4139,6 +4374,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -4260,6 +4501,12 @@ describe('the kubernetes runner', () => {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
             }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
@@ -4303,6 +4550,12 @@ describe('the kubernetes runner', () => {
             {
                 const aux = auxRoutes(method, path);
                 if (aux) return Promise.resolve(aux);
+            }
+            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
+            // attempt and deleted with it, so every fake answers it the same plain way.
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -4375,7 +4628,7 @@ describe('the gate job spec', () => {
 
     it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
         expect(gateSpec().apiVersion).toBe('batch/v1');
-        expect(gateSpec().metadata.name).toMatch(/^factory-gate-test-[0-9a-f]{8}$/);
+        expect(gateSpec().metadata.name).toMatch(/^factory-gate-test-[0-9a-f]{16}$/);
         // A second run of the same gate is a different object — ad-hoc calls land mid-run, and
         // two runs of one gate must never race for one name.
         expect(gateSpec(2).metadata.name).not.toBe(gateSpec(1).metadata.name);
@@ -4449,7 +4702,7 @@ describe('the gate job spec', () => {
             null,
             30_000
         );
-        expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{8}$/);
+        expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{16}$/);
         expect(s.metadata.name).not.toContain('UPPER');
         expect(s.metadata.name).not.toContain('Case');
     });
@@ -4488,7 +4741,7 @@ describe('the gate env body', () => {
 
 describe('the kubernetes gate manager', () => {
     const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
-    const GATE_JOB = /^factory-gate-test-[0-9a-f]{8}$/;
+    const GATE_JOB = /^factory-gate-test-[0-9a-f]{16}$/;
 
     /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
     const gateFake = (
@@ -4816,9 +5069,9 @@ describe('the kubernetes services flow', () => {
         expect(jobPost).toBeGreaterThan(dnsPost);
 
         // And the fleet goes with the attempt: the close-time teardown lists by lease. The
-        // claim's release (GET, DELETE) precedes it; an env-less claim has no Secret to reap.
-        const tail = calls.slice(-4);
-        expect(tail.map((c) => c.method)).toEqual(['GET', 'DELETE', 'GET', 'GET']);
+        // claim's release (GET, DELETE) precedes it; the attempt Secret's reap is the last call.
+        const tail = calls.slice(-5);
+        expect(tail.map((c) => c.method)).toEqual(['GET', 'DELETE', 'GET', 'GET', 'DELETE']);
     });
 
     it('refuses a DNS-name collision terminally, naming the conflict instead of ordering the race', async () => {
@@ -5098,6 +5351,11 @@ describe('the kubernetes runner under opencode', () => {
             if (path === `${ns}/pods/${podName}/log`) return Promise.resolve({ status: 200, body: 'did the work\n' });
             if (path === `${ns}/pods/${ocreadPod}/log`) {
                 return Promise.resolve({ status: 200, body: readout.log ?? '' });
+            }
+            // The per-attempt Secret (the runner's attempt pair), created and reaped per attempt.
+            if (path === `${ns}/secrets`) {
+                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
+                return Promise.resolve({ status: 201, body: '{}' });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };

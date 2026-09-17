@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { orgOf } from '../auth/plugin.js';
 import { flattenMetrics } from '../telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js';
 
@@ -68,11 +69,15 @@ export const ingestRoutes =
         app.post('/api/sessions/branch', { bodyLimit: 4096 }, async (request, reply) => {
             const report = branchReport(request.body);
             // 400, never 5xx: the hook is fire-and-forget and a 5xx would make a well-behaved
-            // client retry a body it can never fix.
+            // client retry a body it can never fix. (The credential check has already happened —
+            // the hook answers 401 before this route ever runs.)
             if (!report) return reply.code(400).send({ error: 'Malformed session branch report' });
 
             try {
-                await store.recordBranch(report);
+                // The org is the credential's, never the report's: `repo` is caller-controlled
+                // payload, and the owner match it used to drive would let a report name another
+                // organization's repository and poison its telemetry (CWE-862).
+                await store.recordBranch(report, orgOf(request));
             } catch (e) {
                 request.log.error({ err: e }, 'session branch upsert failed');
                 return reply.code(503).send({ error: (e as Error).message });

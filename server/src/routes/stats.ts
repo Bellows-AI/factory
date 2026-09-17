@@ -1,10 +1,11 @@
 import { isRangePreset, resolveRange } from '@factory-ai/core';
-import type { DateRange, Organization } from '@factory-ai/core';
+import type { DateRange, Organization, OrganizationMeta } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
-import { callerOf } from '../auth/plugin.js';
-import type { RepoAccessScope } from '../github/access-scope.js';
-import type { AppConfig } from '../config.js';
-import type { StatsScope, StatsService } from '../stats-service.js';
+import { callerOf, orgOf } from '../auth/plugin.js';
+import type { AuthStore } from '../auth/store.js';
+import { LOCAL_ORG_ID, type AppConfig } from '../config.js';
+import type { OrgRegistry } from '../orgs.js';
+import type { StatsScope } from '../stats-service.js';
 
 interface StatsQuery {
     range?: string;
@@ -48,21 +49,67 @@ function parseRange(query: StatsQuery, now: Date): DateRange | { error: string }
 }
 
 /**
- * One function, not an `OrgProvider`.
+ * The org resolution still lives in ONE function, as docs/organizations.md promised it would —
+ * the body changed with #99, the shape did not.
  *
- * The precedent for an early interface here — `TokenProvider` — ships with one implementation
- * in tree, and has a signature that was load-bearing on day
- * one. A directory's org list is per *user*, so its real signature is `resolve(caller, orgId)` in a
- * codebase that has no caller, no session and no auth: the interface would have to change shape the
- * day its second implementation arrived, having bought nothing but a provider threaded through
- * `buildApp` and the service deps. Mode 2 replaces this body and its argument list, in one place.
+ * It no longer answers "is this the configured org" but "may this caller read that org": the
+ * caller's own org (session row, personal-token row, org-token row) is served without a check;
+ * a requested org must EXIST (400 UNKNOWN_ORG — the error a typo gets) and be one the caller is a
+ * member of (403 FORBIDDEN — the error a stranger gets). Membership is the materialized fact the
+ * last sign-in reported, so the check is a read, never a GitHub call.
+ *
+ * `store` is absent only in the route tests that predate accounts: no auth hook, nobody to be a
+ * member of anything, and any requested org other than the local one is unknown by definition.
  */
-function resolveOrg(config: AppConfig, requested: string | undefined): Organization | { error: string } {
-    const current = { id: config.orgId, name: config.orgName };
+async function resolveOrg(
+    config: AppConfig,
+    store: AuthStore | undefined,
+    request: Parameters<typeof callerOf>[0],
+    requested: string | undefined
+): Promise<
+    { meta: OrganizationMeta; serviceOrg: Organization } | { error: string; code: 'UNKNOWN_ORG' | 'FORBIDDEN' }
+> {
+    const caller = callerOf(request);
+    const orgToken = request.auth?.kind === 'org' ? request.auth.token : null;
+
+    // The org this principal is bound to. A user principal carries its org (with its name) from
+    // the row it authenticated through; an org token carries only the id.
+    const bound: Organization | null = caller
+        ? caller.org
+        : orgToken
+          ? ((await store?.findOrg(orgToken.orgId)) ?? { id: orgToken.orgId, name: orgToken.orgId })
+          : { id: LOCAL_ORG_ID, name: LOCAL_ORG_ID };
+
     // '' is not a request, consistent with how every other empty value is treated.
-    if (!requested || requested === current.id) return current;
+    if (!requested || requested === bound.id) {
+        return {
+            serviceOrg: bound,
+            meta: {
+                mode: config.auth.mode === 'none' ? 'config' : 'directory',
+                current: bound,
+                available: caller ? await store!.membershipsOf(caller.user.id) : [bound],
+            },
+        };
+    }
+
+    const org = (await store?.findOrg(requested)) ?? null;
+    if (!org) {
+        return { error: `Unknown organization '${requested}'`, code: 'UNKNOWN_ORG' };
+    }
+    // Known, but not this caller's: the org decides WHICH data set, and the membership join —
+    // not the parameter — decides whose. "Trust the parameter" is how a cross-tenant read is
+    // born. Read ONCE: this route is the dashboard's two-second poll, and ?org= is on it.
+    const memberships = caller ? await store!.membershipsOf(caller.user.id) : [];
+    if (!caller || !memberships.some((m) => m.id === requested)) {
+        return { error: `Not a member of '${requested}'`, code: 'FORBIDDEN' };
+    }
     return {
-        error: `Unknown organization '${requested}'; this deployment serves '${current.id}' only`,
+        serviceOrg: org,
+        meta: {
+            mode: 'directory',
+            current: org,
+            available: memberships,
+        },
     };
 }
 
@@ -99,35 +146,44 @@ function resolveScope(
 export const statsRoutes =
     (
         config: AppConfig,
-        service: StatsService,
-        now: () => number = Date.now,
-        scope?: RepoAccessScope | undefined
+        orgs: OrgRegistry,
+        store: AuthStore | undefined,
+        now: () => number = Date.now
     ): FastifyPluginAsync =>
     async (app) => {
         app.get('/api/stats', async (request, reply) => {
             const query = request.query as StatsQuery;
 
             // Ahead of parseRange: the organization selects WHICH data set is being ranged, so it
-            // is the more fundamental of the two errors, and in mode 2 it decides which store the
-            // range applies to at all. Ahead of ensureFresh() too — a bad request is a bad request
-            // whatever the cache is doing, which is why this can never be answered with a 202.
+            // is the more fundamental of the two errors. Ahead of ensureFresh() too — a bad
+            // request is a bad request whatever the cache is doing, which is why this can never
+            // be answered with a 202.
             //
-            // Rejected rather than ignored, and the BAD_RANGE precedent below understates the
-            // reason. An ignored range at least echoes back in `meta.range` where a reader could
-            // notice; an ignored ?org= would echo `meta.organization.current` as the configured
-            // org, rendering one organization's figures under a heading the caller did not ask
-            // for. Once the store is partitioned, "trust the parameter" must never become a habit:
-            // the day auth lands, that habit is a cross-tenant read.
-            const org = resolveOrg(config, query.org);
+            // Rejected rather than ignored: an ignored ?org= would echo `meta.organization.current`
+            // as the caller's own org, rendering one organization's figures under a heading the
+            // caller did not ask for. Unknown is 400; known-but-not-yours is 403 — the caller
+            // authenticated, the answer just belongs to somebody else.
+            const org = await resolveOrg(config, store, request, query.org);
             if ('error' in org) {
-                return reply.code(400).send({ error: org.error, code: 'UNKNOWN_ORG' });
+                return reply.code(org.code === 'FORBIDDEN' ? 403 : 400).send({ error: org.error, code: org.code });
             }
+
+            // The runtime for the resolved org: its repo source, telemetry and stats cache are
+            // all the org's own. Null here is not "unknown" — resolveOrg just proved the row —
+            // but the runtime failed to build, which is a 503 like every other unavailable
+            // backing service, never a client error.
+            const rt = await orgs.for(org.serviceOrg.id);
+            if (!rt) {
+                return reply.code(503).send({
+                    error: `The runtime for '${org.serviceOrg.id}' could not be built; retry`,
+                    code: 'ORG_UNAVAILABLE',
+                });
+            }
+            const service = rt.service;
 
             // Beside the organization: the org decides WHICH data set, the scope decides WHOSE
             // figures within it, and both must be settled before any range is parsed or the
-            // cache is touched — a bad scope is a bad request whatever the cache is doing.
-            // `callerScope`, not `scope`: the plugin argument named `scope` is the per-user REPO
-            // access scope, a different dimension entirely.
+            // cache is touched.
             const callerScope = resolveScope(config, request, query.scope);
             if ('error' in callerScope) {
                 return reply.code(400).send({ error: callerScope.error, code: callerScope.code });
@@ -137,19 +193,10 @@ export const statsRoutes =
                 return reply.code(400).send({ error: range.error, code: 'BAD_RANGE' });
             }
 
-            // `org` goes no further on purpose. The service already knows the only organization
-            // there is, and a parameter it ignores is worse than no parameter.
-            //
-            // The per-user repo scope narrows WHAT is measured, not which range is measured — so
-            // it rides into `current()` beside the range, and the same read answers every caller.
-            // Null means no scope, or this caller's has never been computed: the full list then.
-            const caller = callerOf(request);
-            const repoFilter = scope && caller ? await scope.scopedNames(caller.user.id) : null;
-
             service.ensureFresh();
-            // Both dimensions ride into `current()`: whose figures (caller scope), and — where
-            // per-user repo scoping is active — the caller's subset of the installation.
-            const payload = service.current(range, callerScope.value, repoFilter ?? undefined);
+            // The organization meta rides into `current()` so the payload names the org the
+            // figures were computed for — and what else this caller could have asked for.
+            const payload = service.current(range, callerScope.value, org.meta);
 
             // A stale cache is still served with 200. A failed read must keep the last
             // good render on screen and explain itself, not blank the dashboard.
@@ -178,8 +225,10 @@ export const statsRoutes =
             return reply.code(202).send({ fetch });
         });
 
-        app.post('/api/refresh', async (_request, reply) => {
-            service.refresh();
-            return reply.code(202).send({ fetch: service.fetchState() });
+        app.post('/api/refresh', async (request, reply) => {
+            // The caller's own org cache. An oat_ names its org the same way a session does.
+            const rt = await orgs.for(orgOf(request));
+            rt?.service.refresh();
+            return reply.code(202).send({ fetch: rt?.service.fetchState() ?? null });
         });
     };

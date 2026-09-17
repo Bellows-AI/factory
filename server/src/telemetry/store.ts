@@ -16,17 +16,19 @@ export interface SessionBranchReport {
  */
 export interface TelemetryStore {
     insertMetrics(rows: MetricRow[]): Promise<number>;
-    recordBranch(report: SessionBranchReport): Promise<void>;
+    recordBranch(report: SessionBranchReport, orgId: string): Promise<void>;
 }
 
 /**
- * `orgId` is bound at construction, the way every store binds it: it is a constant for
- * the life of the process, and a per-call parameter is one more thing an ingest route can forget.
- *
- * Note that `insertMetrics` does not stamp it. metric_point has no org column on purpose — a
- * datapoint's organization is resolved through session_branch, exactly as its repo is.
+ * WHERE THE ORG COMES FROM — the credential verified at the ingest boundary, never the report's
+ * repo. A report's `repo` is caller-controlled payload, and matching its owner against the
+ * installation orgs let any caller write telemetry into another organization by naming its
+ * repository (CWE-862). The route now records with `orgOf(request)`: the attempt's org for the
+ * runner's job-id + lease-token pair, the membership's org for the laptop plugin's personal
+ * bearer. `metric_point` keeps no org of its own — a datapoint's organization is still resolved
+ * through `session_branch`, exactly as its repo is.
  */
-export function createPostgresStore({ sql, orgId }: { sql: Sql; orgId: string }): TelemetryStore {
+export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
     return {
         async insertMetrics(rows) {
             if (!rows.length) return 0;
@@ -53,7 +55,8 @@ export function createPostgresStore({ sql, orgId }: { sql: Sql; orgId: string })
             return inserted.count;
         },
 
-        async recordBranch({ agent, sessionId, repo, branch, headSha, at }) {
+        async recordBranch(report, orgId) {
+            const { agent, sessionId, repo, branch, headSha, at } = report;
             const when = new Date(at);
             // Widen the interval rather than overwrite it: each report is one sample of a
             // branch that was held for some span, and the span is what the attribution join

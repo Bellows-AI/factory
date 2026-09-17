@@ -54,17 +54,14 @@ spec:
                       # — there is no no-fetch mode to fall back to.
                       - name: GITHUB_APP_ID
                         value: {{ .Values.github.appId | quote }}
-                      - name: GITHUB_APP_INSTALLATION_ID
-                        value: {{ .Values.github.installationId | quote }}
                       - name: GITHUB_APP_PRIVATE_KEY
                         valueFrom:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: github-app-private-key
-                      - name: ORG_ID
-                        value: {{ .Values.org.id | quote }}
-                      - name: ORG_NAME
-                        value: {{ .Values.org.name | quote }}
+                      # The organizations are the App's installations, materialized at sign-in
+                      # (#99) — there is no org env to set. Install the App on every account this
+                      # deployment should serve.
                       # The checkouts. Same path the runners mount the claim at: the board writes
                       # there, and `workspacePath` on a claim is relative to this root.
                       - name: ORG_WORKSPACE_ROOT
@@ -102,15 +99,18 @@ spec:
                         value: {{ .Values.auth.publicUrl | quote }}
                       - name: COOKIE_SECURE
                         value: {{ .Values.auth.cookieSecure | quote }}
-                      - name: AUTH_BOOTSTRAP_ADMIN
-                        value: {{ .Values.auth.bootstrapAdmin | quote }}
-                      - name: AUTH_AUTO_JOIN_GITHUB_ORG
-                        value: {{ .Values.auth.autoJoinGithubOrg | quote }}
                       - name: INGEST_TOKEN
                         valueFrom:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: ingest-token
+                      # The App's installation webhook: present, the route verifies GitHub's HMAC
+                      # against it; empty, the route does not exist at all.
+                      - name: GITHUB_WEBHOOK_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: github-webhook-secret
                   {{- with .Values.dashboard.resources }}
                   resources:
                       {{- toYaml . | nindent 20 }}

@@ -53,10 +53,12 @@ describe('GET /api/stats', () => {
         expect(body.telemetry.totals.sessions).toBe(13);
         expect(body.telemetry.totals.tokens.input).toBeGreaterThan(0);
         expect(body.meta.repos).toEqual([{ owner: 'Bellows-AI', name: 'bellows.ai' }]);
+        // No auth hook in this harness, so the request carries no caller: the payload names the
+        // local org, mode 'config' — the AUTH_MODE=none shape.
         expect(body.meta.organization).toEqual({
             mode: 'config',
-            current: { id: 'test-org', name: 'Test Org' },
-            available: [{ id: 'test-org', name: 'Test Org' }],
+            current: { id: 'default', name: 'default' },
+            available: [{ id: 'default', name: 'default' }],
         });
         // The property the selector rests on: one element, equal to current, so the SPA needs no
         // second endpoint and no mode-specific branch in its markup.
@@ -242,43 +244,101 @@ describe('GET /api/stats', () => {
 });
 
 describe('GET /api/stats organization', () => {
-    const warm = async () => {
-        const h = await harness();
+    const warm = async (harnessOptions: Parameters<typeof harness>[0] = {}) => {
+        const h = await harness(harnessOptions);
         app = h.app;
         await app.inject({ method: 'GET', url: '/api/stats' });
         await h.settle();
         return h;
     };
 
-    it('accepts the organization it serves', async () => {
-        await warm();
-        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=test-org' });
+    /** A signed-in member of test-org, with the org planted for the membership checks. */
+    const memberOfTestOrg = async (
+        extraSeed?: (store: ReturnType<typeof memoryAuthStore>) => void,
+        options: { telemetry?: ReturnType<typeof stubTelemetryClient>; skipWarm?: boolean } = {}
+    ) => {
+        const auth = memoryAuthStore();
+        extraSeed?.(auth);
+        const caller = auth.seedMember('test-org', 'octocat');
+        const cookie = await signedIn(auth, caller);
+        const h = await harness({
+            auth,
+            config: { auth: githubAuth() },
+            ...(options.telemetry ? { telemetry: options.telemetry } : {}),
+        });
+        app = h.app;
+        // Warm WITH the cookie: a github-mode board 401s the anonymous probe, and the cold
+        // cache would 202 the assertions below. Skippable for the tests that PIN the cold 202.
+        if (!options.skipWarm) {
+            await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
+            await h.settle();
+        }
+        return { h, cookie };
+    };
+
+    it("serves the caller's own org from the session, not from a parameter", async () => {
+        const { cookie } = await memberOfTestOrg();
+
+        const res = await app!.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
+
+        expect(res.statusCode).toBe(200);
+        // meta names the CALLER's org: directory mode, one current, the memberships available.
+        expect(res.json().meta.organization).toEqual({
+            mode: 'directory',
+            current: { id: 'test-org', name: 'test-org' },
+            available: [{ id: 'test-org', name: 'test-org' }],
+        });
+    });
+
+    it('accepts ?org= naming an org the caller is a member of', async () => {
+        const { cookie } = await memberOfTestOrg();
+
+        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=test-org', headers: { cookie } });
+
         expect(res.statusCode).toBe(200);
         expect(res.json().meta.organization.current.id).toBe('test-org');
     });
 
-    it("rejects an unknown organization, never another organization's figures", async () => {
-        await warm();
-        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=other-org' });
+    it("rejects an unknown organization with 400, never another organization's figures", async () => {
+        const { cookie } = await memberOfTestOrg();
+
+        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=other-org', headers: { cookie } });
+
         expect(res.statusCode).toBe(400);
         expect(res.json().code).toBe('UNKNOWN_ORG');
-        // Names the one it does serve: the reader's next question is always "then which?".
-        expect(res.json().error).toMatch(/test-org/);
+        // Names the one it refused: the reader's next question is always "then which?".
+        expect(res.json().error).toMatch(/other-org/);
+    });
+
+    it('rejects a known organization the caller is not a member of with 403', async () => {
+        // The distinction the issue draws: unknown is a typo (400), known-but-not-yours is a
+        // boundary (403) — the caller authenticated, the answer just belongs to somebody else.
+        const { cookie } = await memberOfTestOrg((store) => {
+            store.seedOrg('planted-org', 'Planted', '777777');
+        });
+
+        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=planted-org', headers: { cookie } });
+
+        expect(res.statusCode).toBe(403);
+        expect(res.json().code).toBe('FORBIDDEN');
     });
 
     it('treats an empty ?org= as unset, like every other empty value', async () => {
-        await warm();
-        expect((await app!.inject({ method: 'GET', url: '/api/stats?org=' })).statusCode).toBe(200);
+        const { cookie } = await memberOfTestOrg();
+        expect((await app!.inject({ method: 'GET', url: '/api/stats?org=', headers: { cookie } })).statusCode).toBe(
+            200
+        );
     });
 
     it('rejects an unknown organization before the cold-start 202', async () => {
         // A bad request is a bad request whatever the cache is doing. Answering 202 here would
-        // have the client poll forever for a request that can never succeed.
+        // have the client poll forever for a request that can never succeed. The telemetry stub
+        // never resolves and the cache is left cold on purpose: a 400 can then only have come
+        // from the guard running ahead of the fetch.
         const telemetry = stubTelemetryClient({ rollups: () => new Promise(() => {}) });
-        const h = await harness({ telemetry });
-        app = h.app;
+        const { cookie } = await memberOfTestOrg(undefined, { telemetry, skipWarm: true });
 
-        const res = await app.inject({ method: 'GET', url: '/api/stats?org=nope' });
+        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=nope', headers: { cookie } });
         expect(res.statusCode).toBe(400);
         expect(res.json().code).toBe('UNKNOWN_ORG');
     });
@@ -287,8 +347,36 @@ describe('GET /api/stats organization', () => {
         // Pins the guard's placement ahead of parseRange. Without this the ordering is untested and
         // a future reshuffle is invisible — and the organization decides WHICH data set is being
         // ranged, so it is the more fundamental of the two errors.
+        const { cookie } = await memberOfTestOrg();
+        const res = await app!.inject({
+            method: 'GET',
+            url: '/api/stats?org=nope&range=fortnight',
+            headers: { cookie },
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.json().code).toBe('UNKNOWN_ORG');
+    });
+
+    it('answers 503 when the org runtime failed to build — never a 400 for a proven org', async () => {
+        // resolveOrg just proved the org exists (membership), so null from the registry is a
+        // failed build: a 503 like every other unavailable backing service, not a client error.
+        const auth = memoryAuthStore();
+        const caller = auth.seedMember('test-org', 'octocat');
+        const cookie = await signedIn(auth, caller);
+        const h = await harness({ auth, config: { auth: githubAuth() }, orgsFor: ['never-this-org'] });
+        app = h.app;
+
+        const res = await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } });
+
+        expect(res.statusCode).toBe(503);
+        expect(res.json().code).toBe('ORG_UNAVAILABLE');
+    });
+
+    it('answers the no-caller case in the none-mode shape it serves', async () => {
+        // No auth hook at all — the route-test mode. The bound org is the local one, and any
+        // requested org other than it is unknown by definition: there is no store to know others.
         await warm();
-        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=nope&range=fortnight' });
+        const res = await app!.inject({ method: 'GET', url: '/api/stats?org=test-org' });
         expect(res.statusCode).toBe(400);
         expect(res.json().code).toBe('UNKNOWN_ORG');
     });

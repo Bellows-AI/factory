@@ -43,9 +43,8 @@ const REFRESH_MARGIN_MS = 5 * 60 * 1000;
  *
  * A claim runs these requests inside its transaction, so GitHub answering slowly holds that claim's
  * job-row lock and one of the pool's connections for the duration — and unrelated claims,
- * heartbeats and completions all stall behind a remote request. Both of them — the installation
- * lookup, when no id is configured, and the token POST — abort on this clock; the claim surfaces
- * the failure and its 503/retry path takes over.
+ * heartbeats and completions all stall behind a remote request. The token POST aborts on this
+ * clock; the claim surfaces the failure and its 503/retry path takes over.
  */
 const MINT_TIMEOUT_MS = 5000;
 
@@ -67,6 +66,12 @@ function appJwt(appId: string, key: KeyObject, nowMs: number): string {
 
 export interface AppTokenOptions {
     readonly github: Extract<GitHubConfig, { mode: 'app' }>;
+    /**
+     * The installation to mint for. REQUIRED since #99: the org registry passes each
+     * organization's installation_id, so one process holds one provider per installation and the
+     * old single-installation discovery (fatal on 0 or several) has nothing left to answer.
+     */
+    readonly installationId: string;
     readonly fetchFn?: typeof fetch;
     readonly now?: () => number;
     readonly mintTimeoutMs?: number;
@@ -82,51 +87,6 @@ async function json(response: Response, what: string): Promise<unknown> {
         throw new GitHubAppError(`${what} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
     }
     return response.json();
-}
-
-/**
- * The installation the App is on, when the operator did not name one.
- *
- * Fatal on zero and on more than one, rather than picking. Zero means the App exists but nobody has
- * installed it, which is the single most likely first-run state and needs saying out loud. More than
- * one means the choice is real and guessing it would silently measure somebody else's organization.
- */
-async function discoverInstallation(
-    apiUrl: string,
-    jwt: string,
-    fetchFn: typeof fetch,
-    timeoutMs: number
-): Promise<string> {
-    const response = await fetchFn(`${apiUrl}/app/installations?per_page=100`, {
-        headers: {
-            authorization: `Bearer ${jwt}`,
-            accept: 'application/vnd.github+json',
-            // GitHub rejects an API request with no User-Agent outright.
-            'user-agent': 'factory-ai',
-        },
-        // The same hold MINT_TIMEOUT_MS puts on the token POST below: with no configured id this
-        // lookup is the first request a claim makes, and a hung one pins the transaction all the same.
-        signal: AbortSignal.timeout(timeoutMs),
-    });
-    const body = (await json(response, 'installation lookup')) as {
-        id?: number;
-        account?: { login?: string };
-    }[];
-
-    if (!Array.isArray(body) || body.length === 0) {
-        throw new GitHubAppError(
-            'this GitHub App is not installed anywhere. Install it on the organization or account whose repositories you want measured, then restart.'
-        );
-    }
-    if (body.length > 1) {
-        const where = body.map((i) => i.account?.login ?? String(i.id)).join(', ');
-        throw new GitHubAppError(
-            `this GitHub App is installed on ${body.length} accounts (${where}). Set GITHUB_APP_INSTALLATION_ID to say which one this deployment reports on — guessing would silently measure the wrong organization.`
-        );
-    }
-    const [only] = body;
-    if (typeof only?.id !== 'number') throw new GitHubAppError('installation lookup returned no id');
-    return String(only.id);
 }
 
 export interface InstallationTokenProvider extends TokenProvider {
@@ -155,7 +115,7 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         throw new GitHubAppError(`GITHUB_APP_PRIVATE_KEY is not a usable private key: ${(error as Error).message}`);
     }
 
-    let installation = github.installationId;
+    const installation = options.installationId;
     let cached: { token: string; expiresAt: number } | null = null;
     // Single-flight. Two concurrent callers past a stale cache would otherwise mint two tokens and
     // race to store one; GitHub does not invalidate the loser, but it counts against the App and the
@@ -164,7 +124,6 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
 
     const mint = async (): Promise<string> => {
         const jwt = appJwt(github.appId, key, now());
-        installation ??= await discoverInstallation(github.apiUrl, jwt, fetchFn, mintTimeoutMs);
 
         const response = await fetchFn(`${github.apiUrl}/app/installations/${installation}/access_tokens`, {
             method: 'POST',
@@ -213,10 +172,63 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         },
 
         async installationId() {
-            if (installation) return installation;
-            await this.get();
-            // `mint` sets it, and throws if it could not.
-            return installation as unknown as string;
+            return installation;
+        },
+    };
+}
+
+export interface AppSlugOptions {
+    readonly github: Extract<GitHubConfig, { mode: 'app' }>;
+    readonly fetchFn?: typeof fetch;
+    readonly now?: () => number;
+    readonly slugTimeoutMs?: number;
+}
+
+export interface AppSlugProvider {
+    /** The App's URL slug — the `apps/<slug>` path segment of its install page. */
+    slug(): Promise<string>;
+}
+
+/**
+ * The App's slug, for building install-page URLs (`github.com/apps/<slug>/installations/new`).
+ *
+ * `GET /app` authenticates with the App JWT — not the installation token every app-client call
+ * carries — which is why it lives here beside the signer rather than in app-client.ts. The slug
+ * is cached for the life of the process (a rename is cosmetic and nothing keys on it); failures
+ * are rethrown uncached, because the caller is the sign-in request path (0 installations →
+ * redirect to the install page) and a stale miss there must fail the sign-in, not loop it.
+ */
+export function createAppSlugProvider(options: AppSlugOptions): AppSlugProvider {
+    const { github, fetchFn = fetch, now = Date.now } = options;
+    const slugTimeoutMs = options.slugTimeoutMs ?? MINT_TIMEOUT_MS;
+
+    let key: KeyObject;
+    try {
+        key = createPrivateKey(github.privateKeyPem);
+    } catch (error) {
+        throw new GitHubAppError(`GITHUB_APP_PRIVATE_KEY is not a usable private key: ${(error as Error).message}`);
+    }
+
+    let cached: string | null = null;
+
+    return {
+        async slug() {
+            if (cached) return cached;
+            const jwt = appJwt(github.appId, key, now());
+            const response = await fetchFn(`${github.apiUrl}/app`, {
+                headers: {
+                    authorization: `Bearer ${jwt}`,
+                    accept: 'application/vnd.github+json',
+                    'user-agent': 'factory-ai',
+                },
+                // The sign-in request path holds: a hung GitHub aborts here rather than pinning
+                // the browser's callback.
+                signal: AbortSignal.timeout(slugTimeoutMs),
+            });
+            const body = (await json(response, 'app lookup')) as { slug?: string };
+            if (!body.slug) throw new GitHubAppError('app response carried no slug');
+            cached = body.slug;
+            return body.slug;
         },
     };
 }

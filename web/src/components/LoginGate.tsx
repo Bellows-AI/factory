@@ -6,7 +6,9 @@ const REASONS: Record<string, string> = {
     denied: 'Sign-in was cancelled.',
     state: 'That sign-in link expired. Try again.',
     github: 'GitHub could not be reached. Try again.',
-    no_membership: 'That GitHub account has not been invited to this organization.',
+    install:
+        'This dashboard is organized by GitHub App installation, and none were found for your account. Install the App, then sign in again.',
+    install_cancelled: 'You returned without installing the App. Install it, then sign in again.',
 };
 
 /**
@@ -34,7 +36,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
             {error ? (
                 <p className="login-error">{error}</p>
             ) : (
-                <p>Sign in with the GitHub account you were invited with.</p>
+                <p>Sign in with GitHub. The organizations you can see are the App installations.</p>
             )}
             {reason ? <p className="login-error">{REASONS[reason] ?? 'Sign-in failed.'}</p> : null}
             {/*

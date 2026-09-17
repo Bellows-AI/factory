@@ -5,10 +5,9 @@ import { buildApp } from '../src/app.js';
 import type { AuthConfig } from '../src/config.js';
 import type { JobStore } from '../src/db/job-store.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
-import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { MemoryAuthStore } from './helpers.js';
-import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -52,13 +51,10 @@ const telemetryStub = (): TelemetryStore => ({
 async function build(auth: AuthConfig, store: MemoryAuthStore, authors: string[] = []) {
     const config = testConfig({ auth });
     const repos = staticRepoSource([{ owner: 'Bellows-AI', name: 'bellows.ai' }]);
-    const service = createStatsService({ config, repos, telemetry: stubTelemetryClient() });
     app = await buildApp({
         config,
-        service,
-        repos,
+        orgs: staticRegistry({ config, repos, jobs: jobStub(authors), telemetry: stubTelemetryClient() }),
         store: telemetryStub(),
-        jobs: jobStub(authors),
         auth: store,
     });
     return app;
@@ -127,7 +123,9 @@ describe('personal access tokens', () => {
         const server = await build(githubAuth(), store);
         expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) })).statusCode).toBe(200);
 
-        await store.removeMember(ORG, 'octocat');
+        // Nothing in production deletes a membership except the sign-in propagation — this
+        // stands in for GitHub no longer reporting the installation.
+        store.removeMembership(ORG, caller.user.id);
 
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
         expect(response.statusCode).toBe(401);
@@ -334,52 +332,40 @@ describe('organization access tokens', () => {
         expect(response.statusCode).toBe(401);
     });
 
-    it('is minted by an admin only — mint, list, and revoke alike', async () => {
+    it('is minted by any member — the roles that gated it retired with the roster (#99)', async () => {
+        // Installation access IS membership, and every member is the same trust level: an org
+        // token mints, lists and revokes without an admin anywhere in the deployment.
         const store = memoryAuthStore();
         const member = store.seedMember(ORG, 'member');
-        const admin = store.seedMember(ORG, 'admin', 'admin');
         const memberCookie = await signedIn(store, member);
-        const adminCookie = await signedIn(store, admin);
         const server = await build(githubAuth(), store);
 
-        const refusedMint = await server.inject({
+        const mint = await server.inject({
             method: 'POST',
             url: '/api/tokens/org',
             payload: { label: 'ci' },
             headers: { cookie: memberCookie },
         });
-        expect(refusedMint.statusCode).toBe(403);
+        expect(mint.statusCode).toBe(201);
+        expect((mint.json() as { token: string }).token.startsWith(OAT)).toBe(true);
 
-        const refusedList = await server.inject({
+        const list = await server.inject({
             method: 'GET',
             url: '/api/tokens/org',
             headers: { cookie: memberCookie },
         });
-        expect(refusedList.statusCode).toBe(403);
+        expect(list.statusCode).toBe(200);
+        expect(list.json()).toMatchObject({ tokens: [{ label: 'ci' }] });
 
-        const refusedRevoke = await server.inject({
+        // Still a real revoke: a member-revoked org token dies like any other.
+        const mintedId = (list.json() as { tokens: { id: string }[] }).tokens[0]!.id;
+        const revoke = await server.inject({
             method: 'POST',
-            url: '/api/tokens/org/10000000-0000-4000-8000-000000000009/revoke',
+            url: `/api/tokens/org/${mintedId}/revoke`,
             headers: { cookie: memberCookie },
         });
-        expect(refusedRevoke.statusCode).toBe(403);
-
-        const allowed = await server.inject({
-            method: 'POST',
-            url: '/api/tokens/org',
-            payload: { label: 'ci' },
-            headers: { cookie: adminCookie },
-        });
-        expect(allowed.statusCode).toBe(201);
-        expect((allowed.json() as { token: string }).token.startsWith(OAT)).toBe(true);
-
-        const adminList = await server.inject({
-            method: 'GET',
-            url: '/api/tokens/org',
-            headers: { cookie: adminCookie },
-        });
-        expect(adminList.statusCode).toBe(200);
-        expect(adminList.json()).toMatchObject({ tokens: [{ label: 'ci' }] });
+        expect(revoke.statusCode).toBe(200);
+        expect(revoke.json()).toMatchObject({ revoked: true });
     });
 
     it('validates the revoke id as a uuid', async () => {
@@ -425,7 +411,7 @@ describe('organization access tokens', () => {
 describe('AUTH_MODE=none', () => {
     it('ignores access-token bearers, like every credential in that mode', async () => {
         const store = memoryAuthStore();
-        store.seedLocalUser(ORG);
+        store.seedLocalUser('default');
         const server = await build({ mode: 'none', ingestToken: null }, store);
 
         const response = await server.inject({

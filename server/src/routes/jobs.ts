@@ -1,24 +1,13 @@
-import type { FastifyPluginAsync } from 'fastify';
-import { callerOf } from '../auth/plugin.js';
-import type { RepoAccessScope } from '../github/access-scope.js';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import { callerOf, orgOf } from '../auth/plugin.js';
 import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals, ServiceStatus } from '../db/job-store.js';
-import type { WorkflowStore } from '../db/workflow-store.js';
 import type { WorkflowDefinition } from '../db/workflow-schema.js';
+import type { OrgRegistry } from '../orgs.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
 export interface JobRouteDeps {
-    store: JobStore;
-    /**
-     * The per-user repo scope. Absent — or a caller with no computed set — and repo labels are not
-     * checked against anything but their shape. A WORKER token never sees this route.
-     */
-    scope?: RepoAccessScope | undefined;
-    /**
-     * The workflow store, when the deployment serves workflow definitions. Present in main.ts;
-     * absent in the route tests that predate workflows, whose creates resolve no workflow and so
-     * stay byte-identical (docs/workflows.md).
-     */
-    workflows?: WorkflowStore | undefined;
+    /** The per-org runtimes; the store a request touches is the CALLER's org's. */
+    orgs: OrgRegistry;
 }
 
 /**
@@ -198,9 +187,25 @@ function leaseSeconds(raw: unknown): number | null {
 }
 
 export const jobRoutes =
-    ({ store, scope, workflows: workflowsStore }: JobRouteDeps): FastifyPluginAsync =>
+    ({ orgs }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
+        /**
+         * The job board a request lands on is its caller's org's (#99): the session, the personal
+         * token or the worker token each names one, and the runtime resolved from it carries that
+         * org's store. Absent in the route-test mode with no stores behind the registry.
+         */
+        const storeOf = async (request: FastifyRequest): Promise<JobStore | null> => {
+            const rt = await orgs.for(orgOf(request));
+            return rt?.jobs ?? null;
+        };
+        /** The workflow definitions the create may resolve against — the caller's org's (#99). */
+        const workflowsOf = async (request: FastifyRequest) => {
+            const rt = await orgs.for(orgOf(request));
+            return rt?.workflows ?? null;
+        };
         app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const fields = body(request.body);
             const command = fields.command;
             if (typeof command !== 'string' || !command.trim()) {
@@ -230,29 +235,6 @@ export const jobRoutes =
             const createdBy = caller?.user.id ?? null;
 
             /*
-             * The repo label is scoped too, not just the picker: hiding a repo from GET /api/repos
-             * while POST accepted it would make the API's honesty depend on the SPA's politeness.
-             *
-             * 403, not 400 BAD_REPO: the name is well-formed and the repo is real — this caller
-             * just may not use it. Null set (never computed) and absent scope are the unscoped
-             * cases, and org/worker tokens never reach here as callers. GitHub owner and repo
-             * names are case-insensitive, so the comparison is too — a label that differs only in
-             * case from the installation's spelling is the same repository.
-             */
-            if (scope && caller && typeof repo === 'string') {
-                const allowed = await scope.scopedNames(caller.user.id);
-                const wanted = repo.toLowerCase();
-                if (allowed !== null && !allowed.some((name) => name.toLowerCase() === wanted)) {
-                    return bad(
-                        reply,
-                        'REPO_NOT_ACCESSIBLE',
-                        `"${repo}" is not one of the repositories your GitHub account can access`,
-                        403
-                    );
-                }
-            }
-
-            /*
              * The workflow the task will walk, resolved by the board (docs/workflows.md): a named
              * workflow within the caller's visible scopes — repo over user over org when the name
              * exists in several — or, unnamed, the scope stack's default. The resolution is also
@@ -261,6 +243,7 @@ export const jobRoutes =
              * create that resolves NO workflow calls the store exactly as before 027 — no field,
              * no read, a byte-identical row and claim.
              */
+            const workflowsStore = await workflowsOf(request);
             let workflow: { id: string; node: string; snapshot: WorkflowDefinition } | null = null;
             if (workflowsStore) {
                 const resolve = async () => {
@@ -322,6 +305,8 @@ export const jobRoutes =
         // POST, not GET: claiming mutates. The worker id is required — it is the only thing that
         // says which container is holding a job when one has to be found and killed.
         app.post('/api/jobs/claim', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const { worker, leaseSeconds: requested } = body(request.body);
             if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
                 return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
@@ -344,6 +329,8 @@ export const jobRoutes =
         });
 
         app.post('/api/jobs/:id/heartbeat', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -381,6 +368,8 @@ export const jobRoutes =
         // the session id at spawn time, and a run that is still going is exactly when a reader wants
         // to open it.
         app.post('/api/jobs/:id/session', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -431,6 +420,8 @@ export const jobRoutes =
         // activity line, the dashboard's "is it stuck or working" answer. Absent (or null) means
         // no fresh sample: the last stored one stays. Replaced, never appended, like the tail.
         app.post('/api/jobs/:id/output', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -464,6 +455,8 @@ export const jobRoutes =
         // there is no verdict here; the report REPLACES the stored list, which is what makes the
         // UI's "current/last ran only" honest rather than a truncation somebody has to remember.
         app.post('/api/jobs/:id/gates', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -522,6 +515,8 @@ export const jobRoutes =
         // after the sync, and gates the run on what the tree holds NOW. Lease-guarded like every
         // worker route: the fresh answer goes only to the worker that holds the run.
         app.post('/api/jobs/:id/gates-reread', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -554,6 +549,8 @@ export const jobRoutes =
         // every worker route: the credential goes only to the worker that holds the run.
         // `GITHUB_TOKEN: null` — nothing fresher than the claim env — is an answer, not an error.
         app.post('/api/jobs/:id/publish-token', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -584,6 +581,8 @@ export const jobRoutes =
         // park was the user's stop landing, `standby` for the Remote Control idle park — and the
         // answer carries it.
         app.post('/api/jobs/:id/suspend', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -614,6 +613,8 @@ export const jobRoutes =
         // The executor is NOT taken from the body: the adjustment is bound to the executor that
         // ran the task, copied from the parent at insert like the repo and the session.
         app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -658,6 +659,8 @@ export const jobRoutes =
         // The user's verdict that the task is done — the one no run can make. Idempotent in the
         // store, so a retried click answers the same instant rather than rewriting it.
         app.post('/api/jobs/:id/done', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -684,6 +687,8 @@ export const jobRoutes =
         // stays, so the follow-up composer is what the member sees next. 202 for the moving case,
         // because the request RIDES to the worker and the settle lands moments later.
         app.post('/api/jobs/:id/stop', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -716,6 +721,8 @@ export const jobRoutes =
         // every job write here, not just because the driver has no use for it — a worker token
         // deleting the audit rows of jobs it never held would be exactly the thread-read hole again.
         app.post('/api/jobs/:id/remove', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -743,6 +750,8 @@ export const jobRoutes =
         // claim/complete are, and the body matches: the worker name is required (it is queued for
         // exactly this claim), and an idle poll answers 204 rather than a parsed null.
         app.post('/api/reclaims/claim', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const { worker, leaseSeconds: requested } = body(request.body);
             if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
                 return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
@@ -765,6 +774,8 @@ export const jobRoutes =
         // The driver's proof that a parked worktree is gone. Only the worker that holds the claim
         // may ack it, so a slow worker's row survives a foreign ack and finishes on its next try.
         app.post('/api/reclaims/:id/ack', { bodyLimit: 4096 }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -795,6 +806,8 @@ export const jobRoutes =
         // rather than a thread read, so a worker credential can never pull the audit data of jobs
         // it does not hold (see docs/auth.md). A thread that merely finished keeps its tree.
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -866,7 +879,7 @@ export const jobRoutes =
                         // cap never splits a surrogate pair.
                         summary:
                             typeof summary === 'string' && summary.trim()
-                                ? [...summary].slice(0, SUMMARY_LIMIT).join('')
+                                ? [...summary.trim()].slice(0, SUMMARY_LIMIT).join('')
                                 : null,
                     })
             );
@@ -881,6 +894,8 @@ export const jobRoutes =
         });
 
         app.get('/api/jobs/:id', async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -898,6 +913,8 @@ export const jobRoutes =
         // same conversation — the UI keeps one task per thread, so the URL may name the root or
         // any adjustment and the page must not change identity underneath the reader.
         app.get('/api/jobs/:id/thread', async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const id = (request.params as { id: string }).id;
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -912,6 +929,8 @@ export const jobRoutes =
         });
 
         app.get('/api/jobs', async (request, reply) => {
+            const store = await storeOf(request);
+            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const query = request.query as { status?: string; limit?: string; repo?: string };
             // 'terminal' is the one pseudo-status: every settled verdict at once, so a
             // completed-jobs view can bound its request instead of filtering a newest-N window

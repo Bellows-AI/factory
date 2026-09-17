@@ -14,6 +14,12 @@ import { createServer } from 'node:http';
 const port = Number(process.env.STUB_IDP_PORT ?? 8125);
 const login = process.env.STUB_IDP_LOGIN ?? 'e2e-user';
 const userId = Number(process.env.STUB_IDP_USER_ID ?? 424242);
+// The installations the account can see (#99) — the membership decision. Comma-separated ids;
+// each becomes an organization named after `stub-org-<id>` at sign-in.
+const installations = (process.env.STUB_IDP_INSTALLATIONS ?? '999999')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => /^\d+$/.test(id));
 
 const json = (response, body) => {
     response.writeHead(200, { 'content-type': 'application/json' });
@@ -41,8 +47,23 @@ createServer((request, response) => {
 
     if (url.pathname === '/user') {
         // The numeric id is the identity; the login is only a label. Both are pinned here so the
-        // seeded invite and the account that claims it are the same person.
+        // seeded data and the account that signs in are the same person.
         json(response, { id: userId, login, name: 'E2E User', avatar_url: null });
+        return;
+    }
+
+    // The membership decision itself: what the callback asks with the exchanged token (#99).
+    if (url.pathname === '/user/installations') {
+        json(response, {
+            installations: installations.map((id) => ({ id: Number(id), account: { login: `stub-org-${id}` } })),
+        });
+        return;
+    }
+
+    // The App slug, for building the install-page redirect. The offline board never asks (it has
+    // no App client), but the seam keeps a future online check honest.
+    if (url.pathname === '/app') {
+        json(response, { slug: 'stub-app' });
         return;
     }
 

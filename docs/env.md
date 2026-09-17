@@ -11,9 +11,9 @@ Issue #17 called the org scope "Core secrets" and asked that everything "stack u
 
 | Scope | Row shape | Who writes it | Reaches |
 | --- | --- | --- | --- |
-| Core (organization) | `user_id` and repo columns null | an admin | every runner in the deployment |
+| Core (organization) | `user_id` and repo columns null | any member | every runner in the organization |
 | Workspace | `user_id` set | the member, their own rows | their runners |
-| Repository | `repo_owner`/`repo_name` set | an admin | every member's runners in that repository |
+| Repository | `repo_owner`/`repo_name` set | any member | every member's runners in that repository |
 
 One table, `env_var`, three sibling scopes, enforced by `env_var_scope_ck`: exactly one of the three
 is set per row. A table per scope would put the stacking rule in three places and a union; here the
@@ -23,14 +23,14 @@ scope columns cannot sit in a primary key (a PK column must be NOT NULL), so uni
 real value.
 
 - **"Org level" is a database scope, not server configuration.** The issue asked for UI editing,
-  which a `ORG_*` environment variable cannot offer; and this deployment has exactly one
-  organization (`ORG_ID`, the `organization` table), so rows with null `user_id` and null repo ARE
-  the org scope without a third identifier.
+  which an environment variable cannot offer; `org_id` names the partition — the App's
+  installation a member signed into (#99) — so rows with null `user_id` and null repo ARE the org
+  scope without a third identifier.
 - **Repository scope is org-wide, not per member.** One configuration per repository, applied to
   every member's runs in it — the Actions precedent, and the reading of the issue's listing of
-  org/workspace/repo as siblings. Admin-gated for the same reason: an admin's repo var influences
-  other members' runs, which is acceptable under "membership is not a sandbox"
-  ([jobs.md](jobs.md)) but is not a decision a member should make for somebody else.
+  org/workspace/repo as siblings. Any member writes it: installation access is membership (#99),
+  one trust level with no admin tier, and "membership is not a sandbox" ([jobs.md](jobs.md))
+  already accepts that a member's runners share the organization's ground.
 - **Precedence is org < workspace < repo, most specific wins.** The issue's own listed order, and
   the Actions rule. `stackEnv` is `{...org, ...workspace, ...repo}` — exported and pinned by the
   offline suite, because a rule this load-bearing must not live only where a database is.
@@ -49,11 +49,12 @@ real value.
   (`transcriptDir` in driver/src/docker.ts): it is where the headless transcript store lives, and
   the runner entrypoint redirects `CLAUDE_CONFIG_DIR` onto it — a member value would steer
   transcripts, and with them the CLI's whole configuration directory, somewhere else
-  ([jobs.md](jobs.md)). `FACTORY_STATS_URL`, `INGEST_TOKEN` and `BELLOWS_SESSION_ID` are reserved
-  for the branch reporter (see [jobs.md](jobs.md)): a member value in the first tells the
-  runner's attribution reports to post somewhere else, the second forges their credential, and
-  the third claims the report is somebody else's session — a cross-tenant write into the
-  telemetry store, refused the same way. `OPENCODE_CONFIG_CONTENT` is the one name the board
+   ([jobs.md](jobs.md)). `FACTORY_STATS_URL`, `RUNNER_JOB_ID`, `RUNNER_LEASE_TOKEN` and
+   `BELLOWS_SESSION_ID` are reserved for the branch reporter (see [jobs.md](jobs.md)): a member
+   value in the first tells the runner's attribution reports to post somewhere else, the middle
+   two forge the attempt credential the board resolves those reports' organization from, and the
+   last claims the report is somebody else's session — a cross-tenant write into the telemetry
+   store, refused the same way. `OPENCODE_CONFIG_CONTENT` is the one name the board
   reserves that the driver does not: the claim SYNTHESIZES it from the author's own executor row
   when the task was stamped with an `opencode` executor ([workspace.md](workspace.md)), applied
   after the resolved scopes so the synthesized value wins any collision, and a member var of the
@@ -195,8 +196,8 @@ sentence saying why (the `root: null` posture).
 - **`server/test-db/env-var-store.test.ts`** — the SQL: whole-scope replace, the keep-a-null-secret
   rule, the write-only echo vs `resolveFor`, the stacking order, and the check constraints at the
   row. Needs a `*_test` database.
-- **`server/test/routes.env.test.ts`** — offline, against the in-memory double: sessions, the
-  admin/member split, validation codes, `UNKNOWN_REPO`, the 503 path.
+- **`server/test/routes.env.test.ts`** — offline, against the in-memory double: sessions,
+  member-writable scopes, validation codes, `UNKNOWN_REPO`, the 503 path.
 - **`server/test/job-store.env.test.ts`** — offline, the base-layer merge rule (`withMintedToken`):
   a configured `GITHUB_TOKEN` wins in any scope, the mint fills the gap, and no mint changes
   nothing.

@@ -1,7 +1,7 @@
 import { createPublicKey, createVerify, generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { GitHubConfig } from '../src/config.js';
-import { installationTokenProvider } from '../src/github/app-token.js';
+import { createAppSlugProvider, installationTokenProvider } from '../src/github/app-token.js';
 
 /*
  * The key is generated HERE, per run, and never committed. A fixture private key in a repository is
@@ -20,12 +20,26 @@ function appConfig(overrides: Partial<Extract<GitHubConfig, { mode: 'app' }>> = 
     return {
         mode: 'app' as const,
         appId: 'Iv23liEXAMPLE',
-        installationId: '4242',
         privateKeyPem: PEM,
         apiUrl: API,
         ...overrides,
     };
 }
+
+/** The provider under test: every mint names an explicit installation since #99. */
+const provider = (overrides: {
+    installationId?: string;
+    fetchFn: typeof fetch;
+    now?: () => number;
+    mintTimeoutMs?: number;
+}) =>
+    installationTokenProvider({
+        github: appConfig(),
+        installationId: overrides.installationId ?? '4242',
+        fetchFn: overrides.fetchFn,
+        ...(overrides.now ? { now: overrides.now } : {}),
+        ...(overrides.mintTimeoutMs ? { mintTimeoutMs: overrides.mintTimeoutMs } : {}),
+    });
 
 interface Call {
     url: string;
@@ -34,7 +48,9 @@ interface Call {
 }
 
 /** Records every request and answers the token endpoint. No network, no timers. */
-function stubFetch(options: { expiresAt?: () => string; token?: () => string; installations?: unknown } = {}) {
+function stubFetch(
+    options: { expiresAt?: () => string; token?: () => string; installations?: unknown; app?: unknown } = {}
+) {
     const calls: Call[] = [];
     const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
@@ -57,6 +73,9 @@ function stubFetch(options: { expiresAt?: () => string; token?: () => string; in
                 status: 200,
             });
         }
+        if (url.endsWith('/app')) {
+            return new Response(JSON.stringify(options.app ?? { slug: 'stub-app' }), { status: 200 });
+        }
         return new Response('unexpected', { status: 500 });
     }) as typeof fetch;
     return { calls, fetchFn };
@@ -78,7 +97,7 @@ function jwtFrom(calls: Call[]): { header: Record<string, unknown>; payload: Rec
 describe('the App JWT', () => {
     it('is RS256 and verifies against the public half of the key', async () => {
         const { calls, fetchFn } = stubFetch();
-        await installationTokenProvider({ github: appConfig(), fetchFn }).get();
+        await provider({ fetchFn }).get();
 
         const { header, raw } = jwtFrom(calls);
         expect(header).toEqual({ alg: 'RS256', typ: 'JWT' });
@@ -99,7 +118,7 @@ describe('the App JWT', () => {
         // otherwise fail every mint with a 401 that reads exactly like a bad key.
         const now = Date.parse('2026-08-21T12:00:00.000Z');
         const { calls, fetchFn } = stubFetch();
-        await installationTokenProvider({ github: appConfig(), fetchFn, now: () => now }).get();
+        await provider({ fetchFn, now: () => now }).get();
 
         const { payload } = jwtFrom(calls);
         expect(payload.iat).toBe(Math.floor(now / 1000) - 60);
@@ -109,7 +128,7 @@ describe('the App JWT', () => {
 
     it('sends the app id as a string, so a client id of the Iv23li… form still works', async () => {
         const { calls, fetchFn } = stubFetch();
-        await installationTokenProvider({ github: appConfig(), fetchFn }).get();
+        await provider({ fetchFn }).get();
         expect(jwtFrom(calls).payload.iss).toBe('Iv23liEXAMPLE');
     });
 
@@ -121,6 +140,7 @@ describe('the App JWT', () => {
                 github: appConfig({
                     privateKeyPem: '-----BEGIN RSA PRIVATE KEY-----\nnope\n-----END RSA PRIVATE KEY-----',
                 }),
+                installationId: '4242',
                 fetchFn: stubFetch().fetchFn,
             })
         ).toThrow(/not a usable private key/);
@@ -131,7 +151,7 @@ describe('the installation token', () => {
     it('is cached until the refresh margin, then re-minted', async () => {
         let now = Date.parse('2026-08-21T12:00:00.000Z');
         const { calls, fetchFn } = stubFetch({ expiresAt: () => new Date(now + 3600_000).toISOString() });
-        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, now: () => now });
+        const tokens = provider({ fetchFn, now: () => now });
 
         await tokens.get();
         const mints = () => calls.filter((call) => call.url.includes('/access_tokens')).length;
@@ -152,7 +172,7 @@ describe('the installation token', () => {
     it('mints once when two callers race a cold cache', async () => {
         // GitHub does not invalidate the loser, so a double mint leaves a live token nothing holds.
         const { calls, fetchFn } = stubFetch();
-        const tokens = installationTokenProvider({ github: appConfig(), fetchFn });
+        const tokens = provider({ fetchFn });
 
         const [a, b] = await Promise.all([tokens.get(), tokens.get()]);
         expect(a).toBe(b);
@@ -183,7 +203,7 @@ describe('the installation token', () => {
          */
         let serial = 0;
         const { calls, fetchFn } = stubFetch({ token: () => `ghs_${++serial}` });
-        const tokens = installationTokenProvider({ github: appConfig(), fetchFn });
+        const tokens = provider({ fetchFn });
 
         const [a, b] = await Promise.all([tokens.fresh(), tokens.fresh()]);
         expect(a).toBe(b);
@@ -194,7 +214,7 @@ describe('the installation token', () => {
         let now = Date.parse('2026-08-21T12:00:00.000Z');
         // A ten-minute token: entirely inside what an assumed hour would consider fresh.
         const { calls, fetchFn } = stubFetch({ expiresAt: () => new Date(now + 10 * 60 * 1000).toISOString() });
-        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, now: () => now });
+        const tokens = provider({ fetchFn, now: () => now });
 
         await tokens.get();
         now += 6 * 60 * 1000;
@@ -214,7 +234,7 @@ describe('the installation token', () => {
             token: () => `ghs_${++serial}`,
             expiresAt: () => new Date(now + 3600_000).toISOString(),
         });
-        const tokens = installationTokenProvider({ github: appConfig(), fetchFn, now: () => now });
+        const tokens = provider({ fetchFn, now: () => now });
         const mints = () => calls.filter((call) => call.url.includes('/access_tokens')).length;
 
         const cached = await tokens.get();
@@ -233,61 +253,67 @@ describe('the installation token', () => {
     });
 });
 
-describe('discovering the installation', () => {
-    it('uses the configured id without asking', async () => {
-        const { calls, fetchFn } = stubFetch();
-        await installationTokenProvider({ github: appConfig(), fetchFn }).get();
-        expect(calls.some((call) => call.url.endsWith('/app/installations?per_page=100'))).toBe(false);
-        expect(calls[0]?.url).toBe(`${API}/app/installations/4242/access_tokens`);
-    });
-
-    it('discovers it when exactly one installation exists', async () => {
-        const { calls, fetchFn } = stubFetch();
-        const tokens = installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn });
-        await tokens.get();
-        expect(calls[1]?.url).toBe(`${API}/app/installations/99/access_tokens`);
-        await expect(tokens.installationId()).resolves.toBe('99');
-    });
-
-    it('refuses to guess when the App is installed nowhere', async () => {
-        // The single most likely first-run state, and it needs saying out loud rather than
-        // presenting as an empty dashboard.
-        const { fetchFn } = stubFetch({ installations: [] });
-        await expect(
-            installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get()
-        ).rejects.toThrow(/not installed anywhere/);
-    });
-
-    it('refuses to guess between several, and names them', async () => {
-        // Guessing would silently measure somebody else's organization.
-        const { fetchFn } = stubFetch({
-            installations: [
-                { id: 1, account: { login: 'acme' } },
-                { id: 2, account: { login: 'other' } },
-            ],
-        });
-        await expect(
-            installationTokenProvider({ github: appConfig({ installationId: null }), fetchFn }).get()
-        ).rejects.toThrow(/installed on 2 accounts \(acme, other\)[\s\S]*GITHUB_APP_INSTALLATION_ID/);
-    });
-
-    it('abandons a discovery that hangs rather than holding the caller forever', async () => {
+describe('an explicit installation id (#99)', () => {
+    it('mints against it and never discovers', async () => {
         /*
-         * With no configured id, discovery is the FIRST request a claim makes, and it runs inside
-         * the claim's transaction — so a hung lookup holds the job-row lock and a pool connection
-         * exactly as a hung mint would, and it has to abort on the same clock. This stub only
-         * settles when its signal does.
+         * The per-org mint path: the org registry passes each organization's installation_id, so
+         * the provider is told the installation rather than guessing one. Discovery would be
+         * fatal here by design — an App with several installations cannot answer "which one".
          */
-        const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) =>
-            new Promise<Response>((_resolve, reject) => {
-                init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason));
-            })) as typeof fetch;
-        const tokens = installationTokenProvider({
-            github: appConfig({ installationId: null }),
-            fetchFn,
-            mintTimeoutMs: 10,
-        });
+        const { calls, fetchFn } = stubFetch({ installations: [] });
+        const tokens = provider({ installationId: '777', fetchFn });
 
-        await expect(tokens.fresh()).rejects.toMatchObject({ name: 'TimeoutError' });
+        await tokens.get();
+        expect(calls.some((call) => call.url.includes('/app/installations?'))).toBe(false);
+        expect(calls.find((call) => call.url.includes('/access_tokens'))?.url).toBe(
+            `${API}/app/installations/777/access_tokens`
+        );
+    });
+
+    it('answers installationId() without a mint when it was given one', async () => {
+        const { calls, fetchFn } = stubFetch();
+        const tokens = provider({ installationId: '777', fetchFn });
+
+        await expect(tokens.installationId()).resolves.toBe('777');
+        expect(calls).toHaveLength(0);
+    });
+});
+
+describe('the app slug', () => {
+    it('asks GET /app with a JWT and caches the answer', async () => {
+        const { calls, fetchFn } = stubFetch({ app: { slug: 'acme-factory' } });
+        const slug = createAppSlugProvider({ github: appConfig(), fetchFn });
+
+        await expect(slug.slug()).resolves.toBe('acme-factory');
+        await expect(slug.slug()).resolves.toBe('acme-factory');
+        expect(calls.filter((call) => call.url.endsWith('/app'))).toHaveLength(1);
+        // The App JWT, not an installation token: GET /app has no installation to act on.
+        const [header, payload] = calls
+            .find((call) => call.url.endsWith('/app'))!
+            .authorization.replace(/^Bearer /, '')
+            .split('.');
+        expect(JSON.parse(Buffer.from(header, 'base64url').toString())).toEqual({ alg: 'RS256', typ: 'JWT' });
+        expect(JSON.parse(Buffer.from(payload, 'base64url').toString()).iss).toBe('Iv23liEXAMPLE');
+    });
+
+    it('does not cache a failure', async () => {
+        // Called from the sign-in path (0 installations → install page); a transient miss must
+        // not be remembered, or every sign-in for the next process lifetime would fail.
+        const { calls, fetchFn } = stubFetch({ app: { slug: 'acme-factory' } });
+        let appCalls = 0;
+        const failing = (async (input: string | URL | Request, init?: RequestInit) => {
+            if (String(input).endsWith('/app') && appCalls++ === 0) return new Response('nope', { status: 502 });
+            return fetchFn(input, init);
+        }) as typeof fetch;
+        const slug = createAppSlugProvider({ github: appConfig(), fetchFn: failing });
+
+        await expect(slug.slug()).rejects.toThrow(/failed with 502/);
+        // The retry succeeds — and the retry having been MADE at all is the no-caching proof.
+        await expect(slug.slug()).resolves.toBe('acme-factory');
+    });
+
+    it('refuses an answer that carries no slug', async () => {
+        const { fetchFn } = stubFetch({ app: {} });
+        await expect(createAppSlugProvider({ github: appConfig(), fetchFn }).slug()).rejects.toThrow(/carried no slug/);
     });
 });

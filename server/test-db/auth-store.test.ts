@@ -3,7 +3,8 @@ import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore, type AuthStore } from '../src/auth/store.js';
-import { LOCAL_LOGIN, migrate, reapSessions } from '../src/db/migrate.js';
+import { LOCAL_ORG_ID } from '../src/config.js';
+import { adoptOrg, LOCAL_LOGIN, migrate, reapSessions } from '../src/db/migrate.js';
 
 const url = process.env.DATABASE_URL;
 
@@ -34,18 +35,17 @@ let store: AuthStore;
  * anything another one is using — `job` in particular references `app_user`, so a blanket
  * `truncate app_user cascade` would silently empty the job suite's table mid-run.
  */
-const ORG = 'auth-test-org';
-const OTHER_ORG = 'auth-test-other';
+// Numeric strings: an org id IS an installation id now, and signIn casts it into
+// organization.installation_id (bigint). Names that are not numbers stopped being org ids.
+const ORG = '911001';
+const SECOND_ORG = '911002';
 /** Every account this file creates is numbered from here, so the cleanup can be precise. */
 const ID_BASE = 90000;
 
 beforeAll(async () => {
     if (!enabled) return;
     sql = postgres(url as string, { max: 4 });
-    await migrate(sql, { orgId: 'test-org', attempts: 3 });
-    for (const id of [ORG, OTHER_ORG]) {
-        await sql`insert into organization (id, name) values (${id}, ${id}) on conflict (id) do nothing`;
-    }
+    await migrate(sql, { attempts: 3 });
     store = createAuthStore({ sql });
 });
 
@@ -55,10 +55,22 @@ afterAll(async () => {
 
 beforeEach(async () => {
     if (!enabled) return;
-    await sql`delete from org_membership where org_id in (${ORG}, ${OTHER_ORG})`;
-    await sql`delete from worker_token where org_id in (${ORG}, ${OTHER_ORG})`;
-    await sql`delete from access_token where org_id in (${ORG}, ${OTHER_ORG})`;
-    // Sessions go with their account, through `on delete cascade`.
+    // The organization rows go too: signIn materializes them from installations now (#99), so
+    // every test starts from no orgs at all. The FKs cascade the memberships and sessions —
+    // and the plain rows are planted straight back, because the token and adoption tests write
+    // rows that need an org to point at without signing in first.
+    await sql`delete from organization where id in (${ORG}, ${SECOND_ORG})`;
+    await sql`insert into organization (id, name) values (${ORG}, ${ORG}), (${SECOND_ORG}, ${SECOND_ORG})
+              on conflict (id) do nothing`;
+    await sql`delete from worker_token where org_id in (${ORG}, ${SECOND_ORG})`;
+    await sql`delete from access_token where org_id in (${ORG}, ${SECOND_ORG})`;
+    // The adoption test plants session_branch rows, and org_id on that table is a plain column
+    // (005 added it without a foreign key), so the organization delete above cannot cascade to
+    // them — against the shared database this suite shares with the other db files, one adopted
+    // `acme/web` row would survive every cleanup and the count assertions would drift per run.
+    await sql`delete from session_branch where org_id in (${ORG}, ${SECOND_ORG}) or session_id like 'adopt-%'`;
+    // Sessions whose org is gone would already be; this catches rows of deleted accounts.
+    await sql`delete from session where user_id in (select id from app_user where github_user_id >= ${ID_BASE})`;
     await sql`delete from app_user where github_user_id >= ${ID_BASE}`;
 });
 
@@ -69,6 +81,12 @@ const identity = (n: number, login: string) => ({
     avatarUrl: null,
 });
 
+const live = () => new Date(Date.now() + 3600_000);
+
+/** Signs in as this identity, with ORG as the only installation GitHub reports. */
+const member = (n = 0, login = 'octocat', installations = [{ id: ORG, name: ORG }]) =>
+    store.signIn(identity(n, login), installations[0]!.id, installations);
+
 const sessionCount = async (userId: string): Promise<number> => {
     const [row] = await sql<{ count: number }[]>`
         select count(*)::int as count from session where user_id = ${userId}
@@ -76,261 +94,170 @@ const sessionCount = async (userId: string): Promise<number> => {
     return row!.count;
 };
 
-describe.skipIf(!enabled)('invite and claim', () => {
-    it('creates an invite for a login that has no account yet', async () => {
-        // The whole reason the primary key is the login: at invite time there is nobody to point at.
-        expect(await store.invite(ORG, 'octocat', 'member')).toBe('created');
-        expect(await store.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'member', claimed: false }]);
-    });
+describe.skipIf(!enabled)('sign-in materializes the installations (#99)', () => {
+    it('creates the organization row from the installation: id = installation id, name = account login', async () => {
+        await member(0, 'octocat', [{ id: '424242', name: 'acme' }]);
 
-    it('normalises the login, because GitHub is case-insensitive about them', async () => {
-        await store.invite(ORG, 'OctoCat', 'member');
-        const caller = await store.signIn(identity(1, 'octocat'), ORG);
-        expect(caller?.role).toBe('member');
-    });
-
-    it('binds the account on first sign-in and keeps the invited role', async () => {
-        await store.invite(ORG, 'octocat', 'admin');
-
-        const caller = await store.signIn(identity(1, 'octocat'), ORG);
-
-        expect(caller?.user.login).toBe('octocat');
-        expect(caller?.role).toBe('admin');
-        expect(await store.listMembers(ORG)).toEqual([{ login: 'octocat', role: 'admin', claimed: true }]);
-    });
-
-    it('refuses a login nobody invited, while still recording the identity', async () => {
-        expect(await store.signIn(identity(2, 'stranger'), ORG)).toBeNull();
-        const [row] = await sql<{ id: string }[]>`
-            select id from app_user where github_user_id = ${ID_BASE + 2}
+        const [org] = await sql<{ id: string; name: string; installation_id: string | null }[]>`
+            select id, name, installation_id::text as installation_id from organization where id = '424242'
         `;
-        // The account exists — the identity is a fact — but there is no membership and no session.
-        expect(row).toBeDefined();
+        expect(org).toMatchObject({ id: '424242', name: 'acme', installation_id: '424242' });
     });
 
-    it('is idempotent across repeated sign-ins', async () => {
-        await store.invite(ORG, 'octocat', 'member');
-        const first = await store.signIn(identity(1, 'octocat'), ORG);
-        const second = await store.signIn(identity(1, 'octocat'), ORG);
-        expect(second?.user.id).toBe(first?.user.id);
-    });
+    it('creates a membership for EVERY reported installation, bound to the account', async () => {
+        const caller = await member(1, 'octocat', [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
 
-    it('creates one account per numeric id, not one per login it has used', async () => {
-        await store.invite(ORG, 'octocat', 'admin');
-        const before = await store.signIn(identity(1, 'octocat'), ORG);
-
-        // The same GitHub account, renamed.
-        const after = await store.signIn(identity(1, 'octocat-renamed'), ORG);
-
-        expect(after?.user.id).toBe(before?.user.id);
-        expect(after?.user.login).toBe('octocat-renamed');
-        expect(after?.role).toBe('admin');
-    });
-
-    it('does NOT let a new account claim a membership by taking a freed login', async () => {
-        /*
-         * The predicate `and user_id is null` on the claim, tested end to end against the database.
-         *
-         * GitHub frees a login when its owner renames. Without that predicate this sequence hands
-         * the impostor the original member's row, admin role included.
-         */
-        await store.invite(ORG, 'octocat', 'admin');
-        const original = await store.signIn(identity(1, 'octocat'), ORG);
-        await store.signIn(identity(1, 'octocat-renamed'), ORG);
-
-        const impostor = await store.signIn(identity(2, 'octocat'), ORG);
-
-        expect(impostor).toBeNull();
-        expect((await store.listMembers(ORG))[0]).toMatchObject({ claimed: true });
-        // The membership is still the original account's.
-        const rebound = await store.signIn(identity(1, 'octocat-renamed'), ORG);
-        expect(rebound?.user.id).toBe(original?.user.id);
-    });
-
-    it('does not give one account two memberships in one organization', async () => {
-        /*
-         * Somebody invited under both an old and a new login. Without the `not exists` guard on the
-         * claim this violates org_membership_user_uk and turns a legitimate sign-in into a 500.
-         */
-        await store.invite(ORG, 'octocat', 'member');
-        await store.signIn(identity(1, 'octocat'), ORG);
-        await store.invite(ORG, 'octocat-renamed', 'admin');
-
-        const caller = await store.signIn(identity(1, 'octocat-renamed'), ORG);
-
-        expect(caller).not.toBeNull();
-        const claimed = (await store.listMembers(ORG)).filter((m) => m.claimed);
-        expect(claimed).toHaveLength(1);
-    });
-
-    it('claims memberships in every organization at once', async () => {
-        await store.invite(ORG, 'octocat', 'member');
-        await store.invite(OTHER_ORG, 'octocat', 'admin');
-
-        await store.signIn(identity(1, 'octocat'), ORG);
-
-        // One sign-in, both rows claimed — the update is not scoped to the org being signed in to.
-        expect((await store.listMembers(OTHER_ORG))[0]).toMatchObject({ claimed: true, role: 'admin' });
-    });
-
-    it('keeps organizations apart', async () => {
-        await store.invite(OTHER_ORG, 'octocat', 'member');
-        expect(await store.signIn(identity(1, 'octocat'), ORG)).toBeNull();
-    });
-
-    it('updates the role on a re-invite rather than failing', async () => {
-        await store.invite(ORG, 'octocat', 'member');
-        expect(await store.invite(ORG, 'octocat', 'admin')).toBe('updated');
-        expect((await store.listMembers(ORG))[0]?.role).toBe('admin');
-    });
-});
-
-describe.skipIf(!enabled)('auto-join', () => {
-    it('creates the missing membership instead of refusing', async () => {
-        const caller = await store.signIn(identity(20, 'stranger'), ORG, { autoJoin: true });
-
-        expect(caller?.user.login).toBe('stranger');
-        // `member`, never `admin`: being let in is not the same as being trusted to let others in.
-        expect(caller?.role).toBe('member');
-        expect(await store.listMembers(ORG)).toEqual([{ login: 'stranger', role: 'member', claimed: true }]);
-    });
-
-    it('does nothing when the account is already a member, keeping its role', async () => {
-        await store.invite(ORG, 'octocat', 'admin');
-
-        const caller = await store.signIn(identity(21, 'octocat'), ORG, { autoJoin: true });
-
-        expect(caller?.role).toBe('admin');
-        expect(await store.listMembers(ORG)).toHaveLength(1);
-    });
-
-    it('is idempotent, so a second sign-in does not collide with the row it created', async () => {
-        const first = await store.signIn(identity(22, 'stranger'), ORG, { autoJoin: true });
-        const second = await store.signIn(identity(22, 'stranger'), ORG, { autoJoin: true });
-
-        expect(second?.user.id).toBe(first?.user.id);
-        expect(await store.listMembers(ORG)).toHaveLength(1);
-    });
-
-    it('joins only the organization it was asked about', async () => {
-        await store.signIn(identity(23, 'stranger'), ORG, { autoJoin: true });
-        expect(await store.listMembers(OTHER_ORG)).toEqual([]);
-    });
-
-    it('still refuses without the flag, which is what keeps the decision in the callback', async () => {
-        expect(await store.signIn(identity(24, 'stranger'), ORG)).toBeNull();
-        expect(await store.listMembers(ORG)).toEqual([]);
-    });
-
-    it('stamps auto_joined on the row it creates, never on a claimed invite', async () => {
-        const joined = await store.signIn(identity(25, 'joiner'), ORG, { autoJoin: true });
-        expect(joined?.autoJoined).toBe(true);
-
-        await store.invite(ORG, 'invited', 'admin');
-        const claimed = await store.signIn(identity(26, 'invited'), ORG);
-        expect(claimed?.autoJoined).toBe(false);
-    });
-
-    it('carries the org role it was created with, mapped by the caller', async () => {
-        const admin = await store.signIn(identity(27, 'orgadmin'), ORG, { autoJoin: true, role: 'admin' });
-        expect(admin?.role).toBe('admin');
-        expect(admin?.autoJoined).toBe(true);
-    });
-
-    it('lists the claimed auto-joined rows only, for the roster sweep', async () => {
-        const joined = await store.signIn(identity(28, 'sweepme'), ORG, { autoJoin: true, role: 'admin' });
-        await store.invite(ORG, 'notmine', 'admin');
-        await store.signIn(identity(29, 'notmine'), ORG);
-
-        const rows = await store.listAutoJoined(ORG);
-        expect(rows).toEqual([
-            {
-                login: 'sweepme',
-                role: 'admin',
-                userId: joined!.user.id,
-                githubUserId: joined!.user.githubUserId,
-            },
+        expect(await store.membershipsOf(caller.user.id)).toEqual([
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
         ]);
     });
 
-    it('updateMemberRole re-roles an existing auto-joined row by account, and never creates one', async () => {
-        const joined = await store.signIn(identity(30, 'promotable'), ORG, { autoJoin: true });
+    it('is idempotent: a second sign-in updates labels instead of duplicating rows', async () => {
+        const caller = await member(2, 'octocat');
 
-        expect(await store.updateMemberRole(ORG, joined!.user.id, 'admin')).toBe(true);
-        expect((await store.listMembers(ORG)).find((m) => m.login === 'promotable')?.role).toBe('admin');
+        // Same account, renamed on GitHub, and the installation renamed with it.
+        await store.signIn(identity(2, 'octocat-renamed'), ORG, [{ id: ORG, name: 'acme-renamed' }]);
 
-        // The never-admits rule, at the store level: no row for this account, no effect.
-        expect(await store.updateMemberRole(ORG, '00000000-0000-4000-8000-ffffffffffff', 'admin')).toBe(false);
-        expect(await store.listMembers(ORG)).not.toContainEqual(expect.objectContaining({ login: 'ghost' }));
-
-        // The `auto_joined` guard: an invited row is out of GitHub's reach even by account.
-        await store.invite(ORG, 'invited-role', 'admin');
-        const invited = await store.signIn(identity(32, 'invited-role'), ORG);
-        expect(await store.updateMemberRole(ORG, invited!.user.id, 'member')).toBe(false);
-        expect((await store.listMembers(ORG)).find((m) => m.login === 'invited-role')?.role).toBe('admin');
+        const memberships = await store.membershipsOf(caller.user.id);
+        expect(memberships).toEqual([{ id: ORG, name: 'acme-renamed' }]);
+        // Still one account: the numeric id is the identity.
+        const [count] = await sql<{ count: number }[]>`
+            select count(*)::int as count from app_user where github_user_id = ${ID_BASE + 2}
+        `;
+        expect(count?.count).toBe(1);
     });
 
-    it('removeMemberById ends the account the row was created for, guarded by auto_joined', async () => {
-        const joined = await store.signIn(identity(33, 'swept'), ORG, { autoJoin: true });
-        await store.createSession(Buffer.alloc(32, 3), joined!.user.id, new Date(Date.now() + 3600_000));
+    it('does NOT let a new account inherit a membership by taking the freed login', async () => {
+        // The most important case in this file. A rename frees the login; a DIFFERENT numeric id
+        // registering it is a different account, and gets its own membership — never the original's.
+        const original = await member(3, 'octocat');
 
-        expect(await store.removeMemberById(ORG, joined!.user.id)).toBe('removed');
-        expect(await store.listMembers(ORG)).not.toContainEqual(expect.objectContaining({ login: 'swept' }));
-        expect(await sessionCount(joined!.user.id)).toBe(0);
+        const impostor = await member(4, 'octocat');
 
-        // An invited row survives the id-keyed removal — that path is the CLI's, not GitHub's.
-        await store.invite(ORG, 'kept', 'admin');
-        const invited = await store.signIn(identity(34, 'kept'), ORG);
-        expect(await store.removeMemberById(ORG, invited!.user.id)).toBe('missing');
-        expect(await store.listMembers(ORG)).toContainEqual(expect.objectContaining({ login: 'kept' }));
+        expect(impostor.user.id).not.toBe(original.user.id);
+        const rows = await sql<{ org_id: string; user_id: string }[]>`
+            select org_id, user_id from org_membership where org_id = ${ORG} order by user_id
+        `;
+        expect(rows.map((r) => r.user_id).sort()).toEqual([original.user.id, impostor.user.id].sort());
+    });
+
+    it('drops the membership of an installation GitHub no longer reports', async () => {
+        // The propagation the security property needs: losing the installation ends the
+        // membership at the next sign-in, and the session reads it is joined through die with it.
+        const caller = await member(5, 'octocat', [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
+        await store.createSession(hashToken('sig-x'), caller.user.id, live(), ORG);
+        // Planted orgs carry no installation; these two ARE installations, so the propagation
+        // rule (installation orgs only) applies to them.
+        await sql`update organization set installation_id = id::bigint where id in (${ORG}, ${SECOND_ORG})`;
+
+        await store.signIn(identity(5, 'octocat'), SECOND_ORG, [{ id: SECOND_ORG, name: SECOND_ORG }]);
+
+        expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: SECOND_ORG, name: SECOND_ORG }]);
+        // The session row survives; the join through the membership does not.
+        expect(await store.findSession(hashToken('sig-x'))).toBeNull();
+    });
+
+    it('refuses an orgId outside the reported installations', async () => {
+        // The route validates; the store asserts rather than silently resolving null.
+        await expect(member(6, 'octocat', [{ id: ORG, name: ORG }])).resolves.toBeTruthy();
+        await expect(store.signIn(identity(6, 'octocat'), SECOND_ORG, [{ id: ORG, name: ORG }])).rejects.toThrow(
+            /no membership/
+        );
+    });
+
+    it('records the membership the first sign-in reported it', async () => {
+        const caller = await member(7, 'first-seen');
+        const [row] = await sql<{ claimed_at: Date | null; invited_at: Date | null }[]>`
+            select claimed_at, invited_at from org_membership
+            where org_id = ${ORG} and user_id = ${caller.user.id}
+        `;
+        expect(row?.claimed_at).not.toBeNull();
+        expect(row?.invited_at).not.toBeNull();
     });
 });
 
 describe.skipIf(!enabled)('sessions', () => {
-    const live = () => new Date(Date.now() + 3600_000);
-
-    const member = async () => {
-        await store.invite(ORG, 'octocat', 'member');
-        return (await store.signIn(identity(1, 'octocat'), ORG))!;
-    };
-
-    it('resolves a live session to its caller', async () => {
+    it('resolves a live session to its caller, in the org the session row names', async () => {
         const caller = await member();
         const hash = hashToken('token-a');
-        await store.createSession(hash, caller.user.id, live());
+        await store.createSession(hash, caller.user.id, live(), ORG);
 
-        expect((await store.findSession(hash, ORG))?.user.id).toBe(caller.user.id);
+        const resolved = await store.findSession(hash);
+        expect(resolved?.user.id).toBe(caller.user.id);
+        expect(resolved?.org).toEqual({ id: ORG, name: ORG });
     });
 
     it('refuses an expired session', async () => {
         const caller = await member();
         const hash = hashToken('token-b');
-        await store.createSession(hash, caller.user.id, new Date(Date.now() - 1000));
+        await store.createSession(hash, caller.user.id, new Date(Date.now() - 1000), ORG);
 
-        expect(await store.findSession(hash, ORG)).toBeNull();
+        expect(await store.findSession(hash)).toBeNull();
     });
 
     it('refuses an unknown token', async () => {
         await member();
-        expect(await store.findSession(hashToken('never-issued'), ORG)).toBeNull();
+        expect(await store.findSession(hashToken('never-issued'))).toBeNull();
+    });
+
+    it('refuses a session with no org — every row predating 028 — rather than guessing one', async () => {
+        // The fail-closed upgrade path: a null org joins no membership, so the upgrade signs
+        // everybody out instead of mis-scoping anybody.
+        const caller = await member();
+        await sql`
+            insert into session (token_hash, user_id, expires_at, org_id)
+            values (${hashToken('token-pre028')}, ${caller.user.id}, ${live()}, null)
+        `;
+
+        expect(await store.findSession(hashToken('token-pre028'))).toBeNull();
     });
 
     it('stops resolving the moment the membership is gone', async () => {
-        // The membership is an inner join in findSession, which is what makes removal take effect on
-        // the next request rather than at cookie expiry.
+        // The membership is an inner join in findSession, which is what makes removal take effect
+        // on the next request rather than at cookie expiry.
         const caller = await member();
         const hash = hashToken('token-c');
-        await store.createSession(hash, caller.user.id, live());
+        await store.createSession(hash, caller.user.id, live(), ORG);
 
-        await sql`delete from org_membership where org_id = ${ORG} and github_login = 'octocat'`;
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${caller.user.id}`;
 
-        expect(await store.findSession(hash, ORG)).toBeNull();
+        expect(await store.findSession(hash)).toBeNull();
+    });
+
+    it('moves a session only to an org its user is a member of', async () => {
+        const caller = await member(8, 'switcher', [{ id: ORG, name: ORG }]);
+        await member(9, 'elsewhere', [{ id: SECOND_ORG, name: SECOND_ORG }]);
+        const hash = hashToken('token-swap');
+        await store.createSession(hash, caller.user.id, live(), ORG);
+
+        await expect(store.updateSessionOrg(hash, SECOND_ORG)).resolves.toBe(false);
+        // Still in the original org — the refusal left no trace.
+        expect((await store.findSession(hash))?.org.id).toBe(ORG);
+
+        await member(8, 'switcher', [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
+        await expect(store.updateSessionOrg(hash, SECOND_ORG)).resolves.toBe(true);
+        expect((await store.findSession(hash))?.org.id).toBe(SECOND_ORG);
+    });
+
+    it('reports an unknown session token as unmoved', async () => {
+        await member();
+        await expect(store.updateSessionOrg(hashToken('never-issued'), ORG)).resolves.toBe(false);
     });
 
     it('deletes on logout', async () => {
         const caller = await member();
         const hash = hashToken('token-e');
-        await store.createSession(hash, caller.user.id, live());
+        await store.createSession(hash, caller.user.id, live(), ORG);
 
         await store.deleteSession(hash);
 
@@ -339,37 +266,28 @@ describe.skipIf(!enabled)('sessions', () => {
 
     it('takes every session with the account when it is deleted', async () => {
         const caller = await member();
-        await store.createSession(hashToken('token-f'), caller.user.id, live());
-        await store.createSession(hashToken('token-g'), caller.user.id, live());
+        await store.createSession(hashToken('token-f'), caller.user.id, live(), ORG);
+        await store.createSession(hashToken('token-g'), caller.user.id, live(), ORG);
 
         await sql`delete from app_user where id = ${caller.user.id}`;
 
         expect(await sessionCount(caller.user.id)).toBe(0);
     });
 
-    it('ends a removed member\u2019s sessions immediately', async () => {
-        // Otherwise removal takes effect whenever the cookie happens to expire, which on a board
-        // that runs shell commands is not soon enough.
-        const caller = await member();
-        await store.createSession(hashToken('token-h'), caller.user.id, live());
-
-        expect(await store.removeMember(ORG, 'octocat')).toBe('removed');
-
-        expect(await sessionCount(caller.user.id)).toBe(0);
-    });
-
-    it('reports removing somebody who is not a member', async () => {
-        expect(await store.removeMember(ORG, 'nobody')).toBe('missing');
-    });
-
     it('reaps only what has already expired', async () => {
         const caller = await member();
-        await store.createSession(hashToken('token-i'), caller.user.id, new Date(Date.now() - 1000));
-        await store.createSession(hashToken('token-j'), caller.user.id, live());
+        await store.createSession(hashToken('token-i'), caller.user.id, new Date(Date.now() - 1000), ORG);
+        await store.createSession(hashToken('token-j'), caller.user.id, live(), ORG);
 
         await reapSessions(sql);
 
         expect(await sessionCount(caller.user.id)).toBe(1);
+    });
+
+    it('finds an organization row and answers null for a typo', async () => {
+        await member(10, 'org-looker');
+        expect(await store.findOrg(ORG)).toEqual({ id: ORG, name: ORG });
+        expect(await store.findOrg('no-such-org')).toBeNull();
     });
 });
 
@@ -379,64 +297,53 @@ describe.skipIf(!enabled)('worker tokens', () => {
         // organization it is working for.
         await store.createWorkerToken(ORG, 'driver-1', hashToken('fwt_a'));
 
-        expect(await store.findWorkerToken(hashToken('fwt_a'))).toMatchObject({
-            orgId: ORG,
-            name: 'driver-1',
-        });
+        expect(await store.findWorkerToken(hashToken('fwt_a'))).toMatchObject({ orgId: ORG, name: 'driver-1' });
     });
 
     it('refuses an unknown token', async () => {
-        expect(await store.findWorkerToken(hashToken('fwt_never-minted'))).toBeNull();
+        expect(await store.findWorkerToken(hashToken('fwt_nothing'))).toBeNull();
     });
 
     it('refuses a revoked one', async () => {
-        await store.createWorkerToken(ORG, 'driver-1', hashToken('fwt_b'));
-        expect(await store.revokeWorkerToken(ORG, 'driver-1')).toBe('revoked');
+        await store.createWorkerToken(ORG, 'driver-2', hashToken('fwt_b'));
 
+        expect(await store.revokeWorkerToken(ORG, 'driver-2')).toBe('revoked');
         expect(await store.findWorkerToken(hashToken('fwt_b'))).toBeNull();
     });
 
     it('reports revoking a name that has no live token', async () => {
-        expect(await store.revokeWorkerToken(ORG, 'driver-1')).toBe('missing');
+        expect(await store.revokeWorkerToken(ORG, 'nobody')).toBe('missing');
     });
 
     it('stamps last_used_at, so an unused token is visible as one', async () => {
-        await store.createWorkerToken(ORG, 'driver-1', hashToken('fwt_c'));
-        const [before] = await sql<{ last_used_at: Date | null }[]>`
-            select last_used_at from worker_token where org_id = ${ORG} and name = 'driver-1'
+        await store.createWorkerToken(ORG, 'driver-3', hashToken('fwt_c'));
+        const before = await sql<{ last_used_at: Date | null }[]>`
+            select last_used_at from worker_token where org_id = ${ORG} and name = 'driver-3'
         `;
-        expect(before?.last_used_at).toBeNull();
+        expect(before[0]?.last_used_at).toBeNull();
 
         await store.findWorkerToken(hashToken('fwt_c'));
-
-        const [after] = await sql<{ last_used_at: Date | null }[]>`
-            select last_used_at from worker_token where org_id = ${ORG} and name = 'driver-1'
+        const after = await sql<{ last_used_at: Date | null }[]>`
+            select last_used_at from worker_token where org_id = ${ORG} and name = 'driver-3'
         `;
-        expect(after?.last_used_at).not.toBeNull();
+        expect(after[0]?.last_used_at).not.toBeNull();
     });
 
     it('lists live and revoked tokens together', async () => {
-        await store.createWorkerToken(ORG, 'driver-1', hashToken('fwt_d'));
-        await store.createWorkerToken(ORG, 'driver-2', hashToken('fwt_e'));
-        await store.revokeWorkerToken(ORG, 'driver-2');
+        await store.createWorkerToken(ORG, 'driver-4', hashToken('fwt_d'));
+        await store.createWorkerToken(ORG, 'driver-5', hashToken('fwt_e'));
+        await store.revokeWorkerToken(ORG, 'driver-4');
 
-        expect(await store.listWorkerTokens(ORG)).toMatchObject([
-            { name: 'driver-1', revoked: false },
-            { name: 'driver-2', revoked: true },
+        const list = await store.listWorkerTokens(ORG);
+        expect(list).toEqual([
+            { name: 'driver-4', createdAt: expect.any(String), revoked: true },
+            { name: 'driver-5', createdAt: expect.any(String), revoked: false },
         ]);
     });
 });
 
 describe.skipIf(!enabled)('access tokens', () => {
-    /** Invites, signs in, and returns the claimed caller — the person a personal token acts as. */
-    const member = async (n: number, login: string) => {
-        await store.invite(ORG, login, 'member');
-        const caller = await store.signIn(identity(n, login), ORG);
-        expect(caller).not.toBeNull();
-        return caller!;
-    };
-
-    const createPersonal = async (caller: Awaited<ReturnType<typeof member>>, token: string, label: string) =>
+    const createPersonal = (caller: { user: { id: string } }, token: string, label: string) =>
         store.createAccessToken({
             kind: 'personal',
             orgId: ORG,
@@ -446,13 +353,15 @@ describe.skipIf(!enabled)('access tokens', () => {
             tokenHash: hashToken(token),
         });
 
-    it('resolves a personal token to its caller through the membership join', async () => {
+    it('resolves a personal token to its caller in the org the token was minted for', async () => {
         const caller = await member(1, 'token-user');
         await createPersonal(caller, 'fat_a', 'laptop');
 
-        expect(await store.findPersonalToken(hashToken('fat_a'), ORG)).toMatchObject({
+        const resolved = await store.findPersonalToken(hashToken('fat_a'));
+        expect(resolved).toMatchObject({
             user: { id: caller.user.id, login: 'token-user' },
             role: 'member',
+            org: { id: ORG, name: ORG },
         });
     });
 
@@ -460,9 +369,9 @@ describe.skipIf(!enabled)('access tokens', () => {
         const caller = await member(2, 'leaver');
         await createPersonal(caller, 'fat_b', 'laptop');
 
-        await store.removeMember(ORG, 'leaver');
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${caller.user.id}`;
 
-        expect(await store.findPersonalToken(hashToken('fat_b'), ORG)).toBeNull();
+        expect(await store.findPersonalToken(hashToken('fat_b'))).toBeNull();
     });
 
     it('refuses a revoked token, of either kind', async () => {
@@ -479,34 +388,86 @@ describe.skipIf(!enabled)('access tokens', () => {
 
         expect(await store.revokePersonalToken(ORG, caller.user.id, personal.id)).toBe('revoked');
         expect(await store.revokeOrgToken(ORG, org.id)).toBe('revoked');
-        expect(await store.findPersonalToken(hashToken('fat_c'), ORG)).toBeNull();
-        expect(await store.findOrgToken(hashToken('oat_c'), ORG)).toBeNull();
+        expect(await store.findPersonalToken(hashToken('fat_c'))).toBeNull();
+        expect(await store.findOrgToken(hashToken('oat_c'))).toBeNull();
         // Revoking again changes nothing.
         expect(await store.revokePersonalToken(ORG, caller.user.id, personal.id)).toBe('missing');
         expect(await store.revokeOrgToken(ORG, org.id)).toBe('missing');
     });
 
-    it('refuses a token minted for another organization', async () => {
-        const caller = await member(4, 'elsewhere');
+    it('resolves each token into its OWN org, whatever else the account belongs to', async () => {
+        // Since #99 the lookup is by the globally-unique hash and the org comes FROM the row —
+        // the mint-time binding. A token minted into one org acts there and nowhere else.
+        const caller = await member(4, 'everywhere', [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
         await store.createAccessToken({
             kind: 'personal',
-            orgId: OTHER_ORG,
+            orgId: SECOND_ORG,
             userId: caller.user.id,
             createdBy: caller.user.id,
             label: 'laptop',
             tokenHash: hashToken('fat_d'),
         });
-        await store.createAccessToken({
+
+        const resolved = await store.findPersonalToken(hashToken('fat_d'));
+        expect(resolved?.org.id).toBe(SECOND_ORG);
+    });
+
+    it('answers an org token with its identity AND its org', async () => {
+        const caller = await member(9, 'org-minter');
+        const org = await store.createAccessToken({
             kind: 'org',
-            orgId: OTHER_ORG,
+            orgId: ORG,
             userId: null,
             createdBy: caller.user.id,
             label: 'ci',
-            tokenHash: hashToken('oat_d'),
+            tokenHash: hashToken('oat_h'),
         });
 
-        expect(await store.findPersonalToken(hashToken('fat_d'), ORG)).toBeNull();
-        expect(await store.findOrgToken(hashToken('oat_d'), ORG)).toBeNull();
+        expect(await store.findOrgToken(hashToken('oat_h'))).toEqual({ orgId: ORG, id: org.id, label: 'ci' });
+    });
+
+    it('resolves an org token only while its minter is still a member', async () => {
+        // The issuer's membership is the org token's authority, the same join a session and a
+        // personal token run: sign-in propagation deleting the membership kills the token's reach
+        // on the next request, while the row itself survives unrevoked — history with no reach,
+        // the same contract the personal kind states.
+        const minter = await member(12, 'org-leaver');
+        const org = await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: minter.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_i'),
+        });
+        expect(await store.findOrgToken(hashToken('oat_i'))).toEqual({ orgId: ORG, id: org.id, label: 'ci' });
+
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${minter.user.id}`;
+
+        expect(await store.findOrgToken(hashToken('oat_i'))).toBeNull();
+        const [row] = await sql<{ revoked_at: Date | null }[]>`
+            select revoked_at from access_token where org_id = ${ORG} and id = ${org.id}
+        `;
+        expect(row?.revoked_at).toBeNull();
+    });
+
+    it('does not resolve an org token whose minter is a member of a DIFFERENT org', async () => {
+        // The join is on (org, creator) together: membership elsewhere is not authority here, so
+        // a row minted into ORG by someone whose membership is only in SECOND_ORG is dead.
+        const minter = await member(13, 'org-outsider', [{ id: SECOND_ORG, name: SECOND_ORG }]);
+        await store.createAccessToken({
+            kind: 'org',
+            orgId: ORG,
+            userId: null,
+            createdBy: minter.user.id,
+            label: 'ci',
+            tokenHash: hashToken('oat_j'),
+        });
+
+        expect(await store.findOrgToken(hashToken('oat_j'))).toBeNull();
     });
 
     it('stamps last_used_at, then holds it within the throttle window', async () => {
@@ -515,40 +476,34 @@ describe.skipIf(!enabled)('access tokens', () => {
         const caller = await member(5, 'throttle');
         await createPersonal(caller, 'fat_e', 'laptop');
 
-        await store.findPersonalToken(hashToken('fat_e'), ORG);
+        await store.findPersonalToken(hashToken('fat_e'));
         const [first] = await sql<{ last_used_at: Date }[]>`
             select last_used_at from access_token where org_id = ${ORG} and label = 'laptop'
         `;
         expect(first?.last_used_at).not.toBeNull();
 
-        await store.findPersonalToken(hashToken('fat_e'), ORG);
+        await store.findPersonalToken(hashToken('fat_e'));
         const [second] = await sql<{ last_used_at: Date }[]>`
             select last_used_at from access_token where org_id = ${ORG} and label = 'laptop'
         `;
         expect(second?.last_used_at?.getTime()).toBe(first?.last_used_at?.getTime());
     });
 
-    it('marks a removed member’s personal tokens revoked, keeping the rows', async () => {
+    it('leaves a memberless personal token unrevoked but dead — the join is the enforcement', async () => {
+        // The old removeMember marked tokens; the sign-in propagation that replaced it does not.
+        // It does not need to: findPersonalToken joins the membership, so the row survives as
+        // history with no reach at all.
         const caller = await member(6, 'removed');
         await createPersonal(caller, 'fat_f', 'laptop');
-        await store.createAccessToken({
-            kind: 'org',
-            orgId: ORG,
-            userId: null,
-            createdBy: caller.user.id,
-            label: 'ci',
-            tokenHash: hashToken('oat_f'),
-        });
+        await sql`update organization set installation_id = id::bigint where id in (${ORG}, ${SECOND_ORG})`;
 
-        await store.removeMember(ORG, 'removed');
+        await store.signIn(identity(6, 'removed'), SECOND_ORG, [{ id: SECOND_ORG, name: SECOND_ORG }]);
 
-        const rows = await sql<{ kind: string; label: string; revoked_at: Date | null }[]>`
-            select kind, label, revoked_at from access_token where org_id = ${ORG} order by label
+        const [row] = await sql<{ revoked_at: Date | null }[]>`
+            select revoked_at from access_token where org_id = ${ORG} and label = 'laptop'
         `;
-        expect(rows).toMatchObject([
-            { label: 'ci', revoked_at: null },
-            { label: 'laptop', revoked_at: expect.any(Date) },
-        ]);
+        expect(row?.revoked_at).toBeNull();
+        expect(await store.findPersonalToken(hashToken('fat_f'))).toBeNull();
     });
 
     it('stores the hash of the token, never the token', async () => {
@@ -597,94 +552,100 @@ describe.skipIf(!enabled)('access tokens', () => {
             expect(JSON.stringify(view)).not.toContain('hash');
         }
     });
+});
 
-    it('resolves an org token to its identity', async () => {
-        const caller = await member(9, 'org-minter');
-        const org = await store.createAccessToken({
-            kind: 'org',
-            orgId: ORG,
-            userId: null,
-            createdBy: caller.user.id,
-            label: 'ci',
-            tokenHash: hashToken('oat_h'),
-        });
+describe.skipIf(!enabled)('removeMember (the webhook)', () => {
+    it('deletes the membership by the GitHub numeric id, and says so', async () => {
+        // The webhook carries the numeric id — THE identity — while org_membership keys on
+        // user_id since 029, so the lookup joins through app_user.
+        const caller = await member();
+        expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(true);
+        expect(await store.membershipsOf(caller.user.id)).toEqual([]);
+    });
 
-        expect(await store.findOrgToken(hashToken('oat_h'), ORG)).toEqual({ id: org.id, label: 'ci' });
+    it('answers false once the row is gone, and for a github id that is nobody here', async () => {
+        const caller = await member();
+        expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(true);
+        expect(await store.removeMember(ORG, caller.user.githubUserId)).toBe(false);
+        expect(await store.removeMember(ORG, ID_BASE + 777)).toBe(false);
     });
 });
 
-describe.skipIf(!enabled)('boot-time seeding', () => {
-    /** Its own organization per case: bootstrapping is defined by an org having no members yet. */
-    const freshOrg = () => `auth-boot-${Date.now().toString(36)}${Math.floor(Math.random() * 1e6)}`.slice(0, 39);
+describe.skipIf(!enabled)('the local org (AUTH_MODE=none)', () => {
+    it('resolves the stand-in account the local org seeds', async () => {
+        // migrate({localUser}) writes exactly this shape; the plugin resolves it on every request
+        // a none-mode deployment serves.
+        await sql`
+            insert into organization (id, name) values (${LOCAL_ORG_ID}, ${LOCAL_ORG_ID})
+            on conflict (id) do nothing
+        `;
+        const [user] = await sql<{ id: string }[]>`
+            insert into app_user (github_user_id, github_login, display_name)
+            values (0, ${LOCAL_LOGIN}, 'Local')
+            on conflict (github_user_id) do update set last_login_at = now()
+            returning id
+        `;
+        await sql`
+            insert into org_membership (org_id, github_login, user_id, claimed_at)
+            values (${LOCAL_ORG_ID}, ${LOCAL_LOGIN}, ${user!.id}, now())
+            on conflict (org_id, user_id) do update set user_id = excluded.user_id
+        `;
 
-    it('bootstraps an admin into an organization that has nobody in it', async () => {
-        // Without this an upgrade is a lockout: rows, no users, no memberships, and every route
-        // 401ing with nothing in the log to say why.
-        const orgId = freshOrg();
-        await migrate(sql, { orgId, attempts: 1, bootstrapAdmin: 'FirstAdmin' });
+        const caller = await store.localCaller(LOCAL_ORG_ID);
+        expect(caller?.user.login).toBe(LOCAL_LOGIN);
+        expect(caller?.org).toEqual({ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID });
+        expect(await store.localCaller('not-the-local-org')).toBeNull();
+    });
+});
 
-        expect(await store.listMembers(orgId)).toEqual([{ login: 'firstadmin', role: 'admin', claimed: false }]);
+describe.skipIf(!enabled)('the migration runner and adoption', () => {
+    it('claims the pre-organization rows into the org it is given, and is a no-op afterwards', async () => {
+        // What adoptOrg exists for, now driven by the adopt CLI instead of every boot (#99):
+        // without it a re-homed deployment reads an empty dashboard that looks like data loss.
+        await sql`
+            insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
+            values ('__unclaimed__', 'claude-code', ${`adopt-${Date.now()}`}, 'acme/web', 'main', null, now(), now(), 1)
+        `;
+        let moved = '';
+        await adoptOrg(sql, ORG, (m) => {
+            moved += m;
+        });
+
+        expect(moved).toContain('pre-organization rows');
+        // Nothing unclaimed survives, and the row reads from the target org now.
+        const [left] = await sql<{ count: number }[]>`
+            select count(*)::int as count from session_branch where org_id = '__unclaimed__'
+            and agent = 'claude-code'
+        `;
+        expect(left?.count).toBe(0);
+        const [adopted] = await sql<{ count: number }[]>`
+            select count(*)::int as count from session_branch
+            where org_id = ${ORG} and agent = 'claude-code' and repo = 'acme/web'
+        `;
+        expect(adopted?.count).toBe(1);
+
+        // Second run: nothing left to claim, no line.
+        let again = '';
+        await adoptOrg(sql, ORG, (m) => {
+            again += m;
+        });
+        expect(again).toBe('');
     });
 
-    it('does not reinstate an admin who removed themselves', async () => {
-        // One-shot ignition, not a standing grant.
-        const orgId = freshOrg();
-        await migrate(sql, { orgId, attempts: 1, bootstrapAdmin: 'firstadmin' });
-        await store.invite(orgId, 'someone-else', 'member');
-        await store.removeMember(orgId, 'firstadmin');
-
-        await migrate(sql, { orgId, attempts: 1, bootstrapAdmin: 'firstadmin' });
-
-        expect((await store.listMembers(orgId)).map((m) => m.login)).toEqual(['someone-else']);
+    it('keeps a membership from existing without an account — invites are gone, irrecoverably', async () => {
+        // 029 set user_id NOT NULL and re-keyed the table. The row type this suite used to spend
+        // most of its time on — an unclaimed invite — can no longer be written at all.
+        await member(11, 'constraint-watcher');
+        await expect(
+            sql`insert into org_membership (org_id, github_login, user_id) values (${ORG}, 'nobody', null)`
+        ).rejects.toThrow();
     });
 
-    it('still bootstraps when the only member is the AUTH_MODE=none stand-in', async () => {
-        /*
-         * A deployment that booted once without auth has a `__local__` membership. If that counted
-         * as a member, turning auth on afterwards would silently skip the bootstrap and lock
-         * everybody out — the exact failure this whole mechanism exists to prevent.
-         */
-        const orgId = freshOrg();
-        await migrate(sql, { orgId, attempts: 1, localUser: true });
+    it('is a localUser boot away from a usable none-mode database', async () => {
+        // The offline tooling's boot: org row, stand-in account, adoption — all idempotent.
+        await migrate(sql, { localUser: true, attempts: 1, log: (m) => console.log('[mig]', m) });
 
-        await migrate(sql, { orgId, attempts: 1, bootstrapAdmin: 'firstadmin' });
-
-        const logins = (await store.listMembers(orgId)).map((m) => m.login).sort();
-        expect(logins).toEqual([LOCAL_LOGIN, 'firstadmin'].sort());
-    });
-
-    it('seeds the stand-in account and resolves it as a caller', async () => {
-        const orgId = freshOrg();
-        await migrate(sql, { orgId, attempts: 1, localUser: true });
-
-        const caller = await store.localCaller(orgId);
-
-        expect(caller?.user.githubUserId).toBe(0);
-        expect(caller?.role).toBe('admin');
-    });
-
-    it('has no stand-in when it was not asked for one', async () => {
-        const orgId = freshOrg();
-        await migrate(sql, { orgId, attempts: 1 });
-        expect(await store.localCaller(orgId)).toBeNull();
-    });
-
-    it('records the organization so memberships have something to reference', async () => {
-        const orgId = freshOrg();
-        await migrate(sql, { orgId, orgName: 'A Display Name', attempts: 1 });
-
-        const [row] = await sql<{ name: string }[]>`select name from organization where id = ${orgId}`;
-        expect(row?.name).toBe('A Display Name');
-    });
-
-    it('does not rewrite a name on a later boot', async () => {
-        // Config plants the row; the database owns the name afterwards. Otherwise a stale ORG_NAME
-        // in one operator's shell silently renames the organization for everybody.
-        const orgId = freshOrg();
-        await migrate(sql, { orgId, orgName: 'Original', attempts: 1 });
-        await migrate(sql, { orgId, orgName: 'Overwritten', attempts: 1 });
-
-        const [row] = await sql<{ name: string }[]>`select name from organization where id = ${orgId}`;
-        expect(row?.name).toBe('Original');
+        expect(await store.findOrg(LOCAL_ORG_ID)).toEqual({ id: LOCAL_ORG_ID, name: LOCAL_ORG_ID });
+        expect((await store.localCaller(LOCAL_ORG_ID))?.user.login).toBe(LOCAL_LOGIN);
     });
 });

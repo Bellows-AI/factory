@@ -1,13 +1,18 @@
 import postgres from 'postgres';
-import { resolveConfig } from '../config.js';
+import { LOCAL_ORG_ID, resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
+import { parseArgs, value } from '../admin/args.js';
 import { backfillTranscripts } from './transcripts.js';
 
 /**
- *     npm run backfill
+ *     npm run backfill [-- --org <installation-id>]
  *
  * Reads Claude Code transcripts from disk and imports them. Safe to re-run: rows land with
  * `source = 'transcript'` and the dedup index makes a second pass a no-op.
+ *
+ * `--org` names the organization the sessions belong to. It defaults to the local org
+ * (AUTH_MODE=none); a github-mode deployment names its installation id — the same id
+ * `npm run adopt` printed for the legacy data.
  */
 const { config } = resolveConfig();
 if (!config.databaseUrl) {
@@ -17,18 +22,38 @@ if (!config.databaseUrl) {
     process.exit(1);
 }
 
+const args = parseArgs(process.argv.slice(2));
+// none mode falls back to the local org, which boot seeds. Github mode has no fallback: a legacy
+// `default` row can still sit in an upgraded database, so the existence check below cannot tell a
+// live installation from that leftover, and an omitted --org would land the import outside every
+// installation org. Explicit is the only safe spelling there.
+const orgId = value(args, 'org') ?? (config.auth.mode === 'none' ? LOCAL_ORG_ID : undefined);
+if (!orgId) {
+    console.error('github mode requires --org <installation-id> — its organizations come from sign-in, not boot.');
+    process.exit(1);
+}
+
 const sql = postgres(config.databaseUrl, { max: 4 });
 try {
-    // Imported sessions land in the configured organization, so a backfill run against the wrong
-    // one is worth naming before it writes anything.
-    console.log(`[org] importing into ${config.orgName} (${config.orgId})`);
-    await migrate(sql, {
-        orgId: config.orgId,
-        orgName: config.orgName,
-        log: (m) => console.log(`[migrate] ${m}`),
-    });
+    // Imported sessions land in one organization, so a backfill run against the wrong one is
+    // worth naming before it writes anything.
+    console.log(`[org] importing into ${orgId}`);
+    // The none-mode default: migrating with the local org, exactly as the server boots, so the
+    // default target exists. Github mode seeds nothing — its orgs come from sign-in.
+    await migrate(sql, { localUser: config.auth.mode === 'none', log: (m) => console.log(`[migrate] ${m}`) });
+    // The org must exist before the first row: session_branch's foreign key would otherwise
+    // fail partway through the import, leaving a partial write behind. Github mode's orgs are
+    // materialized at sign-in (#99) — boot created none, so a typo'd or too-early --org aborts
+    // here instead of halfway through the transcripts.
+    const orgs = await sql`select id from organization where id = ${orgId}`;
+    if (!orgs.length) {
+        console.error(
+            `"${orgId}" is not an organization in this database. Sign in once to materialize the installation's org, or run: npm run adopt -- --installation <id>.`
+        );
+        process.exit(1);
+    }
     const summary = await backfillTranscripts(sql, {
-        orgId: config.orgId,
+        orgId,
         log: (m) => console.log(`[backfill] ${m}`),
     });
 

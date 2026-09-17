@@ -687,6 +687,52 @@ export function withMintedToken(
 }
 
 /**
+ * The branch-ingest credential's verifier, and the ONE job query in this module that is org-less —
+ * deliberately, because its whole purpose is to say which org a request is speaking for: the
+ * runner's reporter presents the job it claimed and that attempt's lease token, and the pair's
+ * answer IS the org. `createJobStore` binds the org at construction; this resolver must run before
+ * any org is known, which is why it is a factory of its own and not a store method.
+ *
+ * No status filter, but nothing unbounded either. The reporter's final `--once` sample lands
+ * seconds after the verdict, and `complete` retains the lease token for exactly that reason (the
+ * only settle point that does — dead and suspend clear theirs, because those attempts end without
+ * a verdict whose tail matters). The pair is attempt-scoped regardless: a reclaim rotates the
+ * token on the row (`gen_random_uuid`), so a superseded attempt's pair stops resolving the moment
+ * the job is handed to its replacement and cannot write into the winner's org.
+ *
+ * Two bounds keep retention honest. The pair resolves from the job row alone — no membership
+ * join, because the runner is not a person — so a pair captured from a runner's env would
+ * otherwise outlive its author's removal from the org indefinitely: nothing prunes completed
+ * jobs, and a claimed-but-never-settled row would keep resolving forever too. So a finished job
+ * resolves only within an hour of the verdict (the tail sample needs seconds; this has orders of
+ * magnitude to spare), and an UNFINISHED job resolves only while its lease is live — a lease that
+ * expired without a reclaim is a run that died, and its captured pair dies with it.
+ */
+export const LEASE_TAIL_GRACE = '1 hour';
+
+export function createOrgOfLease({
+    sql,
+    ready,
+}: {
+    sql: Sql;
+    ready?: Promise<unknown>;
+}): (jobId: string, leaseToken: string) => Promise<string | null> {
+    return async (jobId, leaseToken) => {
+        if (ready) await ready;
+        const rows = await sql<{ org_id: string }[]>`
+            select org_id from job
+            where id = ${jobId} and lease_token = ${leaseToken}
+              and (
+                  (finished_at is not null and finished_at > now() - ${LEASE_TAIL_GRACE}::interval)
+                  or
+                  (finished_at is null and lease_expires_at > now())
+              )
+        `;
+        return rows[0]?.org_id ?? null;
+    };
+}
+
+/**
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
  *
@@ -1686,7 +1732,14 @@ export function createJobStore({
                         exit_code   = ${exitCode},
                         output      = ${output},
                         finished_at = now(),
-                        lease_token = null,
+                        -- The lease token is RETAINED, deliberately — the only settle point that
+                        -- keeps it (dead and suspend clear theirs). The reporter's final --once
+                        -- tail sample lands after this verdict, and it authenticates with the
+                        -- attempt's job-id + lease-token pair; clearing the token here would
+                        -- 401 that sample into silence and lose the run's last branch state. The
+                        -- pair stays attempt-scoped anyway: a reclaim rotates the token on the
+                        -- row, so a superseded attempt's pair stops resolving the moment the
+                        -- job is handed out again.
                         -- The verdict is the last settle point of the attempt: bank its segment,
                         -- so the task's clock covers the run that just ended.
                         wall_clock_ms = ${wallTick},
@@ -1887,7 +1940,14 @@ export function createJobStore({
                           : sql``
                 }
                   ${repo ? sql`and repo = ${repo}` : sql``}
-                order by job.created_at desc, job.id
+                order by ${
+                    // The recently-completed panel asks for terminal jobs: newest COMPLETION
+                    // first. `created_at` order permanently buries an old job that finished
+                    // after many newer ones — the row is past the limit before it is done.
+                    status === 'terminal'
+                        ? sql`job.finished_at desc, job.created_at desc, job.id`
+                        : sql`job.created_at desc, job.id`
+                }
                 limit ${limit}
             `;
             return rows.map(toJob);

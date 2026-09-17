@@ -227,9 +227,11 @@ the in-container twin of the local `plugins/agent-telemetry` hook — and POSTs 
 `FACTORY_STATS_URL` (`/api/sessions/branch`). OTLP metrics carry a session id and nothing else,
 so this side channel is what lets the board attribute a run's tokens to the PR its branch
 became. The driver supplies everything it needs: the endpoint (`RUNNER_STATS_URL`, defaulted to
-the board), the session id (`BELLOWS_SESSION_ID`, the uuid it minted) and, when the board
-requires one, the ingest token (`RUNNER_INGEST_TOKEN`). Nothing is logged, nothing retries, and
-every failure — a board that is down, a token that is wrong, a directory that is not a
+the board), the session id (`BELLOWS_SESSION_ID`, the uuid it minted) and the attempt it runs
+for — `RUNNER_JOB_ID` + `RUNNER_LEASE_TOKEN`, sent as `x-factory-job-id` +
+`x-factory-job-lease-token`, the pair the board resolves the report's organization from (never
+from the report's `repo` field). Nothing is logged, nothing retries, and
+every failure — a board that is down, a pair that does not resolve, a directory that is not a
 checkout — is a silent no-op: the run is unattributed, never failed. Hand-run containers get no
 session id from a driver, so the reporter stays inert; the local plugin remains the path for
 sessions you start yourself.

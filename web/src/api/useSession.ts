@@ -15,6 +15,8 @@ export interface Session {
     membership: { invitedAt: string | null; claimedAt: string | null };
     account: { createdAt: string | null; lastLoginAt: string | null };
     organization: { id: string; name: string };
+    /** Every org the account could switch to — the installations GitHub reported at sign-in. */
+    organizations: { id: string; name: string }[];
     /** The member's checkout root, or null when workspaces are switched off for the deployment. */
     workspacePath: string | null;
     /** 'none' means the server is running open, so there is no session to end and no button. */

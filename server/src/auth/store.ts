@@ -21,17 +21,25 @@ export interface Membership {
     claimedAt: string | null;
 }
 
-/** An authenticated request's subject: who, and what they may do in the bound organization. */
+/** One installation-reported organization, as the store sees it: the id and its login label. */
+export interface InstallationRef {
+    id: string;
+    name: string;
+}
+
+/**
+ * An authenticated request's subject: who, in which organization, and what they may do there.
+ *
+ * The org is a property of the caller (#99), resolved fresh on every request: a session carries
+ * its org in the row, a personal token in its own row, a worker token in its own — and each is
+ * re-checked through the org_membership join, so a GitHub-side removal at the next sign-in ends
+ * every credential's reach immediately.
+ */
 export interface Caller {
     user: AuthUser;
+    org: { id: string; name: string };
     membership: Membership;
     role: Role;
-    /**
-     * How the membership row was born. An auto-joined row is the GitHub organization's to
-     * maintain — re-checked and re-roled on every sign-in, swept by the roster sync. An invited
-     * row is Factory's: GitHub is never asked about it, and can never remove or re-role it.
-     */
-    autoJoined: boolean;
 }
 
 export interface WorkerIdentity {
@@ -53,41 +61,58 @@ export interface AccessTokenView {
 
 /** What the board learns about the organization token a request arrived with. */
 export interface OrgTokenIdentity {
+    orgId: string;
     id: string;
     label: string;
 }
 
 export interface AuthStore {
     /**
-     * Binds a GitHub identity to an account and claims whatever invites are waiting for it.
+     * Binds a GitHub identity to an account and materializes what GitHub reported: every
+     * installation the signing-in account can see becomes an organization row (id = the
+     * installation id, name = the account login) and a membership of it.
      *
-     * Returns null when nobody has invited this login to the given organization — which is a
-     * refusal, not an error: an account is created either way, because the identity is a fact, but
-     * without a membership there is nothing to sign in to.
-     *
-     * `autoJoin` creates that missing membership instead of refusing, as an ordinary `member`. It is
-     * a parameter rather than a config read because the decision is not this layer's to make: the
-     * caller passes it only after GitHub has confirmed the org, and a store that could admit anyone
-     * on its own would be one bad default away from an open deployment. `role` rides with it — the
-     * org's role for the signing-in account, mapped admin-to-admin — and the row is stamped
-     * `auto_joined`, marking it as GitHub's to maintain rather than Factory's.
+     * Returns the caller bound to `orgId`, which the caller of this method has validated against
+     * `installations` — this layer trusts that, and refuses nothing: under installation-access-
+     * is-membership there is no invite to be waiting for and no auto-join decision to delegate.
+     * Memberships of installation orgs NOT in the reported list are deleted: a GitHub-side
+     * removal bites at the next sign-in, which is the propagation the security property needs.
      */
-    signIn(
-        identity: GitHubIdentity,
-        orgId: string,
-        options?: { autoJoin?: boolean; role?: Role }
-    ): Promise<Caller | null>;
-    createSession(tokenHash: Buffer, userId: string, expiresAt: Date): Promise<void>;
-    /** The caller behind a live session token, or null if it is unknown, expired, or unmembered. */
-    findSession(tokenHash: Buffer, orgId: string): Promise<Caller | null>;
+    signIn(identity: GitHubIdentity, orgId: string, installations: readonly InstallationRef[]): Promise<Caller>;
+    createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
+    /**
+     * The caller behind a live session token, or null when unknown, expired, unmembered — or
+     * bound to no organization, which is what every row predating 028 is: the join fails, so the
+     * upgrade signs everybody out rather than guessing an org for anybody.
+     */
+    findSession(tokenHash: Buffer): Promise<Caller | null>;
+    /**
+     * Moves a session to `orgId`, and only when that session's user is a member of it — the
+     * membership predicate is the whole security property, since the org decides which data the
+     * session reads from here on. False when the session is unknown or the move is not allowed.
+     */
+    updateSessionOrg(tokenHash: Buffer, orgId: string): Promise<boolean>;
     deleteSession(tokenHash: Buffer): Promise<void>;
+    /** The organization row, or null — the ?org= and POST /api/auth/org validators' first question. */
+    findOrg(orgId: string): Promise<{ id: string; name: string } | null>;
+    /** Every organization the account is a member of — the selector's available[] and the switch check. */
+    membershipsOf(userId: string): Promise<{ id: string; name: string }[]>;
+    /**
+     * Deletes one membership by the GitHub numeric id — THE identity; the membership keys on
+     * user_id since 029, so the lookup joins through app_user — and reports whether a row was
+     * deleted. The webhook's whole act of revocation: findSession and findPersonalToken
+     * inner-join through org_membership, so the removed account's every credential dies on its
+     * next request. What this buys over the sign-in sweep is the timing — GitHub's report, not
+     * the account's next sign-in.
+     */
+    removeMember(orgId: string, githubUserId: number): Promise<boolean>;
     /** The stand-in account AUTH_MODE=none attributes every request to. */
     localCaller(orgId: string): Promise<Caller | null>;
     findWorkerToken(tokenHash: Buffer): Promise<WorkerIdentity | null>;
 
-    // Access tokens (fat_/oat_). They resolve through the same org_membership join a session does,
-    // so removing a member ends their tokens' reach on the very next request — the property that
-    // lets them be minted over HTTP from the settings UI, unlike the worker token.
+    // Access tokens (fat_/oat_). Each row carries the org it was minted for, and resolves through
+    // the same org_membership join a session does, so removing a member ends their tokens' reach
+    // on the very next request — the property that lets them be minted over HTTP.
     createAccessToken(input: {
         kind: AccessTokenKind;
         orgId: string;
@@ -97,37 +122,17 @@ export interface AuthStore {
         tokenHash: Buffer;
     }): Promise<{ id: string }>;
     /** The caller behind a live personal token, through the same join findSession uses. */
-    findPersonalToken(tokenHash: Buffer, orgId: string): Promise<Caller | null>;
-    /** The organization token behind a hash, or null when unknown, revoked, or from another org. */
-    findOrgToken(tokenHash: Buffer, orgId: string): Promise<OrgTokenIdentity | null>;
+    findPersonalToken(tokenHash: Buffer): Promise<Caller | null>;
+    /**
+     * The organization token behind a hash, or null when unknown, revoked — or its issuer's
+     * membership is gone, which is the join that bounds a mintable-by-any-member credential.
+     */
+    findOrgToken(tokenHash: Buffer): Promise<OrgTokenIdentity | null>;
     listPersonalTokens(orgId: string, userId: string): Promise<AccessTokenView[]>;
     listOrgTokens(orgId: string): Promise<AccessTokenView[]>;
     revokePersonalToken(orgId: string, userId: string, id: string): Promise<'revoked' | 'missing'>;
     revokeOrgToken(orgId: string, id: string): Promise<'revoked' | 'missing'>;
 
-    // Used by the CLIs and the roster sync. They write through the store rather than their own SQL
-    // so that the claim predicate and the session cleanup on removal exist in exactly one place.
-    invite(orgId: string, login: string, role: Role): Promise<'created' | 'updated'>;
-    removeMember(orgId: string, login: string): Promise<'removed' | 'missing'>;
-    listMembers(orgId: string): Promise<{ login: string; role: Role; claimed: boolean }[]>;
-    /**
-     * The claimed rows auto-join created — the only rows the GitHub org is allowed to maintain.
-     * Unclaimed rows are not here: a login nobody has signed in with yet has no account to sweep.
-     * `githubUserId` rides along because the org's own roster is matched on it — the login is a
-     * mutable label, and matching on it removes members who renamed and re-roles strangers.
-     */
-    listAutoJoined(orgId: string): Promise<{ login: string; role: Role; userId: string; githubUserId: number }[]>;
-    /**
-     * Removes the auto-joined row of THIS account, with removeMember's cleanup (sessions deleted,
-     * personal tokens revoked). Keyed by the account, never the login, and guarded by `auto_joined`
-     * so no GitHub-derived caller can ever remove a row an invite created.
-     */
-    removeMemberById(orgId: string, userId: string): Promise<'removed' | 'missing'>;
-    /**
-     * Moves an existing AUTO-JOINED row to `role`, keyed by the account and update-only, so this
-     * can never admit and never re-role a row an invite owns.
-     */
-    updateMemberRole(orgId: string, userId: string, role: Role): Promise<boolean>;
     createWorkerToken(orgId: string, name: string, tokenHash: Buffer): Promise<{ id: string }>;
     revokeWorkerToken(orgId: string, name: string): Promise<'revoked' | 'missing'>;
     listWorkerTokens(orgId: string): Promise<{ name: string; createdAt: string; revoked: boolean }[]>;
@@ -144,7 +149,8 @@ interface CallerRow {
     invited_at: Date | null;
     claimed_at: Date | null;
     role: Role;
-    auto_joined: boolean;
+    org_id: string;
+    org_name: string;
 }
 
 interface TokenRow {
@@ -177,9 +183,9 @@ const toCaller = (row: CallerRow): Caller => ({
         createdAt: toIso(row.created_at),
         lastLoginAt: toIso(row.last_login_at),
     },
+    org: { id: row.org_id, name: row.org_name },
     membership: { invitedAt: toIso(row.invited_at), claimedAt: toIso(row.claimed_at) },
     role: row.role,
-    autoJoined: row.auto_joined,
 });
 
 /**
@@ -191,7 +197,8 @@ const toCaller = (row: CallerRow): Caller => ({
  * and its two most important reads — a session token and a worker token — are global by nature, with
  * the worker token being the very thing that *tells* a driver which organization it is working for.
  * Binding an org at construction would mean the object had to already know the answer it exists to
- * produce.
+ * produce. Since #99 that answer is per caller: a session and a personal token each carry their own
+ * org in their row, and every read resolves the caller THROUGH it.
  */
 export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unknown> }): AuthStore {
     const gate = async () => {
@@ -201,9 +208,11 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
     const memberOf = async (userId: string, orgId: string): Promise<Caller | null> => {
         const rows = await sql<CallerRow[]>`
             select u.id, u.github_user_id, u.github_login, u.display_name,
-                   u.avatar_url, u.created_at, u.last_login_at,
-                   m.invited_at, m.claimed_at, m.role, m.auto_joined
+                       u.avatar_url, u.created_at, u.last_login_at,
+                       m.invited_at, m.claimed_at, m.role,
+                       o.id as org_id, o.name as org_name
             from org_membership m join app_user u on u.id = m.user_id
+            join organization o on o.id = m.org_id
             where m.org_id = ${orgId} and m.user_id = ${userId}
         `;
         const row = rows[0];
@@ -211,7 +220,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
     };
 
     return {
-        async signIn(identity, orgId, options) {
+        async signIn(identity, orgId, installations) {
             await gate();
             const login = identity.login.toLowerCase();
 
@@ -230,63 +239,82 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             `;
             const userId = users[0]!.id;
 
+            // One installation = one organization (#99). The id IS the installation id, so the row
+            // is stable across account renames; the name is a label, re-derived on every sign-in.
+            // adoptOrg() may have created the row first (the legacy-data CLI), so this is an
+            // upsert, never an insert.
+            for (const org of installations) {
+                await sql`
+                    insert into organization (id, name, installation_id)
+                    values (${org.id}, ${org.name}, ${org.id}::bigint)
+                    on conflict (id) do update set
+                        name = excluded.name,
+                        installation_id = excluded.installation_id
+                `;
+                await sql`
+                    insert into org_membership (org_id, github_login, user_id, claimed_at)
+                    values (${org.id}, ${login}, ${userId}, now())
+                    on conflict (org_id, user_id) do update set github_login = excluded.github_login
+                `;
+            }
+
+            // The materialized fact, re-synced at every sign-in: a membership of an installation
+            // org GitHub no longer reports is gone, and with it — through the joins the reads run
+            // — this account's sessions' and tokens' reach into that org.
             await sql`
-                update org_membership m set user_id = ${userId}, claimed_at = now()
-                where m.github_login = ${login}
-                  -- THE SECURITY PROPERTY. Without it: somebody invited as "alice" claims the row,
-                  -- later renames, freeing the login; a different account registers "alice", signs
-                  -- in, and this statement hands them the original membership and its role. With it
-                  -- the row is already claimed, so the impostor matches nothing and is refused.
-                  and m.user_id is null
-                  -- Skips an organization this account is already a member of. Somebody invited
-                  -- under both an old and a new login would otherwise claim both rows and violate
-                  -- org_membership_user_uk, turning a legitimate sign-in into a 500.
-                  and not exists (
-                      select 1 from org_membership x
-                      where x.org_id = m.org_id and x.user_id = ${userId}
-                  )
+                delete from org_membership
+                where user_id = ${userId}
+                  and org_id in (select id from organization where installation_id is not null)
+                  and org_id <> all(${installations.map((i) => i.id)})
             `;
 
-            const claimed = await memberOf(userId, orgId);
-            if (claimed || !options?.autoJoin) return claimed;
-
-            // Already bound to this account, so there is no unclaimed row for a freed login to
-            // capture and the `user_id is null` guard above has nothing to do here. `do nothing`
-            // rather than an update: a login with an *unclaimed* invite reached the branch above and
-            // never gets here, so a conflict at this point is a concurrent second sign-in of this
-            // same account, and the role it already has must win over a fresh `member`.
-            await sql`
-                insert into org_membership (org_id, github_login, role, user_id, claimed_at, auto_joined)
-                values (${orgId}, ${login}, ${options.role ?? 'member'}, ${userId}, now(), true)
-                on conflict (org_id, github_login) do nothing
-            `;
-            return memberOf(userId, orgId);
+            const caller = await memberOf(userId, orgId);
+            if (!caller) throw new Error(`sign-in resolved no membership of "${orgId}" for this account`);
+            return caller;
         },
 
-        async createSession(tokenHash, userId, expiresAt) {
+        async createSession(tokenHash, userId, expiresAt, orgId) {
             await gate();
             await sql`
-                insert into session (token_hash, user_id, expires_at)
-                values (${tokenHash}, ${userId}, ${expiresAt})
+                insert into session (token_hash, user_id, expires_at, org_id)
+                values (${tokenHash}, ${userId}, ${expiresAt}, ${orgId})
             `;
         },
 
-        async findSession(tokenHash, orgId) {
+        async findSession(tokenHash) {
             await gate();
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role, m.auto_joined
+                       m.invited_at, m.claimed_at, m.role,
+                       o.id as org_id, o.name as org_name
                 from session s
                 join app_user u on u.id = s.user_id
+                -- The org is the session row's, never the process's: this is what the caller sees.
+                join organization o on o.id = s.org_id
                 -- An inner join, so losing the membership ends the session's usefulness on the very
                 -- next request rather than when the cookie eventually expires. That immediacy is the
-                -- reason sessions are rows at all.
-                join org_membership m on m.user_id = u.id and m.org_id = ${orgId}
+                -- reason sessions are rows at all — and a pre-028 row (org_id null) joins nothing,
+                -- which is the fail-closed upgrade path.
+                join org_membership m on m.user_id = u.id and m.org_id = s.org_id
                 where s.token_hash = ${tokenHash} and s.expires_at > now()
             `;
             const row = rows[0];
             return row ? toCaller(row) : null;
+        },
+
+        async updateSessionOrg(tokenHash, orgId) {
+            await gate();
+            const rows = await sql<{ user_id: string }[]>`
+                update session s set org_id = ${orgId}
+                where s.token_hash = ${tokenHash}
+                  and exists (
+                      select 1 from org_membership m
+                      where m.org_id = ${orgId} and m.user_id = s.user_id
+                  )
+                returning user_id
+            `;
+            return rows.length > 0;
         },
 
         async deleteSession(tokenHash) {
@@ -294,13 +322,43 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             await sql`delete from session where token_hash = ${tokenHash}`;
         },
 
+        async findOrg(orgId) {
+            await gate();
+            const rows = await sql<{ id: string; name: string }[]>`
+                select id, name from organization where id = ${orgId}
+            `;
+            return rows[0] ?? null;
+        },
+
+        async membershipsOf(userId) {
+            await gate();
+            const rows = await sql<{ id: string; name: string }[]>`
+                select o.id, o.name from org_membership m join organization o on o.id = m.org_id
+                where m.user_id = ${userId} order by o.name
+            `;
+            return rows;
+        },
+
+        async removeMember(orgId, githubUserId) {
+            await gate();
+            const rows = await sql<{ user_id: string }[]>`
+                delete from org_membership
+                where org_id = ${orgId}
+                  and user_id in (select id from app_user where github_user_id = ${githubUserId})
+                returning user_id
+            `;
+            return rows.length > 0;
+        },
+
         async localCaller(orgId) {
             await gate();
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role, m.auto_joined
+                       m.invited_at, m.claimed_at, m.role,
+                       o.id as org_id, o.name as org_name
                 from app_user u join org_membership m on m.user_id = u.id and m.org_id = ${orgId}
+                join organization o on o.id = m.org_id
                 where u.github_user_id = 0
             `;
             const row = rows[0];
@@ -329,51 +387,67 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             return { id: rows[0]!.id };
         },
 
-        async findPersonalToken(tokenHash, orgId) {
+        async findPersonalToken(tokenHash) {
             await gate();
             // A throttled touch, not findWorkerToken's unconditional one: worker routes are one
             // driver's heartbeat, while an access token rides the dashboard's two-second poll, and
             // a write on every one of those reads is exactly what the session's write-free read
-            // path exists to avoid. The stale-row predicate keeps it to one rewrite a minute. The
-            // org and kind in the predicate keep a token from another organization — which the
-            // select below will refuse — from being stamped as used here.
+            // path exists to avoid. The stale-row predicate keeps it to one rewrite a minute.
+            // token_hash is globally unique, so the org is not in this predicate — it comes back
+            // FROM the row, which is the mint-time binding.
             await sql`
                 update access_token set last_used_at = now()
-                where token_hash = ${tokenHash} and org_id = ${orgId} and kind = 'personal'
+                where token_hash = ${tokenHash} and kind = 'personal'
                   and revoked_at is null
                   and (last_used_at is null or last_used_at < now() - interval '60 seconds')
             `;
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role, m.auto_joined
+                       m.invited_at, m.claimed_at, m.role,
+                       o.id as org_id, o.name as org_name
                 from access_token t
                 join app_user u on u.id = t.user_id
+                -- The token's OWN org: it acts as its user there and nowhere else, whatever other
+                -- orgs the account can see.
+                join organization o on o.id = t.org_id
                 -- The same join findSession runs, so losing the membership ends the token's reach
                 -- on the very next request — the property that makes it safe to have minted it.
-                join org_membership m on m.user_id = u.id and m.org_id = ${orgId}
+                join org_membership m on m.user_id = u.id and m.org_id = t.org_id
                 where t.token_hash = ${tokenHash} and t.kind = 'personal'
-                  and t.org_id = ${orgId} and t.revoked_at is null
+                  and t.revoked_at is null
             `;
             const row = rows[0];
             return row ? toCaller(row) : null;
         },
 
-        async findOrgToken(tokenHash, orgId) {
+        async findOrgToken(tokenHash) {
             await gate();
+            // The same throttled touch findPersonalToken runs — and the same membership
+            // predicate, so a token whose authority is gone never looks used.
             await sql`
-                update access_token set last_used_at = now()
-                where token_hash = ${tokenHash} and org_id = ${orgId} and kind = 'org'
-                  and revoked_at is null
-                  and (last_used_at is null or last_used_at < now() - interval '60 seconds')
+                update access_token t set last_used_at = now()
+                where t.token_hash = ${tokenHash} and t.kind = 'org'
+                  and t.revoked_at is null
+                  and (t.last_used_at is null or t.last_used_at < now() - interval '60 seconds')
+                  and exists (
+                      select 1 from org_membership m
+                      where m.org_id = t.org_id and m.user_id = t.created_by
+                  )
             `;
-            const rows = await sql<{ id: string; label: string }[]>`
-                select id, label from access_token
-                where token_hash = ${tokenHash} and kind = 'org'
-                  and org_id = ${orgId} and revoked_at is null
+            const rows = await sql<{ org_id: string; id: string; label: string }[]>`
+                select t.org_id, t.id, t.label from access_token t
+                -- The org comes from the row (worker-token-shaped: no user stands behind it), but
+                -- the ISSUER's live membership is the token's authority: this inner join is what
+                -- makes sign-in propagation end an org token's reach on the very next request,
+                -- the same immediacy a session and a personal token have. A row with no creator
+                -- (on delete set null) joins nothing and resolves null.
+                join org_membership m on m.org_id = t.org_id and m.user_id = t.created_by
+                where t.token_hash = ${tokenHash} and t.kind = 'org'
+                  and t.revoked_at is null
             `;
             const row = rows[0];
-            return row ? { id: row.id, label: row.label } : null;
+            return row ? { orgId: row.org_id, id: row.id, label: row.label } : null;
         },
 
         async listPersonalTokens(orgId, userId) {
@@ -417,114 +491,6 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
                 returning id
             `;
             return rows[0] ? 'revoked' : 'missing';
-        },
-
-        async invite(orgId, login, role) {
-            await gate();
-            const rows = await sql<{ claimed_at: Date | null; inserted: boolean }[]>`
-                insert into org_membership (org_id, github_login, role)
-                values (${orgId}, ${login.toLowerCase()}, ${role})
-                on conflict (org_id, github_login) do update set role = excluded.role
-                returning claimed_at, (xmax = 0) as inserted
-            `;
-            return rows[0]?.inserted ? 'created' : 'updated';
-        },
-
-        async removeMember(orgId, login) {
-            await gate();
-            const rows = await sql<{ user_id: string | null }[]>`
-                delete from org_membership
-                where org_id = ${orgId} and github_login = ${login.toLowerCase()}
-                returning user_id
-            `;
-            const row = rows[0];
-            if (!row) return 'missing';
-            // The membership is what findSession joins through, so deleting it already ends access.
-            // The sessions go too because a revoked credential should not outlive the decision by
-            // even one request if the membership is ever restored. A personal token reaches the
-            // same place through the same join, so it is marked rather than deleted: rows keep the
-            // history, the way every other revocation here does.
-            if (row.user_id) {
-                await sql`delete from session where user_id = ${row.user_id}`;
-                await sql`
-                    update access_token set revoked_at = now()
-                    where org_id = ${orgId} and user_id = ${row.user_id}
-                      and kind = 'personal' and revoked_at is null
-                `;
-            }
-            return 'removed';
-        },
-
-        async listMembers(orgId) {
-            await gate();
-            const rows = await sql<{ github_login: string; role: Role; claimed_at: Date | null }[]>`
-                select github_login, role, claimed_at from org_membership
-                where org_id = ${orgId} order by github_login
-            `;
-            return rows.map((row) => ({
-                login: row.github_login,
-                role: row.role,
-                claimed: row.claimed_at !== null,
-            }));
-        },
-
-        async listAutoJoined(orgId) {
-            await gate();
-            const rows = await sql<
-                { github_login: string; role: Role; user_id: string; github_user_id: string | number }[]
-            >`
-                select m.github_login, m.role, m.user_id, u.github_user_id
-                from org_membership m join app_user u on u.id = m.user_id
-                where m.org_id = ${orgId} and m.auto_joined and m.user_id is not null
-                order by m.github_login
-            `;
-            return rows.map((row) => ({
-                login: row.github_login,
-                role: row.role,
-                userId: row.user_id,
-                githubUserId: Number(row.github_user_id),
-            }));
-        },
-
-        async removeMemberById(orgId, userId) {
-            await gate();
-            // `and auto_joined` is the store-level half of "the store never admits on its own
-            // authority", read in reverse: GitHub may only ever un-create what it created. An
-            // invited row is untouched by every GitHub-derived caller, whatever they pass in.
-            //
-            // One transaction, because the three writes are one decision: a cleanup that failed
-            // after the delete would leave live-looking credentials parked on disk, and a later
-            // auto-join re-admitting the same account would hand them back working.
-            return sql.begin(async (tx) => {
-                const rows = await tx<{ user_id: string }[]>`
-                    delete from org_membership
-                    where org_id = ${orgId} and user_id = ${userId} and auto_joined
-                    returning user_id
-                `;
-                const row = rows[0];
-                if (!row) return 'missing';
-                // The same cleanup removeMember does: sessions go outright, personal tokens are marked.
-                await tx`delete from session where user_id = ${row.user_id}`;
-                await tx`
-                    update access_token set revoked_at = now()
-                    where org_id = ${orgId} and user_id = ${row.user_id}
-                      and kind = 'personal' and revoked_at is null
-                `;
-                return 'removed';
-            });
-        },
-
-        async updateMemberRole(orgId, userId, role) {
-            await gate();
-            // Keyed by the account and guarded by `auto_joined`: the login column is a mutable
-            // label (renames happen), and the rows GitHub may re-role are exactly the ones it
-            // created. Update-only, so this can never admit either.
-            const rows = await sql<{ user_id: string }[]>`
-                update org_membership set role = ${role}
-                where org_id = ${orgId} and user_id = ${userId} and auto_joined
-                returning user_id
-            `;
-            return rows.length > 0;
         },
 
         async createWorkerToken(orgId, name, tokenHash) {

@@ -10,18 +10,19 @@ export interface GitHubIdentity {
 }
 
 /**
- * What GitHub says about an account's place in one organization.
+ * One GitHub App installation the signing-in account can see.
  *
- * `role` is the org-level role from `GET /user/memberships/orgs/{org}` — `admin` or plain `member`.
- * When `state` is not `active` there is no membership to have a role in, and it is `member`.
+ * `id` is the installation id as a decimal string, because it becomes the organization id —
+ * which is a `^[a-z0-9][a-z0-9_-]{0,38}$` database key and URL parameter, not a number.
  */
-export interface OrgMembership {
-    state: 'active' | 'pending' | 'none';
-    role: 'admin' | 'member';
+export interface InstallationAccount {
+    id: string;
+    /** The account (organization or user) the App is installed on, by login. A label. */
+    account: string | null;
 }
 
 /**
- * The two calls the OAuth exchange needs, behind a seam.
+ * The calls the OAuth exchange needs, behind a seam.
  *
  * An interface rather than direct `fetch` calls because it is what keeps `npm test` offline: the
  * route tests drive a stub and never reach the network. Hand-rolled rather than delegated to an
@@ -34,22 +35,20 @@ export interface GitHubIdentityClient {
     exchange(code: string): Promise<string>;
     identity(accessToken: string): Promise<GitHubIdentity>;
     /**
-     * This account's membership of `org`, asked with the signing-in person's own token.
-     *
-     * `pending` is its own answer rather than folded into `active`: an unaccepted GitHub invitation
-     * means somebody was offered a seat, not that they hold one, and admitting them would let an
-     * org admin add a login to Factory without that person ever agreeing to it.
-     *
-     * Called when auth.auto_join_github_org is set — for an account with no row yet, and again on
-     * every sign-in of a row auto-join created, which is how removals and role changes in the org
-     * reach Factory. Requires `read:org`, which is requested whenever auto-join is configured — an
-     * unscoped token sees no organizations and would report every account `none`.
+     * The GitHub App installations this account can see, asked with the signing-in person's own
+     * token. This IS the membership decision under multi-org sign-in (#99): one installation is
+     * one organization, so what this returns is exactly the orgs the caller may sign into.
+     * Requires `read:org`, which the authorize URL requests unconditionally in github mode — an
+     * unscoped token reports no installations and would send everybody to the install page.
      */
-    orgMembership(accessToken: string, org: string): Promise<OrgMembership>;
+    installations(accessToken: string): Promise<InstallationAccount[]>;
 }
 
 /** Where GitHub sends the browser back. Derived from the configured origin, never from a header. */
 export const callbackPath = '/api/auth/github/callback';
+
+/** 100 a page, ten pages, then fail loud rather than feed signIn a prefix of the truth. */
+const MAX_INSTALLATION_PAGES = 10;
 
 export class GitHubAuthError extends Error {}
 
@@ -65,17 +64,11 @@ export function createGitHubIdentityClient(
             url.searchParams.set('client_id', auth.clientId);
             url.searchParams.set('redirect_uri', redirectUri);
             url.searchParams.set('state', state);
-            // No `scope` unless auto-join is configured. Under invite-only membership `read:org`
-            // buys nothing — membership is Factory's, not GitHub's — and the numeric id and login
-            // this flow needs come back from /user on an unscoped token. The visible cost of asking
-            // for nothing is that GitHub's consent screen says the app "will not be able to access
-            // your data", which reads as broken to some people; that is the honest description of a
-            // login that reads nothing.
-            //
-            // With auto-join on, the org check IS the membership decision, and it is unanswerable
-            // without this scope: an unscoped token reports every organization absent, so every
-            // sign-in would be refused with no_membership and nothing would say why.
-            if (auth.autoJoinGithubOrg) url.searchParams.set('scope', 'read:org');
+            // `read:org`, always in github mode (#99). Listing installations IS the membership
+            // decision now, and an unscoped token reports none — every sign-in would be bounced
+            // to the install page with nothing to say why. The scope is org-level only: sign-in
+            // still reads no repository data, which is what the OAuth/App split is for.
+            url.searchParams.set('scope', 'read:org');
             return url.toString();
         },
 
@@ -133,28 +126,41 @@ export function createGitHubIdentityClient(
             };
         },
 
-        async orgMembership(accessToken, org) {
+        async installations(accessToken) {
             // Derived from userUrl rather than configured separately, so the one environment seam
             // that already redirects /user redirects this too and the stub IdP needs no second knob.
-            const response = await fetchFn(`${auth.userUrl}/memberships/orgs/${encodeURIComponent(org)}`, {
-                headers: {
-                    authorization: `Bearer ${accessToken}`,
-                    accept: 'application/vnd.github+json',
-                    'user-agent': 'factory-ai',
-                },
-            });
-            // 404 is the ordinary "not a member" answer. A 403 used to fold into it too, back when
-            // the answer only refused a sign-in; the same answer now REMOVES a returning member,
-            // so "GitHub could not be asked" (a missing scope, a secondary rate limit — both 403)
-            // must fail the sign-in loudly instead of masquerading as a departure. Only GitHub
-            // answering 404 counts as `none`.
-            if (response.status === 404) return { state: 'none', role: 'member' };
-            if (!response.ok) throw new GitHubAuthError(`org membership lookup failed with ${response.status}`);
-            const body = (await response.json()) as { state?: string; role?: string };
-            const state = body.state === 'active' ? 'active' : body.state === 'pending' ? 'pending' : 'none';
-            // The org role maps onto Factory's two roles directly: an org admin may maintain
-            // membership, an ordinary member may not. Anything else GitHub might report is a member.
-            return { state, role: body.role === 'admin' && state === 'active' ? 'admin' : 'member' };
+            //
+            // Paginated, and PAST THE CAP A LOUD FAILURE, never a prefix: the callback feeds this
+            // list to signIn, which deletes every membership of an installation-org NOT in it —
+            // silently truncating at GitHub's default 30-per-page would make every sign-in
+            // permanently remove an enterprise-scale account's orgs beyond page one. Fail the
+            // sign-in instead; a thousand installations is not a page-walk problem anybody has.
+            const out: InstallationAccount[] = [];
+            for (let page = 1; page <= MAX_INSTALLATION_PAGES; page += 1) {
+                const response = await fetchFn(`${auth.userUrl}/installations?per_page=100&page=${page}`, {
+                    headers: {
+                        authorization: `Bearer ${accessToken}`,
+                        accept: 'application/vnd.github+json',
+                        'user-agent': 'factory-ai',
+                    },
+                });
+                if (!response.ok) throw new GitHubAuthError(`installation lookup failed with ${response.status}`);
+                const body = (await response.json()) as {
+                    installations?: { id?: number; account?: { login?: string } | null }[];
+                };
+                const batch = body.installations ?? [];
+                // A well-formed but meaningless entry (no numeric id) is skipped, not fatal: GitHub
+                // owns the payload, and one malformed row must not lock everybody out.
+                for (const install of batch) {
+                    if (typeof install.id === 'number') {
+                        out.push({ id: String(install.id), account: install.account?.login ?? null });
+                    }
+                }
+                if (batch.length < 100) return out;
+            }
+            throw new GitHubAuthError(
+                `more than ${MAX_INSTALLATION_PAGES * 100} installations — refusing a truncated list, because sign-in removes what this list does not report`
+            );
         },
     };
 }

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
-import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { createJobStore, createOrgOfLease, type JobStore } from '../src/db/job-store.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 
@@ -26,6 +26,8 @@ let sql: Sql;
 let store: JobStore;
 /** A second store on the same pool, bound to a different org. Only the org guard uses it. */
 let otherOrgStore: JobStore;
+/** The org-less lease resolver the branch-ingest credential is verified against. */
+let orgOfLease: (jobId: string, leaseToken: string) => Promise<string | null>;
 
 const ORG = 'test-org';
 const OTHER_ORG = 'other-org';
@@ -45,6 +47,7 @@ beforeAll(async () => {
     await migrate(sql, { orgId: ORG, attempts: 3 });
     store = createJobStore({ sql, orgId: ORG });
     otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
+    orgOfLease = createOrgOfLease({ sql });
 });
 
 afterAll(async () => {
@@ -186,6 +189,98 @@ describe.skipIf(!enabled)('job store', () => {
         expect(result).toEqual({ result: 'missing' });
     });
 
+    // The branch-ingest credential: the runner's reporter presents the pair it runs for, and
+    // this resolver answers the org — with no status filter but two bounds: the tail grace on
+    // `finished_at` (the reporter's final `--once` sample lands seconds after the verdict, while
+    // a pair captured from a runner's env must not stay a write credential forever — nothing
+    // prunes completed jobs), and a live `lease_expires_at` for UNFINISHED jobs, so a lease that
+    // expired without a reclaim takes its captured pair with it. The pair resolves from the job
+    // row with no membership join, which is exactly why it must expire like every other
+    // credential. That only works because complete() RETAINS the lease token; the dead retirement
+    // and the suspend park clear it, because those attempts end without a verdict whose tail
+    // matters; and a reclaim rotates it, which is what makes the pair attempt-scoped — a
+    // superseded attempt can no longer write into the winner's org.
+    describe('orgOfLease', () => {
+        it('resolves the org for a live lease pair, and only for the matching lease', async () => {
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', 300);
+
+            expect(await orgOfLease(claim!.id, claim!.leaseToken)).toBe(ORG);
+            expect(await orgOfLease(id, '99999999-9999-4999-8999-999999999999')).toBeNull();
+            expect(await orgOfLease(ABSENT, claim!.leaseToken)).toBeNull();
+        });
+
+        it('stops resolving once an unfinished lease expires — a dead run takes its pair with it', async () => {
+            // Claim, then expire, with no reclaim and no verdict: the row is still 'running', but
+            // the lease is gone, and the pair must not outlive it.
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', 300);
+            await expireLease(id);
+
+            expect((await row(id))[0]?.status).toBe('running');
+            expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
+        });
+
+        it('keeps resolving after complete — the reporter’s tail sample lands after the verdict', async () => {
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', 300);
+            await store.complete(id, claim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'done',
+            });
+
+            expect((await row(id))[0]?.status).toBe('succeeded');
+            expect(await orgOfLease(id, claim!.leaseToken)).toBe(ORG);
+        });
+
+        it('stops resolving once the verdict is older than the tail grace', async () => {
+            // The bound that keeps retention honest: the pair rides the job row with no
+            // membership join, so a captured pair must expire like every other credential here.
+            // The tail sample needs seconds; the grace is an hour.
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', 300);
+            await store.complete(id, claim!.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'done',
+            });
+            await sql`update job set finished_at = now() - interval '2 hours' where id = ${id}`;
+
+            expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
+        });
+
+        it('stops resolving the OLD lease once a reclaim rotated the token', async () => {
+            const { id } = await queue('echo hi');
+            const stale = await store.claim('w1', 300);
+            await expireLease(id);
+            const winner = await store.claim('w2', 300);
+            expect(winner!.leaseToken).not.toBe(stale!.leaseToken);
+
+            expect(await orgOfLease(id, stale!.leaseToken)).toBeNull();
+            expect(await orgOfLease(id, winner!.leaseToken)).toBe(ORG);
+        });
+
+        it('stops resolving after a suspend — a parked attempt ends without a verdict', async () => {
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', 300);
+            await store.suspend(id, claim!.leaseToken);
+
+            expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
+        });
+
+        it('stops resolving after the dead retirement', async () => {
+            const { id } = await queue('kill -9 $$');
+            await sql`update job set max_attempts = 1 where id = ${id}`;
+            const claim = await store.claim('w1', 300);
+            await expireLease(id);
+            await store.claim('w2', 300);
+            expect((await row(id))[0]?.status).toBe('dead');
+
+            expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
+        });
+    });
+
     it('stores the close-time agent-turn count, and unmeasured when the report carries none', async () => {
         const first = await queue('echo hi');
         const one = await store.claim('w1', 300);
@@ -242,11 +337,13 @@ describe.skipIf(!enabled)('job store', () => {
         // The verdict banks the attempt's segment, so the row's own clock is no longer null.
         const listed = await store.list({ limit: 10 });
         const row = listed.find((entry) => entry.id === first.id);
-        expect(row?.wallClockMs).not.toBeNull();
+        expect(row).toBeDefined();
+        expect(row!.wallClockMs).toEqual(expect.any(Number));
         // The thread total rides the thread read alone.
         expect(row?.taskWallClockMs ?? null).toBeNull();
         const thread = await store.thread(first.id);
-        expect(thread?.[0]?.taskWallClockMs).not.toBeNull();
+        expect(thread).not.toBeNull();
+        expect(thread![0]!.taskWallClockMs).toEqual(expect.any(Number));
     });
 
     it('streams a rolling output tail while the run is going', async () => {

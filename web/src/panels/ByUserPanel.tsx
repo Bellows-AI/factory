@@ -18,7 +18,7 @@ export function ByUserPanel({ telemetry, meta }: { telemetry: TelemetryStats; me
             meta={meta}
         >
             {rows.length === 0 ? (
-                <p className="muted">No sessions in the coverage window yet.</p>
+                <p className="muted">No attributed sessions in the coverage window yet.</p>
             ) : (
                 <div className="chart-wrap">
                     <table className="by-user">
