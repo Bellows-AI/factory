@@ -9,17 +9,20 @@ function title(job: Job): string {
 }
 
 /**
- * The board's recently completed runs, newest first — what the agent says it did, beside who
- * asked for it and what the run cost in context and banked execution time. This is the board's
- * own audit rows, not the telemetry above: it counts only runs the board ran, and it says so.
+ * The board's recently completed tasks, newest first — what the agent says it did, beside who
+ * asked for it and what the task cost in context and banked execution time. The terminal list is
+ * grouped server-side as one row per task (issue 124): a thread's follow-up turns fold into their
+ * root, the present tense (status, summary, context) is the newest run's, and the wall clock is
+ * the thread's total — the figure the task view's head clock shows. This is the board's own
+ * audit rows, not the telemetry above: it counts only runs the board ran, and it says so.
  */
 export function RecentTasksPanel({ jobs, error }: { jobs: Job[] | null; error: string | null }) {
     return (
         <section className="panel">
             <h2>Recently completed</h2>
             <p className="muted">
-                The board's finished runs, newest first — the agent's own closing words beside the run's cost. A run the
-                board never held (a local session, a backfilled transcript) has no row here.
+                The board's finished tasks, newest first — the agent's own closing words beside the task's cost. A run
+                the board never held (a local session, a backfilled transcript) has no row here.
             </p>
             {error !== null ? (
                 <p className="alert">The board could not be read — {error}.</p>
@@ -58,7 +61,7 @@ export function RecentTasksPanel({ jobs, error }: { jobs: Job[] | null; error: s
                                         )}
                                     </td>
                                     <td>{tokens(job.runtime?.contextTokens ?? null)}</td>
-                                    <td>{wallClock(job.wallClockMs, null)}</td>
+                                    <td>{wallClock(job.taskWallClockMs, null)}</td>
                                     <td>{taskTime(job.finishedAt)}</td>
                                 </tr>
                             ))}
