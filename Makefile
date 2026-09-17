@@ -61,7 +61,9 @@ runners: runners-build
 # installs the chart with charts/factory/values-local.yaml, the offline profile: AUTH_MODE=none +
 # the code-only no-fetch dashboard entry, stub echo executor — no GitHub App, no Claude credential.
 # Re-runs upgrade the release in place, keeping its data. Once everything is up the port-forward
-# takes the foreground; Ctrl-C detaches it and leaves the stack running. K8S_PORT defaults to 8081
+# takes the foreground; Ctrl-C detaches it and leaves the stack running. `make build` is the hot
+# half against a running stack — rebuild the code images, load them into the node, restart the
+# workloads — no install, no port-forward, release and data kept. K8S_PORT defaults to 8081
 # so it can sit beside a running dev stack on 8080, the same reasoning as BAKED_PORT. `make stop`
 # uninstalls the release and reaps what uninstall leaves: the claims (checkouts and history go
 # with them — a dev install is disposable by construction) and the runner Jobs, created at runtime
@@ -74,7 +76,25 @@ DRIVER_IMAGE ?= factory-driver
 STUB_IMAGE ?= echo-executor
 COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib
 
-.PHONY: start stop
+.PHONY: build start stop
+
+# Update a running cluster with new code. The stub executor and the collector are static — start's
+# build left them in the node — so only the two code images are rebuilt and re-loaded. The restart
+# exists because the images are side-loaded under one tag and read with IfNotPresent: nothing rolls
+# on its own, and the running pods would keep the old layers. With no release installed the target
+# stops after the load and says so, so `make build && make start` is a valid cold sequence too.
+build:
+	docker build -f docker/Dockerfile --target runtime -t $(IMAGE) .
+	docker build -f docker/driver.Dockerfile -t $(DRIVER_IMAGE) .
+	@for image in $(IMAGE) $(DRIVER_IMAGE); do \
+		kind load docker-image $$image --name $(CLUSTER) || exit 1; \
+	done
+	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_RELEASE)-factory >/dev/null 2>&1; then \
+		kubectl --context kind-$(CLUSTER) rollout restart \
+			deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local; \
+	else \
+		echo "make build: no release $(K8S_RELEASE) in $(CLUSTER) — images loaded; 'make start' installs it"; \
+	fi
 
 start:
 	@for tool in docker kind helm kubectl; do \
