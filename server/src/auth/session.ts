@@ -3,6 +3,12 @@ import type { CookieSerializeOptions } from '@fastify/cookie';
 
 export const SESSION_COOKIE = 'factory_session';
 export const OAUTH_COOKIE = 'factory_oauth';
+/**
+ * Carries the opaque token of a pending sign-in (#125) — the round-trip hop between the OAuth
+ * callback and the selection screen's completion POST. Like the session cookie: the row holds the
+ * hash, the cookie the signed value, and the signature is rejected before any database round trip.
+ */
+export const PENDING_COOKIE = 'factory_pending';
 
 /** How long the OAuth round trip is allowed to take. Long enough to read a consent screen. */
 export const OAUTH_TTL_SECONDS = 600;
@@ -64,6 +70,8 @@ interface StatePayload {
     r: string;
     /** The organization the sign-in was for, as a decimal installation id. Optional deep link. */
     o?: string;
+    /** Set when the sign-in explicitly asked to re-open the selection screen (`?reselect=1`). */
+    x?: 1;
 }
 
 /**
@@ -80,11 +88,12 @@ interface StatePayload {
  * that matters — the login entry point keeps working while migrations are still retrying, the same
  * instinct that keeps /api/health off the database.
  */
-export function encodeState(returnTo: string, secret: string, org?: string): string {
+export function encodeState(returnTo: string, secret: string, org?: string, reselect = false): string {
     const payload: StatePayload = {
         n: b64url(randomBytes(16)),
         r: safeReturnPath(returnTo),
         ...(org ? { o: org } : {}),
+        ...(reselect ? { x: 1 as const } : {}),
     };
     return sign(b64url(Buffer.from(JSON.stringify(payload))), secret);
 }
@@ -92,7 +101,7 @@ export function encodeState(returnTo: string, secret: string, org?: string): str
 export function decodeState(
     signed: string | undefined,
     secret: string
-): { returnTo: string; org: string | null } | null {
+): { returnTo: string; org: string | null; reselect: boolean } | null {
     const value = unsign(signed, secret);
     if (!value) return null;
     try {
@@ -100,7 +109,7 @@ export function decodeState(
         // The org is a decimal installation id, not a free-form string; anything else decodes as
         // "no preference" and the callback falls back to the first reported installation.
         const org = payload.o && /^\d+$/.test(payload.o) ? payload.o : null;
-        return { returnTo: safeReturnPath(payload.r), org };
+        return { returnTo: safeReturnPath(payload.r), org, reselect: payload.x === 1 };
     } catch {
         return null;
     }
@@ -140,5 +149,15 @@ export function sessionCookieOptions(secure: boolean, maxAgeSeconds: number): Co
  * short-lived because it is single-use — the callback clears it either way.
  */
 export function oauthCookieOptions(secure: boolean): CookieSerializeOptions {
+    return { path: '/api/auth', httpOnly: true, sameSite: 'lax', secure, maxAge: OAUTH_TTL_SECONDS };
+}
+
+/**
+ * The pending sign-in cookie (#125). The same attributes as the state cookie, for the same
+ * reasons — Lax because the callback is a cross-site top-level GET, root-of-auth path because
+ * nothing else reads it, short-lived because a pending sign-in is single-use and its row
+ * expires underneath it anyway.
+ */
+export function pendingCookieOptions(secure: boolean): CookieSerializeOptions {
     return { path: '/api/auth', httpOnly: true, sameSite: 'lax', secure, maxAge: OAUTH_TTL_SECONDS };
 }

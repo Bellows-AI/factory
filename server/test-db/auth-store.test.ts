@@ -4,7 +4,8 @@ import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore, type AuthStore } from '../src/auth/store.js';
 import { LOCAL_ORG_ID } from '../src/config.js';
-import { adoptOrg, LOCAL_LOGIN, mergeLegacyOrg, migrate, reapSessions } from '../src/db/migrate.js';
+import { trackedRepos } from '../src/db/tracked-repos.js';
+import { adoptOrg, LOCAL_LOGIN, mergeLegacyOrg, migrate, reapPendingSignIns, reapSessions } from '../src/db/migrate.js';
 
 const url = process.env.DATABASE_URL;
 
@@ -87,6 +88,11 @@ beforeEach(async () => {
     // Sessions whose org is gone would already be; this catches rows of deleted accounts.
     await sql`delete from session where user_id in (select id from app_user where github_user_id >= ${ID_BASE})`;
     await sql`delete from app_user where github_user_id >= ${ID_BASE}`;
+    // The onboarding tables (#125). pending_sign_in has no org key — it names installations that
+    // are deliberately not materialized — so it scopes like the accounts, by the id slice this
+    // file owns. tracked_repo is org-owned like everything else.
+    await sql`delete from pending_sign_in where github_user_id >= ${ID_BASE}`;
+    await sql`delete from tracked_repo where org_id like '911%'`;
 });
 
 const identity = (n: number, login: string) => ({
@@ -201,6 +207,32 @@ describe.skipIf(!enabled)('sign-in materializes the installations (#99)', () => 
             select count(*)::int as count from org_membership where org_id = ${LEGACY_ORG}
         `;
         expect(count?.count).toBe(0);
+    });
+
+    it('sweeps a membership of an org GitHub still reports but the selection does not (issue 125)', async () => {
+        // Since #125 signIn takes the SELECTION, not the report: an installation the account can
+        // still see but no longer tracks is swept exactly like an unreported one — one predicate,
+        // two meanings of "this account does not reach here". Deselecting is the opt-out, and a
+        // later re-selection restores reach through the same upsert.
+        const caller = await member(16, 'deselector', [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
+        await sql`update organization set installation_id = id::bigint where id in (${ORG}, ${SECOND_ORG})`;
+
+        // GitHub still reports both; the account re-chose ORG only.
+        await store.signIn(identity(16, 'deselector'), ORG, [{ id: ORG, name: ORG }]);
+
+        expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
+        // Re-selecting restores reach exactly as sign-in always has.
+        await store.signIn(identity(16, 'deselector'), SECOND_ORG, [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
+        expect(await store.membershipsOf(caller.user.id)).toEqual([
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
     });
 
     it('names the adoption target only when exactly one installation exists', async () => {
@@ -605,6 +637,148 @@ describe.skipIf(!enabled)('access tokens', () => {
         for (const view of [...personal, ...org]) {
             expect(JSON.stringify(view)).not.toContain('hash');
         }
+    });
+});
+
+describe.skipIf(!enabled)('the pending sign-in row (issue 125)', () => {
+    it('round-trips identity and report, storing only the hash at rest', async () => {
+        // Completing a pending sign-in mints a session, so the row is a bearer credential at
+        // rest — the same rule as the session table's.
+        const token = await store.createPendingSignIn({
+            identity: identity(20, 'pending-user'),
+            installations: [
+                { id: ORG, name: 'acme' },
+                { id: SECOND_ORG, name: 'other' },
+            ],
+            returnTo: '/dash',
+            orgPreference: SECOND_ORG,
+            expiresAt: live(),
+        });
+
+        const [row] = await sql<{ token_hash: Buffer }[]>`
+            select token_hash from pending_sign_in where github_user_id = ${ID_BASE + 20}
+        `;
+        expect(row!.token_hash.equals(hashToken(token))).toBe(true);
+        expect(row!.token_hash.toString('utf8')).not.toContain(token);
+
+        expect(await store.findPendingSignIn(hashToken(token))).toEqual({
+            identity: {
+                githubUserId: ID_BASE + 20,
+                login: 'pending-user',
+                displayName: 'pending-user',
+                avatarUrl: null,
+            },
+            installations: [
+                { id: ORG, name: 'acme' },
+                { id: SECOND_ORG, name: 'other' },
+            ],
+            returnTo: '/dash',
+            orgPreference: SECOND_ORG,
+        });
+    });
+
+    it('answers null for an unknown token, and spends an expired row on sight', async () => {
+        const expired = await store.createPendingSignIn({
+            identity: identity(21, 'stale'),
+            installations: [{ id: ORG, name: ORG }],
+            returnTo: '/',
+            orgPreference: null,
+            expiresAt: new Date(Date.now() - 1000),
+        });
+
+        expect(await store.findPendingSignIn(hashToken(expired))).toBeNull();
+        // The read is also the reaping: nothing stale survives behind it.
+        const [left] = await sql<{ count: number }[]>`
+            select count(*)::int as count from pending_sign_in where github_user_id = ${ID_BASE + 21}
+        `;
+        expect(left?.count).toBe(0);
+    });
+
+    it('deletePendingSignIn spends a live row — the completion route single-use', async () => {
+        const token = await store.createPendingSignIn({
+            identity: identity(22, 'once-only'),
+            installations: [{ id: ORG, name: ORG }],
+            returnTo: '/',
+            orgPreference: null,
+            expiresAt: live(),
+        });
+        expect(await store.findPendingSignIn(hashToken(token))).not.toBeNull();
+
+        await store.deletePendingSignIn(hashToken(token));
+
+        expect(await store.findPendingSignIn(hashToken(token))).toBeNull();
+    });
+
+    it('the boot reaper clears expired rows and keeps live ones', async () => {
+        const stale = await store.createPendingSignIn({
+            identity: identity(23, 'reaped'),
+            installations: [{ id: ORG, name: ORG }],
+            returnTo: '/',
+            orgPreference: null,
+            expiresAt: new Date(Date.now() - 1000),
+        });
+        const fresh = await store.createPendingSignIn({
+            identity: identity(24, 'kept'),
+            installations: [{ id: ORG, name: ORG }],
+            returnTo: '/',
+            orgPreference: null,
+            expiresAt: live(),
+        });
+
+        await reapPendingSignIns(sql);
+
+        expect(await store.findPendingSignIn(hashToken(stale))).toBeNull();
+        expect(await store.findPendingSignIn(hashToken(fresh))).not.toBeNull();
+    });
+});
+
+describe.skipIf(!enabled)('the stored selection (issue 125)', () => {
+    it('answers empty for an account that never signed in', async () => {
+        expect(await store.storedSelection(ID_BASE + 30)).toEqual([]);
+    });
+
+    it('answers the membership orgs — the membership rows ARE the stored choice', async () => {
+        const caller = await store.signIn(identity(31, 'chooser'), ORG, [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
+
+        expect(await store.storedSelection(caller.user.githubUserId)).toEqual([ORG, SECOND_ORG]);
+
+        // A GitHub-side removal plus a narrowing sign-in prunes the answer with it.
+        await store.signIn(identity(31, 'chooser'), SECOND_ORG, [{ id: SECOND_ORG, name: SECOND_ORG }]);
+        expect(await store.storedSelection(caller.user.githubUserId)).toEqual([SECOND_ORG]);
+    });
+});
+
+describe.skipIf(!enabled)('the tracked-repo allowlist (issue 125)', () => {
+    it('writes, replaces and clears the org allowlist wholesale', async () => {
+        await store.replaceTrackedRepos(ORG, ['acme/web', 'acme/other']);
+        expect(await trackedRepos({ sql, orgId: ORG })).toEqual(['acme/other', 'acme/web']);
+
+        // Replace, not append: the second narrowing is the whole truth, not a delta.
+        await store.replaceTrackedRepos(ORG, ['acme/web']);
+        expect(await trackedRepos({ sql, orgId: ORG })).toEqual(['acme/web']);
+
+        // Empty means "track everything": the rows go, the narrowing with them.
+        await store.replaceTrackedRepos(ORG, []);
+        expect(await trackedRepos({ sql, orgId: ORG })).toEqual([]);
+    });
+
+    it('is per-org: one org allowlist never leaks into another', async () => {
+        await store.replaceTrackedRepos(ORG, ['acme/web']);
+        await store.replaceTrackedRepos(SECOND_ORG, ['other/one']);
+
+        expect(await trackedRepos({ sql, orgId: ORG })).toEqual(['acme/web']);
+        expect(await trackedRepos({ sql, orgId: SECOND_ORG })).toEqual(['other/one']);
+        expect(await trackedRepos({ sql, orgId: '911999' })).toEqual([]);
+    });
+
+    it('takes the rows with the organization, whose repo scope they are', async () => {
+        await store.replaceTrackedRepos(ORG, ['acme/web']);
+        await sql`delete from organization where id = ${ORG}`;
+
+        expect(await trackedRepos({ sql, orgId: ORG })).toEqual([]);
     });
 });
 

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { throughSignIn } from './signin.js';
 
 /**
  * The Workspace page, the left nav, and the one failure that shows up only in production.
@@ -17,12 +18,11 @@ import type { Page } from '@playwright/test';
 const SHOTS = 'artifacts/ui';
 
 const cards = (page: Page) => page.locator('.cards').first().locator('.card');
-const signIn = (page: Page) => page.getByRole('link', { name: 'Sign in with GitHub' });
 
 async function signedIn(page: Page) {
-    await page.goto('/');
-    await signIn(page).click();
-    await expect(cards(page)).toHaveCount(5, { timeout: 60_000 });
+    // The shared helper: through the selection screen on the run's first sign-in, straight in
+    // after it (the stored choice is the choice).
+    await throughSignIn(page);
 }
 
 /**

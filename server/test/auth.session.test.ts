@@ -95,7 +95,19 @@ describe('cookie attributes', () => {
 
 describe('oauth state', () => {
     it('round-trips the return path inside the signed value', () => {
-        expect(decodeState(encodeState('/reports', SECRET), SECRET)).toEqual({ returnTo: '/reports', org: null });
+        expect(decodeState(encodeState('/reports', SECRET), SECRET)).toEqual({
+            returnTo: '/reports',
+            org: null,
+            reselect: false,
+        });
+    });
+
+    it('carries the reselect flag through the signature (#125)', () => {
+        expect(decodeState(encodeState('/', SECRET, undefined, true), SECRET)).toEqual({
+            returnTo: '/',
+            org: null,
+            reselect: true,
+        });
     });
 
     it('is different every time, so one state cannot complete another browser flow', () => {
@@ -135,12 +147,24 @@ describe('return paths', () => {
     });
 
     it('survives a return path smuggled through the state', () => {
-        expect(decodeState(encodeState('//evil.test', SECRET), SECRET)).toEqual({ returnTo: '/', org: null });
+        expect(decodeState(encodeState('//evil.test', SECRET), SECRET)).toEqual({
+            returnTo: '/',
+            org: null,
+            reselect: false,
+        });
     });
 
     it('carries a requested organization through the signature, and only a decimal id at that', () => {
-        expect(decodeState(encodeState('/', SECRET, '999999'), SECRET)).toEqual({ returnTo: '/', org: '999999' });
+        expect(decodeState(encodeState('/', SECRET, '999999'), SECRET)).toEqual({
+            returnTo: '/',
+            org: '999999',
+            reselect: false,
+        });
         // Anything else decodes as "no preference" — the shape is the installation id's, or nothing.
-        expect(decodeState(encodeState('/', SECRET, 'other-org'), SECRET)).toEqual({ returnTo: '/', org: null });
+        expect(decodeState(encodeState('/', SECRET, 'other-org'), SECRET)).toEqual({
+            returnTo: '/',
+            org: null,
+            reselect: false,
+        });
     });
 });

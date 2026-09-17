@@ -10,8 +10,10 @@ import type {
     Caller,
     InstallationRef,
     OrgTokenIdentity,
+    PendingSignIn,
     Role,
 } from '../src/auth/store.js';
+import type { InstallationRepo } from '../src/github/app-client.js';
 import { LOCAL_ORG_ID, type AppConfig, type AuthConfig } from '../src/config.js';
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
@@ -515,6 +517,10 @@ export interface MemoryAuthStore extends AuthStore {
         hashHex: string;
         revoked: boolean;
     }[];
+    /** Every pending sign-in row, in creation order — who it is for and what was reported. */
+    pendingSignIns(): { githubUserId: number; installations: string[]; expiresAt: number }[];
+    /** Ages every pending row past its expiry, standing in for the TTL a real wait would run. */
+    expirePendingSignIns(): void;
 }
 
 /**
@@ -564,6 +570,16 @@ export function memoryAuthStore(): MemoryAuthStore {
         revokedAt: string | null;
     }
     const accessTokenRows: AccessTokenRow[] = [];
+    interface PendingRow {
+        tokenHash: string;
+        identity: GitHubIdentity;
+        installations: InstallationRef[];
+        returnTo: string;
+        orgPreference: string | null;
+        expiresAt: number;
+    }
+    const pendingRows: PendingRow[] = [];
+    const trackedRepoRows = new Map<string, string[]>();
     let nextId = 1;
 
     /** A fixed stamp, the same trick listWorkerTokens uses: timestamps are not what most tests vary. */
@@ -749,6 +765,72 @@ export function memoryAuthStore(): MemoryAuthStore {
                 hashHex: t.hash,
                 revoked: t.revokedAt !== null,
             })),
+
+        pendingSignIns: () =>
+            pendingRows.map((r) => ({
+                githubUserId: r.identity.githubUserId,
+                installations: r.installations.map((i) => i.id),
+                expiresAt: r.expiresAt,
+            })),
+
+        expirePendingSignIns: () => {
+            for (const row of pendingRows) row.expiresAt = Date.now() - 1;
+        },
+
+        async storedSelection(githubUserId) {
+            const user = users.find((u) => u.githubUserId === githubUserId);
+            if (!user) return [];
+            return members.filter((m) => m.userId === user.id).map((m) => m.orgId);
+        },
+
+        async createPendingSignIn(input) {
+            // An opaque token like the session's; only its hash is kept, because a pending row
+            // completes into a session — it is a bearer credential at rest.
+            const token = mintToken();
+            pendingRows.push({
+                tokenHash: key(hashToken(token)),
+                identity: { ...input.identity },
+                installations: input.installations.map((i) => ({ ...i })),
+                returnTo: input.returnTo,
+                orgPreference: input.orgPreference,
+                expiresAt: input.expiresAt.getTime(),
+            });
+            return token;
+        },
+
+        async findPendingSignIn(tokenHash) {
+            const row = pendingRows.find((r) => r.tokenHash === key(tokenHash));
+            if (!row) return null;
+            // Expired rows are lazily spent here, mirroring the SQL store's delete-and-ignore.
+            if (row.expiresAt <= Date.now()) {
+                pendingRows.splice(pendingRows.indexOf(row), 1);
+                return null;
+            }
+            const found: PendingSignIn = {
+                identity: { ...row.identity },
+                installations: row.installations.map((i) => ({ ...i })),
+                returnTo: row.returnTo,
+                orgPreference: row.orgPreference,
+            };
+            return found;
+        },
+
+        async deletePendingSignIn(tokenHash) {
+            const index = pendingRows.findIndex((r) => r.tokenHash === key(tokenHash));
+            // The SQL claim carries `expires_at > now()` — an expired row answers unclaimed, not
+            // spent-on-sight, here too.
+            if (index === -1 || pendingRows[index]!.expiresAt <= Date.now()) return false;
+            pendingRows.splice(index, 1);
+            return true;
+        },
+
+        async trackedRepos(orgId) {
+            return trackedRepoRows.get(orgId) ?? [];
+        },
+
+        async replaceTrackedRepos(orgId, repos) {
+            trackedRepoRows.set(orgId, [...repos]);
+        },
 
         async signIn(identity, orgId, installations) {
             const login = identity.login.toLowerCase();
@@ -1101,6 +1183,7 @@ export async function harness({
     userExecutors,
     envVars,
     appSlug,
+    installationListing,
     orgsFor,
     workflows,
 }: {
@@ -1125,6 +1208,12 @@ export async function harness({
     envVars?: EnvVarStore;
     /** The install-page slug, for the callback's 0-installations redirect. Absent offline. */
     appSlug?: () => Promise<string>;
+    /**
+     * Repos one installation can see, for the onboarding screen's per-org checkboxes (#125).
+     * Absent by default, which leaves the screen reporting repo tracking as unavailable — the
+     * offline shape, where there is no App client to ask.
+     */
+    installationListing?: (installationId: string) => Promise<InstallationRepo[] | null>;
     /**
      * Overrides which org ids the registry answers for. Tests are single-org, so the default
      * answers for EVERY id with the same runtime — the honest shape for a harness that has no
@@ -1164,6 +1253,7 @@ export async function harness({
         auth,
         identity,
         appSlug,
+        installationListing,
         now: () => clock,
     });
     return {

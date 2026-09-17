@@ -1,5 +1,7 @@
 import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
+import { hashToken, mintToken } from './session.js';
+import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
 
 export type Role = 'admin' | 'member';
 
@@ -25,6 +27,20 @@ export interface Membership {
 export interface InstallationRef {
     id: string;
     name: string;
+}
+
+/**
+ * A sign-in parked between the OAuth callback and the selection screen (#125).
+ *
+ * The OAuth code is single-use, so the identity and the installation report must survive the hop
+ * while the person spends time choosing; this is what they survive in. Only its hash is stored —
+ * completing one mints a session, so the row is a bearer credential at rest.
+ */
+export interface PendingSignIn {
+    identity: GitHubIdentity;
+    installations: InstallationRef[];
+    returnTo: string;
+    orgPreference: string | null;
 }
 
 /**
@@ -68,19 +84,57 @@ export interface OrgTokenIdentity {
 
 export interface AuthStore {
     /**
-     * Binds a GitHub identity to an account and materializes what GitHub reported: every
-     * installation the signing-in account can see becomes an organization row (id = the
-     * installation id, name = the account login) and a membership of it.
+     * Binds a GitHub identity to an account and materializes the SELECTION (#125): every
+     * installation the caller passes becomes an organization row (id = the installation id, name
+     * = the account login) and a membership of it. The caller — the route — has already
+     * intersected the account's choice with what GitHub reported this sign-in; this layer trusts
+     * that and refuses nothing: under installation-access-is-membership there is no invite to be
+     * waiting for and no auto-join decision to delegate.
      *
-     * Returns the caller bound to `orgId`, which the caller of this method has validated against
-     * `installations` — this layer trusts that, and refuses nothing: under installation-access-
-     * is-membership there is no invite to be waiting for and no auto-join decision to delegate.
-     * Memberships of ANY organization not in the reported list are deleted: a GitHub-side removal
-     * bites at the next sign-in (the propagation the security property needs), and so does a
-     * pre-#99 membership of a legacy org no installation will ever report (#123) — the directory
-     * is the installations, and a membership outside it is upgrade residue, not a switchable org.
+     * Memberships of ANY organization not passed are deleted, and since #125 that covers two
+     * cases with one predicate: an installation GitHub stopped reporting (the propagation the
+     * security property needs), and an installation the account tracks no longer (the opt-out).
+     * Both mean "this account does not reach here any more", and a pre-#99 legacy org is
+     * reported by nothing, ever, so it is always in the swept set (#123) — the directory is the
+     * installations, and a membership outside the selection is residue, not a switchable org.
      */
     signIn(identity: GitHubIdentity, orgId: string, installations: readonly InstallationRef[]): Promise<Caller>;
+    /**
+     * The account's stored org selection — its membership org ids, by GitHub numeric id.
+     * Read-only: an account that abandons the selection screen must leave no rows behind, so the
+     * membership rows ARE the stored choice. Empty means first sign-in (or unknown account).
+     */
+    storedSelection(githubUserId: number): Promise<string[]>;
+    /**
+     * Parks an identity and its installation report for the selection screen (#125). Returns the
+     * opaque token for the pending cookie; only its sha-256 is stored — completing a pending
+     * sign-in mints a session, so the row is a bearer credential at rest.
+     */
+    createPendingSignIn(input: {
+        identity: GitHubIdentity;
+        installations: readonly InstallationRef[];
+        returnTo: string;
+        orgPreference: string | null;
+        expiresAt: Date;
+    }): Promise<string>;
+    /**
+     * The parked sign-in behind a token hash, or null when unknown — or expired, which is spent
+     * on sight rather than left for the boot reaper to find.
+     */
+    findPendingSignIn(tokenHash: Buffer): Promise<PendingSignIn | null>;
+    /**
+     * Spends a pending sign-in — atomically, so only one of two concurrent completions can claim
+     * it. True when this call spent the row; false means it was already gone (single-use).
+     */
+    deletePendingSignIn(tokenHash: Buffer): Promise<boolean>;
+    /** The org's tracked-repo allowlist, as "owner/name" strings. Empty when everything is tracked. */
+    trackedRepos(orgId: string): Promise<string[]>;
+    /**
+     * Replaces an org's tracked-repo allowlist with `repos` ("owner/name" strings). Empty means
+     * the org tracks everything its installation reports — the completion route runs this only
+     * for orgs whose checkbox set was actually narrowed.
+     */
+    replaceTrackedRepos(orgId: string, repos: readonly string[]): Promise<void>;
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
     /**
      * The caller behind a live session token, or null when unknown, expired, unmembered — or
@@ -288,6 +342,96 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             const caller = await memberOf(userId, orgId);
             if (!caller) throw new Error(`sign-in resolved no membership of "${orgId}" for this account`);
             return caller;
+        },
+
+        async storedSelection(githubUserId) {
+            await gate();
+            // The membership rows ARE the stored choice (#125): what the account selected at its
+            // last onboarding, already pruned by the sweep to what it may still reach.
+            const rows = await sql<{ org_id: string }[]>`
+                select m.org_id from org_membership m
+                join app_user u on u.id = m.user_id
+                where u.github_user_id = ${githubUserId}
+            `;
+            return rows.map((row) => row.org_id);
+        },
+
+        async createPendingSignIn(input) {
+            await gate();
+            const token = mintToken();
+            await sql`
+                insert into pending_sign_in
+                    (token_hash, github_user_id, login, display_name, avatar_url,
+                     installations, return_to, org_preference, expires_at)
+                values (${hashToken(token)}, ${input.identity.githubUserId}, ${input.identity.login.toLowerCase()},
+                        ${input.identity.displayName}, ${input.identity.avatarUrl},
+                        ${sql.json(input.installations.map((install) => ({ ...install })))},
+                        ${input.returnTo}, ${input.orgPreference}, ${input.expiresAt})
+            `;
+            return token;
+        },
+
+        async findPendingSignIn(tokenHash) {
+            await gate();
+            // Expired rows are spent on sight — the same lazy reaping findSession's expiry
+            // predicate does, so a stale cookie can never complete even if the boot reaper has
+            // not run yet.
+            await sql`delete from pending_sign_in where expires_at < now()`;
+            const rows = await sql<
+                {
+                    github_user_id: string | number;
+                    login: string;
+                    display_name: string | null;
+                    avatar_url: string | null;
+                    installations: InstallationRef[];
+                    return_to: string;
+                    org_preference: string | null;
+                }[]
+            >`
+                select github_user_id, login, display_name, avatar_url,
+                       installations, return_to, org_preference
+                from pending_sign_in
+                where token_hash = ${tokenHash}
+            `;
+            const row = rows[0];
+            if (!row) return null;
+            return {
+                identity: {
+                    // bigint arrives as a string from postgres.js; Number() is exact well past any
+                    // id GitHub will issue this century — the same read toCaller makes.
+                    githubUserId: Number(row.github_user_id),
+                    login: row.login,
+                    displayName: row.display_name,
+                    avatarUrl: row.avatar_url,
+                },
+                installations: row.installations,
+                returnTo: row.return_to,
+                orgPreference: row.org_preference,
+            };
+        },
+
+        async deletePendingSignIn(tokenHash) {
+            await gate();
+            // Returning, not blind, and only while the row is still live: the completion route
+            // claims the row with this delete, so single-use holds against two completions racing
+            // each other, and a request that straddled the expiry cannot complete on a read that
+            // happened to run while the row was still fresh.
+            const rows = await sql<{ token_hash: Buffer }[]>`
+                delete from pending_sign_in
+                where token_hash = ${tokenHash} and expires_at > now()
+                returning token_hash
+            `;
+            return rows.length > 0;
+        },
+
+        async trackedRepos(orgId) {
+            await gate();
+            return trackedRepoRows({ sql, orgId });
+        },
+
+        async replaceTrackedRepos(orgId, repos) {
+            await gate();
+            await replaceTrackedRepoRows({ sql, orgId, repos });
         },
 
         async createSession(tokenHash, userId, expiresAt, orgId) {

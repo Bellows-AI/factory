@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/AppShell.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { EnvPage } from './pages/EnvPage.js';
+import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { TaskComposerPage } from './pages/TaskComposerPage.js';
 import { TaskDetailPage } from './pages/TaskDetailPage.js';
@@ -27,6 +28,10 @@ import { WorkspacePage } from './pages/WorkspacePage.js';
 export function App() {
     return (
         <Routes>
+            {/* The sign-in selection screen (issue 125). Outside the shell: its caller holds no session
+                yet — the pending cookie, not a session cookie, is what the page stands on — so the
+                sidenav and the stats poll have nothing to stand on either. */}
+            <Route path="onboarding" element={<OnboardingPage />} />
             <Route element={<AppShell />}>
                 <Route index element={<DashboardPage />} />
                 <Route path="workspace" element={<WorkspacePage />} />

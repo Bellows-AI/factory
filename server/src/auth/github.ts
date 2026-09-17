@@ -131,10 +131,11 @@ export function createGitHubIdentityClient(
             // that already redirects /user redirects this too and the stub IdP needs no second knob.
             //
             // Paginated, and PAST THE CAP A LOUD FAILURE, never a prefix: the callback feeds this
-            // list to signIn, which deletes every membership of an installation-org NOT in it —
-            // silently truncating at GitHub's default 30-per-page would make every sign-in
-            // permanently remove an enterprise-scale account's orgs beyond page one. Fail the
-            // sign-in instead; a thousand installations is not a page-walk problem anybody has.
+            // list to the selection step (#125) — it is what the stored choice is pruned against,
+            // what the screen offers, and what signIn materializes and sweeps from, so silently
+            // truncating at GitHub's default 30-per-page would make every sign-in permanently
+            // remove an enterprise-scale account's orgs beyond page one. Fail the sign-in
+            // instead; a thousand installations is not a page-walk problem anybody has.
             const out: InstallationAccount[] = [];
             for (let page = 1; page <= MAX_INSTALLATION_PAGES; page += 1) {
                 const response = await fetchFn(`${auth.userUrl}/installations?per_page=100&page=${page}`, {

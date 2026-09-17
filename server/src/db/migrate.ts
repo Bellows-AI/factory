@@ -256,6 +256,18 @@ export async function reapSessions(sql: Sql): Promise<number> {
 }
 
 /**
+ * Drops pending sign-ins (#125) nobody can complete any more.
+ *
+ * The pending row is the single-use hop between the OAuth callback and the selection screen; the
+ * read path spends an expired row on sight regardless (findPendingSignIn deletes it), so like
+ * reapSessions this is table hygiene, not enforcement — the cookie expires with the row.
+ */
+export async function reapPendingSignIns(sql: Sql): Promise<number> {
+    const result = await sql`delete from pending_sign_in where expires_at < now()`;
+    return result.count;
+}
+
+/**
  * A `.repeatable.sql` file is re-applied on every boot instead of being recorded.
  *
  * Without this a fix to a view would never land: the version is already in
@@ -327,6 +339,7 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
                 await ensureLocalUser(sql, LOCAL_ORG_ID);
             }
             await reapSessions(sql);
+            await reapPendingSignIns(sql);
             return;
         } catch (e) {
             lastError = e;

@@ -5,11 +5,15 @@ or the org selector in the topbar.
 
 An **organization owns the repo list and partitions every stored row.** The organizations are the
 GitHub App's installations (#99): one installation = one organization, its id the installation id
-(a decimal string), its name the installation account's login. Sign-in materializes them —
-`GET /user/installations` is the org list, upserted into `organization` together with a membership
-for the signing-in account. `meta.organization.mode` is `'directory'` in github mode and `'config'`
-under AUTH_MODE=none, which keeps the single local org named by `LOCAL_ORG_ID` and the selector
-disabled.
+(a decimal string), its name the installation account's login. Sign-in materializes the ones the
+signing-in account **chose** (#125) — `GET /user/installations` is the org list a first sign-in
+with two or more must narrow on the selection screen, and the chosen ones are upserted into
+`organization` together with a membership for the signing-in account. The membership rows are the
+stored choice: the next sign-in reuses it without re-prompting, and a member of an enterprise who
+never opted into an installation costs the deployment no row, no runtime and no warmed cache —
+`warmAll()` warms only what sign-in materialized. `meta.organization.mode` is `'directory'` in
+github mode and `'config'` under AUTH_MODE=none, which keeps the single local org named by
+`LOCAL_ORG_ID` and the selector disabled.
 
 **The org is a property of the caller, not of the process.** A session carries its org in its row,
 a personal token in its own, a worker token in its own — and every request re-checks it through the

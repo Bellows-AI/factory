@@ -7,12 +7,16 @@ The dashboard reports **every repo the GitHub App installation reports as one se
 Per-repo pages are not built yet; when they are, they filter `meta.repos` and the `repo` field on
 each session rather than refetching.
 
-- **The repo list is whatever the App installation reports (`repos.snapshotNames()`), and there is
-  no separate telemetry repo setting.** A second list is a second source of truth that silently
-  drops sessions the moment it drifts. The list changes under the process — somebody grants the App
-  another repository and it appears without a restart, on the 10-minute TTL in
-  [metrics.md](metrics.md) — which is why it is a function over a snapshot rather than a bound
-  array.
+- **The repo list is what the App installation reports, intersected with the org's tracked-repo
+  allowlist (`repos.snapshotNames()`), and there is no separate telemetry repo setting.** The
+  allowlist is `tracked_repo` (030) — the onboarding screen's per-org checkbox answer (#125) — and
+  its empty state means every reported repo: the default, which is why the screen's all-checked
+  confirm writes nothing. The intersection happens inside `RepoSource`, so stats scoping,
+  `otherRepoSessions` and the workspace/env writes all follow one truth. A second list would be a
+  second source of truth that silently drops sessions the moment it drifts. The list changes under
+  the process — somebody grants the App another repository and it appears without a restart, on the
+  10-minute TTL in [metrics.md](metrics.md) — which is why it is a function over a snapshot rather
+  than a bound array.
 - **The list is a network read, so it cannot be a config field.** `RepoSource` exposes two
   accessors because its two callers genuinely differ: `list()` may go to GitHub and is always
   awaited (the refresh path); `snapshot()` never blocks and is what `StatsService.current()` reads,
@@ -28,7 +32,10 @@ each session rather than refetching.
   a session in its totals only when the hook tagged it with a repo in `repos`. A session tagged with
   a repo outside the list lands in `otherRepoSessions`; a session with telemetry but no hook report
   lands in `sessionsWithoutHook`. Dropping either silently would make a repo removed from the
-  installation, or a plugin that stopped reporting, read as an idle week.
+  installation, or a plugin that stopped reporting, read as an idle week. Since #125 the same holds
+  for an unselected repo — a repo the installation reports but the org's allowlist does not name
+  counts in `otherRepoSessions`, never vanishes: the honest bucket is where a narrowed choice's
+  remainder lives.
 - **The hook stamps `owner/name` — the same form the list carries.** That is the whole reason the
   comparison is a string inclusion and not a lookup: there are no ids to join on, so the one
   spelling of a repo name is a contract between the plugin, the branch reporter and the
@@ -47,9 +54,12 @@ the scoping machinery:
 - **`meta.telemetry.repoFilter` is gone with it.** `otherRepoSessions` counts only sessions on
   repos outside the installation now, and `meta.repos` is the org's full list — the figures a page
   renders are interpretable exactly when the list that produced them is named.
-- **`POST /api/jobs` and `PUT /api/workspace/repos` validate against the installation list** (the
-  clone rides the installation's token, so a repo outside it is one the deployment has no business
-  fetching), and refuse unknown names with `400 UNKNOWN_REPO`. There is no `403
-  REPO_NOT_ACCESSIBLE` any more: within an installation, every member may reach everything.
+- **`PUT /api/workspace/repos` and the per-repo env write validate against the tracked list** —
+  the installation report intersected with the org's allowlist (#125) — refusing unknown names
+  with `400 UNKNOWN_REPO`. The clone rides the installation's token, so a repo outside it is one
+  the deployment has no business fetching; an untracked one is one the org chose not to follow.
+  There is no `403 REPO_NOT_ACCESSIBLE` any more: within an installation, every member may reach
+  everything the org tracks. `POST /api/jobs` validates the repo field's format only — the job's
+  repo is a label its telemetry is filed under, not a fetch target.
 - **`GET /api/env`'s repo scope is unfiltered** — every member of the installation may read and
   write the per-repo env config, exactly as they may the org-wide one.

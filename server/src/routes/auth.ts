@@ -1,23 +1,28 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver } from '../auth/plugin.js';
 import type { GitHubIdentityClient } from '../auth/github.js';
+import { createGitHubAppClient, type InstallationRepo } from '../github/app-client.js';
+import { installationTokenProvider } from '../github/app-token.js';
 import { ensureUserWorkspace } from '../workspace/provision.js';
 import { workspaceDir } from '../workspace/reconcile.js';
 import {
     OAUTH_COOKIE,
+    OAUTH_TTL_SECONDS,
+    PENDING_COOKIE,
     SESSION_COOKIE,
     decodeState,
     encodeState,
     hashToken,
     mintToken,
     oauthCookieOptions,
+    pendingCookieOptions,
     safeReturnPath,
     sessionCookieOptions,
     sign,
     statesMatch,
     unsign,
 } from '../auth/session.js';
-import type { AuthStore } from '../auth/store.js';
+import type { AuthStore, Caller, PendingSignIn } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
 
 export interface AuthRouteDeps {
@@ -31,6 +36,14 @@ export interface AuthRouteDeps {
      * 0-installation path reports `install` instead.
      */
     appSlug?: (() => Promise<string>) | undefined;
+    /**
+     * Repos one installation can see, for the onboarding screen (#125). Absent means the screen
+     * reports repo tracking as unavailable — the offline shape, where there is no App client to
+     * ask. Built from the config when not injected: one transient per-installation client per
+     * call, exactly the shape the org registry builds for a materialized org — the difference is
+     * that onboarding lists repos for an installation that has no org row yet.
+     */
+    installationListing?: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined;
 }
 
 /**
@@ -46,11 +59,31 @@ const failure = (returnTo: string, reason: string): string =>
 /** An installation id is a decimal string and nothing else — the org ids are installation ids. */
 const INSTALLATION_ID = /^\d+$/;
 
+/** One installation as the onboarding screen receives it: its stored narrowing, if it has one. */
+interface PendingInstallation {
+    id: string;
+    account: string;
+    tracked: string[] | null;
+}
+
 export const authRoutes =
-    ({ config, store, identity, appSlug }: AuthRouteDeps): FastifyPluginAsync =>
+    ({ config, store, identity, appSlug, installationListing }: AuthRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const { auth } = config;
         const resolveUser = createUserResolver({ config, store });
+
+        // The onboarding screen's repo read (#125). Not injected means built from the config —
+        // the App arm — or absent, which the screen renders as "repo tracking unavailable".
+        const appGithub = config.github;
+        const defaultListing =
+            appGithub.mode === 'app'
+                ? (installationId: string) =>
+                      createGitHubAppClient(appGithub, installationTokenProvider({ github: appGithub, installationId }))
+                          .listRepositories()
+                          .then((listing) => [...listing.repos])
+                : undefined;
+        const listInstallationRepos: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined =
+            installationListing ?? defaultListing;
 
         app.get('/api/auth/me', async (request, reply) => {
             const caller = await resolveUser(request).catch(() => null);
@@ -109,13 +142,17 @@ export const authRoutes =
         const cookie = sessionCookieOptions(auth.cookieSecure, Math.floor(auth.sessionTtlMs / 1000));
 
         app.get('/api/auth/github', async (request, reply) => {
-            const query = request.query as { returnTo?: string; org?: string };
+            const query = request.query as { returnTo?: string; org?: string; reselect?: string };
             const returnTo = safeReturnPath(query.returnTo);
             // A deep link can ask to land in a specific organization. It rides the signed state —
             // one signature covers destination and org — and is only a preference: the callback
             // validates it against the installations GitHub reports, and falls back to the first.
             const org = query.org && INSTALLATION_ID.test(query.org) ? query.org : undefined;
-            const state = encodeState(returnTo, secret, org);
+            // `reselect=1` asks to re-open the selection screen even though the account already
+            // has a stored choice (#125) — the only surface for changing it, because the GitHub
+            // user token that enumerated the installations is discarded at sign-in and cannot be
+            // re-asked outside an OAuth round trip.
+            const state = encodeState(returnTo, secret, org, query.reselect === '1');
             // The same signed value goes to GitHub and into the cookie; the callback requires both
             // and that they match. GitHub echoes the one it was given, so an attacker who starts a
             // flow in their own browser cannot make a victim's browser complete it — the victim's
@@ -123,6 +160,60 @@ export const authRoutes =
             reply.setCookie(OAUTH_COOKIE, state, oauthCookieOptions(auth.cookieSecure));
             return reply.redirect(identity.authorizeUrl(state), 302);
         });
+
+        /*
+         * The tail every sign-in shares: the workspace directory and the session row.
+         *
+         * The workspace part — a `mkdir` is microseconds, so signing in can afford it; a clone is
+         * minutes, so signing in cannot, and nothing is cloned until this person picks
+         * repositories. A failure here must not block the sign-in: the workspace is one feature of
+         * the dashboard, and a full disk should not turn into "you cannot log in". GET
+         * /api/workspace calls the same function, so a session that got here without one recovers
+         * on its first visit to the page.
+         *
+         * The session part — the cookie's Max-Age and the row's expires_at describe the same
+         * instant: the first stops the browser sending it, the second stops this server honouring
+         * a copy of it that no browser is enforcing. The row carries the org it was created in —
+         * the whole session reads from there until POST /api/auth/org says otherwise.
+         */
+        const startSession = async (request: FastifyRequest, reply: FastifyReply, caller: Caller): Promise<void> => {
+            try {
+                ensureUserWorkspace({
+                    root: config.workspaceRoot,
+                    orgId: caller.org.id,
+                    userId: caller.user.id,
+                    login: caller.user.login,
+                    githubUserId: caller.user.githubUserId,
+                    // The one moment a GitHub rename can have happened since the last visit.
+                    rewriteBreadcrumb: true,
+                });
+            } catch (e) {
+                request.log.error({ err: e }, 'workspace provisioning failed');
+            }
+
+            const token = mintToken();
+            await store.createSession(
+                hashToken(token),
+                caller.user.id,
+                new Date(Date.now() + auth.sessionTtlMs),
+                caller.org.id
+            );
+            reply.setCookie(SESSION_COOKIE, sign(token, secret), cookie);
+        };
+
+        /*
+         * The pending sign-in behind the cookie, or null. The cookie holds a signed opaque token;
+         * the row is keyed by its hash — the same at-rest rule as the session cookie — and the
+         * signature is rejected before any database round trip.
+         */
+        const pendingFrom = async (
+            request: FastifyRequest
+        ): Promise<{ token: string; pending: PendingSignIn } | null> => {
+            const token = unsign(request.cookies[PENDING_COOKIE], secret);
+            if (!token) return null;
+            const pending = await store.findPendingSignIn(hashToken(token));
+            return pending ? { token, pending } : null;
+        };
 
         app.get('/api/auth/github/callback', async (request, reply) => {
             const query = request.query as { code?: string; state?: string; error?: string };
@@ -141,13 +232,15 @@ export const authRoutes =
             }
             if (!query.code) return reply.redirect(failure(returnTo, 'state'), 302);
 
-            let caller;
+            let caller: Caller;
             try {
                 const accessToken = await identity.exchange(query.code);
                 const who = await identity.identity(accessToken);
-                // THE MEMBERSHIP DECISION. What this account can see is what it may sign into;
-                // store.signIn materializes every reported installation as an organization and a
-                // membership, and drops memberships of installations it no longer reports.
+                // THE FULL REPORT, loudly complete. Since #125 this is no longer automatically
+                // the membership set: it is what the selection is validated against, what the
+                // stored choice is pruned with, and what signIn materializes from — signIn
+                // removes what this list does not name, so a truncated one is as corrosive as
+                // ever (see github.ts's page cap).
                 const installations = await identity.installations(accessToken);
                 if (installations.length === 0) {
                     // The ordinary first-run state, not a fault: the App exists but is installed
@@ -162,63 +255,255 @@ export const authRoutes =
                         return reply.redirect(failure(returnTo, 'install'), 302);
                     }
                 }
-                // First reported installation, unless the sign-in was FOR another one this account
-                // can actually see. Anything else silently falls back — a stale deep link is a
-                // preference, never an error page.
+                const reported = installations.map((install) => ({
+                    id: install.id,
+                    name: install.account ?? install.id,
+                }));
+                // The account's stored choice, intersected with what GitHub still reports — the
+                // membership rows ARE the stored selection (#125), and the sweep has already kept
+                // it honest. Anything GitHub stopped reporting drops out here.
+                const stored = await store.storedSelection(who.githubUserId);
+                const remembered = stored.filter((id) => reported.some((install) => install.id === id));
+
+                // THE SELECTION STEP. A first sign-in — no stored choice — with two or more
+                // installations parks the round trip and asks what to track; so does an explicit
+                // `?reselect=1`. One installation has nothing to choose, whatever was asked.
+                if ((remembered.length === 0 || decoded.reselect) && reported.length >= 2) {
+                    const token = await store.createPendingSignIn({
+                        identity: who,
+                        installations: reported,
+                        returnTo,
+                        orgPreference: decoded.org,
+                        // The row and the pending cookie describe the same instant, for the same
+                        // reason the session cookie's Max-Age and its row's expires_at do.
+                        expiresAt: new Date(Date.now() + OAUTH_TTL_SECONDS * 1000),
+                    });
+                    reply.setCookie(PENDING_COOKIE, sign(token, secret), pendingCookieOptions(auth.cookieSecure));
+                    return reply.redirect('/onboarding', 302);
+                }
+
+                // Straight in: the remembered selection in report order, or the one installation
+                // when nothing is stored. First reported installation, unless the sign-in was FOR
+                // another one this account can actually see — a stale deep link is a preference,
+                // never an error page.
+                const selection =
+                    remembered.length > 0 ? reported.filter((ref) => remembered.includes(ref.id)) : reported;
                 const selected =
-                    decoded.org && installations.some((install) => install.id === decoded.org)
+                    decoded.org && selection.some((install) => install.id === decoded.org)
                         ? decoded.org
-                        : installations[0]!.id;
-                caller = await store.signIn(
-                    who,
-                    selected,
-                    installations.map((install) => ({ id: install.id, name: install.account ?? install.id }))
-                );
+                        : selection[0]!.id;
+                caller = await store.signIn(who, selected, selection);
             } catch (e) {
                 request.log.error({ err: e }, 'github sign-in failed');
                 return reply.redirect(failure(returnTo, 'github'), 302);
             }
 
-            /*
-             * The workspace directory, and only the directory.
-             *
-             * A `mkdir` is microseconds, so signing in can afford it; a clone is minutes, so signing
-             * in cannot, and nothing is cloned until this person picks repositories. A member who
-             * signs in once and never returns therefore costs an empty directory and nothing else.
-             *
-             * A failure here must not block the sign-in: the workspace is one feature of the
-             * dashboard, and a full disk should not turn into "you cannot log in". GET
-             * /api/workspace calls the same function, so a session that got here without one
-             * recovers on its first visit to the page.
-             */
-            try {
-                ensureUserWorkspace({
-                    root: config.workspaceRoot,
-                    orgId: caller.org.id,
-                    userId: caller.user.id,
-                    login: caller.user.login,
-                    githubUserId: caller.user.githubUserId,
-                    // The one moment a GitHub rename can have happened since the last visit.
-                    rewriteBreadcrumb: true,
-                });
-            } catch (e) {
-                request.log.error({ err: e }, 'workspace provisioning failed');
+            await startSession(request, reply, caller);
+            return reply.redirect(returnTo, 302);
+        });
+
+        /*
+         * The selection screen's read (#125).
+         *
+         * Answers the parked sign-in the onboarding page is to render: who is signing in, what
+         * their account can see, and what arrives pre-checked. `selected` is the stored choice —
+         * already intersected with the report — when there is one (a reselect), and every
+         * reported installation otherwise (a first sign-in, where the default matches today's
+         * behavior and confirming is a no-op narrowing).
+         */
+        app.get('/api/auth/github/pending', async (request, reply) => {
+            const resolved = await pendingFrom(request);
+            if (!resolved) {
+                return reply.code(401).send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+            }
+            const { pending } = resolved;
+            const stored = await store.storedSelection(pending.identity.githubUserId);
+            const remembered = stored.filter((id) => pending.installations.some((install) => install.id === id));
+            return reply.code(200).send({
+                identity: {
+                    login: pending.identity.login,
+                    displayName: pending.identity.displayName,
+                    avatarUrl: pending.identity.avatarUrl,
+                },
+                // `tracked` is the org's stored repo allowlist, or null when it tracks everything.
+                // The screen seeds its checkboxes from it: a reselect must SHOW the narrowing it
+                // is asking about, and confirming must be able to express widening back — an
+                // all-checked org that had a narrowing posts an empty list, which clears it.
+                // Intersected with what the installation CURRENTLY reports: a repo removed (or
+                // renamed) on GitHub's side since the narrowing was stored is not seedable, and
+                // posting it would 400 UNKNOWN_REPO with no checkbox anywhere to uncheck. The
+                // listing is asked ONLY for an org that has a narrowing to check against — a
+                // first sign-in's screen (narrowings nowhere) costs no App call, no rate-limit
+                // point, on the enterprise path this flow exists for.
+                installations: await Promise.all(
+                    pending.installations.map(async (install): Promise<PendingInstallation> => {
+                        const narrowed = await store.trackedRepos(install.id);
+                        if (narrowed.length === 0) {
+                            return { id: install.id, account: install.name, tracked: null };
+                        }
+                        const listed = listInstallationRepos
+                            ? await listInstallationRepos(install.id)
+                                  .then((repos) =>
+                                      repos === null ? null : repos.map((repo) => `${repo.owner}/${repo.name}`)
+                                  )
+                                  .catch(() => null)
+                            : null;
+                        // Nothing to intersect with: show the stored names as they are, so the
+                        // screen still says what the org narrowed to even while offline.
+                        const seeded = listed === null ? narrowed : narrowed.filter((name) => listed.includes(name));
+                        return {
+                            id: install.id,
+                            account: install.name,
+                            tracked: seeded.length > 0 ? seeded : null,
+                        };
+                    })
+                ),
+                selected: remembered.length > 0 ? remembered : pending.installations.map((install) => install.id),
+                reselect: remembered.length > 0,
+                org: pending.orgPreference,
+                returnTo: pending.returnTo,
+            });
+        });
+
+        /*
+         * One installation's repos, for the screen's per-org checkboxes (#125).
+         *
+         * A direct per-installation read through the App client — the org registry cannot answer
+         * here, because the org rows this choice is deciding on do not exist yet. `source:
+         * 'none'` means there was no client to ask (offline, or GitHub failed): a fact the screen
+         * renders as "unavailable" rather than an empty list pretending the installation has no
+         * repos — narrowing one is then refused at completion, never silently guessed.
+         */
+        app.get('/api/auth/github/pending/installations/:installationId/repos', async (request, reply) => {
+            const resolved = await pendingFrom(request);
+            if (!resolved) {
+                return reply.code(401).send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+            }
+            const { installationId } = request.params as { installationId: string };
+            const reported = resolved.pending.installations.some((install) => install.id === installationId);
+            if (!INSTALLATION_ID.test(installationId) || !reported) {
+                return reply.code(400).send({ error: 'Unknown installation', code: 'UNKNOWN_INSTALLATION' });
+            }
+            if (!listInstallationRepos) return reply.code(200).send({ repos: [], source: 'none' });
+            const repos = await listInstallationRepos(installationId).catch((e: Error) => {
+                request.log.error({ err: e }, 'installation repo listing failed');
+                return null;
+            });
+            if (!repos) return reply.code(200).send({ repos: [], source: 'none' });
+            return reply.code(200).send({
+                repos: repos.map((repo) => `${repo.owner}/${repo.name}`),
+                source: 'app',
+            });
+        });
+
+        /*
+         * The selection screen's write (#125).
+         *
+         * Materializes the posted choice and finishes the sign-in the callback parked. JSON
+         * errors, not `?auth_error=` redirects — this route is reached by the SPA's fetch, not by
+         * a top-level navigation, so a redirect would be swallowed by it. Everything else about
+         * the failure rule stays: an expired or missing pending sign-in is one answer ("start
+         * again"), and every refusal leaves the pending row alive so the person can re-post.
+         */
+        app.post('/api/auth/github/complete', { bodyLimit: 1048576 }, async (request, reply) => {
+            const resolved = await pendingFrom(request);
+            if (!resolved) {
+                return reply.code(401).send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+            }
+            const { pending } = resolved;
+
+            const body = request.body as { orgs?: unknown; repos?: unknown } | undefined;
+            // The orgs: non-empty, deduplicated, decimal ids, every one of the reported set. The
+            // selection may only narrow what GitHub reported — never widen it.
+            const orgIds: string[] = [];
+            const rawOrgs = Array.isArray(body?.orgs) ? body.orgs : [];
+            for (const entry of rawOrgs) {
+                if (typeof entry !== 'string' || !INSTALLATION_ID.test(entry) || orgIds.includes(entry)) {
+                    return reply.code(400).send({ error: 'Bad org selection', code: 'BAD_SELECTION' });
+                }
+                orgIds.push(entry);
+            }
+            if (orgIds.length === 0 || !orgIds.every((id) => pending.installations.some((i) => i.id === id))) {
+                return reply.code(400).send({ error: 'Bad org selection', code: 'BAD_SELECTION' });
             }
 
-            const token = mintToken();
-            // The cookie's Max-Age and the row's expires_at describe the same instant: the first
-            // stops the browser sending it, the second stops this server honouring a copy of it that
-            // no browser is enforcing. The row carries the org it was created in — the whole
-            // session reads from there until POST /api/auth/org says otherwise.
-            await store.createSession(
-                hashToken(token),
-                caller.user.id,
-                new Date(Date.now() + auth.sessionTtlMs),
-                caller.org.id
-            );
-            reply.setCookie(SESSION_COOKIE, sign(token, secret), cookie);
+            // The repos, per chosen org — optional, because the screen posts a key only for an
+            // org whose checkbox set was narrowed. Keys must be selected orgs; values must be
+            // names that org's installation can actually see.
+            const reposByOrg = new Map<string, string[]>();
+            if (body?.repos !== undefined) {
+                if (typeof body.repos !== 'object' || body.repos === null || Array.isArray(body.repos)) {
+                    return reply.code(400).send({ error: 'Bad repo selection', code: 'BAD_SELECTION' });
+                }
+                for (const [orgId, names] of Object.entries(body.repos as Record<string, unknown>)) {
+                    if (!orgIds.includes(orgId) || !Array.isArray(names)) {
+                        return reply.code(400).send({ error: 'Bad repo selection', code: 'BAD_SELECTION' });
+                    }
+                    const listed = names.filter((name): name is string => typeof name === 'string');
+                    if (listed.length !== names.length) {
+                        return reply.code(400).send({ error: 'Bad repo selection', code: 'BAD_SELECTION' });
+                    }
+                    reposByOrg.set(orgId, listed);
+                }
+            }
+            const listings = new Map<string, InstallationRepo[]>();
+            for (const [orgId, names] of reposByOrg) {
+                if (names.length === 0) continue; // nothing narrowed — nothing to validate
+                const known = listings.get(orgId);
+                if (known === undefined) {
+                    const fetched = listInstallationRepos
+                        ? await listInstallationRepos(orgId).catch((e: Error) => {
+                              request.log.error({ err: e }, 'installation repo listing failed');
+                              return null;
+                          })
+                        : null;
+                    if (!fetched) {
+                        return reply.code(400).send({
+                            error: 'Repos cannot be listed for this installation',
+                            code: 'REPOS_UNAVAILABLE',
+                        });
+                    }
+                    listings.set(orgId, fetched);
+                }
+                const visible = new Set(listings.get(orgId)!.map((repo) => `${repo.owner}/${repo.name}`));
+                if (!names.every((name) => visible.has(name))) {
+                    return reply.code(400).send({ error: 'Unknown repository', code: 'UNKNOWN_REPO' });
+                }
+            }
 
-            return reply.redirect(returnTo, 302);
+            let caller: Caller;
+            try {
+                // THE CLAIM. Atomically spends the pending row before anything is materialized,
+                // so only one of two completions racing the same cookie can get past it — the
+                // docs' single-use is a property, not a description of the happy path. Every
+                // validation refusal above left the row alive; from here the row is spent, and a
+                // failure means starting the flow again.
+                const claimed = await store.deletePendingSignIn(hashToken(resolved.token));
+                if (!claimed) {
+                    return reply.code(401).send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+                }
+                // The choice, in report order, and the session lands in the deep-linked org when
+                // it was chosen — or the first of the selection, as the callback would.
+                const selection = pending.installations.filter((install) => orgIds.includes(install.id));
+                const selected =
+                    pending.orgPreference && orgIds.includes(pending.orgPreference)
+                        ? pending.orgPreference
+                        : selection[0]!.id;
+                caller = await store.signIn(pending.identity, selected, selection);
+                for (const [orgId, names] of reposByOrg) {
+                    await store.replaceTrackedRepos(orgId, names);
+                }
+                // Inside the claim's try: a session-mint failure (database gone dark after a
+                // successful claim) answers the same JSON shape as every other completion
+                // failure — the row is spent either way, so the only path is starting again.
+                await startSession(request, reply, caller);
+            } catch (e) {
+                request.log.error({ err: e }, 'onboarding completion failed');
+                return reply.code(500).send({ error: 'Could not complete the sign-in', code: 'COMPLETE_FAILED' });
+            }
+
+            reply.clearCookie(PENDING_COOKIE, pendingCookieOptions(auth.cookieSecure));
+            return reply.code(200).send({ organization: caller.org, returnTo: pending.returnTo });
         });
 
         /*
