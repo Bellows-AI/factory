@@ -119,6 +119,8 @@ describe('TopBar', () => {
                 { id: 'bellows', name: 'Bellows AI' },
                 { id: 'acme', name: 'Acme Inc' },
             ],
+            legacyOrganizations: [],
+            adoptInto: null,
             workspacePath: null,
             mode: 'github',
         };

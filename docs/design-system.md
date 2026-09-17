@@ -143,6 +143,7 @@ Components:
 
 | File | Primitives |
 | --- | --- |
+| `AdoptionNotice.tsx` | status |
 | `AppShell.tsx` | shell |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table |

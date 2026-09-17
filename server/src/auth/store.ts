@@ -75,8 +75,10 @@ export interface AuthStore {
      * Returns the caller bound to `orgId`, which the caller of this method has validated against
      * `installations` — this layer trusts that, and refuses nothing: under installation-access-
      * is-membership there is no invite to be waiting for and no auto-join decision to delegate.
-     * Memberships of installation orgs NOT in the reported list are deleted: a GitHub-side
-     * removal bites at the next sign-in, which is the propagation the security property needs.
+     * Memberships of ANY organization not in the reported list are deleted: a GitHub-side removal
+     * bites at the next sign-in (the propagation the security property needs), and so does a
+     * pre-#99 membership of a legacy org no installation will ever report (#123) — the directory
+     * is the installations, and a membership outside it is upgrade residue, not a switchable org.
      */
     signIn(identity: GitHubIdentity, orgId: string, installations: readonly InstallationRef[]): Promise<Caller>;
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
@@ -97,6 +99,20 @@ export interface AuthStore {
     findOrg(orgId: string): Promise<{ id: string; name: string } | null>;
     /** Every organization the account is a member of — the selector's available[] and the switch check. */
     membershipsOf(userId: string): Promise<{ id: string; name: string }[]>;
+    /**
+     * The database's pre-upgrade organizations — rows with no installation id (028 added the
+     * column with no backfill) that no sign-in can ever materialize or sweep away. They are
+     * adoption territory, not the directory: `/api/auth/me` reports them so the dashboard can
+     * surface `npm run adopt` instead of leaving their stranded rows invisible.
+     */
+    legacyOrgs(): Promise<{ id: string; name: string }[]>;
+    /**
+     * The one installation org, when exactly one exists — the only target a legacy org can be
+     * paired with in a surfaced `adopt --from` command without guessing. Null when zero or
+     * several installations exist: which legacy org belongs to which installation is the
+     * operator's decision, and the deployment must not fill it in for them.
+     */
+    adoptTarget(): Promise<{ id: string } | null>;
     /**
      * Deletes one membership by the GitHub numeric id — THE identity; the membership keys on
      * user_id since 029, so the lookup joins through app_user — and reports whether a row was
@@ -258,13 +274,14 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
                 `;
             }
 
-            // The materialized fact, re-synced at every sign-in: a membership of an installation
-            // org GitHub no longer reports is gone, and with it — through the joins the reads run
-            // — this account's sessions' and tokens' reach into that org.
+            // The materialized fact, re-synced at every sign-in: a membership of an organization
+            // GitHub does not report is gone, and with it — through the joins the reads run —
+            // this account's sessions' and tokens' reach into that org. Any org, not only known
+            // installations: a legacy (pre-#99) org is reported by nothing, ever, so leaving it
+            // out of the sweep would list the same account under both ids forever (#123).
             await sql`
                 delete from org_membership
                 where user_id = ${userId}
-                  and org_id in (select id from organization where installation_id is not null)
                   and org_id <> all(${installations.map((i) => i.id)})
             `;
 
@@ -337,6 +354,22 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
                 where m.user_id = ${userId} order by o.name
             `;
             return rows;
+        },
+
+        async legacyOrgs() {
+            await gate();
+            const rows = await sql<{ id: string; name: string }[]>`
+                select id, name from organization where installation_id is null order by id
+            `;
+            return rows;
+        },
+
+        async adoptTarget() {
+            await gate();
+            const rows = await sql<{ id: string }[]>`
+                select id from organization where installation_id is not null
+            `;
+            return rows.length === 1 ? { id: rows[0]!.id } : null;
         },
 
         async removeMember(orgId, githubUserId) {

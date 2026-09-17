@@ -470,6 +470,12 @@ export interface MemoryAuthStore extends AuthStore {
      */
     seedMember(orgId: string, login: string, role?: Role): Caller;
     /**
+     * Attaches an EXISTING account to an org — the shape of a membership row written before the
+     * current sign-in path existed (pre-#99), which signIn's sweep has to remove. Unlike
+     * seedMember, no account is created: the point is a membership of the signing-in user.
+     */
+    seedMembership(orgId: string, userId: string): void;
+    /**
      * The stand-in account AUTH_MODE=none resolves, exactly as migrate()'s ensureLocalUser writes
      * it: github_user_id 0, a value GitHub never issues, and the reserved `__local__` login, which
      * is unrepresentable as a real GitHub login because underscores are not permitted in one.
@@ -646,6 +652,20 @@ export function memoryAuthStore(): MemoryAuthStore {
             return callerFor(user, member);
         },
 
+        seedMembership(orgId, userId) {
+            ensureOrg(orgId);
+            const user = users.find((u) => u.id === userId);
+            if (!user) throw new Error(`seedMembership: no account ${userId} to attach to "${orgId}"`);
+            members.push({
+                orgId,
+                login: user.login,
+                userId,
+                role: 'member',
+                invitedAt: STAMP,
+                claimedAt: STAMP,
+            });
+        },
+
         seedLocalUser(orgId) {
             ensureOrg(orgId);
             const user: User = {
@@ -780,16 +800,14 @@ export function memoryAuthStore(): MemoryAuthStore {
                 }
             }
 
-            // The propagation half: memberships of installation orgs GitHub no longer reports are
-            // gone, and with them this account's reach into those orgs.
+            // The propagation half: memberships of ANY org GitHub does not report are gone, and
+            // with them this account's reach into those orgs — legacy (pre-#99) orgs included,
+            // since no installation will ever report them.
             const reported = new Set(installations.map((i) => i.id));
             for (let i = members.length - 1; i >= 0; i -= 1) {
                 const member = members[i]!;
                 if (member.userId !== user.id) continue;
-                const org = orgs.get(member.orgId);
-                if (org?.installationId !== null && org?.installationId !== undefined && !reported.has(member.orgId)) {
-                    members.splice(i, 1);
-                }
+                if (!reported.has(member.orgId)) members.splice(i, 1);
             }
 
             const caller = memberOf(user.id, orgId);
@@ -829,6 +847,18 @@ export function memoryAuthStore(): MemoryAuthStore {
                 .filter((m) => m.userId === userId)
                 .map((m) => ({ id: m.orgId, name: orgNameOf(m.orgId) }))
                 .sort((a, b) => a.name.localeCompare(b.name));
+        },
+
+        async legacyOrgs() {
+            return [...orgs.values()]
+                .filter((org) => org.installationId === null)
+                .map((org) => ({ id: org.id, name: org.name }))
+                .sort((a, b) => a.id.localeCompare(b.id));
+        },
+
+        async adoptTarget() {
+            const installed = [...orgs.values()].filter((org) => org.installationId !== null);
+            return installed.length === 1 ? { id: installed[0]!.id } : null;
         },
 
         async localCaller(orgId) {

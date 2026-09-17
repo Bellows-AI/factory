@@ -15,7 +15,7 @@
  */
 import postgres from 'postgres';
 import { resolveConfig } from '../config.js';
-import { adoptOrg, migrate } from '../db/migrate.js';
+import { adoptOrg, mergeLegacyOrg, migrate } from '../db/migrate.js';
 import { parseArgs, value } from './args.js';
 
 const { config } = resolveConfig({ env: process.env, github: { mode: 'none' } });
@@ -62,41 +62,10 @@ try {
     await adoptOrg(sql, installation, (m) => console.log(`[adopt] ${m}`));
 
     if (from) {
-        // History written under the legacy configured id is merged into the installation's org.
-        // session_branch is the only org-owned table left (005's list shrank with 023).
-        //
-        // MERGE, not an update: the unique key (org_id, agent, session_id, repo, branch) may
-        // already hold the same session under the new org — a sign-in after the installation
-        // appeared writes exactly that row. UPDATE would violate it on the first collision and
-        // abort the adoption partway; upserting widens the span instead, and only a successful
-        // merge deletes the legacy rows.
-        // One transaction, because a crash between the upsert and the delete would make a rerun
-        // merge the same legacy rows again and add `excluded.samples` a second time.
-        const mergedBranches = await sql.begin(async (tx) => {
-            const merged = await tx`
-                insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-                select ${installation}, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples
-                from session_branch where org_id = ${from}
-                on conflict (org_id, agent, session_id, repo, branch) do update set
-                    head_sha   = coalesce(excluded.head_sha, session_branch.head_sha),
-                    first_seen = least(session_branch.first_seen, excluded.first_seen),
-                    last_seen  = greatest(session_branch.last_seen, excluded.last_seen),
-                    samples    = session_branch.samples + excluded.samples
-            `;
-            await tx`delete from session_branch where org_id = ${from}`;
-            return merged;
-        });
-        console.log(`[adopt] merged ${mergedBranches.count} session_branch rows from "${from}" into "${installation}"`);
-
-        // Members merge, never duplicate: a person already reported by a sign-in into the
-        // installation keeps that row untouched.
-        const merged = await sql`
-            insert into org_membership (org_id, github_login, user_id, role, invited_at, claimed_at)
-            select ${installation}, github_login, user_id, role, invited_at, claimed_at
-            from org_membership where org_id = ${from} and user_id is not null
-            on conflict (org_id, user_id) do nothing
-        `;
-        console.log(`[adopt] merged ${merged.count} memberships from "${from}" into "${installation}"`);
+        // History written under the legacy configured id is merged into the installation's org —
+        // every org-owned table, not only the telemetry — and the legacy org row is retired, so
+        // the selector and the adoption notice stop naming it (#123).
+        await mergeLegacyOrg(sql, installation, from, (m) => console.log(`[adopt] ${m}`));
     }
 
     console.log(`[adopt] done. Members sign in as usual; the dashboard reads from "${installation}" now.`);
