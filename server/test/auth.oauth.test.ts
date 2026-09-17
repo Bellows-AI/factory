@@ -253,6 +253,24 @@ describe('identity is the numeric id, not the login', () => {
 });
 
 describe('membership follows what GitHub last reported', () => {
+    it('drops a membership of a legacy org — no installation can ever report it', async () => {
+        // The pre-#99 rows: an org with no installation id (028 added the column with no
+        // backfill) and the membership the single-org sign-in wrote. Nothing matches an
+        // installation back to that org, so the sweep is what keeps the selector from listing
+        // the same account twice — and the legacy org from reading as a second, empty one.
+        const { app, auth } = await setup();
+        const cookie = await signIn(app);
+        const userId = (
+            await app.inject({ method: 'GET', url: '/api/auth/me', cookies: { [SESSION_COOKIE]: cookie } })
+        ).json().user.id as string;
+        auth.seedOrg('legacy-1', 'Legacy');
+        auth.seedMembership('legacy-1', userId);
+
+        await signIn(app);
+
+        expect((await auth.membershipsOf(userId)).map((m) => m.id)).toEqual([ORG]);
+    });
+
     it('drops a membership whose installation is no longer reported', async () => {
         // The security property, one sign-in late: losing access to an installation ends the
         // membership the next time that account signs in — and the session's read goes with it,
@@ -351,7 +369,55 @@ describe('/api/auth/me', () => {
             // renders as an absence rather than an error — the same posture as /api/workspace.
             workspacePath: null,
             mode: 'github',
+            // No pre-upgrade rows in a fresh store: nothing is waiting for adoption.
+            legacyOrganizations: [],
+            // Two installations are reported here, so no pairing is unambiguous enough to name.
+            adoptInto: null,
         });
+    });
+
+    it('lists the pre-upgrade organizations still waiting for adoption', async () => {
+        // The duplicate-selector symptom of #123 reads as a bug; the payload names the rows a
+        // skipped `npm run adopt` left behind so the SPA can surface the command instead. With
+        // exactly one installation in the database, the pairing is not a guess and the payload
+        // names it; with several, which legacy org belongs to which installation is the
+        // operator's `--from` decision, and nothing fills it in for them.
+        const { app } = await setup((store) => {
+            store.seedOrg('legacy-1', 'Legacy');
+        });
+        const cookie = await signIn(app);
+
+        const body = (
+            await app.inject({
+                method: 'GET',
+                url: '/api/auth/me',
+                cookies: { [SESSION_COOKIE]: cookie },
+            })
+        ).json();
+
+        expect(body.legacyOrganizations).toEqual([{ id: 'legacy-1', name: 'Legacy' }]);
+        expect(body.adoptInto).toEqual({ id: ORG });
+    });
+
+    it('refuses to pair a legacy org with an installation when several exist', async () => {
+        const { app } = await setup(
+            (store) => {
+                store.seedOrg('legacy-1', 'Legacy');
+            },
+            oneInstallation(ORG).concat([{ id: '888888', account: 'other-org' }])
+        );
+        const cookie = await signIn(app);
+
+        const body = (
+            await app.inject({
+                method: 'GET',
+                url: '/api/auth/me',
+                cookies: { [SESSION_COOKIE]: cookie },
+            })
+        ).json();
+
+        expect(body.legacyOrganizations).toEqual([{ id: 'legacy-1', name: 'Legacy' }]);
+        expect(body.adoptInto).toBeNull();
     });
 });
 

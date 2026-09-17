@@ -45,6 +45,20 @@ immediately (see [auth.md](auth.md)).
   `migrate()` adopts only in AUTH_MODE=none (into the local org), and `npm run adopt --
   --installation <id> [--from <legacy-org-id>]` is the one-off upgrade step for everything else. A
   missed run reads as an empty dashboard; the upgrade docs say to run it.
+- **A legacy (pre-#99) org is adoption territory, never the directory (#123).** Its row has no
+  `installation_id`, so no sign-in ever materializes or relabels it — and since the #123 sweep,
+  sign-in deletes a membership of ANY org not in the reported installations, not only of
+  installation orgs: a legacy membership would otherwise sit beside the installation's forever,
+  listing the same account twice. Matching a legacy org to an installation automatically was
+  rejected — the only key available is the account login, which is a label (docs/auth.md), and
+  which installation owns which legacy id is an operator decision (`--from` expresses it) that a
+  guessed match would silently destroy. What the deployment owes instead is visibility:
+  `/api/auth/me` reports the orgs still waiting (`legacyOrganizations`), the dashboard surfaces
+  the `npm run adopt` command — filled in with `--installation` only when exactly one
+  installation exists (`adoptInto`), because a guessed pairing would re-home another org's
+  history — and `--from` now re-homes EVERY org-owned table and deletes the legacy org row — so
+  the notice clears exactly when the adoption happened, and nothing is stranded behind a husk
+  the old merge left standing.
 - **Ingest attribution is the credential's, not the report's.** A branch report carries a repo,
   never an org — the reporter holds no session — so the org used to be guessed by matching the
   repo's owner against the installation orgs' account logins. That was a cross-tenant write
