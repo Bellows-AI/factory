@@ -5,8 +5,9 @@ setting.
 
 **There are two postures, and `AUTH_MODE` picks between them explicitly.** With `AUTH_MODE=github`
 every `/api/*` route requires a credential — a session cookie, or an access token (`fat_`/`oat_`,
-hash-stored like the session) for a caller that cannot hold a cookie, and a `Bearer fwt_…` worker
-token for the driver. With `AUTH_MODE=none`, the default, there is no application-level auth at all
+hash-stored like the session) for a caller that cannot hold a cookie, and the shared
+`JOB_BOARD_TOKEN` board secret for the driver. With `AUTH_MODE=none`, the default, there is no
+application-level auth at all
 and the `127.0.0.1` bind is the access control, exactly as it always was; `loadConfig` refuses that
 mode on a non-loopback `HOST` unless `AUTH_ALLOW_PUBLIC_BIND=1` says something else is doing the
 authenticating. See [auth.md](auth.md). CSP and `X-Content-Type-Options` / `Referrer-Policy` are set
@@ -68,7 +69,7 @@ access to the database is equivalent to holding every runner credential. What th
 promise is write-only at the API — every list read nulls a secret's value, admin included — so the
 browser never holds one, and the claim never persists one onto the job row that every member can
 read. The values do cross the board→driver hop in the claim JSON; that hop already carries the
-worker token's authority and supports https, and under `AUTH_MODE=none` the whole board is open
+board secret's authority and supports https, and under `AUTH_MODE=none` the whole board is open
 anyway. The App's installation token rides that same hop, minted onto the claim env under
 `GITHUB_TOKEN` (#28): it is the one-hour, installation-scoped credential this file already trusted
 for clones, now handed to the runner by name — a leak of it expires within the hour, which is the
@@ -94,7 +95,7 @@ exactly that — so put authentication in front of the port *before* moving it, 
 `AUTH_MODE=github` it is narrowed to **any member of the organization**, which is smaller and still
 real: membership is not a sandbox, and `RUNNER_SKIP_PERMISSIONS` decides how much an agent may then
 do. Queueing records `job.created_by`, so at least the request has a name against it. The claim side
-takes a worker token rather than a session, because a member holding a lease is a member able to take
+takes the board secret rather than a session, because a member holding a lease is a member able to take
 work away from the driver running it. See [jobs.md](jobs.md) and [auth.md](auth.md).
 
 The telemetry ingest routes are unauthenticated unless `auth.ingest_token` is set, and the collector

@@ -82,6 +82,12 @@ services:
             COOKIE_SECURE: ${COOKIE_SECURE:-}
             INGEST_TOKEN: ${INGEST_TOKEN:-}
             GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+            # The shared board secret: the SAME value the driver below presents on the worker
+            # routes. Both services read the one .env entry, so "the same" is true by
+            # construction — no minting, no database row, nothing to paste twice. Required in
+            # this stack (the board refuses to boot in github mode without it); ignored against
+            # an open board, where the worker routes are open anyway.
+            JOB_BOARD_TOKEN: ${JOB_BOARD_TOKEN:?set JOB_BOARD_TOKEN in .env (openssl rand -hex 32)}
             # No AUTH_ALLOW_PUBLIC_BIND. It used to be required here: the Dockerfile sets
             # HOST=0.0.0.0, and loadConfig refuses `none` on a non-loopback host, so an open stack
             # needed the hatch to boot at all. With AUTH_MODE pinned to github above there is
@@ -154,10 +160,9 @@ services:
             dockerfile: docker/driver.Dockerfile
         environment:
             JOB_BOARD_URL: http://dashboard:8080
-            # The worker token, from `npm run worker-token -- --org <installation-id> --name
-            # driver-1` — one per org (#99), so a driver working for two organizations is two of
-            # this service with two tokens. Only needed when the dashboard runs AUTH_MODE=github;
-            # against an open board it stays empty and the header is omitted entirely rather than
+            # The shared board secret — the same ${JOB_BOARD_TOKEN} the dashboard validates
+            # against, so there is exactly one place to set it. Against an open board
+            # (AUTH_MODE=none) it stays empty and the header is omitted entirely rather than
             # sent blank.
             JOB_BOARD_TOKEN: ${JOB_BOARD_TOKEN:-}
             # No ORG_ID. It only ever built the runner's WORKDIR as /workspaces/<org>, and the board

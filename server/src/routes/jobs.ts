@@ -197,12 +197,31 @@ export const jobRoutes =
     async (app) => {
         /**
          * The job board a request lands on is its caller's org's (#99): the session, the personal
-         * token or the worker token each names one, and the runtime resolved from it carries that
-         * org's store. Absent in the route-test mode with no stores behind the registry.
+         * token or the worker secret's resolved org each names one, and the runtime resolved from
+         * it carries that org's store. Absent in the route-test mode with no stores behind the
+         * registry.
          */
         const storeOf = async (request: FastifyRequest): Promise<JobStore | null> => {
             const rt = await orgs.for(orgOf(request));
             return rt?.jobs ?? null;
+        };
+        /**
+         * The boards a WORKER call may reach. The shared secret authenticates the driver, not an
+         * org, so a claim names no row and no org: it is offered EVERY org's queue, first claim
+         * wins and the empty orgs cost one idle poll each. Every other worker route arrives with
+         * the org the auth hook read from the row its URL names, and is a one-element list.
+         */
+        const boardsOf = async (request: FastifyRequest): Promise<JobStore[]> => {
+            if (request.auth?.kind === 'worker' && request.auth.orgId === null) {
+                const boards: JobStore[] = [];
+                for (const org of await orgs.list()) {
+                    const rt = await orgs.for(org.id);
+                    if (rt?.jobs) boards.push(rt.jobs);
+                }
+                return boards;
+            }
+            const store = await storeOf(request);
+            return store ? [store] : [];
         };
         /** The workflow definitions the create may resolve against — the caller's org's (#99). */
         const workflowsOf = async (request: FastifyRequest) => {
@@ -347,8 +366,8 @@ export const jobRoutes =
         // POST, not GET: claiming mutates. The worker id is required — it is the only thing that
         // says which container is holding a job when one has to be found and killed.
         app.post('/api/jobs/claim', { bodyLimit: 4096 }, async (request, reply) => {
-            const store = await storeOf(request);
-            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
+            const boards = await boardsOf(request);
+            if (!boards.length) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const { worker, leaseSeconds: requested } = body(request.body);
             if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
                 return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
@@ -358,10 +377,18 @@ export const jobRoutes =
                 return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
             }
 
+            // First board with work wins; the rest cost one idle poll each. With the common
+            // single-org deployment this is the single claim query it always was.
             const claim = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job claim failed'),
-                () => store.claim(worker, lease)
+                async () => {
+                    for (const board of boards) {
+                        const claimed = await board.claim(worker, lease);
+                        if (claimed !== null) return claimed;
+                    }
+                    return null;
+                }
             );
             if (!claim.ok) return reply;
             // 204, not 200 with a null: an idle poll is the common case and it should not have to
@@ -760,7 +787,7 @@ export const jobRoutes =
         });
 
         // The user's remove: the thread is gone and a worktree reclaim is queued. Person-gated like
-        // every job write here, not just because the driver has no use for it — a worker token
+        // every job write here, not just because the driver has no use for it — the board secret
         // deleting the audit rows of jobs it never held would be exactly the thread-read hole again.
         app.post('/api/jobs/:id/remove', { bodyLimit: 4096 }, async (request, reply) => {
             const store = await storeOf(request);
@@ -792,8 +819,8 @@ export const jobRoutes =
         // claim/complete are, and the body matches: the worker name is required (it is queued for
         // exactly this claim), and an idle poll answers 204 rather than a parsed null.
         app.post('/api/reclaims/claim', { bodyLimit: 4096 }, async (request, reply) => {
-            const store = await storeOf(request);
-            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
+            const boards = await boardsOf(request);
+            if (!boards.length) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const { worker, leaseSeconds: requested } = body(request.body);
             if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
                 return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
@@ -806,7 +833,13 @@ export const jobRoutes =
             const claim = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'reclaim claim failed'),
-                () => store.claimReclaim(worker, lease)
+                async () => {
+                    for (const board of boards) {
+                        const claimed = await board.claimReclaim(worker, lease);
+                        if (claimed !== null) return claimed;
+                    }
+                    return null;
+                }
             );
             if (!claim.ok) return reply;
             if (claim.value === null) return reply.code(204).send();

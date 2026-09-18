@@ -18,6 +18,7 @@ const github = (env: NodeJS.ProcessEnv = {}) =>
         GITHUB_OAUTH_CLIENT_ID: 'client-id',
         GITHUB_OAUTH_CLIENT_SECRET: 'client-secret',
         SESSION_SECRET: SECRET,
+        JOB_BOARD_TOKEN: SECRET,
         ...env,
     });
 
@@ -44,7 +45,7 @@ describe('AUTH_MODE', () => {
 });
 
 describe('github mode is all-or-nothing', () => {
-    it.each(['GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET', 'SESSION_SECRET'])(
+    it.each(['GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET', 'SESSION_SECRET', 'JOB_BOARD_TOKEN'])(
         'is fatal when %s is missing, and names it',
         (key) => {
             // Named individually: the operator has one key to fix and should not have to diff the
@@ -60,6 +61,16 @@ describe('github mode is all-or-nothing', () => {
 
     it('refuses a session secret short enough to be guessed', () => {
         expect(() => github({ SESSION_SECRET: 'short' })).toThrow(/at least 32 characters/);
+    });
+
+    it('refuses a board secret short enough to be guessed', () => {
+        // The same floor the webhook secret sits behind: a short shared secret is enumerable
+        // however constant-time the comparison is.
+        expect(() => github({ JOB_BOARD_TOKEN: 'short' })).toThrow(/JOB_BOARD_TOKEN must be at least 32 characters/);
+    });
+
+    it('carries the board secret the driver presents', () => {
+        expect((github({ JOB_BOARD_TOKEN: SECRET }).auth as { jobBoardToken: string }).jobBoardToken).toBe(SECRET);
     });
 });
 

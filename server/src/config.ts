@@ -108,6 +108,15 @@ export type AuthConfig =
            */
           readonly publicUrl: string;
           readonly ingestToken: string | null;
+          /**
+           * The shared secret the driver presents on the worker routes (JOB_BOARD_TOKEN on both
+           * sides — the same variable name on the board and the driver is what makes "the same
+           * value" verifiable at a glance). The deployment's one driver credential: whoever holds
+           * it can claim work and report results, so it is required in this mode — a board that
+           * cannot authenticate its own driver is the silent 401 loop this variable exists to
+           * prevent, and fatal-at-boot is what names it.
+           */
+          readonly jobBoardToken: string;
           /** Overridable so the browser check can drive a stub. Environment only — see loadAuth. */
           readonly authorizeUrl: string;
           readonly tokenUrl: string;
@@ -357,6 +366,23 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         );
     }
 
+    // Required in this mode, not optional: a github-mode board authenticates its driver with this
+    // one secret, and a board that boots without it fails every claim with 401s the driver logs
+    // forever and nobody reads — the exact silent-forever failure fatal-at-boot replaces. The
+    // length floor is the webhook secret's: a short shared secret is an enumerable credential
+    // however constant-time the comparison is.
+    const jobBoardToken = env.JOB_BOARD_TOKEN?.trim();
+    if (!jobBoardToken) {
+        throw new Error(
+            'AUTH_MODE is "github" but JOB_BOARD_TOKEN is not set. It is the secret the driver presents on the worker routes — the same value in the driver\'s environment and this one. Generate one with: openssl rand -hex 32.'
+        );
+    }
+    if (jobBoardToken.length < MIN_SESSION_SECRET_LENGTH) {
+        throw new Error(
+            `JOB_BOARD_TOKEN must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${jobBoardToken.length}. Generate one with: openssl rand -hex 32.`
+        );
+    }
+
     // Defaulted only for a loopback bind, where the origin is unambiguous. A deployment reachable
     // from elsewhere has to say what its origin is, because `http://0.0.0.0:8080` is not a URL any
     // browser will ever be redirected back to and a wrong one fails at GitHub with an opaque error.
@@ -387,6 +413,7 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         cookieSecure: bool(env.COOKIE_SECURE, false, 'COOKIE_SECURE'),
         publicUrl: origin.origin,
         ingestToken,
+        jobBoardToken,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
         // a phishing vector; as an environment variable it stays a test seam that main.ts logs
         // loudly when it is used.

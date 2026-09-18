@@ -10,12 +10,13 @@ export interface DriverConfig {
     /** Where the board is. The driver is a client of it, never of the database. */
     boardUrl: string;
     /**
-     * The worker token the board authenticates this process by, or '' against an open board.
+     * The shared board secret the board authenticates this process by, or '' against an open board.
      *
      * Environment only — there is no config file here, and a credential that decides whether a
-     * process may run shell commands does not belong on a command line. It is also what tells the
-     * board which organization this driver works for, which is why it is minted per organization by
-     * `npm run worker-token` rather than shared between deployments.
+     * process may run shell commands does not belong on a command line. It is the same value the
+     * dashboard validates against (one .env entry / one chart Secret key), and it is the
+     * deployment's driver credential: a claim is offered every organization's board, and the org
+     * a call operates on comes from the row its URL names.
      */
     boardToken: string;
     /** Names this driver on every claim, so a stuck job can be traced back to a process. */
@@ -24,7 +25,7 @@ export interface DriverConfig {
      * `orgId` used to live here, and its only job was building the runner's WORKDIR as
      * `<workspaceMount>/<orgId>`. The board sends `workspacePath` on the claim now — it owns the
      * layout, because it is what created the directory — so this process builds nothing and no
-     * longer has to be told which organization it is working for. The worker token already says
+     * longer has to be told which organization it is working for. The board's own claim already says
      * that, and said it more reliably.
      */
     image: string;

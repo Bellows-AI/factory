@@ -82,13 +82,11 @@ secret:
     # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route
     # does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     githubWebhookSecret: ''
-    # The drivers' credentials, one per organization (#99): the worker token IS the org binding,
-    # so the chart renders one driver Deployment (and its gate Service) per entry. Keys are the
-    # installation ids sign-in created — `npm run worker-token -- --org <installation-id> --name
-    # <worker>` mints one, printed once, only its hash stored. An EMPTY map renders no driver at
-    # all: there is no org to work for. Empty VALUES render an optional key, which is what an
-    # AUTH_MODE=none board (the local profile) wants.
-    jobBoardTokens: {}
+    # The shared board secret: the dashboard validates `Bearer $JOB_BOARD_TOKEN` on the worker
+    # routes against it and the driver presents it. One value, both sides — generate with
+    # `openssl rand -hex 32`. Required in github mode (the server refuses to boot without it);
+    # empty is fine for the AUTH_MODE=none local profile, where the worker routes are open.
+    jobBoardToken: ''
 
 driver:
     # Built from docker/driver.Dockerfile:

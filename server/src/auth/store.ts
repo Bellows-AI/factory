@@ -47,7 +47,7 @@ export interface PendingSignIn {
  * An authenticated request's subject: who, in which organization, and what they may do there.
  *
  * The org is a property of the caller (#99), resolved fresh on every request: a session carries
- * its org in the row, a personal token in its own row, a worker token in its own — and each is
+ * its org in the row, a personal token in its own row — and each is
  * re-checked through the org_membership join, so a GitHub-side removal at the next sign-in ends
  * every credential's reach immediately.
  */
@@ -56,12 +56,6 @@ export interface Caller {
     org: { id: string; name: string };
     membership: Membership;
     role: Role;
-}
-
-export interface WorkerIdentity {
-    orgId: string;
-    id: string;
-    name: string;
 }
 
 export type AccessTokenKind = 'personal' | 'org';
@@ -164,7 +158,6 @@ export interface AuthStore {
     removeMember(orgId: string, githubUserId: number): Promise<boolean>;
     /** The stand-in account AUTH_MODE=none attributes every request to. */
     localCaller(orgId: string): Promise<Caller | null>;
-    findWorkerToken(tokenHash: Buffer): Promise<WorkerIdentity | null>;
 
     // Access tokens (fat_/oat_). Each row carries the org it was minted for, and resolves through
     // the same org_membership join a session does, so removing a member ends their tokens' reach
@@ -188,10 +181,6 @@ export interface AuthStore {
     listOrgTokens(orgId: string): Promise<AccessTokenView[]>;
     revokePersonalToken(orgId: string, userId: string, id: string): Promise<'revoked' | 'missing'>;
     revokeOrgToken(orgId: string, id: string): Promise<'revoked' | 'missing'>;
-
-    createWorkerToken(orgId: string, name: string, tokenHash: Buffer): Promise<{ id: string }>;
-    revokeWorkerToken(orgId: string, name: string): Promise<'revoked' | 'missing'>;
-    listWorkerTokens(orgId: string): Promise<{ name: string; createdAt: string; revoked: boolean }[]>;
 }
 
 interface CallerRow {
@@ -250,11 +239,11 @@ const toCaller = (row: CallerRow): Caller => ({
  *
  * That is not an oversight to be tidied up later. The other stores are handed an organization and
  * read rows inside it; this one is what decides whether a caller belongs to an organization at all,
- * and its two most important reads — a session token and a worker token — are global by nature, with
- * the worker token being the very thing that *tells* a driver which organization it is working for.
- * Binding an org at construction would mean the object had to already know the answer it exists to
- * produce. Since #99 that answer is per caller: a session and a personal token each carry their own
- * org in their row, and every read resolves the caller THROUGH it.
+ * and its most important read — a session token — is global by nature: the row *tells* the board
+ * which organization the caller is working in. Binding an org at construction would mean the object
+ * had to already know the answer it exists to produce. Since #99 that answer is per caller: a
+ * session and a personal token each carry their own org in their row, and every read resolves the
+ * caller THROUGH it.
  */
 export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unknown> }): AuthStore {
     const gate = async () => {
@@ -510,17 +499,6 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             return row ? toCaller(row) : null;
         },
 
-        async findWorkerToken(tokenHash) {
-            await gate();
-            const rows = await sql<{ org_id: string; id: string; name: string }[]>`
-                update worker_token set last_used_at = now()
-                where token_hash = ${tokenHash} and revoked_at is null
-                returning org_id, id, name
-            `;
-            const row = rows[0];
-            return row ? { orgId: row.org_id, id: row.id, name: row.name } : null;
-        },
-
         async createAccessToken(input) {
             await gate();
             const rows = await sql<{ id: string }[]>`
@@ -534,8 +512,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
 
         async findPersonalToken(tokenHash) {
             await gate();
-            // A throttled touch, not findWorkerToken's unconditional one: worker routes are one
-            // driver's heartbeat, while an access token rides the dashboard's two-second poll, and
+            // A throttled touch: an access token rides the dashboard's two-second poll, and
             // a write on every one of those reads is exactly what the session's write-free read
             // path exists to avoid. The stale-row predicate keeps it to one rewrite a minute.
             // token_hash is globally unique, so the org is not in this predicate — it comes back
@@ -582,7 +559,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             `;
             const rows = await sql<{ org_id: string; id: string; label: string }[]>`
                 select t.org_id, t.id, t.label from access_token t
-                -- The org comes from the row (worker-token-shaped: no user stands behind it), but
+                -- The org comes from the row (no user stands behind it), but
                 -- the ISSUER's live membership is the token's authority: this inner join is what
                 -- makes sign-in propagation end an org token's reach on the very next request,
                 -- the same immediacy a session and a personal token have. A row with no creator
@@ -636,39 +613,6 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
                 returning id
             `;
             return rows[0] ? 'revoked' : 'missing';
-        },
-
-        async createWorkerToken(orgId, name, tokenHash) {
-            await gate();
-            const rows = await sql<{ id: string }[]>`
-                insert into worker_token (org_id, name, token_hash)
-                values (${orgId}, ${name}, ${tokenHash})
-                returning id
-            `;
-            return { id: rows[0]!.id };
-        },
-
-        async revokeWorkerToken(orgId, name) {
-            await gate();
-            const rows = await sql<{ id: string }[]>`
-                update worker_token set revoked_at = now()
-                where org_id = ${orgId} and name = ${name} and revoked_at is null
-                returning id
-            `;
-            return rows[0] ? 'revoked' : 'missing';
-        },
-
-        async listWorkerTokens(orgId) {
-            await gate();
-            const rows = await sql<{ name: string; created_at: Date; revoked_at: Date | null }[]>`
-                select name, created_at, revoked_at from worker_token
-                where org_id = ${orgId} order by created_at
-            `;
-            return rows.map((row) => ({
-                name: row.name,
-                createdAt: row.created_at.toISOString(),
-                revoked: row.revoked_at !== null,
-            }));
         },
     };
 }

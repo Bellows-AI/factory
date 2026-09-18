@@ -245,13 +245,14 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   comes back FROM the row: the token acts in its mint org and nowhere else. The membership join
   gives the same immediacy as a session's: when sign-in propagation deletes the membership, the
   token dies on the spot (its row survives unrevoked, as history with no reach). That live
-  re-resolution is what makes these mintable from the settings page while the worker token is
-  CLI-only — minting is still a credential-issuing act, so it belongs behind the session cookie
+  re-resolution is what makes these mintable from the settings page — minting is still a
+  credential-issuing act, so it belongs behind the session cookie
   and HTTPS on anything but a loopback deployment.
 - **An org token is the ORG's credential, not its minter's — and its authority is bounded by the
-  minter's live membership.** `findOrgToken` resolves the org from the row and no user —
-  deliberately the same shape as a worker token: no person stands behind it, and the org it acts
-  in comes from the row. What it does not share with the worker token is independence from the
+  minter's live membership.** `findOrgToken` resolves the org from the row and no user — no person
+  stands behind it, and the org it acts
+  in comes from the row. What it does not share with a session or a personal token is independence
+  from the
   minter: the lookup joins the creator's `org_membership`, so the token's reach ends exactly when
   a session's or a personal token's does — sign-in propagation deletes the membership, and the
   next request resolves nothing (the row survives unrevoked, history with no reach, the same
@@ -276,7 +277,7 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   per token: an access token rides the dashboard's two-second poll, and a write on every read is
   exactly what the session's write-free read path exists to avoid. The list must not promise more
   than "used within the last minute".
-- **The prefix is the compare-before-query.** `fat_`/`oat_`/`fwt_` are dispatched on the string
+- **The prefix is the compare-before-query.** `fat_`/`oat_` are dispatched on the string
   alone, before any database round trip — a garbage bearer costs a hash and a 401, not a query.
   A bearer on a session route IS the credential for that request: an unknown one is a 401, never a
   fall-through to the cookie behind it.
@@ -292,7 +293,7 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 | `/api/auth/*` | open. `/me` answers `200 {authenticated: false}` on its own — being what *tells* the SPA it is unauthenticated is its purpose, and a 401 there would be logged as a console error by the browser of everybody who has not signed in yet. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
 | `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove`, `/api/tokens` with its org and revoke variants | session cookie, or `Bearer fat_…` — an `oat_` bearer passes on this row's reads plus the `POST /api/refresh` cache poke, and is `403` on the rest (see [Access tokens](#access-tokens)) |
-| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `/publish-token`, `/api/reclaims/claim`, `/api/reclaims/:id/ack` | `Bearer fwt_…` worker token |
+| `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `/publish-token`, `/api/reclaims/claim`, `/api/reclaims/:id/ack` | `Bearer $JOB_BOARD_TOKEN` — the shared board secret |
 | OTLP | optional `X-Factory-Ingest-Token` |
 | `POST /api/sessions/branch` | github mode: the runner's attempt pair (`x-factory-job-id` + `x-factory-job-lease-token`) or `Bearer fat_…`; none mode: open. The deployment-wide ingest token does **not** authorize this write — see the ingest bullet below. |
 
@@ -307,7 +308,7 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   `/remove` are *human* routes: a finished task is over, and stopping
   or deleting one is a person's verdict — which is exactly what makes adjusting, closing,
   stopping and removing one a person's action. The reclaim queue is the opposite shape: it hands
-  the driver worktrees to delete, so its claim and ack take the worker token like the job claim and
+  the driver worktrees to delete, so its claim and ack take the board secret like the job claim and
   complete do.
 - **`GET /api/jobs/:id/thread` is session-only, and an earlier exception for the worker token was
   removed.** The thread carries every job of the conversation — commands, output tails, session
@@ -318,21 +319,28 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   `threadDone` in the same transaction as the verdict, and the driver reclaims on that. The
   task detail page keeps its session-cookie read, which was the read's original and remaining
   purpose.
-- **The worker token is minted by CLI only.** `npm run worker-token -- --org <installation-id>
-  --name driver-1`, printed
-  once, hash stored. No HTTP route mints a credential: everything else a member can do is bounded by
-  the organization, whereas this issues something that claims work and reports results with no human
-  anywhere. (The one precision since #28: the claim route mints a GitHub App installation token onto
-  the claim env, but that token is bounded by the installation, scoped to GitHub, and dead within
-  the hour — see [env.md](env.md). The worker token is the only credential that answers for the
-  board itself.) The `fwt_` prefix makes a leaked token greppable and makes "cookie or worker token?"
-  answerable without a database lookup. The access tokens below are the deliberate contrast, and the
-  reason is the same property read the other way: their authority is a live membership,
-  re-resolved through the join on every request, so they can be minted over HTTP and still die the
-  moment the membership does.
-- **The token is also the driver's org binding** — it is how a process with no session says which
-  organization it is working for, which is why `worker_token.token_hash` is uniquely indexed even
-  though the primary key leads with `org_id`.
+- **The worker credential is one shared secret: `JOB_BOARD_TOKEN`, the same value in the board's
+  and the driver's environment.** Compared constant-time against the board's configured value —
+  no token row, no hash at rest, no CLI to mint one. There is deliberately no HTTP route and no
+  database row for it: the credential answers for a process that claims work and reports results
+  with no human anywhere, and that process is installed by the same operator who configures the
+  board, so the secret travels the same channel every other deployment credential does — the
+  environment (`.env` for compose, a Secret key for the chart). Required in `github` mode and
+  fatal-at-boot when missing or short (the same 32-character floor the session and webhook secrets
+  sit behind): a board that fails every claim with 401s the driver logs forever is the silent
+  failure this replaces. Rotation is changing the value on both sides and restarting. (The claim
+  route still mints a GitHub App installation token onto the claim env, but that token is bounded
+  by the installation, scoped to GitHub, and dead within the hour — see [env.md](env.md). The
+  board secret is the only credential that answers for the board itself.)
+- **The secret is the deployment's driver credential, not an org binding.** The per-org
+  `worker_token` rows this replaced made each driver's token name the one organization it claimed
+  from; with one deployment-wide secret that scoping would be theater — the operator who holds the
+  secret owns every org anyway. So a claim names no row and no org: it is offered **every**
+  organization's queue, first board with work wins. Every other worker route (heartbeat, complete,
+  output, gates, publish-token, the reclaim ack) carries the job or reclaim id in its URL, and the
+  auth hook resolves the org from that row — the same direction the branch route resolves in, and
+  routing rather than authorization, because the secret already answered the authorization
+  question. An id that resolves to nothing is a 404, not an org.
 - **The driver's whole share of this is one header.** `JOB_BOARD_TOKEN` in `driver/src/config.ts` and
   an `authorization` header in `board.ts`. It stays that way because that package depends on nothing
   — see `AGENTS.md`. The header is **omitted** rather than sent empty against an open board: an empty

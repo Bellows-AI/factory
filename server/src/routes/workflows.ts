@@ -35,7 +35,7 @@ function repoReason(value: string): string | null {
 
 /**
  * Workflow definitions: the process a task walks, stored per scope and validated strictly by the
- * store (docs/workflows.md). A person's surface, like every task route: a worker token never gets
+ * store (docs/workflows.md). A person's surface, like every task route: the board secret never gets
  * past the auth wall here, because workflow selection is a human's decision, never a driver's.
  *
  * - `GET /api/workflows?repo=owner/name` — the caller-visible list (the org's, their own, the

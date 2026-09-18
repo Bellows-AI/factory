@@ -38,10 +38,9 @@ timescale:
     enabled: true
 
 secret:
-    # One driver, no token: the local board runs AUTH_MODE=none, and an entry with an empty value
-    # is what keeps the driver Deployment rendering with an optional Secret key (#99).
-    jobBoardTokens:
-        local: ''
+    # No board secret: the local board runs AUTH_MODE=none, where the worker routes are open and
+    # the driver omits the header entirely. The key still renders — empty, and optional in both
+    # pod specs — so the chart renders unchanged between profiles.
 
 driver:
     image: factory-driver

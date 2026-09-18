@@ -3,7 +3,7 @@ import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
 import { LOCAL_ORG_ID, resolveConfig, type GitHubConfig } from './config.js';
-import { createOrgOfLease } from './db/job-store.js';
+import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { createOrgRegistry } from './orgs.js';
 import { createPostgresStore } from './telemetry/store.js';
@@ -73,6 +73,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
 
     if (config.auth.mode === 'github') {
         console.log(`[auth] GitHub sign-in, callback ${config.auth.publicUrl}${callbackPath}`);
+        console.log('[auth] worker routes take Bearer $JOB_BOARD_TOKEN — the same value the driver holds');
         console.log(
             '[auth] the App setup URL must point at the /api/auth/github/setup route for the install round trip'
         );
@@ -100,8 +101,12 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
-        // org-less job query, because the pair's answer IS the org.
+        // org-less job query, because the pair's answer IS the org. The worker-route resolvers
+        // beside it are the same direction: the shared board secret authenticates the driver, and
+        // the org a call operates on comes from the row its URL names.
         orgOfLease: createOrgOfLease({ sql, ready }),
+        orgOfJob: createOrgOfJob({ sql, ready }),
+        orgOfReclaim: createOrgOfReclaim({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         logger: true,

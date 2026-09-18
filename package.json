@@ -28,8 +28,7 @@
         "format": "biome format --write .",
         "lint:fix": "biome check --write .",
         "backfill": "npm run build -w core && npm run build -w server && node server/dist/backfill/cli.js",
-        "seed": "npm run build -w core && npm run build -w server && node server/dist/seed/cli.js",
-        "worker-token": "npm run build -w core && npm run build -w server && node --env-file-if-exists=.env server/dist/admin/worker-token.js"
+        "seed": "npm run build -w core && npm run build -w server && node server/dist/seed/cli.js"
     },
     "devDependencies": {
         "@biomejs/biome": "2.5.13",

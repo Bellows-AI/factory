@@ -16,9 +16,11 @@ github mode and `'config'` under AUTH_MODE=none, which keeps the single local or
 `LOCAL_ORG_ID` and the selector disabled.
 
 **The org is a property of the caller, not of the process.** A session carries its org in its row,
-a personal token in its own, a worker token in its own — and every request re-checks it through the
+a personal token in its own — and every request re-checks it through the
 `org_membership` join, so a GitHub-side removal at the next sign-in ends every credential's reach
-immediately (see [auth.md](auth.md)).
+immediately (see [auth.md](auth.md)). The driver holds no org-bound credential at all: the shared
+board secret authenticates the process, and the org a worker call operates on comes from the job
+row it names.
 
 - **The id is the installation id.** Stable across account renames, unique, zero config, and it
   passes the `organization_id_ck` the 010 check constraint still enforces (`^[a-z0-9][a-z0-9_-]{0,38}$`).
@@ -71,5 +73,5 @@ immediately (see [auth.md](auth.md)).
   /api/auth/org` moves it, guarded by the membership.
 - **Most stores still bind `orgId` at construction**; the org registry builds them per org and
   caches. **`createAuthStore` remains the exception** and takes the organization per call, because
-  it is what *decides* whether a caller belongs to one — and because a worker token's lookup cannot
-  start from an organization at all, being the thing that reports which one a driver is working for.
+  it is what *decides* whether a caller belongs to one — the one store whose lookups cannot start
+  from an organization, since a session row is what reports which one a caller is working in.
