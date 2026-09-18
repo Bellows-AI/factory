@@ -5,6 +5,8 @@ import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
 import {
     type WorkflowParamChoice,
+    clampedWorkflow,
+    ComposerParamRow,
     paramsComplete,
     paramValueMatches,
     TaskComposer,
@@ -1235,6 +1237,66 @@ describe('composer param validation — the client mirror of the board check', (
 
     it('answers false for a pattern the client cannot compile — the board decides', () => {
         expect(paramValueMatches({ name: 'x', pattern: '[' }, 'y')).toBe(false);
+    });
+});
+
+describe('the workflow choice is clamped to the choices the list offers', () => {
+    // A repository switch refetches the list for the new context, and a chosen name the answered
+    // list no longer offers must not survive in state: its parameter inputs vanish, the vacuous
+    // param gate lights Send, and the launch carries a name the board refuses with
+    // UNKNOWN_WORKFLOW. The same clamp rule the executor and repository selects already live by.
+    const list = [
+        { id: 'w1', name: 'fix-issue', scope: 'org' as const },
+        { id: 'w2', name: 'triage', scope: 'repo' as const },
+    ];
+
+    it('resets a chosen name the answered list does not offer back to unchosen', () => {
+        expect(clampedWorkflow('fix-issue', [])).toBe('');
+        expect(clampedWorkflow('triage', [list[0]!])).toBe('');
+    });
+
+    it('keeps a name the list still offers, and holds off while the fetch is in flight', () => {
+        expect(clampedWorkflow('fix-issue', list)).toBe('fix-issue');
+        // `null` is "not answered yet" — it says nothing about the new context, so a choice
+        // survives the wait and is judged the moment the list lands.
+        expect(clampedWorkflow('fix-issue', null)).toBe('fix-issue');
+        expect(clampedWorkflow('', list)).toBe('');
+    });
+});
+
+describe('the composer parameter row', () => {
+    // The row renders only once a workflow is chosen — composer state the offline suite cannot
+    // drive — so it is its own exported component: same props-in-markup-out contract, rendered
+    // and pinned here directly.
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+    const renderRow = (params: WorkflowParamChoice[], values: Record<string, string>) =>
+        renderToStaticMarkup(<ComposerParamRow params={params} values={values} onInput={() => {}} />);
+
+    it('marks the blocking inputs invalid and points them at the named needs message', () => {
+        // The gate's reason must reach assistive technology: the blocking field carries
+        // `aria-invalid`, the message carries a stable id, and the field references it — a
+        // screen-reader member learns WHICH field is dark and WHY, not just that Send is.
+        const html = renderRow([issue], {});
+        expect(html).toContain('aria-invalid="true"');
+        expect(html).toContain('aria-describedby="composer-param-error"');
+        expect(html).toContain('id="composer-param-error"');
+        expect(html).toContain('aria-live="polite"');
+        expect(html).toContain('>needs: issue (must match #\\d+)<');
+    });
+
+    it('keeps the announcement region mounted, silent and unmarked, once every value validates', () => {
+        // A live region can only announce a change it survives, so the region outlives the
+        // message; a valid field carries no invalid state and no error reference.
+        const html = renderRow([issue], { issue: '#12' });
+        expect(html).toContain('id="composer-param-error"');
+        expect(html).not.toContain('aria-invalid');
+        expect(html).not.toContain('aria-describedby');
+        expect(html).not.toContain('needs:');
+    });
+
+    it('never emits a placeholder value', () => {
+        const html = renderRow([issue], { issue: '#12' });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
 

@@ -64,6 +64,20 @@ export function valuesForWorkflow(
 }
 
 /**
+ * The workflow select's value, clamped to the choices the ANSWERED list offers: a chosen name the
+ * current context no longer serves must not survive invisibly in the draft — its parameter inputs
+ * are gone, the vacuous gate lights Send, and the launch carries a name the board refuses with
+ * UNKNOWN_WORKFLOW. A fetch still in flight (`null`) says nothing about the coming context, so a
+ * choice survives the wait and is judged the moment the list lands.
+ */
+export function clampedWorkflow(workflow: string, workflows: readonly { name: string }[] | null): string {
+    if (workflow === '' || workflows === null || workflows.some((choice) => choice.name === workflow)) {
+        return workflow;
+    }
+    return '';
+}
+
+/**
  * The new-task composer, the default right pane of the tasks area.
  *
  * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`,
@@ -161,10 +175,6 @@ export function TaskComposer({
     const chosenWorkflowId = chosenWorkflow?.id ?? null;
     const paramValues = valuesForWorkflow(storedParams, chosenWorkflowId);
     const paramsReady = paramsComplete(declaredParams, paramValues);
-    // The declarations Send is still dark for — empty, over-length or pattern-refused values
-    // alike. Named in place below: a disabled button with no reason on screen is a task that
-    // cannot start.
-    const missingParams = declaredParams.filter((param) => !paramValueMatches(param, paramValues[param.name]));
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
     // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
@@ -205,6 +215,15 @@ export function TaskComposer({
             setRepo(firstRepo(repos));
         }
     }, [repos, repo]);
+
+    // And the workflow: a repository switch refetches the list for the new context, and a chosen
+    // name the answered list does not offer must go the way of a deleted executor — clamped to
+    // what exists. Unchosen is the only reset target: nothing autoselects a process, so the
+    // member's words run verbatim until one is picked again.
+    useEffect(() => {
+        const clamped = clampedWorkflow(workflow, workflows);
+        if (clamped !== workflow) setWorkflow(clamped);
+    }, [workflows, workflow]);
 
     // The workflow list's repo context must track the composer's repo WHEREVER the composer sets
     // it — the mount initializer, the autoselect above, the clamp above, or the member's own
@@ -351,40 +370,75 @@ export function TaskComposer({
                     </button>
                 </div>
                 {declaredParams.length > 0 ? (
-                    <div className="composer-row">
-                        {declaredParams.map((param) => (
-                            <label key={param.name} className="composer-label composer-param">
-                                {param.name}{' '}
-                                <input
-                                    className="composer-select"
-                                    placeholder="required"
-                                    title={param.pattern !== undefined ? `must match ${param.pattern}` : undefined}
-                                    maxLength={512}
-                                    value={paramValues[param.name] ?? ''}
-                                    onChange={(e) =>
-                                        setStoredParams({
-                                            workflowId: chosenWorkflowId,
-                                            values: { ...paramValues, [param.name]: e.target.value },
-                                        })
-                                    }
-                                />
-                            </label>
-                        ))}
-                        {missingParams.length > 0 ? (
-                            <span className="muted">
-                                needs:{' '}
-                                {missingParams
-                                    .map((param) =>
-                                        param.pattern !== undefined
-                                            ? `${param.name} (must match ${param.pattern})`
-                                            : param.name
-                                    )
-                                    .join(', ')}
-                            </span>
-                        ) : null}
-                    </div>
+                    <ComposerParamRow
+                        params={declaredParams}
+                        values={paramValues}
+                        onInput={(name, value) =>
+                            setStoredParams({
+                                workflowId: chosenWorkflowId,
+                                values: { ...paramValues, [name]: value },
+                            })
+                        }
+                    />
                 ) : null}
             </div>
         </section>
+    );
+}
+
+/**
+ * The chosen workflow's declared parameters: one explicit input per declaration, and the list of
+ * the ones still blocking Send, named in words. Each blocking input carries `aria-invalid` and
+ * references the message by id, so a screen reader hears WHICH field is dark and why — a disabled
+ * button alone says neither. The message's region stays mounted while the row does, because a
+ * live region can only announce a change it survives, and speaks politely: it updates per
+ * keystroke, not as an alarm.
+ */
+export function ComposerParamRow({
+    params,
+    values,
+    onInput,
+}: {
+    /** The declared parameters of the chosen workflow, one input each. */
+    params: readonly WorkflowParamChoice[];
+    /** The member's typed values so far, keyed by parameter name. */
+    values: Record<string, string>;
+    /** One keystroke: the parameter's name, and the field's new value. */
+    onInput: (name: string, value: string) => void;
+}) {
+    // The declarations Send is still dark for — empty, over-length or pattern-refused values
+    // alike. Named in place below: a disabled button with no reason on screen is a task that
+    // cannot start.
+    const missing = params.filter((param) => !paramValueMatches(param, values[param.name]));
+    return (
+        <div className="composer-row">
+            {params.map((param) => {
+                const invalid = !paramValueMatches(param, values[param.name]);
+                return (
+                    <label key={param.name} className="composer-label composer-param">
+                        {param.name}{' '}
+                        <input
+                            className="composer-select"
+                            placeholder="required"
+                            title={param.pattern !== undefined ? `must match ${param.pattern}` : undefined}
+                            aria-invalid={invalid || undefined}
+                            aria-describedby={invalid ? 'composer-param-error' : undefined}
+                            maxLength={512}
+                            value={values[param.name] ?? ''}
+                            onChange={(e) => onInput(param.name, e.target.value)}
+                        />
+                    </label>
+                );
+            })}
+            <span id="composer-param-error" className="muted" aria-live="polite">
+                {missing.length > 0
+                    ? `needs: ${missing
+                          .map((param) =>
+                              param.pattern !== undefined ? `${param.name} (must match ${param.pattern})` : param.name
+                          )
+                          .join(', ')}`
+                    : ''}
+            </span>
+        </div>
     );
 }
