@@ -221,8 +221,18 @@ export function OnboardingPage({
             // listing — so a name the listing cannot render is never submitted.
             const chosen = [...(repoChecked[orgId] ?? standingRepos(installation.tracked, listing))];
             // Checking nothing is not a state this route can express — tracking no repo of a
-            // selected org is what deselecting the org is for. The empty hint below says so.
-            if (chosen.length === 0) continue;
+            // selected org is what deselecting the org is for. A TOUCHED org standing at nothing
+            // is refused loudly (the response must match what the screen showed); an untouched
+            // org with a fully-stale narrowing also stands at nothing, and omitting it is what
+            // keeps those rows retained until the person actually revises.
+            if (chosen.length === 0) {
+                if (narrowed.has(orgId)) {
+                    setError('Select at least one repository, or deselect the organization.');
+                    setSubmitting(false);
+                    return;
+                }
+                continue;
+            }
             // All-checked means track everything, future repos included: posted as an empty
             // list, which clears any stored narrowing rather than pinning today's list. Mutual
             // set inclusion, not a length compare — a set must not read as "everything" merely
