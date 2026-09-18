@@ -17,21 +17,28 @@ function watchConsole(page: Page): string[] {
 }
 
 test.describe('the task composer', () => {
-    // The board owns the base workflow's row and refreshes it at boot; that refresh races the
-    // page's first list fetch. A reload re-reads the list, and toPass bounds the retry — a
-    // reload that never helps is a real failure, not a race.
-    async function selectWorkflowAndSettle(page: Page, name: string) {
-        const workflow = page.getByLabel('Workflow');
+    /**
+     * The board owns the base workflow's row and refreshes it at boot — seedBase fires without
+     * being awaited (orgs.ts), so the first list read can still serve a stale pre-parameter
+     * definition. The refresh must land BEFORE the page loads: the visit below is the one a
+     * member gets, and the test takes no second one. toPass bounds the wait — a refresh that
+     * never lands is a real failure, not a race to hide.
+     */
+    async function awaitSeedRefresh(page: Page) {
         await expect(async () => {
-            await page.reload();
-            await expect(workflow).toBeVisible();
-            await workflow.selectOption(name);
-            await expect(workflow).toHaveValue(name);
+            const response = await page.request.get('/api/workflows');
+            expect(response.ok()).toBe(true);
+            const { workflows } = (await response.json()) as {
+                workflows: { name: string; params: { name: string }[] }[];
+            };
+            const fixIssue = workflows.find((choice) => choice.name === 'fix-issue');
+            expect(fixIssue?.params.map((param) => param.name)).toContain('issue');
         }).toPass({ timeout: 15_000 });
     }
 
     test('a workflow that declares parameters asks for them before Send', async ({ page }) => {
         const problems = watchConsole(page);
+        await awaitSeedRefresh(page);
         await page.goto('/tasks');
 
         const composer = page.locator('.composer');
@@ -44,7 +51,9 @@ test.describe('the task composer', () => {
 
         // Selecting it must surface one labelled input per declared parameter: the launch
         // refuses without them, so a select without a form is a task that cannot start.
-        await selectWorkflowAndSettle(page, 'fix-issue');
+        const workflow = page.getByLabel('Workflow');
+        await workflow.selectOption('fix-issue');
+        await expect(workflow).toHaveValue('fix-issue');
         const issue = composer.getByRole('textbox', { name: 'issue' });
         await expect(issue).toBeVisible();
 

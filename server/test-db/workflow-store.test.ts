@@ -262,4 +262,28 @@ describe.skipIf(!enabled)('the workflow store', () => {
         // member's definition is not the boot's to correct.
         expect((await store.get(mine.id))?.definition).toEqual({ entry: 'x', nodes: [], edges: [], params: [] });
     });
+
+    it('reserves the base workflow name in the org scope for the shipped template', async () => {
+        await store.seedBase();
+        const [board] = await store.listVisible({ userId: null, repo: null });
+
+        // An admin may delete org-level workflows, and the slot is then free until the next boot:
+        // the unique index no longer stands in the way, so nothing but a reservation keeps an
+        // admin definition out of the one row seedBase refreshes every boot.
+        await store.remove(board!.id);
+        const admin = await store.create({
+            name: BASE_WORKFLOW.name,
+            scope: { kind: 'org' },
+            definition,
+            createdBy: ALICE,
+        });
+        expect(admin).toMatchObject({ refused: true, code: 'NAME_TAKEN' });
+
+        // The next boot seeds the board's own template into the freed slot — and overwrites
+        // nothing of the admin's, because nothing of the admin's could exist there.
+        await store.seedBase();
+        const rows = await store.listVisible({ userId: null, repo: null });
+        expect(rows).toHaveLength(1);
+        expect((await store.get(rows[0]!.id))?.definition).toEqual(BASE_WORKFLOW.definition);
+    });
 });
