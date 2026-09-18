@@ -37,7 +37,7 @@ export const ISSUE_PARAM: WorkflowParam = {
 const fetchIssuePrompt = `Fetch GitHub issue {{param.issue}} with full detail, comments included —
 clarifications and changed requirements often live there:
 
-    gh issue view <url-or-number> --json number,title,body,labels,comments,state
+    gh issue view {{param.issue}} --json number,title,body,labels,comments,state
 
 The member's own words for this task, for context:
 

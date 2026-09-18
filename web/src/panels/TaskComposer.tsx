@@ -50,6 +50,21 @@ export function paramsComplete(params: readonly WorkflowParamChoice[], values: R
 }
 
 /**
+ * The stored parameter values, read back scoped to the workflow they were typed for. A value is
+ * handed over only while that same workflow is STILL the effective one: a repo switch re-resolves
+ * the effective default without any select interaction, so a clear-on-select alone would let
+ * `#12` typed for repo A's default sit valid for repo B's — and launch B's process with A's
+ * issue. Keying the read to the identity makes that carry impossible, with no gap for the stale
+ * values to be shown or sent through.
+ */
+export function valuesForWorkflow(
+    stored: { workflowId: string | null; values: Record<string, string> },
+    workflowId: string | null
+): Record<string, string> {
+    return stored.workflowId === workflowId ? stored.values : {};
+}
+
+/**
  * The new-task composer, the default right pane of the tasks area.
  *
  * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`,
@@ -125,9 +140,13 @@ export function TaskComposer({
     // The workflow starts UNCHOSEN — null, the board's own default — and, unlike repo and
     // executor, nothing autoselects one: a process is the member's call, not the first row's.
     const [workflow, setWorkflow] = useState('');
-    // The declared params of the chosen workflow, filled in the explicit inputs below. Reset when
-    // the choice changes — values typed for one process must never stamp another.
-    const [paramValues, setParamValues] = useState<Record<string, string>>({});
+    // The declared params of the effective workflow, filled in the explicit inputs below. Stored
+    // against the identity of the workflow they were typed for — values typed for one process must
+    // never stamp another, however the effective one came to change.
+    const [storedParams, setStoredParams] = useState<{ workflowId: string | null; values: Record<string, string> }>({
+        workflowId: null,
+        values: {},
+    });
 
     // The workflow whose inputs the composer shows: the member's explicit choice, or — nothing
     // chosen — the board's own default resolution (repo over user over org, the same stack the
@@ -147,6 +166,8 @@ export function TaskComposer({
             .sort((a, b) => DEFAULT_PRECEDENCE[a.scope] - DEFAULT_PRECEDENCE[b.scope])[0] ??
         null;
     const declaredParams = effectiveWorkflow?.params ?? [];
+    const effectiveWorkflowId = effectiveWorkflow?.id ?? null;
+    const paramValues = valuesForWorkflow(storedParams, effectiveWorkflowId);
     const paramsReady = paramsComplete(declaredParams, paramValues);
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
@@ -312,7 +333,9 @@ export function TaskComposer({
                                 value={workflow}
                                 onChange={(e) => {
                                     setWorkflow(e.target.value);
-                                    setParamValues({});
+                                    // The values reset through the identity-keyed read: the changed
+                                    // choice re-resolves the effective workflow, and stale values
+                                    // stop being handed back — select and repo switch alike.
                                 }}
                             >
                                 <option value="">— none —</option>
@@ -345,7 +368,10 @@ export function TaskComposer({
                                     maxLength={512}
                                     value={paramValues[param.name] ?? ''}
                                     onChange={(e) =>
-                                        setParamValues((prev) => ({ ...prev, [param.name]: e.target.value }))
+                                        setStoredParams({
+                                            workflowId: effectiveWorkflowId,
+                                            values: { ...paramValues, [param.name]: e.target.value },
+                                        })
                                     }
                                 />
                             </label>

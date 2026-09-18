@@ -487,6 +487,9 @@ describe('the seeded issue parameter', () => {
         expect(fetchNode.prompt).toContain('{{param.issue}}');
         expect(fetchNode.prompt).toContain('{{command}}');
         expect(fetchNode.prompt).not.toContain('if none was given');
+        // The command block passes the declared param itself — no placeholder left to re-derive.
+        expect(fetchNode.prompt).not.toContain('<url-or-number>');
+        expect(fetchNode.prompt).toContain('gh issue view {{param.issue}}');
     });
 });
 
@@ -660,6 +663,15 @@ describe('the parameter pattern grammar — a safe subset, refused on any doubt'
         expect(withPattern('\\d+\\d+\\d+\\d+\\d+').ok).toBe(false); // more than four quantified atoms
     });
 
+    it('refuses alternation-stacked patterns — branch boundaries carry their own budget', () => {
+        // `(a|aa)(a|aa)…` composes 2ⁿ match paths without a single quantifier, so unquantified
+        // groups may not stack: two branch boundaries, and the pattern is refused.
+        expect(withPattern('(a|aa)(a|aa)(a|aa)').ok).toBe(false);
+        expect(withPattern('a|aa|aaa|aaaa').ok).toBe(false); // three boundaries at the top level
+        // The reported attack: overlap groups repeated to the pattern-size cap.
+        expect(withPattern('(a|aa)'.repeat(42)).ok).toBe(false);
+    });
+
     it('refuses syntax outside the subset, even when JavaScript would allow it', () => {
         expect(withPattern('^\\d+$').ok).toBe(false); // anchors are implicit in the full match
         expect(withPattern('(?=a)b').ok).toBe(false); // lookahead
@@ -675,6 +687,9 @@ describe('the parameter pattern grammar — a safe subset, refused on any doubt'
 
     it('does not over-refuse: a mandatory atom between quantified atoms breaks the ambiguity run', () => {
         expect(withPattern('x*y*b[c]+d+').ok).toBe(true); // true runs: 2, then 1, then 1
+        expect(withPattern('(a|aa)(a|aa)').ok).toBe(true); // two branch boundaries, at the cap
+        // The seeded issue pattern: one boundary and four run-broken quantifiers.
+        expect(withPattern('#\\d+|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\\d+').ok).toBe(true);
     });
 });
 

@@ -190,9 +190,11 @@ export function tailMatches(output: string | null, marker: string): boolean {
  * - the AMBIGUITY BUDGET: quantified atoms chain into a "run" only when nothing mandatory sits
  *   between them (groups are transparent to this — `(a+)(a+)` is a run of two, the classic
  *   blowup shape); a run is capped at MAX_QUANTIFIED_RUN, the whole pattern at
- *   MAX_QUANTIFIED_ATOMS, and bounded repetitions at MAX_PATTERN_BOUND. The worst backtrack a
- *   stored pattern can force is therefore C(value-length, MAX_QUANTIFIED_RUN) — ~2×10⁷ cheap
- *   steps for a 512-character value — instead of unbounded.
+ *   MAX_QUANTIFIED_ATOMS, and bounded repetitions at MAX_PATTERN_BOUND. Alternation carries its
+ *   own budget, MAX_ALTERNATIONS branch boundaries: `(a|aa)(a|aa)…` composes 2ⁿ match paths with
+ *   no quantifier anywhere, so unbounded alternation would stack 2ⁿ on top of the quantifier
+ *   budget — capping the boundaries keeps the worst backtrack a small constant times
+ *   C(value-length, MAX_QUANTIFIED_RUN) instead of exponential in the pattern.
  *
  * Everything else is refused at create (`BAD_PARAMS`) — the same loud-refusal doctrine as the
  * rest of the grammar.
@@ -200,11 +202,15 @@ export function tailMatches(output: string | null, marker: string): boolean {
 const MAX_QUANTIFIED_ATOMS = 4;
 const MAX_QUANTIFIED_RUN = 3;
 const MAX_PATTERN_BOUND = 64;
+const MAX_ALTERNATIONS = 2;
 const CLASS_SHORTHANDS = 'dDwWsSbB';
 
 function isSafePattern(source: string): boolean {
     let pos = 0;
     let quantifiedTotal = 0;
+    // Branch boundaries compose alternatives exactly like quantifiers do — `(a|aa)(a|aa)…` is
+    // the blowup shape with no quantifier anywhere — so they carry their own budget.
+    let alternations = 0;
     // The ambiguity budget: quantified atoms currently chained with nothing mandatory between
     // them. Shared between the sequence and its groups on purpose — `(a+)(a+)` chains THROUGH
     // the group boundary, which is exactly the shape the cap exists for.
@@ -250,6 +256,8 @@ function isSafePattern(source: string): boolean {
                 return true;
             }
             if (ch === '|') {
+                alternations += 1;
+                if (alternations > MAX_ALTERNATIONS) return false;
                 run = 0; // a branch boundary breaks any chain
                 prev = 'bar';
                 pos += 1;

@@ -8,6 +8,7 @@ import {
     paramsComplete,
     paramValueMatches,
     TaskComposer,
+    valuesForWorkflow,
 } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 
@@ -1228,5 +1229,29 @@ describe('composer param validation — the client mirror of the board check', (
 
     it('answers false for a pattern the client cannot compile — the board decides', () => {
         expect(paramValueMatches({ name: 'x', pattern: '[' }, 'y')).toBe(false);
+    });
+});
+
+describe('composer params are scoped to the effective workflow identity', () => {
+    // The review's leak: `#12` typed for repo A's default workflow stays valid when a repo switch
+    // makes repo B's default effective — the same list refetch, zero select interactions — and
+    // Send launches B's process with A's issue. Values are stored against the identity of the
+    // workflow they were typed for, and read back only while that workflow is still effective.
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+
+    it('hands values back only while the workflow they were typed for is still effective', () => {
+        const stored = { workflowId: 'wf-repo-a', values: { issue: '#12' } };
+        expect(valuesForWorkflow(stored, 'wf-repo-a')).toEqual({ issue: '#12' });
+        // Repo B's default is a DIFFERENT definition (a different row id) even at the same name:
+        // the typed value must vanish from the inputs and from the Send gate alike.
+        expect(valuesForWorkflow(stored, 'wf-repo-b')).toEqual({});
+        expect(paramsComplete([issue], valuesForWorkflow(stored, 'wf-repo-b'))).toBe(false);
+    });
+
+    it('answers empty when nothing is effective, and stores nothing before any workflow is', () => {
+        const stored = { workflowId: 'wf-1', values: { issue: '#12' } };
+        expect(valuesForWorkflow(stored, null)).toEqual({});
+        // The mount state: no workflow has ever been effective, so nothing can leak anywhere.
+        expect(valuesForWorkflow({ workflowId: null, values: {} }, 'wf-1')).toEqual({});
     });
 });
