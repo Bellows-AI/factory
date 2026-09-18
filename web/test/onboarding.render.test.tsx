@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     OnboardingPage,
     StartAgainPanel,
+    reconciled,
     standingRepos,
     type PendingSignInPayload,
     type RepoListing,
@@ -103,5 +104,27 @@ describe('seeding from a stored narrowing (#135 review)', () => {
         // unstored, so unchecked.
         expect(html.match(/checked=""/g)?.length).toBe(2);
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+describe('reconciling a rejected submission (#135 review)', () => {
+    // The listing the server validated against AFTER the checkboxes loaded: 'acme/gone' was
+    // removed, 'acme/new' appeared. The submission that carried 'acme/gone' was refused with
+    // UNKNOWN_REPO — the reconcile is what makes "try again" post something submittable instead
+    // of the identical rejected body.
+    const FRESH: RepoListing = { repos: ['acme/web', 'acme/new'], source: 'app' };
+
+    it('drops the names the fresh listing no longer carries and keeps the rest', () => {
+        expect(reconciled(new Set(['acme/web', 'acme/gone']), FRESH)).toEqual(new Set(['acme/web']));
+        // Everything gone: the org stands at nothing — deselection territory, posts nothing.
+        expect(reconciled(new Set(['acme/gone', 'acme/older']), FRESH)).toEqual(new Set());
+    });
+
+    it('seeds and reconcile share one intersection, so a retry cannot carry a stale name', () => {
+        // The standing seed of the same org under the fresh listing — the reconciled touch set
+        // and a fresh seed must agree, whichever the retry posts.
+        expect(reconciled(new Set(['acme/gone', 'acme/web']), FRESH)).toEqual(
+            standingRepos(['acme/gone', 'acme/web'], FRESH)
+        );
     });
 });

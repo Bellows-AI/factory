@@ -25,13 +25,22 @@ export interface RepoListing {
 }
 
 /**
- * The org's standing checked set: its stored narrowing intersected with the live listing — a
- * stored name the listing cannot render must neither seed a checkbox nor ride into the POST —
+ * `chosen` narrowed to what the listing still carries — the one intersection the screen acts
+ * through. Seeding uses it (a stored name the listing cannot render must neither display nor
+ * ride into the POST) and so does the UNKNOWN_REPO recovery: the submission was refused because
+ * the installation's listing changed under the loaded checkboxes, and this is what makes the
+ * retry post only names that still exist instead of the identical rejected body.
+ */
+export const reconciled = (chosen: ReadonlySet<string>, listing: RepoListing): Set<string> =>
+    new Set([...chosen].filter((name) => listing.repos.includes(name)));
+
+/**
+ * The org's standing checked set: its stored narrowing intersected with the live listing —
  * or the whole listing when the org tracks everything. The one seed the checkboxes display, a
  * first touch expands, and the submit posts, so the three cannot drift apart.
  */
 export const standingRepos = (tracked: string[] | null, listing: RepoListing): Set<string> =>
-    new Set(tracked ? tracked.filter((name) => listing.repos.includes(name)) : listing.repos);
+    tracked === null ? new Set(listing.repos) : reconciled(new Set(tracked), listing);
 
 /**
  * The expired-pending state: the one recovery is restarting the OAuth round trip. Rendered
@@ -236,7 +245,30 @@ export function OnboardingPage({
             if (!response.ok) {
                 const body = (await response.json().catch(() => null)) as { code?: string } | null;
                 if (body?.code === 'UNKNOWN_REPO') {
-                    setError('One of the chosen repositories is not offered by its installation. Try again.');
+                    // The installation's listing changed under the loaded checkboxes: the refused
+                    // body carried at least one name that no longer exists, and re-posting it
+                    // verbatim would loop forever. Re-fetch what this submission relied on and
+                    // reconcile every touched set against the fresh names, so the retry — and
+                    // the checkboxes behind it — carry only what still exists.
+                    for (const orgId of considered) {
+                        const current = listings[orgId];
+                        if (!current || current === 'loading' || current.source !== 'app') continue;
+                        const response = await fetch(`/api/auth/github/pending/installations/${orgId}/repos`).catch(
+                            () => null
+                        );
+                        if (!response || !response.ok) continue;
+                        const fresh = (await response.json()) as RepoListing;
+                        if (fresh.source !== 'app') continue;
+                        setListings((prev) => ({ ...prev, [orgId]: fresh }));
+                        setRepoChecked((prev) => {
+                            const chosen = prev[orgId];
+                            if (!chosen) return prev;
+                            return { ...prev, [orgId]: reconciled(chosen, fresh) };
+                        });
+                    }
+                    setError(
+                        'The repositories of an organization changed while you were choosing. The lists were refreshed — review your selection and try again.'
+                    );
                 } else if (body?.code === 'REPOS_UNAVAILABLE') {
                     setError(
                         'The repositories of one of the chosen organizations could not be listed, so its narrowing was refused. Try again.'
