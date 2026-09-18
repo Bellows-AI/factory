@@ -174,12 +174,15 @@ export interface UseJobs {
     /**
      * `workflow` is the NAME of the workflow the task walks, or null to let the board resolve its
      * default (repo > user > org > none). The board freezes the resolved definition onto the task.
+     * `workflowParams` carries the values for the workflow's declared launch parameters, one
+     * validated input each; the board refuses a missing or malformed one instead of launching.
      */
     queue: (
         command: string,
         repo: string | null,
         executor: string | null,
-        workflow: string | null
+        workflow: string | null,
+        workflowParams: Record<string, string> | null
     ) => Promise<QueueResult>;
     followUp: (id: string, command: string) => Promise<QueueResult>;
     markDone: (id: string) => Promise<string | null>;
@@ -289,13 +292,14 @@ export function useJobs(enabled: boolean): UseJobs {
             command: string,
             repo: string | null,
             executor: string | null,
-            workflow: string | null
+            workflow: string | null,
+            workflowParams: Record<string, string> | null
         ): Promise<QueueResult> => {
             try {
                 const response = await fetch('/api/jobs', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ command, repo, executor, workflow }),
+                    body: JSON.stringify({ command, repo, executor, workflow, workflowParams }),
                 });
                 if (response.status === 401) {
                     reportUnauthenticated();

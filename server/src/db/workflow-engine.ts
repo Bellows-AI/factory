@@ -12,6 +12,7 @@
 import type { GateReport } from './job-store.js';
 import {
     type EdgeRule,
+    type ParamValues,
     type WorkflowDefinition,
     type WorkflowNode,
     COMMAND_LIMIT,
@@ -87,6 +88,17 @@ export function primarySessionId(definition: WorkflowDefinition | null, rows: En
  */
 export function nextTransition(input: {
     snapshot: WorkflowDefinition;
+    /**
+     * The thread's frozen parameter values — the root row's `workflow_params`, read beside the
+     * snapshot. Every `{{param.NAME}}` in any node's prompt resolves from here.
+     */
+    params: ParamValues;
+    /**
+     * The thread root's command — `{{command}}` in any prompt resolves to it. For a workflow
+     * thread that is the interpolated entry prompt the member launched with (routes/jobs.ts
+     * builds it), so a successor sees the member's own words, not a bare param value.
+     */
+    command: string;
     /** The whole thread, oldest first, as the store reads it inside the verdict's transaction. */
     rows: EngineRow[];
     completed: CompletedRun;
@@ -122,6 +134,8 @@ export function nextTransition(input: {
             },
             gateName: failed?.name ?? '',
             gateOutput: failed?.output ?? '',
+            param: (name) => input.params[name] ?? '',
+            command: input.command,
         });
         if (command.length > COMMAND_LIMIT) return { action: 'rest', reason: 'command_too_large' };
 

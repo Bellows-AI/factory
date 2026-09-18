@@ -32,6 +32,7 @@ const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
 /** The smallest definition that passes the validator: one publish-reachable loop of two nodes. */
 const definition = {
     entry: 'first',
+    params: [],
     nodes: [
         { name: 'first', kind: 'agent', session: 'resume', prompt: 'do {{second.output}}' },
         { name: 'second', kind: 'agent', session: 'fresh', prompt: 'check', publish: true },
@@ -163,6 +164,23 @@ describe.skipIf(!enabled)('the workflow store', () => {
 
         const someoneElse = await store.listVisible({ userId: '00000000-0000-4000-8000-00000000e999', repo: null });
         expect(someoneElse.map((row) => row.name)).toEqual(['org-wf']);
+    });
+
+    it('carries the declared params on the list summaries, for the composer to render inputs', async () => {
+        await store.create({
+            name: 'parammed',
+            scope: { kind: 'org' },
+            definition: { ...definition, params: [{ name: 'issue', pattern: '#\\d+' }] },
+            createdBy: ALICE,
+        });
+        await store.create({ name: 'paramless', scope: { kind: 'org' }, definition, createdBy: ALICE });
+
+        const listed = await store.listVisible({ userId: null, repo: null });
+        expect(listed).toHaveLength(2);
+        expect(listed.find((row) => row.name === 'parammed')).toMatchObject({
+            params: [{ name: 'issue', pattern: '#\\d+' }],
+        });
+        expect(listed.find((row) => row.name === 'paramless')).toMatchObject({ params: [] });
     });
 
     it('moves the default slot within a scope and resolves it repo over user over org', async () => {

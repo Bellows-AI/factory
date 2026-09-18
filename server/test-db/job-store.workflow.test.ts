@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type Claim, type JobStore } from '../src/db/job-store.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import type { ParamValues, WorkflowDefinition } from '../src/db/workflow-schema.js';
 
 const url = process.env.DATABASE_URL;
 
@@ -36,6 +36,7 @@ const CLEAN = 'VERDICT: CLEAN';
 /** A four-node graph with one review/fix loop, one publish node, and the base session policies. */
 const walk: WorkflowDefinition = {
     entry: 'implement',
+    params: [],
     nodes: [
         { name: 'implement', kind: 'agent', session: 'resume', prompt: 'implement' },
         { name: 'review', kind: 'agent', session: 'fresh', prompt: 'review the work' },
@@ -52,6 +53,7 @@ const walk: WorkflowDefinition = {
 
 const INTERP_CAP: WorkflowDefinition = {
     entry: 'a',
+    params: [],
     nodes: [
         ...['a', 'b', 'c', 'd', 'e'].map((name) => ({
             name,
@@ -93,13 +95,17 @@ beforeEach(async () => {
 });
 
 /** Seeds the named definition, queues a task on it, and returns the root id. */
-async function queueWorkflowJob(definition: WorkflowDefinition, name = 'walk'): Promise<string> {
+async function queueWorkflowJob(
+    definition: WorkflowDefinition,
+    name = 'walk',
+    params: ParamValues = {}
+): Promise<string> {
     const created = await workflows.create({ name, scope: { kind: 'org' }, definition, createdBy: null });
     expect(created).toHaveProperty('id');
     const job = await store.create('fix the thing', null, {
         repo: null,
         executor: null,
-        workflow: { id: (created as { id: string }).id, node: definition.entry, snapshot: definition },
+        workflow: { id: (created as { id: string }).id, node: definition.entry, snapshot: definition, params },
     });
     return job.id;
 }
@@ -367,5 +373,48 @@ describe.skipIf(!enabled)('workflow execution', () => {
         // No member carries the user's done_at, so the thread is not DONE — the pre-027 answer.
         expect(verdict).toMatchObject({ result: 'ok', threadDone: false });
         expect(await thread(job.id)).toHaveLength(1);
+    });
+});
+
+describe.skipIf(!enabled)('workflow parameters', () => {
+    /** A two-node graph whose successor prompt names the declared param and the root command. */
+    const parammed: WorkflowDefinition = {
+        entry: 'fetch',
+        params: [{ name: 'issue', pattern: '#\\d+' }],
+        nodes: [
+            { name: 'fetch', kind: 'agent', session: 'resume', prompt: 'fetch {{param.issue}}' },
+            {
+                name: 'work',
+                kind: 'agent',
+                session: 'resume',
+                prompt: 'issue {{param.issue}}; asked: {{command}}',
+                publish: true,
+            },
+        ],
+        edges: [{ from: 'fetch', to: 'work', when: 'succeeded' }],
+    };
+
+    it('freezes the given param values on the root row beside the snapshot, and null without a workflow', async () => {
+        const root = await queueWorkflowJob(parammed, 'parammed', { issue: '#42' });
+        const [row] = await sql<{ params: unknown }[]>`
+            select workflow_params as params from job where id = ${root}
+        `;
+        expect(row!.params).toEqual({ issue: '#42' });
+
+        const plain = await store.create('plain', null, { repo: null, executor: null });
+        const [bare] = await sql<{ params: unknown }[]>`
+            select workflow_params as params from job where id = ${plain.id}
+        `;
+        expect(bare!.params).toBeNull();
+    });
+
+    it("fills {{param.*}} in a successor prompt from the root's frozen values, {{command}} from the root command", async () => {
+        const root = await queueWorkflowJob(parammed, 'parammed-walk', { issue: '#42' });
+        await runNext('succeeded', 'the issue body'); // fetch → work
+        const rows = await thread(root);
+        expect(rows.map((row) => row.workflowNode)).toEqual(['fetch', 'work']);
+        // `{{command}}` is the ROOT row's command — for a workflow thread launched through the
+        // route, the interpolated entry prompt the member's words rode in on.
+        expect(rows[1]!.command).toBe('issue #42; asked: fix the thing');
     });
 });
