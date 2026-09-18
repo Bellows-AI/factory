@@ -169,6 +169,10 @@ export function TaskComposer({
     const effectiveWorkflowId = effectiveWorkflow?.id ?? null;
     const paramValues = valuesForWorkflow(storedParams, effectiveWorkflowId);
     const paramsReady = paramsComplete(declaredParams, paramValues);
+    // The declarations Send is still dark for — empty, over-length or pattern-refused values
+    // alike. Named in place below: a disabled button with no reason on screen is a task that
+    // cannot start.
+    const missingParams = declaredParams.filter((param) => !paramValueMatches(param, paramValues[param.name]));
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
     // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
@@ -364,7 +368,8 @@ export function TaskComposer({
                                 {param.name}{' '}
                                 <input
                                     className="composer-select"
-                                    placeholder={param.pattern ?? param.name}
+                                    placeholder="required"
+                                    title={param.pattern !== undefined ? `must match ${param.pattern}` : undefined}
                                     maxLength={512}
                                     value={paramValues[param.name] ?? ''}
                                     onChange={(e) =>
@@ -376,6 +381,9 @@ export function TaskComposer({
                                 />
                             </label>
                         ))}
+                        {missingParams.length > 0 ? (
+                            <span className="muted">needs: {missingParams.map((param) => param.name).join(', ')}</span>
+                        ) : null}
                     </div>
                 ) : null}
             </div>

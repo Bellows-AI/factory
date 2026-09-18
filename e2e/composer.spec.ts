@@ -96,6 +96,7 @@ test.describe('the task composer', () => {
         await issue.fill('not an issue reference');
         await expect(send).toBeDisabled();
         await expect(composer.getByText('needs: issue')).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/composer-send-dark-reason.png`, fullPage: true });
 
         // A value the declaration accepts lights Send and retires the reason.
         await issue.fill('#12');
