@@ -232,15 +232,17 @@ describe('TaskComposer', () => {
                     name: 'fix-issue',
                     scope: 'org',
                     isDefault: true,
-                    params: [{ name: 'issue', pattern: '#\\d+' }],
+                    params: [{ name: 'issue', pattern: '#\\d+' }, { name: 'notes' }],
                 },
             ],
         });
-        expect(html).toContain('needs: issue');
+        expect(html).toContain('needs: issue, notes');
         // The declaration's regex source is developer-speak in a form field: the placeholder is
-        // a word, and the exact shape it must match rides the hover title instead.
+        // a word, and the exact shape it must match rides the hover title instead — only where
+        // a shape was declared at all.
         expect(html).toContain('placeholder="required"');
         expect(html).toContain('title="must match #\\d+"');
+        expect(html).not.toContain('must match undefined');
     });
 });
 
