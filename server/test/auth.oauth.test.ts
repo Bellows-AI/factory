@@ -660,15 +660,13 @@ describe('the selection screen (#125)', () => {
         ]);
     });
 
-    it('a narrowing whose every entry went stale is cleared by the read, not left active', async () => {
-        // Every stored entry removed on GitHub's side. Reporting the empty intersection as null
-        // would be a LIE while the rows live: the screen seeds every checkbox checked, an
-        // untouched confirmation posts no repos key, and the stale rows stay active — the repo
-        // source then filters the current listing against names that no longer exist and the org
-        // reads as empty. And leaving them as a visible-but-empty narrowing posts nothing either:
-        // the screen's untouched confirm skips an empty seed set by design. So the read itself
-        // retires the dead rows — read-time repair, the same contract as findPendingSignIn
-        // spending an expired row — and THEN reports track-everything truthfully.
+    it('a narrowing whose every entry went stale is kept and reported, never widened to track-all', async () => {
+        // Every stored entry removed on GitHub's side. Retiring the dead rows would write [] —
+        // which this store reads as TRACK-EVERYTHING, silently widening the org to every repo
+        // its installation can see. So the rows are kept: the repo source keeps filtering
+        // against names that no longer match anything and the org fails closed, and the screen
+        // is told the stored names as they are, so the stale selection is visible and can be
+        // explicitly revised — a confirmation re-posting them 400s UNKNOWN_REPO, never a guess.
         const listing: Record<string, InstallationRepo[] | null> = {
             [ORG]: [
                 { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
@@ -687,13 +685,14 @@ describe('the selection screen (#125)', () => {
         const orgs = screen.json().installations as { id: string; tracked: string[] | null }[];
         expect(orgs).toEqual([
             { id: '888888', account: 'other-org', tracked: null },
-            { id: ORG, account: 'acme', tracked: null },
+            { id: ORG, account: 'acme', tracked: ['acme/gone', 'acme/also-gone'] },
         ]);
-        // The dead rows are gone, so the repo source's empty allowlist really is track-everything.
-        expect(await auth.trackedRepos(ORG)).toEqual([]);
+        // The dead rows are retained — [] would read as track-everything — so the org tracks
+        // nothing effective until the choice is explicitly rewritten.
+        expect(await auth.trackedRepos(ORG)).toEqual(['acme/gone', 'acme/also-gone']);
     });
 
-    it('a partially stale narrowing keeps its surviving entries — the read only retires dead rows', async () => {
+    it('a partially stale narrowing keeps its surviving entries — only the dead ones drop from the screen', async () => {
         // One live entry, one gone: the narrowing is still meaningful, so nothing is cleared and
         // the screen seeds from the survivor.
         const listing: Record<string, InstallationRepo[] | null> = {
@@ -771,6 +770,55 @@ describe('the selection screen (#125)', () => {
         const state = await begin(app);
         const next = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
         expect(next.headers.location).toBe('/onboarding');
+    });
+
+    it('a failed reselect restores the prior choice instead of destroying it', async () => {
+        // The test above fails a FIRST sign-in: nothing pre-exists, so "undo" and "restore" are
+        // the same thing. A RESELECT is where they differ — the account already holds memberships
+        // and allowlist rows — and a rollback that clears or removes instead of restoring would
+        // silently widen a narrowed org and drop standing memberships. So: both orgs chosen and
+        // narrowed once, then a reselect whose first rewrite lands and whose second write fails.
+        const listing: Record<string, InstallationRepo[] | null> = {
+            [ORG]: [
+                { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
+                { owner: 'acme', name: 'other', private: false, defaultBranch: null, pushedAt: null },
+            ],
+            '888888': [
+                { owner: 'other-org', name: 'api', private: false, defaultBranch: null, pushedAt: null },
+                { owner: 'other-org', name: 'web', private: false, defaultBranch: null, pushedAt: null },
+            ],
+        };
+        const { app, auth } = await setup({
+            installations: TWO,
+            installationListing: async (id) => listing[id] ?? null,
+        });
+        const first = await beginOnboarding(app);
+        const done = await finishOnboarding(app, first, {
+            orgs: [ORG, '888888'],
+            repos: { [ORG]: ['acme/web'], '888888': ['other-org/api'] },
+        });
+        expect(done.statusCode).toBe(200);
+        // The standing session the first sign-in minted — the failed reselect must not add to it.
+        expect(auth.sessions()).toHaveLength(1);
+
+        // The reselect rewrites both narrowings; the injector lets the first write land and fails
+        // the second, so the route's catch runs with real prior state to get back to. (Both keys
+        // are numeric, so the payload iterates '888888' first — the write that succeeds.)
+        const second = await beginOnboarding(app, '/', undefined, true);
+        auth.failNextTrackedRepoWrite(1);
+        const response = await finishOnboarding(app, second, {
+            orgs: [ORG, '888888'],
+            repos: { [ORG]: ['acme/other'], '888888': ['other-org/web'] },
+        });
+        expect(response.statusCode).toBe(500);
+        expect(response.json().code).toBe('COMPLETE_FAILED');
+
+        // No half-landed session — and the PRIOR choice intact: memberships on both orgs, and
+        // each org's ORIGINAL narrowing, not a cleared allowlist and not the reselect's new one.
+        expect(auth.sessions()).toHaveLength(1);
+        expect((await auth.storedSelection(4242)).sort()).toEqual(['888888', ORG]);
+        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+        expect(await auth.trackedRepos('888888')).toEqual(['other-org/api']);
     });
 
     it('refuses an empty or foreign selection, an expired row, and no cookie at all', async () => {
@@ -920,7 +968,10 @@ describe('the selection screen (#125)', () => {
         const done = await finishOnboarding(app, cookie, { orgs: [ORG] });
         expect(done.statusCode).toBe(200);
 
-        expect(repos.invalidations()).toBe(before + 1);
+        // Two expires: one when the allowlist lands, and one after completion drains whatever
+        // refresh was in flight — a produce that started before the write holds the pre-write
+        // allowlist and would otherwise stand fresh once it lands.
+        expect(repos.invalidations()).toBe(before + 2);
     });
 
     it("serves an installation's repos through the App seam, or source none without one", async () => {

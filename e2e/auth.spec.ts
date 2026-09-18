@@ -10,15 +10,53 @@ import { finishSignIn, throughSignIn } from './signin.js';
  * the selection screen (#125) and the sign-out, and it runs against its own server with
  * AUTH_MODE=github.
  *
- * The stub reports TWO installations and the run's identity is fresh (playwright.config.ts), so
- * the first sign-in below is a genuine first sign-in: it meets the selection screen, narrows the
- * choice to one org, and every later sign-in in the file reuses that stored choice.
+ * The stub reports TWO installations and the run's identity is fresh (playwright.config.ts). No
+ * test leans on being the run's first sign-in: one that needs the screen forces it (?reselect=1,
+ * the settings page's own link), one that needs a stored choice signs one in itself, and every id
+ * an assertion pins is read from the pending report or from the row the test just chose — never a
+ * fixture constant. Each test therefore passes alone, filtered or reordered; workers: 1 only
+ * serializes.
  */
 
 const cards = (page: Page) => page.locator('.cards').first().locator('.card');
 const gate = (page: Page) => page.locator('.login-gate');
 const signIn = (page: Page) => page.getByRole('link', { name: 'Sign in with GitHub' });
 const screen = (page: Page) => page.locator('.onboarding');
+
+/** One installation as the pending report lists it: the org name the screen renders, and its id. */
+interface ReportedInstallation {
+    id: string;
+    account: string;
+}
+
+/**
+ * The parked sign-in's own report (issue 125): the installations the stub account can see, the
+ * same payload the selection screen renders. Tests derive their expectations from it, so nothing
+ * here writes down an installation or organization id.
+ */
+const pendingReport = async (page: Page): Promise<ReportedInstallation[]> => {
+    const response = await page.request.get('/api/auth/github/pending');
+    return ((await response.json()) as { installations: ReportedInstallation[] }).installations;
+};
+
+/**
+ * Forces the selection screen and lands a session tracking only the first reported installation.
+ * Returns the report in stub order — [0] tracked, [1] seen and declined — so a calling test pins
+ * ids it read, and the tracked/merely-reported contrast is decided here, not inherited from
+ * whatever another test left stored.
+ */
+const trackOnlyFirst = async (page: Page): Promise<ReportedInstallation[]> => {
+    await page.goto('/api/auth/github?reselect=1');
+    await screen(page).waitFor({ timeout: 60_000 });
+    const reported = await pendingReport(page);
+    expect(reported).toHaveLength(2);
+    const orgs = screen(page).locator('.onboarding-org');
+    await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
+    await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(cards(page).first()).toBeVisible({ timeout: 60_000 });
+    return reported;
+};
 
 test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => {
     await page.goto('/');
@@ -38,20 +76,28 @@ test('the document itself is served without authentication', async ({ page }) =>
 });
 
 test('the selection screen tracks only the chosen organizations (issue 125)', async ({ page }) => {
-    await page.goto('/');
-    await signIn(page).click();
+    // `reselect=1` opens the screen whatever any other test has already stored — this test stands
+    // alone.
+    await page.goto('/api/auth/github?reselect=1');
 
-    // Two installations reported, nothing chosen yet: the step between the OAuth round trip and
-    // the session, with one pre-checked checkbox per reported installation.
+    // The step between the OAuth round trip and the session: one row per reported installation,
+    // read from the pending report rather than written down.
     await screen(page).waitFor({ timeout: 60_000 });
+    const reported = await pendingReport(page);
+    expect(reported).toHaveLength(2);
     const orgs = screen(page).locator('.onboarding-org');
     await expect(orgs).toHaveCount(2);
-    await expect(orgs.filter({ hasText: 'stub-org-999999' }).getByRole('checkbox')).toBeChecked();
-    await expect(orgs.filter({ hasText: 'stub-org-888888' }).getByRole('checkbox')).toBeChecked();
+    // Whatever a previous test stored arrives pre-checked; normalize to every reported
+    // installation checked, so what this test confirms is what this test chose.
+    for (const install of reported) {
+        await orgs.filter({ hasText: install.account }).getByRole('checkbox').check();
+    }
     await page.screenshot({ path: 'artifacts/ui/onboarding.png', fullPage: true });
 
-    // Deselect one and confirm: the session lands, and only the checked org was materialized.
-    await orgs.filter({ hasText: 'stub-org-888888' }).getByRole('checkbox').uncheck();
+    // Deselect the second reported installation and confirm: the session lands, and only the
+    // still-checked org was materialized — the choice, nothing else from the report.
+    const kept = reported[0]!;
+    await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
     await page.getByRole('button', { name: 'Continue' }).click();
     await expect(cards(page).first()).toBeVisible({ timeout: 60_000 });
 
@@ -62,15 +108,21 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
         organizations: { id: string; name: string }[];
     };
     expect(body.user.login).toBe('e2e-user');
-    expect(body.organization).toEqual({ id: '999999', name: 'stub-org-999999' });
-    expect(body.organizations).toEqual([{ id: '999999', name: 'stub-org-999999' }]);
+    expect(body.organization).toEqual({ id: kept.id, name: kept.account });
+    expect(body.organizations).toEqual([{ id: kept.id, name: kept.account }]);
 });
 
 test('the next sign-in reuses the stored choice without the screen (issue 125)', async ({ page }) => {
+    // Establish the choice THIS test relies on: sign in once — through the screen when this is
+    // the run's first sign-in, straight in when another test already stored one — then sign out,
+    // so the round trip below is genuine rather than cookie residue.
+    await throughSignIn(page);
+    await page.request.post('/api/auth/logout');
     await page.goto('/');
-    await signIn(page).click();
+    await expect(gate(page)).toBeVisible();
 
-    // Straight through: the stored selection from the test above is the choice, so no screen.
+    // Straight through: the stored choice from the sign-in above is the choice, so no screen.
+    await signIn(page).click();
     await cards(page).first().waitFor({ timeout: 60_000 });
     await expect(screen(page)).toHaveCount(0);
 });
@@ -81,42 +133,44 @@ test('signing in lands on the dashboard', async ({ page }) => {
 });
 
 test("sign-in materializes the chosen installation as the member's organization", async ({ page }) => {
-    await throughSignIn(page);
+    // Choose, don't inherit: the screen is forced and narrowed to the first reported
+    // installation, so the assertion below pins what THIS sign-in chose.
+    const reported = await trackOnlyFirst(page);
+    const chosen = reported[0]!;
 
     const me = await page.request.get('/api/auth/me');
     expect(me.status()).toBe(200);
-    // The stub reports two installations; the selection step narrowed the choice to 999999, and
-    // the sign-in created that org, the membership and the session's binding to it — no invite
-    // anywhere in the flow (#99).
+    // The chosen installation was materialized as the member's organization — the org, the
+    // membership and the session's binding to it, no invite anywhere in the flow (#99).
     expect(await me.json()).toMatchObject({
         user: { login: 'e2e-user' },
         role: 'member',
-        organization: { id: '999999', name: 'stub-org-999999' },
-        organizations: [{ id: '999999', name: 'stub-org-999999' }],
+        organization: { id: chosen.id, name: chosen.account },
+        organizations: [{ id: chosen.id, name: chosen.account }],
         mode: 'github',
     });
 });
 
 test('POST /api/auth/org switches the session, refusing what is unknown or anonymous', async ({ page }) => {
-    await throughSignIn(page);
+    const reported = await trackOnlyFirst(page);
+    const tracked = reported[0]!;
 
-    // Unknown org: a typo is a 400, never a silent stay.
-    const unknown = await page.request.post('/api/auth/org', { data: { orgId: '111111' } });
+    // Unknown org: a typo is a 400, never a silent stay. (Built at runtime — no fixture id.)
+    const unknown = await page.request.post('/api/auth/org', { data: { orgId: String(Date.now()) } });
     expect(unknown.status()).toBe(400);
     expect((await unknown.json()).code).toBe('UNKNOWN_ORG');
 
-    // A tracked org: the switch lands, and /me reports the moved session. (888888 exists as an
-    // installation but was deselected at the screen, so it is unknown here — the pinned contrast.)
-    const planted = await page.request.post('/api/auth/org', { data: { orgId: '999999' } });
+    // A tracked org: the switch lands, and /me reports the moved session.
+    const planted = await page.request.post('/api/auth/org', { data: { orgId: tracked.id } });
     expect(planted.status()).toBe(200);
     const me = await page.request.get('/api/auth/me');
-    expect((await me.json()).organization).toEqual({ id: '999999', name: 'stub-org-999999' });
+    expect((await me.json()).organization).toEqual({ id: tracked.id, name: tracked.account });
 
     // An anonymous caller has no session to move. (Known-but-not-a-member is the 403 FORBIDDEN
     // case; the browser-level pin for it lives in the route tests — server/test/auth.oauth.test.ts.)
     const fresh = await page.context().browser()!.newContext();
     const anonymous = await fresh.request.post(`${test.info().project.use.baseURL}/api/auth/org`, {
-        data: { orgId: '999999' },
+        data: { orgId: tracked.id },
     });
     expect(anonymous.status()).toBe(401);
     await fresh.close();

@@ -361,22 +361,18 @@ export const authRoutes =
                         // Nothing to intersect with: show the stored names as they are, so the
                         // screen still says what the org narrowed to even while offline.
                         const seeded = listed === null ? narrowed : narrowed.filter((name) => listed.includes(name));
-                        // A narrowing whose every entry GitHub stopped reporting is dead weight
-                        // with no way out: an untouched confirmation posts no repos key for an
-                        // empty seed set, and a visible-but-empty narrowing would have the screen
-                        // seed nothing checked — while the repo source, still filtering against
-                        // names that no longer exist, would read the org as tracking nothing. The
-                        // read retires the dead rows — read-time repair, the same contract as
-                        // findPendingSignIn spending an expired row — and THEN null is the
-                        // truthful track-everything answer.
-                        if (listed !== null && seeded.length === 0) {
-                            await store.replaceTrackedRepos(install.id, []);
-                            return { id: install.id, account: install.name, tracked: null };
-                        }
+                        // A narrowing whose every entry GitHub stopped reporting is KEPT, not
+                        // retired: this store reads an empty allowlist as track-everything, so a
+                        // read-time repair to [] would silently widen the org to every repo its
+                        // installation can see — the exact widening the allowlist exists to
+                        // prevent. The stale rows fail closed instead (the repo source filters
+                        // against names that no longer match anything), and the screen is told
+                        // the stored names as they are, so the stale selection is visible and can
+                        // be explicitly revised — re-posting it 400s UNKNOWN_REPO, never a guess.
                         return {
                             id: install.id,
                             account: install.name,
-                            tracked: seeded,
+                            tracked: seeded.length > 0 ? seeded : narrowed,
                         };
                     })
                 ),
@@ -498,7 +494,20 @@ export const authRoutes =
             let caller: Caller | undefined;
             // What this completion has rewritten so far — the rollback's map of what to undo.
             const rewroteAllowlist: string[] = [];
+            // The prior state the rollback restores — read before anything is written, because
+            // the rollback must put back what STOOD here, not a default. A first sign-in has
+            // neither memberships nor narrowings (both reads come back empty), so restoring
+            // degenerates to plain undo; a RESELECT has both, and restoring them is what keeps a
+            // failed reselect from silently widening a narrowed org to track-everything or
+            // dropping standing memberships.
+            const priorAllowlists = new Map<string, string[]>();
+            let priorSelection: string[] = [];
             try {
+                for (const orgId of reposByOrg.keys()) {
+                    priorAllowlists.set(orgId, await store.trackedRepos(orgId));
+                }
+                priorSelection = await store.storedSelection(pending.identity.githubUserId);
+
                 // THE CLAIM. Atomically spends the pending row before anything is materialized,
                 // so only one of two completions racing the same cookie can get past it — the
                 // docs' single-use is a property, not a description of the happy path. Every
@@ -528,29 +537,50 @@ export const authRoutes =
                 // until the next read re-produces, so no poll sees an empty dashboard.
                 for (const orgId of orgIds) {
                     const runtime = await orgs?.for(orgId);
-                    runtime?.repos.invalidate();
+                    if (!runtime) continue;
+                    runtime.repos.invalidate();
+                    // A refresh already in flight read the PRE-write allowlist; when it lands it
+                    // stores that stale list with a fresh timestamp, and the expire above cannot
+                    // touch a result that did not exist yet. The read is single-flight, so this
+                    // joins whatever produce is running rather than racing it — and never
+                    // rejects; a failed produce serves the last good entry. The expire AFTER it
+                    // lands is what retires the stale capture: the old list still serves until
+                    // the next read re-produces, so the exposure is one produce, not a full TTL.
+                    await runtime.repos.list();
+                    runtime.repos.invalidate();
                 }
             } catch (e) {
                 request.log.error({ err: e }, 'onboarding completion failed');
                 // THE ROLLBACK. These writes are separate transactions, so a failure partway
                 // would otherwise leave the memberships committed — and the next OAuth attempt,
                 // seeing a stored selection, would bypass onboarding and silently lose the repo
-                // choice. Undo what landed, best-effort: the allowlist rows back to the
-                // track-everything default, then the memberships signIn materialized, which
-                // returns the account to "no stored choice" and parks the next sign-in on the
+                // choice. Undo what landed, best-effort, back to the PRIOR state rather than to
+                // a default: the allowlist rows get their stored narrowing back (writing []
+                // instead would read as track-everything and widen the org), and the memberships
+                // go back to the stored choice — signIn re-materializes it, which re-adds what
+                // this completion's sweep removed and sweeps what it added. A first sign-in has
+                // no prior choice, so there the memberships are removed, which is the same
+                // thing: the account back to "no stored choice", the next sign-in parked on the
                 // screen again. The pending row stays spent either way — one completion, one
                 // materialization, whatever the outcome.
                 for (const orgId of rewroteAllowlist) {
                     await store
-                        .replaceTrackedRepos(orgId, [])
+                        .replaceTrackedRepos(orgId, priorAllowlists.get(orgId) ?? [])
                         .catch((err: Error) => request.log.error({ err }, 'onboarding rollback failed'));
                 }
                 if (caller) {
-                    for (const install of pending.installations) {
-                        if (!orgIds.includes(install.id)) continue;
+                    const restored = pending.installations.filter((install) => priorSelection.includes(install.id));
+                    if (restored.length > 0) {
                         await store
-                            .removeMember(install.id, pending.identity.githubUserId)
+                            .signIn(pending.identity, restored[0]!.id, restored)
                             .catch((err: Error) => request.log.error({ err }, 'onboarding rollback failed'));
+                    } else {
+                        for (const install of pending.installations) {
+                            if (!orgIds.includes(install.id)) continue;
+                            await store
+                                .removeMember(install.id, pending.identity.githubUserId)
+                                .catch((err: Error) => request.log.error({ err }, 'onboarding rollback failed'));
+                        }
                     }
                 }
                 return reply.code(500).send({ error: 'Could not complete the sign-in', code: 'COMPLETE_FAILED' });

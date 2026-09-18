@@ -522,11 +522,12 @@ export interface MemoryAuthStore extends AuthStore {
     /** Ages every pending row past its expiry, standing in for the TTL a real wait would run. */
     expirePendingSignIns(): void;
     /**
-     * Arms the next replaceTrackedRepos to throw — standing in for a database failure
-     * mid-completion, so a test can hold the route at the exact write whose failure would
-     * otherwise leave a half-materialized sign-in behind.
+     * Arms replaceTrackedRepos to throw on a chosen write: the next `afterWrites` calls succeed,
+     * then one throws — standing in for a database failure mid-completion, so a test can hold the
+     * route at the exact write whose failure would otherwise leave a half-materialized sign-in
+     * behind, with earlier writes already landed.
      */
-    failNextTrackedRepoWrite(): void;
+    failNextTrackedRepoWrite(afterWrites?: number): void;
 }
 
 /**
@@ -586,7 +587,7 @@ export function memoryAuthStore(): MemoryAuthStore {
     }
     const pendingRows: PendingRow[] = [];
     const trackedRepoRows = new Map<string, string[]>();
-    let failTrackedRepoWrites = false;
+    let trackedRepoWritesUntilFailure: number | null = null;
     let nextId = 1;
 
     /** A fixed stamp, the same trick listWorkerTokens uses: timestamps are not what most tests vary. */
@@ -784,8 +785,8 @@ export function memoryAuthStore(): MemoryAuthStore {
             for (const row of pendingRows) row.expiresAt = Date.now() - 1;
         },
 
-        failNextTrackedRepoWrite: () => {
-            failTrackedRepoWrites = true;
+        failNextTrackedRepoWrite: (afterWrites = 0) => {
+            trackedRepoWritesUntilFailure = afterWrites;
         },
 
         async storedSelection(githubUserId) {
@@ -840,9 +841,12 @@ export function memoryAuthStore(): MemoryAuthStore {
         },
 
         async replaceTrackedRepos(orgId, repos) {
-            if (failTrackedRepoWrites) {
-                failTrackedRepoWrites = false;
-                throw new Error('tracked_repo write failed');
+            if (trackedRepoWritesUntilFailure !== null) {
+                if (trackedRepoWritesUntilFailure === 0) {
+                    trackedRepoWritesUntilFailure = null;
+                    throw new Error('tracked_repo write failed');
+                }
+                trackedRepoWritesUntilFailure -= 1;
             }
             trackedRepoRows.set(orgId, [...repos]);
         },
