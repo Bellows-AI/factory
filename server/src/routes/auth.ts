@@ -339,40 +339,25 @@ export const authRoutes =
                 // The screen seeds its checkboxes from it: a reselect must SHOW the narrowing it
                 // is asking about, and confirming must be able to express widening back — an
                 // all-checked org that had a narrowing posts an empty list, which clears it.
-                // Intersected with what the installation CURRENTLY reports: a repo removed (or
-                // renamed) on GitHub's side since the narrowing was stored is not seedable, and
-                // posting it would 400 UNKNOWN_REPO with no checkbox anywhere to uncheck. The
-                // listing is asked ONLY for an org that has a narrowing to check against — a
-                // first sign-in's screen (narrowings nowhere) costs no App call, no rate-limit
-                // point, on the enterprise path this flow exists for.
+                // Reported RAW, never intersected here: the screen holds the live listing (it
+                // fetches each org's repos to render the checkboxes anyway) and intersects where
+                // it can act on it, so this read costs no App call at all — a first sign-in's
+                // screen and a reselect alike.
                 installations: await Promise.all(
                     pending.installations.map(async (install): Promise<PendingInstallation> => {
                         const narrowed = await store.trackedRepos(install.id);
-                        if (narrowed.length === 0) {
-                            return { id: install.id, account: install.name, tracked: null };
-                        }
-                        const listed = listInstallationRepos
-                            ? await listInstallationRepos(install.id)
-                                  .then((repos) =>
-                                      repos === null ? null : repos.map((repo) => `${repo.owner}/${repo.name}`)
-                                  )
-                                  .catch(() => null)
-                            : null;
-                        // Nothing to intersect with: show the stored names as they are, so the
-                        // screen still says what the org narrowed to even while offline.
-                        const seeded = listed === null ? narrowed : narrowed.filter((name) => listed.includes(name));
-                        // A narrowing whose every entry GitHub stopped reporting is KEPT, not
-                        // retired: this store reads an empty allowlist as track-everything, so a
-                        // read-time repair to [] would silently widen the org to every repo its
-                        // installation can see — the exact widening the allowlist exists to
-                        // prevent. The stale rows fail closed instead (the repo source filters
-                        // against names that no longer match anything), and the screen is told
-                        // the stored names as they are, so the stale selection is visible and can
-                        // be explicitly revised — re-posting it 400s UNKNOWN_REPO, never a guess.
+                        // A narrowing whose every entry GitHub stopped reporting is reported as
+                        // stored — the honest stale selection, kept fail-closed: this store reads
+                        // an empty allowlist as track-everything, so retiring the rows here would
+                        // silently widen the org to every repo its installation can see. The
+                        // screen intersects with the listing when seeding and before posting, so
+                        // it can never submit a name the listing cannot render; an untouched
+                        // fully-stale org posts nothing (the rows are retained) and touching the
+                        // live checkboxes is the explicit revision.
                         return {
                             id: install.id,
                             account: install.name,
-                            tracked: seeded.length > 0 ? seeded : narrowed,
+                            tracked: narrowed.length > 0 ? narrowed : null,
                         };
                     })
                 ),

@@ -5,8 +5,10 @@ export interface PendingSignInPayload {
     identity: { login: string; displayName: string | null; avatarUrl: string | null };
     /**
      * One entry per reported installation. `tracked` is the org's stored repo allowlist — null
-     * when it tracks everything — so a reselect SHOWS the narrowing it is asking about instead
-     * of asserting a false all-checked state.
+     * when it tracks everything — reported as stored, so a reselect SHOWS the narrowing it is
+     * asking about. It may name repos the installation no longer reports: the screen intersects
+     * with the live listing when seeding and before posting, so a name the listing cannot
+     * render is never shown as a checkbox and never submitted.
      */
     installations: { id: string; account: string; tracked: string[] | null }[];
     /** The installation ids that arrive pre-checked: the stored choice on a reselect, all otherwise. */
@@ -17,10 +19,19 @@ export interface PendingSignInPayload {
 }
 
 /** What GET /api/auth/github/pending/installations/:id/repos answers for one org. */
-interface RepoListing {
+export interface RepoListing {
     repos: string[];
     source: 'app' | 'none';
 }
+
+/**
+ * The org's standing checked set: its stored narrowing intersected with the live listing — a
+ * stored name the listing cannot render must neither seed a checkbox nor ride into the POST —
+ * or the whole listing when the org tracks everything. The one seed the checkboxes display, a
+ * first touch expands, and the submit posts, so the three cannot drift apart.
+ */
+export const standingRepos = (tracked: string[] | null, listing: RepoListing): Set<string> =>
+    new Set(tracked ? tracked.filter((name) => listing.repos.includes(name)) : listing.repos);
 
 /**
  * The expired-pending state: the one recovery is restarting the OAuth round trip. Rendered
@@ -44,7 +55,10 @@ export function StartAgainPanel({ returnTo }: { returnTo?: string | undefined })
  * Everything arrives pre-checked — the stored choice on a reselect, every reported installation
  * on a first sign-in — so confirming the default is exactly what sign-in did before this screen
  * existed. Per-org repo checkboxes load lazily when an org is expanded, seeded from the org's
- * stored narrowing when it has one. A narrowed org posts its checked set; an org whose checkboxes
+ * stored narrowing intersected with the live listing when it has one — a stored name the listing
+ * cannot render is neither seeded nor posted, so an untouched fully-stale org posts nothing (its
+ * rows are retained) and touching the live checkboxes is the explicit revision. A narrowed org
+ * posts its checked set; an org whose checkboxes
  * all read checked posts an empty list, which clears any stored narrowing — that is the widening
  * move. An org nobody narrowed and never touched posts nothing at all, which keeps "track
  * everything, future repos included" distinct from "track today's list".
@@ -53,7 +67,14 @@ export function StartAgainPanel({ returnTo }: { returnTo?: string | undefined })
  * session cookie itself; the page then assigns the return path as a full load, the same posture
  * as the org switch.
  */
-export function OnboardingPage({ payload: initial }: { payload?: PendingSignInPayload }) {
+export function OnboardingPage({
+    payload: initial,
+    listings: initialListings,
+}: {
+    payload?: PendingSignInPayload;
+    /** The listings seam, beside `payload`: initial per-org listings, so a render test can reach the repo checkboxes. */
+    listings?: Record<string, RepoListing | 'loading'>;
+}) {
     const [payload, setPayload] = useState<PendingSignInPayload | null>(initial ?? null);
     const [expired, setExpired] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -61,7 +82,7 @@ export function OnboardingPage({ payload: initial }: { payload?: PendingSignInPa
     // The org checkboxes: initialized from the payload's pre-checked ids once it has loaded.
     const [checked, setChecked] = useState<Set<string>>(new Set(initial?.selected ?? []));
     // Per-org repo listings, fetched lazily on first expand — never for orgs nobody opened.
-    const [listings, setListings] = useState<Record<string, RepoListing | 'loading'>>({});
+    const [listings, setListings] = useState<Record<string, RepoListing | 'loading'>>(initialListings ?? {});
     // Orgs whose repo checkboxes were touched, plus every org with a stored narrowing — only
     // these post a repos key at all.
     const [narrowed, setNarrowed] = useState<Set<string>>(new Set());
@@ -154,13 +175,16 @@ export function OnboardingPage({ payload: initial }: { payload?: PendingSignInPa
     const toggleRepo = (orgId: string, repo: string) => {
         setNarrowed((prev) => new Set(prev).add(orgId));
         setRepoChecked((prev) => {
-            // First touch seeds the set from the org's standing state — its stored narrowing when
-            // it has one, everything otherwise.
+            // First touch seeds the set from the org's standing state — its stored narrowing
+            // intersected with the live listing, so an unlisted stored name cannot ride in
+            // through a touch either; everything otherwise.
             const installation = payload.installations.find((i) => i.id === orgId);
             const listing = listings[orgId];
             const seeded =
                 prev[orgId] ??
-                new Set(installation?.tracked ?? (listing && listing !== 'loading' ? listing.repos : []));
+                (installation && listing && listing !== 'loading' && listing.source === 'app'
+                    ? standingRepos(installation.tracked, listing)
+                    : new Set<string>());
             const next = new Set(seeded);
             if (next.has(repo)) next.delete(repo);
             else next.add(repo);
@@ -184,7 +208,9 @@ export function OnboardingPage({ payload: initial }: { payload?: PendingSignInPa
             const installation = payload.installations.find((i) => i.id === orgId);
             const listing = listings[orgId];
             if (!installation || !listing || listing === 'loading' || listing.source !== 'app') continue;
-            const chosen = [...(repoChecked[orgId] ?? new Set(installation.tracked ?? listing.repos))];
+            // Untouched orgs post their standing set — the narrowing intersected with the
+            // listing — so a name the listing cannot render is never submitted.
+            const chosen = [...(repoChecked[orgId] ?? standingRepos(installation.tracked, listing))];
             // Checking nothing is not a state this route can express — tracking no repo of a
             // selected org is what deselecting the org is for. The empty hint below says so.
             if (chosen.length === 0) continue;
@@ -279,7 +305,7 @@ export function OnboardingPage({ payload: initial }: { payload?: PendingSignInPa
                                                             checked={
                                                                 chosenRepos
                                                                     ? chosenRepos.has(name)
-                                                                    : (installation.tracked ?? listing.repos).includes(
+                                                                    : standingRepos(installation.tracked, listing).has(
                                                                           name
                                                                       )
                                                             }

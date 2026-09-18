@@ -11,6 +11,9 @@ const repo = (name: string): InstallationRepo =>
         pushedAt: null,
     });
 
+/** One macrotask: by the time this resolves, every queued microtask has run. */
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 /** A client whose listing is fixed — the App arm of the source, without the network. */
 function clientWith(...names: string[]): GitHubAppClient {
     return {
@@ -130,5 +133,33 @@ describe('the tracked-repo allowlist (#125)', () => {
             'acme/new',
         ]);
         expect(source.snapshotNames()).toEqual(['acme/web', 'acme/other', 'acme/new']);
+    });
+
+    it('does not land a produce that started before invalidate() — it re-produces instead', async () => {
+        // The completion race: the refresh is still in flight — old allowlist answer already in
+        // hand — when invalidate() runs. Publishing that result would re-validate the pre-choice
+        // scope as fresh for another full TTL.
+        const clock = 1_000;
+        let tracked: readonly string[] = ['acme/web'];
+        const resolvers: Array<(value: readonly string[]) => void> = [];
+        const source = createRepoSource({
+            client: clientWith('acme/web', 'acme/other'),
+            allowlist: () => new Promise<readonly string[]>((resolve) => resolvers.push(resolve)),
+            ttlMs: 10_000,
+            now: () => clock,
+        });
+
+        const first = source.list();
+        await tick();
+        expect(resolvers.length).toBe(1); // the produce is parked on the allowlist read
+        resolvers[0]!(tracked); // it now holds the old choice …
+        source.invalidate(); // …and the invalidation lands before it publishes
+        tracked = ['acme/other'];
+        await tick();
+        while (resolvers.length > 0) resolvers.shift()!(tracked); // answer whoever is asking now
+
+        const listing = await first;
+        expect(listing.map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/other']);
+        expect(source.snapshotNames()).toEqual(['acme/other']);
     });
 });

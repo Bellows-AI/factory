@@ -633,7 +633,7 @@ describe('the selection screen (#125)', () => {
         expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
     });
 
-    it('the pending payload drops stored narrowing entries the installation no longer reports', async () => {
+    it('the pending payload reports the stored narrowing as stored — the screen intersects with the listing', async () => {
         const listing: Record<string, InstallationRepo[] | null> = {
             [ORG]: [
                 { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
@@ -645,10 +645,11 @@ describe('the selection screen (#125)', () => {
             installations: TWO,
             installationListing: async (id) => listing[id] ?? null,
         });
-        // A narrowing written when 'acme/gone' still existed on GitHub's side. Seeding the screen
-        // from it verbatim would render a checkbox set that cannot be submitted — a 400
-        // UNKNOWN_REPO for a name with no checkbox anywhere to uncheck — so the payload carries
-        // only what the installation currently reports.
+        // A narrowing written when 'acme/gone' still existed on GitHub's side. The payload
+        // carries the raw stored names — the honest stale selection; the screen holds the live
+        // listing anyway and intersects when seeding and before posting, so a name the listing
+        // cannot render is never seeded and never submitted (posting it would 400 UNKNOWN_REPO
+        // with no checkbox anywhere to uncheck).
         await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/web']);
 
         const cookie = await beginOnboarding(app, '/', undefined, true);
@@ -656,7 +657,7 @@ describe('the selection screen (#125)', () => {
         const orgs = screen.json().installations as { id: string; tracked: string[] | null }[];
         expect(orgs).toEqual([
             { id: '888888', account: 'other-org', tracked: null },
-            { id: ORG, account: 'acme', tracked: ['acme/web'] },
+            { id: ORG, account: 'acme', tracked: ['acme/gone', 'acme/web'] },
         ]);
     });
 
@@ -665,8 +666,9 @@ describe('the selection screen (#125)', () => {
         // which this store reads as TRACK-EVERYTHING, silently widening the org to every repo
         // its installation can see. So the rows are kept: the repo source keeps filtering
         // against names that no longer match anything and the org fails closed, and the screen
-        // is told the stored names as they are, so the stale selection is visible and can be
-        // explicitly revised — a confirmation re-posting them 400s UNKNOWN_REPO, never a guess.
+        // is told the stored names as they are — it intersects them with the listing it holds,
+        // so an untouched org posts nothing and the rows stay retained; touching the live
+        // checkboxes is the person's explicit revision.
         const listing: Record<string, InstallationRepo[] | null> = {
             [ORG]: [
                 { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
@@ -692,9 +694,11 @@ describe('the selection screen (#125)', () => {
         expect(await auth.trackedRepos(ORG)).toEqual(['acme/gone', 'acme/also-gone']);
     });
 
-    it('a partially stale narrowing keeps its surviving entries — only the dead ones drop from the screen', async () => {
-        // One live entry, one gone: the narrowing is still meaningful, so nothing is cleared and
-        // the screen seeds from the survivor.
+    it('a partially stale narrowing rides raw in the payload — the dead entry drops in the screen', async () => {
+        // One live entry, one gone: the narrowing is still meaningful, so nothing is cleared.
+        // The payload carries both names as stored; the screen intersects them with the live
+        // listing when seeding and before posting, so only the survivor is ever seeded or
+        // submitted.
         const listing: Record<string, InstallationRepo[] | null> = {
             [ORG]: [
                 { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
@@ -713,7 +717,7 @@ describe('the selection screen (#125)', () => {
         const orgs = screen.json().installations as { id: string; tracked: string[] | null }[];
         expect(orgs).toEqual([
             { id: '888888', account: 'other-org', tracked: null },
-            { id: ORG, account: 'acme', tracked: ['acme/web'] },
+            { id: ORG, account: 'acme', tracked: ['acme/gone', 'acme/web'] },
         ]);
         expect(await auth.trackedRepos(ORG)).toEqual(['acme/gone', 'acme/web']);
     });

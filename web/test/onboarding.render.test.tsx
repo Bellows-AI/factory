@@ -1,6 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { OnboardingPage, StartAgainPanel, type PendingSignInPayload } from '../src/pages/OnboardingPage.js';
+import {
+    OnboardingPage,
+    StartAgainPanel,
+    standingRepos,
+    type PendingSignInPayload,
+    type RepoListing,
+} from '../src/pages/OnboardingPage.js';
 
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
@@ -64,6 +70,38 @@ describe('StartAgainPanel', () => {
     it('falls back to the root when no return path survived', () => {
         const html = renderToStaticMarkup(<StartAgainPanel />);
         expect(html).toContain('href="/api/auth/github?returnTo=%2F"');
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+describe('seeding from a stored narrowing (#135 review)', () => {
+    const LISTING: RepoListing = { repos: ['acme/web', 'acme/other'], source: 'app' };
+    // The payload reports the stored narrowing RAW — including names GitHub stopped reporting.
+    const stale: PendingSignInPayload = {
+        ...pending,
+        installations: [{ id: '999999', account: 'acme', tracked: ['acme/gone', 'acme/web'] }],
+        selected: ['999999'],
+    };
+
+    it('seeds the standing set from the narrowing intersected with the live listing', () => {
+        // A stored name the listing cannot render must neither seed a checkbox nor ride into
+        // the POST — the intersection is where the dead entries drop.
+        expect(standingRepos(['acme/gone', 'acme/web'], LISTING)).toEqual(new Set(['acme/web']));
+        // Fully stale: an untouched org stands at nothing, posts nothing, keeps its rows.
+        expect(standingRepos(['acme/gone'], LISTING)).toEqual(new Set());
+        // Track-everything stands at the whole listing.
+        expect(standingRepos(null, LISTING)).toEqual(new Set(['acme/web', 'acme/other']));
+    });
+
+    it('renders a listed stored name checked, a listed unstored name unchecked, and no unlisted name', () => {
+        const html = renderToStaticMarkup(<OnboardingPage payload={stale} listings={{ 999999: LISTING }} />);
+        expect(html).toContain('acme/web');
+        expect(html).toContain('acme/other');
+        // The stale stored name has no checkbox anywhere — and no checkbox can carry it.
+        expect(html).not.toContain('acme/gone');
+        // The org (selected) plus its one surviving stored repo; 'acme/other' is listed but
+        // unstored, so unchecked.
+        expect(html.match(/checked=""/g)?.length).toBe(2);
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
