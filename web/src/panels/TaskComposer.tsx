@@ -54,13 +54,27 @@ export function paramsComplete(params: readonly WorkflowParamChoice[], values: R
  * handed over only while that same workflow is STILL the chosen one: a select or repo switch
  * changes the list's context, so a clear-on-select alone would let `#12` typed for one process
  * sit valid for another — and launch it with a foreign issue. Keying the read to the identity
- * makes that carry impossible, with no gap for the stale values to be shown or sent through.
+ * makes that carry impossible, with no gap for the stale values to be shown or sent through. A
+ * repository change is handled one layer up, where the whole draft resets (the repo effect below).
  */
 export function valuesForWorkflow(
     stored: { workflowId: string | null; values: Record<string, string> },
     workflowId: string | null
 ): Record<string, string> {
     return stored.workflowId === workflowId ? stored.values : {};
+}
+
+/**
+ * The workflow draft as a repository change leaves it — and as the composer mounts: the choice
+ * back to unchosen, the stored values back to none. One named shape for both moments keeps the
+ * reset provably the no-op on mount it must be, and hands the offline suite (which runs no
+ * effects) the exact state Send sees after a repo switch to pin.
+ */
+export function freshWorkflowDraft(): {
+    workflow: string;
+    storedParams: { workflowId: string | null; values: Record<string, string> };
+} {
+    return { workflow: '', storedParams: { workflowId: null, values: {} } };
 }
 
 /**
@@ -152,15 +166,12 @@ export function TaskComposer({
     const [repoTouched, setRepoTouched] = useState(false);
     // The workflow starts UNCHOSEN — null, meaning no process: the raw prompt runs. And, unlike
     // repo and executor, nothing autoselects one: a process is the member's call, not the first
-    // row's.
-    const [workflow, setWorkflow] = useState('');
+    // row's. A repository change returns it to exactly this shape (the repo effect below).
+    const [workflow, setWorkflow] = useState(freshWorkflowDraft().workflow);
     // The declared params of the chosen workflow, filled in the explicit inputs below. Stored
     // against the identity of the workflow they were typed for — values typed for one process must
     // never stamp another.
-    const [storedParams, setStoredParams] = useState<{ workflowId: string | null; values: Record<string, string> }>({
-        workflowId: null,
-        values: {},
-    });
+    const [storedParams, setStoredParams] = useState(freshWorkflowDraft().storedParams);
 
     // The workflow whose inputs the composer shows: exactly the member's explicit choice. Nothing
     // autoselects one — an unnamed task runs the raw prompt, so a process is the member's call,
@@ -215,6 +226,21 @@ export function TaskComposer({
             setRepo(firstRepo(repos));
         }
     }, [repos, repo]);
+
+    // A repository change re-fetches the workflow list, and the hook keeps the previous list
+    // while the new request is pending — the page hands that stale list straight through, so a
+    // choice made against it could ride Send into a task stamped with the NEW repository: a
+    // workflow name that may not even exist for the new context, carrying values typed for a
+    // process it was not. The draft resets the moment the repository state changes — the
+    // member's select, the autoselect, the clamp: every path a change arrives by is this one
+    // state — and the member picks again from the list that answers. After the context changed,
+    // a process is the member's explicit call again. The reset targets are the mount values, so
+    // the effect's mount-time run is a no-op.
+    useEffect(() => {
+        const reset = freshWorkflowDraft();
+        setWorkflow(reset.workflow);
+        setStoredParams(reset.storedParams);
+    }, [repo]);
 
     // And the workflow: a repository switch refetches the list for the new context, and a chosen
     // name the answered list does not offer must go the way of a deleted executor — clamped to
@@ -347,8 +373,9 @@ export function TaskComposer({
                                 onChange={(e) => {
                                     setWorkflow(e.target.value);
                                     // The values reset through the identity-keyed read: the changed
-                                    // choice re-resolves the effective workflow, and stale values
-                                    // stop being handed back — select and repo switch alike.
+                                    // choice re-resolves the chosen workflow, and stale values
+                                    // stop being handed back. A repo switch goes further and resets
+                                    // the whole draft — the repo effect below.
                                 }}
                             >
                                 <option value="">— none —</option>

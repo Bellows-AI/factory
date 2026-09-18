@@ -7,6 +7,7 @@ import {
     type WorkflowParamChoice,
     clampedWorkflow,
     ComposerParamRow,
+    freshWorkflowDraft,
     paramsComplete,
     paramValueMatches,
     TaskComposer,
@@ -1321,5 +1322,31 @@ describe('composer params are scoped to the chosen workflow identity', () => {
         expect(valuesForWorkflow(stored, null)).toEqual({});
         // The mount state: no workflow has ever been chosen, so nothing can leak anywhere.
         expect(valuesForWorkflow({ workflowId: null, values: {} }, 'wf-1')).toEqual({});
+    });
+});
+
+describe('composer workflow draft resets on a repository change', () => {
+    // The review's window: `useWorkflows` keeps the previous list while the new repository's
+    // request is pending, the page hands that stale list straight through, and the chosen
+    // workflow and its typed values survive the switch — Send can put repo A's workflow name and
+    // A-typed values into a task stamped with repo B. The reset is keyed to the composer's own
+    // repo state, so it covers every path a change arrives by: the member's select, the
+    // autoselect, the clamp. Effects never run under renderToStaticMarkup, so what pins offline
+    // is the exact state the reset leaves behind — the state Send reads through, with the stale
+    // list's default still effective, which is exactly what is effective while the window is open.
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+
+    it('resets to the mount shape — unchosen workflow, no stored values — so the mount run is a no-op', () => {
+        expect(freshWorkflowDraft()).toEqual({ workflow: '', storedParams: { workflowId: null, values: {} } });
+    });
+
+    it('sends no workflow name and hands no values back for whatever the stale list still declares', () => {
+        const reset = freshWorkflowDraft();
+        // An empty choice travels as null: the board resolves its default for the NEW repository.
+        expect(reset.workflow).toBe('');
+        // The values typed against the old list are gone for ANY effective id; with them gone, a
+        // workflow that declares params leaves Send dark — the member picks again and retypes.
+        expect(valuesForWorkflow(reset.storedParams, 'wf-stale-default')).toEqual({});
+        expect(paramsComplete([issue], valuesForWorkflow(reset.storedParams, 'wf-stale-default'))).toBe(false);
     });
 });
