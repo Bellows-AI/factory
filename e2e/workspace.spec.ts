@@ -92,12 +92,13 @@ test('the picker opens by itself when nothing is selected, and is genuinely moda
     await expect(dialog).toBeVisible();
 
     /*
-     * The offline entry runs with no GitHub App credential, so there is no installation to ask —
-     * and the repo source falls back to the repositories the seeded database already holds rows
-     * for. That fallback is what keeps a credential-less run usable at all, and this is where it
-     * is visible: the picker offers exactly what the dashboard is reporting on.
+     * The offline entry runs with no GitHub App credential, and the stored fallback is scoped to
+     * the caller's organization (stored-repos.ts). The seed deliberately plants rows only under
+     * the local org — a github-mode board materializes its own installation org at sign-in (#99)
+     * — so this member's org has no repos to offer and the picker renders its empty state. That
+     * is the honest reading of a credential-less org with no stored rows, not a failure to list.
      */
-    await expect(dialog).toContainText('Bellows-AI/bellows.ai');
+    await expect(dialog).toContainText('This GitHub App is not installed on any repositories yet');
 
     // `:modal` is the property renderToStaticMarkup cannot reach, and the one that everything else
     // about the dialog depends on — focus trapping, Escape, the backdrop, and the inertness the nav

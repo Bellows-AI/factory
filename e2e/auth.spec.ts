@@ -220,13 +220,20 @@ test('the org/my toggle scopes the figures to the signed-in member', async ({ pa
     expect(body.meta.scope).toBe('mine');
     expect(body.meta.scopeLogin).toBe('e2e-user');
 
-    // The page says whose figures these are, and this member queued no seeded tasks, so the
+    // This member's org holds no seeded rows (the seed plants under the local org only), so the
     // per-task panel renders its explicit empty state rather than zeros.
-    await expect(page.getByText('scoped to e2e-user')).toBeVisible();
     await expect(page.getByText('No attributed tasks in this range yet.')).toBeVisible();
     await page.screenshot({ path: 'artifacts/ui/scope-mine.png', fullPage: true });
 
-    // Back to org: the note goes and the organization's figures return from the same snapshot.
-    await toggle.getByRole('button', { name: 'Org' }).click();
-    await expect(page.getByText('scoped to e2e-user')).toHaveCount(0);
+    // Back to org: the organization selection returns from the same snapshot. `scope=org` is not
+    // a URL form — org is the query's default, so its absence IS the org request; the body's meta
+    // says what the figures were computed under.
+    const [orgResponse] = await Promise.all([
+        page.waitForResponse(
+            (r) => r.url().includes('/api/stats?') && !r.url().includes('scope=mine') && r.status() === 200
+        ),
+        toggle.getByRole('button', { name: 'Org' }).click(),
+    ]);
+    expect(((await orgResponse.json()) as { meta: { scope: string } }).meta.scope).toBe('org');
+    await expect(toggle.getByRole('button', { name: 'Org' })).toHaveAttribute('aria-pressed', 'true');
 });

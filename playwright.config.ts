@@ -77,10 +77,11 @@ export default defineConfig({
     ],
     webServer: [
         {
-            // Seeded first, and every run: the assertions read the numbers the generator produces,
-            // and a stale database from an older generator would fail in a way that looks like a UI
-            // bug.
-            command: 'npm run build && npm run seed && node server/dist/offline.js',
+            // Reset, then seeded, every run: the seed is additive and every run generates fresh
+            // session ids, so without the truncate the databases accumulate one generator window
+            // per run and the cold stats fetch eventually outlives the test timeout — a failure
+            // that looks like a UI bug. e2e/reset-db.mjs carries the seed's disposable-name rule.
+            command: 'node e2e/reset-db.mjs && npm run build && npm run seed && node server/dist/offline.js',
             // /api/health never touches GitHub or the database, so it reports ready immediately —
             // the cold stats fetch is awaited in the spec instead.
             url: `http://127.0.0.1:${PORT}/api/health`,
@@ -117,7 +118,7 @@ export default defineConfig({
         {
             // A separate database from the one above, so the invite this seeds cannot change what
             // the visual check renders.
-            command: 'npm run build && npm run seed && node server/dist/offline.js',
+            command: 'node e2e/reset-db.mjs && npm run build && npm run seed && node server/dist/offline.js',
             url: `http://127.0.0.1:${AUTH_PORT}/api/health`,
             cwd: root,
             env: {

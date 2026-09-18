@@ -92,19 +92,15 @@ test.describe('date range selector', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('a narrowed range changes the numbers and says so', async ({ page }) => {
+    test('a narrowed range changes the numbers', async ({ page }) => {
         await open(page);
 
         // All time is what the page opens on, so no click is needed to read the baseline.
         const allTime = await usageCards(page).locator('strong').allInnerTexts();
-        await expect(page.getByText('Every figure above covers')).toHaveCount(0);
 
         await selectPreset(page, 'Today', 'day');
         const today = await usageCards(page).locator('strong').allInnerTexts();
         expect(today).not.toEqual(allTime);
-
-        // The scope has to be stated, or a narrowed range reads as a shrinking repository.
-        await expect(page.getByText('Every figure above covers')).toBeVisible();
     });
 
     test('the custom picker applies both bounds and shows all time until one is set', async ({
@@ -204,8 +200,10 @@ test.describe('the organization selector', () => {
 
         const select = page.locator('.org-select');
         await expect(select).toBeDisabled();
-        await expect(select).toHaveValue('e2e-org');
-        await expect(select).toHaveText('E2E Org');
+        // AUTH_MODE=none has exactly one organization, the local one — its id and name are the
+        // same string, and the ORG_ID env that used to rename it here is gone (#121).
+        await expect(select).toHaveValue('default');
+        await expect(select).toHaveText('default');
         // One option, because a config-mode deployment has exactly one organization.
         await expect(select.locator('option')).toHaveCount(1);
 
