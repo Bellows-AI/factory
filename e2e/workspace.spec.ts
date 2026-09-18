@@ -11,8 +11,9 @@ import { throughSignIn } from './signin.js';
  *
  * The auth server runs with a real ORG_WORKSPACE_ROOT under artifacts/, so this drives real
  * provisioning: a directory is created on disk by the sign-in callback. It does NOT drive a clone —
- * the server here is the offline entry, with no GitHub App credential, so the picker reports the
- * seeded repositories rather than an installation, which is itself a state worth pinning.
+ * the server here is the offline entry, with no GitHub App credential, and the stored fallback is
+ * scoped to the caller's org (stored-repos.ts) while the seed plants rows only under the local org.
+ * This member's installation org holds no repos, so the picker pins its explicit empty state.
  */
 
 const SHOTS = 'artifacts/ui';
