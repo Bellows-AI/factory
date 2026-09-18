@@ -83,7 +83,12 @@ const toSummary = (row: WorkflowRow): WorkflowSummary => ({
     updatedAt: row.updated_at.toISOString(),
 });
 
-const toRecord = (row: WorkflowRow): WorkflowRecord => ({ ...toSummary(row), definition: row.definition });
+// The same grammar normalization as toSummary, applied to the definition itself: rows whose
+// jsonb predates 030 carry no `params` key, and checkWorkflowParams iterates it at launch.
+const toRecord = (row: WorkflowRow): WorkflowRecord => ({
+    ...toSummary(row),
+    definition: { ...row.definition, params: row.definition.params ?? [] },
+});
 
 /**
  * The organization is bound at construction, the way every store is: one deployment, one org, and

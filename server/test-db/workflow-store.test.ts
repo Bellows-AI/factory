@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
+import { checkWorkflowParams } from '../src/db/workflow-schema.js';
 import { BASE_WORKFLOW } from '../src/db/workflow-templates.js';
 
 const url = process.env.DATABASE_URL;
@@ -183,6 +184,23 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(listed.find((row) => row.name === 'paramless')).toMatchObject({ params: [] });
     });
 
+    it('normalizes a pre-030 definition — no params key — so the launch check does not throw', async () => {
+        // The pre-030 jsonb shape, inserted raw: the grammar's params key does not exist yet.
+        await sql`
+            insert into workflow (org_id, name, definition, is_default)
+            values (${ORG}, 'legacy', ${{
+                entry: 'first',
+                nodes: definition.nodes,
+                edges: definition.edges,
+            }}::jsonb, true)
+        `;
+
+        const resolved = await store.findByName('legacy', { userId: null, repo: null });
+        expect(resolved?.definition).toEqual({ ...definition, params: [] });
+        expect(() => checkWorkflowParams(resolved!.definition, undefined)).not.toThrow();
+        expect(checkWorkflowParams(resolved!.definition, undefined)).toEqual({ ok: true, values: {} });
+    });
+
     it('moves the default slot within a scope and resolves it repo over user over org', async () => {
         await store.create({ name: 'org-def', scope: { kind: 'org' }, definition, isDefault: true, createdBy: ALICE });
         await store.create({
@@ -222,6 +240,6 @@ describe.skipIf(!enabled)('the workflow store', () => {
         await sql`update workflow set definition = '{"entry":"x","nodes":[],"edges":[]}'::jsonb where name = ${BASE_WORKFLOW.name}`;
         await store.seedBase();
         const after = await store.get(rows[0]!.id);
-        expect(after?.definition).toEqual({ entry: 'x', nodes: [], edges: [] });
+        expect(after?.definition).toEqual({ entry: 'x', nodes: [], edges: [], params: [] });
     });
 });
