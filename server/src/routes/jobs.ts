@@ -223,6 +223,36 @@ export const jobRoutes =
             const store = await storeOf(request);
             return store ? [store] : [];
         };
+        /**
+         * The scan a worker poll walks across the org boards. The registry lists organizations in
+         * a stable order, so the starting board rotates one position per poll — a fixed first
+         * board would let one busy org fill every driver slot while later orgs starve. A board
+         * that throws costs itself the poll, not the others: claim preparation can fail for one
+         * org alone (an installation-token mint), and one unhealthy org must not block the rest.
+         * Every board failing is still a broken board, not an idle one: the last error is
+         * rethrown, so the guard's 503 — the driver's log-and-repoll signal — survives.
+         */
+        let pollTurn = 0;
+        const firstBoardClaim = async <T>(
+            boards: readonly JobStore[],
+            log: (e: Error) => void,
+            claimOf: (board: JobStore) => Promise<T | null>
+        ): Promise<T | null> => {
+            const start = pollTurn++ % boards.length;
+            let failed: Error | null = null;
+            for (let i = 0; i < boards.length; i++) {
+                const board = boards[(start + i) % boards.length]!;
+                try {
+                    const claimed = await claimOf(board);
+                    if (claimed !== null) return claimed;
+                } catch (e) {
+                    failed = e as Error;
+                    log(failed);
+                }
+            }
+            if (failed) throw failed;
+            return null;
+        };
         /** The workflow definitions the create may resolve against — the caller's org's (#99). */
         const workflowsOf = async (request: FastifyRequest) => {
             const rt = await orgs.for(orgOf(request));
@@ -377,18 +407,9 @@ export const jobRoutes =
                 return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
             }
 
-            // First board with work wins; the rest cost one idle poll each. With the common
-            // single-org deployment this is the single claim query it always was.
-            const claim = await guard(
-                reply,
-                (e) => request.log.error({ err: e }, 'job claim failed'),
-                async () => {
-                    for (const board of boards) {
-                        const claimed = await board.claim(worker, lease);
-                        if (claimed !== null) return claimed;
-                    }
-                    return null;
-                }
+            const claimFailed = (e: Error) => request.log.error({ err: e }, 'job claim failed');
+            const claim = await guard(reply, claimFailed, () =>
+                firstBoardClaim(boards, claimFailed, (board) => board.claim(worker, lease))
             );
             if (!claim.ok) return reply;
             // 204, not 200 with a null: an idle poll is the common case and it should not have to
@@ -830,16 +851,9 @@ export const jobRoutes =
                 return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
             }
 
-            const claim = await guard(
-                reply,
-                (e) => request.log.error({ err: e }, 'reclaim claim failed'),
-                async () => {
-                    for (const board of boards) {
-                        const claimed = await board.claimReclaim(worker, lease);
-                        if (claimed !== null) return claimed;
-                    }
-                    return null;
-                }
+            const reclaimFailed = (e: Error) => request.log.error({ err: e }, 'reclaim claim failed');
+            const claim = await guard(reply, reclaimFailed, () =>
+                firstBoardClaim(boards, reclaimFailed, (board) => board.claimReclaim(worker, lease))
             );
             if (!claim.ok) return reply;
             if (claim.value === null) return reply.code(204).send();

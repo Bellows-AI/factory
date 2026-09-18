@@ -86,6 +86,13 @@ secret:
     # routes against it and the driver presents it. One value, both sides — generate with
     # `openssl rand -hex 32`. Required in github mode (the server refuses to boot without it);
     # empty is fine for the AUTH_MODE=none local profile, where the worker routes are open.
+    #
+    # Upgrading from a release that had `jobBoardTokens` (one `job-board-token-<org>` key per
+    # installation): set this value BEFORE `helm upgrade`. The upgrade renders and the pod starts
+    # without it — nothing in the chart makes the key mandatory — and the server then refuses to
+    # boot ("AUTH_MODE is github but JOB_BOARD_TOKEN is not set"). With `secret.existingSecret`
+    # the chart creates nothing, so add the `job-board-token` key to your managed Secret yourself;
+    # the old per-org keys are dead once the upgrade is in.
     jobBoardToken: ''
 
 driver:
