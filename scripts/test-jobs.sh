@@ -257,7 +257,10 @@ done
     tail -20 "$work/server.log"
     exit 1
 }
-docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1
+docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1 || {
+    echo 'test-jobs: could not truncate job, workflow'
+    exit 1
+}
 
 expect_status 'health answers'            200 GET /api/health
 expect_status 'refuses an empty command'  400 POST /api/jobs '{"command":""}'
