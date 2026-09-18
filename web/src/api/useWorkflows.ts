@@ -3,15 +3,14 @@ import { reportUnauthenticated } from './useSession.js';
 
 /**
  * One workflow the composer can offer: the id and name a `POST /api/jobs` body names, the scope it
- * sits in, whether it is its scope's default, and the launch parameters it DECLARES — one explicit
- * composer input each, all required at launch. Deliberately not the 16 KiB definition — the
- * composer offers a process by name; the board freezes the resolved definition onto the task.
+ * sits in, and the launch parameters it DECLARES — one explicit composer input each, all required
+ * at launch. Deliberately not the 16 KiB definition — the composer offers a process by name; the
+ * board freezes the resolved definition onto the task.
  */
 export interface WorkflowChoice {
     id: string;
     name: string;
     scope: 'org' | 'user' | 'repo';
-    isDefault: boolean;
     params: { name: string; pattern?: string }[];
 }
 

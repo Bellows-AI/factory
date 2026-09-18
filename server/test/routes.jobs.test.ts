@@ -406,13 +406,12 @@ function stubWorkflows(options: { found?: WorkflowRecord | null; definition?: Wo
         scope: 'org',
         userId: null,
         repo: null,
-        isDefault: false,
         params: definition.params,
         createdAt: '2026-09-15T00:00:00.000Z',
         updatedAt: '2026-09-15T00:00:00.000Z',
         definition,
     };
-    const calls = { findByName: [] as string[], resolveDefault: 0 };
+    const calls = { findByName: [] as string[] };
     return {
         calls,
         record: options.found === undefined ? record : options.found,
@@ -430,10 +429,6 @@ function stubWorkflows(options: { found?: WorkflowRecord | null; definition?: Wo
         },
         async findByName(name: string) {
             calls.findByName.push(name);
-            return options.found === undefined ? record : options.found;
-        },
-        async resolveDefault() {
-            calls.resolveDefault += 1;
             return options.found === undefined ? record : options.found;
         },
         async seedBase() {},
@@ -470,32 +465,21 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(jobs.created).toEqual([]);
     });
 
-    it('resolves the scope stack default when the body names none', async () => {
+    // The no-workflow identity: a body without a workflow field names no process, so the member's
+    // words ARE the command and the workflow store is not read at all — no resolution, no default
+    // to fall back to. The row and claim carry no workflow triple; the claim's own shape is
+    // pinned by the db suite, which asserts `publish` is ABSENT on a workflow-less claim.
+    it('runs the raw prompt, reading no workflows, when the body names none', async () => {
         const jobs = stubStore();
         const workflows = stubWorkflows();
         const instance = await harnessWith(jobs, workflows);
 
-        const response = await post(instance, '/api/jobs', { command: 'fix it', repo: 'acme/web' });
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
 
         expect(response.statusCode).toBe(201);
-        expect(workflows.calls.resolveDefault).toBe(1);
-        expect(jobs.workflowTargets).toHaveLength(1);
-    });
-
-    // The no-workflow byte-identity: a body without a workflow field reaches the store exactly as
-    // it did before workflows existed — no triple on the create, no flag the claim would carry.
-    // The claim's own shape is pinned by the db suite, which asserts `publish` is ABSENT on a
-    // workflow-less claim and present (true/false) on a workflow one.
-    it('hands the store no workflow at all when the body names none and no default exists', async () => {
-        const jobs = stubStore();
-        const workflows = stubWorkflows({ found: null });
-        const instance = await harnessWith(jobs, workflows);
-
-        const response = await post(instance, '/api/jobs', { command: 'echo hi' });
-
-        expect(response.statusCode).toBe(201);
-        expect(workflows.calls.resolveDefault).toBe(1);
+        expect(workflows.calls.findByName).toEqual([]);
         expect(jobs.workflowTargets).toEqual([]);
+        expect(jobs.commands).toEqual(['echo hi']);
     });
 });
 
@@ -585,19 +569,6 @@ describe('POST /api/jobs workflow parameters', () => {
         });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_COMMAND');
-        expect(jobs.created).toEqual([]);
-    });
-
-    it('refuses a launch whose DEFAULT workflow declares params the body does not carry', async () => {
-        // The composer's exact blind spot this closes: an unnamed task still resolves the scope
-        // stack's default, and a parametrized default must refuse the bare launch.
-        const jobs = stubStore();
-        const workflows = stubWorkflows({ definition: parammedDefinition });
-        const instance = await harnessWith(jobs, workflows);
-        const response = await post(instance, '/api/jobs', { command: 'fix the login bug', repo: 'acme/web' });
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_WORKFLOW_PARAMS');
-        expect(workflows.calls.resolveDefault).toBe(1);
         expect(jobs.created).toEqual([]);
     });
 });

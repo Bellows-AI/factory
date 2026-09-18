@@ -73,23 +73,30 @@ test.describe('the task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('a dark Send names the parameter the default workflow still needs', async ({ page }) => {
+    test('an unchosen workflow runs the raw prompt; a chosen one demands its parameters', async ({ page }) => {
         const problems = watchConsole(page);
         await awaitSeedRefresh(page);
         await page.goto('/tasks');
 
         const composer = page.locator('.composer');
-        // Nothing chosen: the board's org default (fix-issue) resolves for the task and demands
-        // its parameter. This is the state a member lands in — not the explicit choice above.
+        // Nothing chosen: NO process resolves — the member's words are the whole command, and
+        // Send lights on the draft alone.
         await expect(page.getByLabel('Workflow')).toHaveValue('');
         await page.getByPlaceholder('Describe the task…').fill('fix the login crash');
-
         const send = page.getByRole('button', { name: 'Send' });
+        await expect(send).toBeEnabled();
+        await expect(composer.locator('.composer-param')).toHaveCount(0);
+        await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
+
+        // Choosing the parametrized process is the member's explicit act — and it is the only
+        // thing that engages the parameter gate.
+        await page.getByLabel('Workflow').selectOption('fix-issue');
+        const issue = composer.getByRole('textbox', { name: 'issue' });
+        await expect(issue).toBeVisible();
         await expect(send).toBeDisabled();
         // Send is dark by design, and the composer must say what it is waiting for — at the
         // field, in words, not in the declaration's regex source.
         await expect(composer.getByText('needs: issue')).toBeVisible();
-        const issue = composer.getByRole('textbox', { name: 'issue' });
         await expect(issue).toHaveAttribute('placeholder', 'required');
 
         // A bare number is a valid issue number to a reader but not to the declaration: the

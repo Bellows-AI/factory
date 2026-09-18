@@ -62,7 +62,6 @@ interface ComposerArgs {
               id: string;
               name: string;
               scope: 'org' | 'user' | 'repo';
-              isDefault?: boolean;
               params?: WorkflowParamChoice[];
           }[]
         | null;
@@ -205,6 +204,25 @@ describe('TaskComposer', () => {
         expect(html).not.toContain('Workflow');
     });
 
+    it('runs the raw prompt when no workflow is chosen: no params, no gate', () => {
+        // An unnamed task resolves NO workflow — the member's words are the whole command. A
+        // parametrized workflow sitting in the list must not reach into an unchosen composer.
+        const html = renderComposer({
+            repos: [],
+            workflows: [
+                {
+                    id: 'w1',
+                    name: 'fix-issue',
+                    scope: 'org',
+                    params: [{ name: 'issue', pattern: '#\\d+' }],
+                },
+            ],
+        });
+        expect(html).toContain('<textarea');
+        expect(html).not.toContain('needs:');
+        expect(html).not.toContain('composer-param');
+    });
+
     it('offers the workflow dropdown beside repo and executor, unchosen by default', () => {
         const html = renderComposer({
             workflows: [
@@ -216,33 +234,8 @@ describe('TaskComposer', () => {
         expect(html).toContain('>— none —<');
         expect(html).toContain('fix-issue');
         expect(html).toContain('mine');
-        // Unchosen means the BOARD decides its default; the select's value is the empty option.
+        // Unchosen means NO process: the select's value is the empty option.
         expect(html).toContain('<option value="" selected="">— none —</option>');
-    });
-
-    it('names the parameter a default workflow is waiting for while Send is dark', () => {
-        // An unnamed task resolves the scope stack's default, and a default that declares
-        // parameters keeps Send dark until they validate — a dark button with no reason on
-        // screen is a task that cannot start. The composer must say what it is waiting for.
-        const html = renderComposer({
-            repos: [],
-            workflows: [
-                {
-                    id: 'w1',
-                    name: 'fix-issue',
-                    scope: 'org',
-                    isDefault: true,
-                    params: [{ name: 'issue', pattern: '#\\d+' }, { name: 'notes' }],
-                },
-            ],
-        });
-        expect(html).toContain('needs: issue (must match #\\d+), notes');
-        // The declaration's regex source is developer-speak in a form field: the placeholder is
-        // a word, and the exact shape it must match rides the hover title instead — only where
-        // a shape was declared at all.
-        expect(html).toContain('placeholder="required"');
-        expect(html).toContain('title="must match #\\d+"');
-        expect(html).not.toContain('must match undefined');
     });
 });
 
@@ -1200,28 +1193,16 @@ describe('composer parameters', () => {
             id: 'wf-1',
             name: 'fix-issue',
             scope: 'org' as const,
-            isDefault: false,
             params: [{ name: 'issue', pattern: '#\\d+' }],
         },
     ];
 
     it('renders no parameter inputs while no workflow is chosen', () => {
-        // The composer starts unchosen and the list's fix-issue is NOT the default, so nothing
-        // param-shaped may sit in the markup before the member picks a process.
+        // An unchosen workflow means NO process: the member's words run verbatim, so nothing
+        // param-shaped may sit in the markup before the member picks a process by name.
         const html = renderComposer({ workflows: parammed });
         expect(html).not.toContain('composer-param');
         expect(html).toContain('fix-issue');
-    });
-
-    it('renders the default workflow parameter inputs even while nothing is chosen', () => {
-        // The board resolves the scope-stack default for an unnamed workflow and REFUSES a
-        // launch without its declared parameters — so the inputs must be on screen before
-        // submit, labelled with the default's name, or every bare launch 400s unfixably.
-        const html = renderComposer({
-            workflows: [{ id: 'wf-1', name: 'fix-issue', scope: 'org', isDefault: true, params: parammed[0]!.params }],
-        });
-        expect(html).toContain('composer-param');
-        expect(html).toContain('fix-issue · issue');
     });
 });
 
@@ -1257,26 +1238,26 @@ describe('composer param validation — the client mirror of the board check', (
     });
 });
 
-describe('composer params are scoped to the effective workflow identity', () => {
-    // The review's leak: `#12` typed for repo A's default workflow stays valid when a repo switch
-    // makes repo B's default effective — the same list refetch, zero select interactions — and
-    // Send launches B's process with A's issue. Values are stored against the identity of the
-    // workflow they were typed for, and read back only while that workflow is still effective.
+describe('composer params are scoped to the chosen workflow identity', () => {
+    // The review's leak: `#12` typed for one workflow stays valid when a repo switch refetches
+    // the list and a DIFFERENT same-named definition resolves — zero select interactions — and
+    // Send launches the other process with the first one's issue. Values are stored against the
+    // identity of the workflow they were typed for, and read back only while it is still chosen.
     const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
 
-    it('hands values back only while the workflow they were typed for is still effective', () => {
+    it('hands values back only while the workflow they were typed for is still chosen', () => {
         const stored = { workflowId: 'wf-repo-a', values: { issue: '#12' } };
         expect(valuesForWorkflow(stored, 'wf-repo-a')).toEqual({ issue: '#12' });
-        // Repo B's default is a DIFFERENT definition (a different row id) even at the same name:
-        // the typed value must vanish from the inputs and from the Send gate alike.
+        // Repo B's same-named definition is a DIFFERENT row: the typed value must vanish from
+        // the inputs and from the Send gate alike.
         expect(valuesForWorkflow(stored, 'wf-repo-b')).toEqual({});
         expect(paramsComplete([issue], valuesForWorkflow(stored, 'wf-repo-b'))).toBe(false);
     });
 
-    it('answers empty when nothing is effective, and stores nothing before any workflow is', () => {
+    it('answers empty when nothing is chosen, and stores nothing before any workflow is', () => {
         const stored = { workflowId: 'wf-1', values: { issue: '#12' } };
         expect(valuesForWorkflow(stored, null)).toEqual({});
-        // The mount state: no workflow has ever been effective, so nothing can leak anywhere.
+        // The mount state: no workflow has ever been chosen, so nothing can leak anywhere.
         expect(valuesForWorkflow({ workflowId: null, values: {} }, 'wf-1')).toEqual({});
     });
 });

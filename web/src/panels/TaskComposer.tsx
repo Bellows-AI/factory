@@ -13,8 +13,8 @@ export interface WorkflowParamChoice {
 }
 
 /**
- * The scope stack the board resolves an unnamed workflow's default with: repo over user over org.
- * The client mirrors it to know WHICH default's parameters to ask for before submit.
+ * Repo over user over org — the one precedence rule a name matching several visible scopes
+ * resolves with, the same tie-break `findByName` walks on the board.
  */
 const DEFAULT_PRECEDENCE: Record<'org' | 'user' | 'repo', number> = { repo: 0, user: 1, org: 2 };
 
@@ -51,11 +51,10 @@ export function paramsComplete(params: readonly WorkflowParamChoice[], values: R
 
 /**
  * The stored parameter values, read back scoped to the workflow they were typed for. A value is
- * handed over only while that same workflow is STILL the effective one: a repo switch re-resolves
- * the effective default without any select interaction, so a clear-on-select alone would let
- * `#12` typed for repo A's default sit valid for repo B's — and launch B's process with A's
- * issue. Keying the read to the identity makes that carry impossible, with no gap for the stale
- * values to be shown or sent through.
+ * handed over only while that same workflow is STILL the chosen one: a select or repo switch
+ * changes the list's context, so a clear-on-select alone would let `#12` typed for one process
+ * sit valid for another — and launch it with a foreign issue. Keying the read to the identity
+ * makes that carry impossible, with no gap for the stale values to be shown or sent through.
  */
 export function valuesForWorkflow(
     stored: { workflowId: string | null; values: Record<string, string> },
@@ -75,8 +74,8 @@ export function valuesForWorkflow(
  * The repository is a stamp the member chooses per task — the old repo tabs collapsed into this
  * select, with `none` (null) carrying the same meaning the All tab had. The first selected
  * repository is the default, exactly like the first configured executor. The workflow select sits
- * beside them: a process the task will walk, offered by name; leaving it unchosen lets the board
- * resolve its default.
+ * beside them: a process the task will walk, offered by name, chosen by hand — an unnamed task
+ * runs the member's words verbatim, with no process and no parameters.
  */
 export function TaskComposer({
     repos,
@@ -103,22 +102,22 @@ export function TaskComposer({
      * The workflow choices for the selected repository's context, or null when the list has not
      * answered (or this board serves no workflows at all). Null HIDES the select: a board without
      * the feature renders exactly the composer that came before it. Each choice carries its
-     * declared launch parameters — the composer renders one explicit input per param, and Send
-     * stays disabled until every one validates.
+     * declared launch parameters — choosing one renders an explicit input per param, and Send
+     * stays disabled until every one validates. Unchosen, the task runs the member's words
+     * verbatim — no workflow, no parameters.
      */
     workflows:
         | readonly {
               id: string;
               name: string;
               scope: 'org' | 'user' | 'repo';
-              isDefault?: boolean;
               params?: WorkflowParamChoice[];
           }[]
         | null;
     /** Why the last Send did not queue anything. Said in place, never silently. */
     actionError: string | null;
     sending: boolean;
-    /** `workflow` is a chosen name, or null for "let the board resolve its default". */
+    /** `workflow` is a chosen name, or null for no process — the raw prompt runs. */
     onSend: (
         command: string,
         repo: string | null,
@@ -137,37 +136,30 @@ export function TaskComposer({
     const [executorTouched, setExecutorTouched] = useState(false);
     const [repo, setRepo] = useState(() => firstRepo(repos));
     const [repoTouched, setRepoTouched] = useState(false);
-    // The workflow starts UNCHOSEN — null, the board's own default — and, unlike repo and
-    // executor, nothing autoselects one: a process is the member's call, not the first row's.
+    // The workflow starts UNCHOSEN — null, meaning no process: the raw prompt runs. And, unlike
+    // repo and executor, nothing autoselects one: a process is the member's call, not the first
+    // row's.
     const [workflow, setWorkflow] = useState('');
-    // The declared params of the effective workflow, filled in the explicit inputs below. Stored
+    // The declared params of the chosen workflow, filled in the explicit inputs below. Stored
     // against the identity of the workflow they were typed for — values typed for one process must
-    // never stamp another, however the effective one came to change.
+    // never stamp another.
     const [storedParams, setStoredParams] = useState<{ workflowId: string | null; values: Record<string, string> }>({
         workflowId: null,
         values: {},
     });
 
-    // The workflow whose inputs the composer shows: the member's explicit choice, or — nothing
-    // chosen — the board's own default resolution (repo over user over org, the same stack the
-    // route walks over the same visible list). A default that declares parameters refuses a
-    // launch without them exactly like a chosen one does, so its inputs MUST show before submit,
-    // or every bare task launch would 400 with nothing on screen to fix it. A name is unique per
-    // SCOPE only, so a chosen name matching several visible definitions resolves with the same
-    // repo-over-user-over-org precedence `findByName` uses — never the list's alphabetical accident.
+    // The workflow whose inputs the composer shows: exactly the member's explicit choice. Nothing
+    // autoselects one — an unnamed task runs the raw prompt, so a process is the member's call,
+    // never a silent resolution. A name is unique per SCOPE only, so a name matching several
+    // visible definitions resolves with the same repo-over-user-over-org precedence `findByName`
+    // uses — never the list's alphabetical accident.
     const chosenWorkflow =
         workflows
             ?.filter((choice) => choice.name === workflow)
             .sort((a, b) => DEFAULT_PRECEDENCE[a.scope] - DEFAULT_PRECEDENCE[b.scope])[0] ?? null;
-    const effectiveWorkflow =
-        chosenWorkflow ??
-        (workflows ?? [])
-            .filter((choice) => choice.isDefault === true)
-            .sort((a, b) => DEFAULT_PRECEDENCE[a.scope] - DEFAULT_PRECEDENCE[b.scope])[0] ??
-        null;
-    const declaredParams = effectiveWorkflow?.params ?? [];
-    const effectiveWorkflowId = effectiveWorkflow?.id ?? null;
-    const paramValues = valuesForWorkflow(storedParams, effectiveWorkflowId);
+    const declaredParams = chosenWorkflow?.params ?? [];
+    const chosenWorkflowId = chosenWorkflow?.id ?? null;
+    const paramValues = valuesForWorkflow(storedParams, chosenWorkflowId);
     const paramsReady = paramsComplete(declaredParams, paramValues);
     // The declarations Send is still dark for — empty, over-length or pattern-refused values
     // alike. Named in place below: a disabled button with no reason on screen is a task that
@@ -239,10 +231,8 @@ export function TaskComposer({
         const chosenExecutor = executor === '' ? null : executor;
         const chosenRepo = repo === '' ? null : repo;
         const chosenWorkflowName = workflow === '' ? null : workflow;
-        // Values travel trimmed. They ride beside an explicit choice, or — nothing chosen —
-        // beside the default the board will resolve for the same repo context this list was
-        // fetched for; the board validates them against whatever it resolves and refuses a
-        // mismatch loudly.
+        // Values travel trimmed, and only beside an explicit choice — a task with no workflow
+        // carries no parameters at all.
         const values: Record<string, string> = {};
         for (const param of declaredParams) values[param.name] = (paramValues[param.name] ?? '').trim();
         const chosenParams =
@@ -360,11 +350,10 @@ export function TaskComposer({
                         Send
                     </button>
                 </div>
-                {effectiveWorkflow !== null && declaredParams.length > 0 ? (
+                {declaredParams.length > 0 ? (
                     <div className="composer-row">
                         {declaredParams.map((param) => (
                             <label key={param.name} className="composer-label composer-param">
-                                {chosenWorkflow === null ? `${effectiveWorkflow.name} · ` : ''}
                                 {param.name}{' '}
                                 <input
                                     className="composer-select"
@@ -374,7 +363,7 @@ export function TaskComposer({
                                     value={paramValues[param.name] ?? ''}
                                     onChange={(e) =>
                                         setStoredParams({
-                                            workflowId: effectiveWorkflowId,
+                                            workflowId: chosenWorkflowId,
                                             values: { ...paramValues, [param.name]: e.target.value },
                                         })
                                     }

@@ -36,15 +36,16 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('attempts 0');
     });
 
-    it('the truncate waits for the org-default seed, proven by the warm-up answering 400', () => {
+    it('the truncate waits for the seeded workflow, proven by the named warm-up answering 400', () => {
         // seedBase() fires un-awaited at runtime build (orgs.ts), so a one-shot warm-up gates
-        // nothing: a workflow-less create answers 201 while `fix-issue` is still missing — the
-        // unsafe state — and 400, the missing "issue" parameter refusal, only once it is in the
-        // table. The truncate sits behind that proof, and a seed that never lands stops the run.
-        expect(SCRIPT).not.toContain(`{"command":"warm the org runtime"}' >/dev/null`);
-        expect(SCRIPT).toContain(`warm="$(api POST /api/jobs '{"command":"warm the org runtime"}')"`);
+        // nothing: a NAMED create answers 404 UNKNOWN_WORKFLOW while `fix-issue` is still missing
+        // — the unsafe state — and 400, the missing "issue" parameter refusal, only once it is in
+        // the table. The truncate sits behind that proof, and a seed that never lands stops the run.
+        expect(SCRIPT).toContain(
+            `warm="$(api POST /api/jobs '{"command":"warm the org runtime","workflow":"fix-issue"}')"`
+        );
         expect(SCRIPT).toMatch(/\[ "\$\(status "\$warm"\)" = '400' \]/);
-        expect(SCRIPT).toContain('the org-default workflow never seeded; refusing to truncate');
+        expect(SCRIPT).toContain('the seeded workflow never landed; refusing to truncate');
         expect(SCRIPT.indexOf('warm="$(api POST /api/jobs')).toBeLessThan(SCRIPT.indexOf('truncate job, workflow'));
     });
 
