@@ -32,15 +32,14 @@ Traces for failures are written next to them and open with
 
 ## What the specs assert
 
-- Every range preset re-renders the six headline cards and more than five panels.
+- Every range preset re-renders the five headline cards and more than two panels.
 - No `NaN`, `undefined`, `Infinity` or `[object Object]` anywhere in `main` — that is what a
   missing null guard looks like on screen, and it is invisible to `tsc`.
 - No console errors, page errors or failed requests during the whole walk.
-- A narrowed range changes the headline numbers *and* states its scope, and degrades the revert
-  rate to "unavailable" rather than showing a full-window figure beside range-scoped metrics.
+- A narrowed range changes the headline numbers *and* states its scope.
 - The custom picker sends both bounds, widens an inclusive day into the exclusive `to`, and
   sends nothing at all while it has no date yet.
-- The sparsest range (one merged PR) renders empty rather than broken.
+- The sparsest range (Today on the seeded data) renders empty rather than broken.
 
 ## Extending it
 
@@ -50,7 +49,7 @@ leaks into `npm test` — keep it that way; the default suite must stay offline 
 Two things to know before adding assertions:
 
 - **`.cards` is not unique.** The headline cards and the AI usage panel both use it. Scope to
-  `.cards` `.first()`, as `headlineCards()` does.
+  `.cards` `.first()`, as `usageCards()` does.
 - **A preset that resolves to the query already on screen does not refetch.** `useStats` keys on
   the query string, so clicking the active preset — or "Custom" before a date is entered — fires
   no request. Waiting on a response there hangs until the timeout.

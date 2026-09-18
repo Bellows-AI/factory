@@ -144,13 +144,11 @@ Components:
 
 | File | Primitives |
 | --- | --- |
-| `AdoptionNotice.tsx` | status |
 | `AppShell.tsx` | shell |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table |
 | `ExecutorDialog.tsx` | picker, status |
 | `KeyValues.tsx` | kv |
-| `Limitations.tsx` | panel, limits |
 | `LoginGate.tsx` | login |
 | `OrgSelector.tsx` | org |
 | `RangeSelector.tsx` | range |
@@ -169,7 +167,6 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `AccessTokensPanel.tsx` | panel, status |
 | `AiUsagePanel.tsx` | cards |
 | `ByUserPanel.tsx` | by-user, chart-wrap, task-avatar |
-| `DataQualityPanel.tsx` | panel warn |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
 | `TrackedOrgsPanel.tsx` | panel, login-button |

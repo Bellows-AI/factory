@@ -135,10 +135,6 @@ npm run test:k8s
 # `npm run dev`, seed, verify:ui and test-jobs run. `docker compose` pins `github`, uncontestable by
 # .env, because that stack holds the checkouts. Set the App's Setup URL to
 # <PUBLIC_URL>/api/auth/github/setup so the install round trip returns.
-#
-# One-off: adopt an upgraded database's legacy rows into an installation's org. A missed run reads
-# as an empty dashboard.
-DATABASE_URL=... npm run adopt -- --installation <id> [--from <legacy-org-id>]
 
 # The driver's credential, printed once — only its hash is stored. A CLI and not a route, because it
 # issues something that claims work and reports results with no human anywhere. One token per org:

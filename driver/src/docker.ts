@@ -243,7 +243,7 @@ export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
  * `remoteSessionArgs` applies to a session id. Here the stakes are higher: the value becomes the
  * agent's working directory, and `..` in it would point at the parent of every member's tree.
  *
- * The two halves restate ORG_ID_PATTERN from server/src/config.ts and the uuid above. COPIED rather
+ * The two halves restate the org-id shape server/src/auth/github.ts documents (≤ 39 chars) and the uuid above. COPIED rather
  * than imported: this package depends on nothing, deliberately (see AGENTS.md), and sharing a
  * constant with the server would give a process that needs only `fetch` and `docker` the whole
  * server dependency tree.
@@ -501,7 +501,8 @@ export const containerName = (job: BoardJob): string => `factory-job-${job.id}-$
  * `workspacePathOf` above: it arrives from the board's claim plus a repo label, and a `..` in it
  * would work the parent of every member's tree into a container that runs arbitrary commands.
  *
- * The segments mirror what the system legally produces: org ≤ 39 (ORG_ID_PATTERN) and both ids
+ * The segments mirror what the system legally produces: org ≤ 39 (the org-id shape
+ * server/src/auth/github.ts documents) and both ids
  * uuids (36) — a validator narrower than the input domain would fail every job on a
  * legally-named checkout.
  */

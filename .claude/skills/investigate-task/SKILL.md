@@ -49,7 +49,7 @@ it — "again, but tighter" is a bug report.
 | `exitCode` | 125 with `docker: ` in the output is a daemon refusal (bad image/mount). 124 is the gate/watch timeout. A clean 0 beside `failed` is opencode exiting 0 on a context-limit cut — the close-time readout turns that into the failure it is. |
 | `output` | A ROLLING TAIL the final report overwrote — the end of the run, never the whole transcript. Do not narrate from absence: what is not in the tail was never stored. |
 | `gates` | Current/last report per declared check: `exitCode`, plus the gate's own tail. A gate stuck `running` means the worker died mid-gate. A parse refusal travels as terminal `failed` with the reason in `output` or the claim's `gateError`. |
-| `runtime` | `cpuPercent`/`memUsedMb` — was it doing anything. `activity` — the agent's last line, usually the current tool call. `sampledAt` — staleness: a `running` row whose sample is minutes old has probably lost its worker. `contextTokens`/`costUsd` — how much window the run burned (opencode). |
+| `runtime` | `cpuPercent`/`memUsedMb` — was it doing anything. `activity` — the agent's last line, usually the current tool call. `sampledAt` — staleness: a `running` row whose sample is minutes old has probably lost its worker. `contextTokens`/`contextCostUsd` — how much window the run burned (opencode). |
 | `cancelRequestedAt` | Set: a person stopped it. A `failed` row is still the run's verdict, but a stop explains a run that "gave up". |
 | `doneAt` | The user closed the task by hand — orthogonal to success, never infer quality from it. |
 | `sessionId` / `remoteSessionId` | The conversation's session. Only `remoteSessionId` builds a claude.ai link; the local one joins telemetry. |

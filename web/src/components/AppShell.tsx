@@ -8,7 +8,6 @@ import { useSession } from '../api/useSession.js';
 import type { Session } from '../api/useSession.js';
 import { DEFAULT_RANGE, DEFAULT_SCOPE, statsQuery } from './RangeSelector.js';
 import type { RangeSelection, ScopeSelection } from './RangeSelector.js';
-import { AdoptionNotice } from './AdoptionNotice.js';
 import { SideNav } from './SideNav.js';
 import { TopBar } from './TopBar.js';
 
@@ -100,9 +99,6 @@ export function AppShell() {
             <SideNav tasks={onTasks ? tasks.jobs : null} />
             <div className="shell-main">
                 <TopBar data={data} refreshing={refreshing} onRefresh={refresh} session={session} />
-                {session && (
-                    <AdoptionNotice legacyOrganizations={session.legacyOrganizations} target={session.adoptInto} />
-                )}
                 <Outlet context={context} />
             </div>
         </div>

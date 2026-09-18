@@ -38,10 +38,6 @@ npm run verify:ui                     # boots server/dist/offline.js against the
 # Live, via the environment
 cp .env.example .env   # set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY
 npm run dev
-
-# The organization is identity only. There is no repo list here any more.
-ORG_ID=bellows-ai
-ORG_NAME="Bellows AI"
 ```
 
 **There is no repo list to configure.** Install the GitHub App on the repositories you want
@@ -78,19 +74,14 @@ fetched or overwritten, and nothing is ever pruned; see [docs/workspace.md](docs
 
 **`docker compose up` requires a GitHub sign-in.** `docker-compose.yml` pins `AUTH_MODE=github`,
 and unlike almost everything else in that file `.env` cannot override it. Fill in
-`GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET` (32+ chars), `PUBLIC_URL`
-and `AUTH_BOOTSTRAP_ADMIN` in `.env` — a missing one of the first four is fatal at boot and names
-itself, rather than falling back to an open port; `AUTH_BOOTSTRAP_ADMIN` is optional, seeding that
-login as the first admin only while the organization has no other members. Register an **OAuth App**, not a GitHub App, with the callback at
+`GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET` (32+ chars) and
+`PUBLIC_URL` in `.env` — a missing one is fatal at boot and names itself, rather than falling back
+to an open port. Register an **OAuth App**, not a GitHub App, with the callback at
 `<PUBLIC_URL>/api/auth/github/callback`; on the default compose ports that is
 `http://127.0.0.1:5173/api/auth/github/callback`.
 
-Membership is Factory's, not GitHub's. Set `AUTH_AUTO_JOIN_GITHUB_ORG` to a GitHub organization and
-its members admit themselves, as ordinary members, the first time they sign in — onboarding is "add
-them to the org". Leave it empty for invite-only, where an admin names every login in advance with
-`npm run invite`; either way an invite still admits somebody outside the org, and
-`AUTH_BOOTSTRAP_ADMIN` covers the first admin. Auto-join asks GitHub for `read:org`, which is the
-one scope this app ever requests. See [docs/auth.md](docs/auth.md).
+Membership is the App's installation access: anyone who can see one of its installations signs into
+that org, and nobody else does — onboarding is installing the App. See [docs/auth.md](docs/auth.md).
 
 `npm run dev` on the host still defaults to `AUTH_MODE=none`, where every route is open and the
 loopback bind is the access control — that is what `npm run seed` and `npm run verify:ui` need, and

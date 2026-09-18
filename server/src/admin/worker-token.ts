@@ -12,8 +12,7 @@
  * a session.
  *
  * `--org` is required since #99: the token IS the org binding, and the orgs are the App's
- * installations — one token per org, minted after the org exists (sign-in creates it, or
- * `npm run adopt` for a legacy database).
+ * installations — one token per org, minted after the org exists (sign-in creates it).
  */
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
@@ -70,7 +69,7 @@ try {
         })();
         if (!org) {
             console.error(
-                `"${orgId}" is not an organization in this database. Installations become organizations at sign-in; for a legacy database run: npm run adopt -- --installation <id>.`
+                `"${orgId}" is not an organization in this database. Installations become organizations at sign-in — sign in once, then retry.`
             );
             process.exit(1);
         }

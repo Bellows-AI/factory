@@ -154,20 +154,6 @@ export interface AuthStore {
     /** Every organization the account is a member of — the selector's available[] and the switch check. */
     membershipsOf(userId: string): Promise<{ id: string; name: string }[]>;
     /**
-     * The database's pre-upgrade organizations — rows with no installation id (028 added the
-     * column with no backfill) that no sign-in can ever materialize or sweep away. They are
-     * adoption territory, not the directory: `/api/auth/me` reports them so the dashboard can
-     * surface `npm run adopt` instead of leaving their stranded rows invisible.
-     */
-    legacyOrgs(): Promise<{ id: string; name: string }[]>;
-    /**
-     * The one installation org, when exactly one exists — the only target a legacy org can be
-     * paired with in a surfaced `adopt --from` command without guessing. Null when zero or
-     * several installations exist: which legacy org belongs to which installation is the
-     * operator's decision, and the deployment must not fill it in for them.
-     */
-    adoptTarget(): Promise<{ id: string } | null>;
-    /**
      * Deletes one membership by the GitHub numeric id — THE identity; the membership keys on
      * user_id since 029, so the lookup joins through app_user — and reports whether a row was
      * deleted. The webhook's whole act of revocation: findSession and findPersonalToken
@@ -311,8 +297,6 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
 
             // One installation = one organization (#99). The id IS the installation id, so the row
             // is stable across account renames; the name is a label, re-derived on every sign-in.
-            // adoptOrg() may have created the row first (the legacy-data CLI), so this is an
-            // upsert, never an insert.
             for (const org of installations) {
                 await sql`
                     insert into organization (id, name, installation_id)
@@ -498,22 +482,6 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
                 where m.user_id = ${userId} order by o.name
             `;
             return rows;
-        },
-
-        async legacyOrgs() {
-            await gate();
-            const rows = await sql<{ id: string; name: string }[]>`
-                select id, name from organization where installation_id is null order by id
-            `;
-            return rows;
-        },
-
-        async adoptTarget() {
-            await gate();
-            const rows = await sql<{ id: string }[]>`
-                select id from organization where installation_id is not null
-            `;
-            return rows.length === 1 ? { id: rows[0]!.id } : null;
         },
 
         async removeMember(orgId, githubUserId) {

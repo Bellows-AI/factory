@@ -28,12 +28,13 @@ export function TaskComposerPage() {
         command: string,
         chosenRepo: string | null,
         executor: string | null,
-        workflow: string | null
+        workflow: string | null,
+        workflowParams: Record<string, string> | null
     ): Promise<string | null> => {
         setActionError(null);
         setSending(true);
         try {
-            const result = await tasks.queue(command, chosenRepo, executor, workflow);
+            const result = await tasks.queue(command, chosenRepo, executor, workflow, workflowParams);
             if (result.error !== null) {
                 setActionError(result.error);
                 return result.error;

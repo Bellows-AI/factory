@@ -7,6 +7,7 @@ import {
     INTERP_TAIL_LIMIT,
     TRUNCATION_MARKER,
     boundedTail,
+    checkWorkflowParams,
     interpolate,
     tailMatches,
     validateDefinition,
@@ -72,6 +73,8 @@ const gate = (
 describe('nextTransition', () => {
     it('inserts the next row with an interpolated command when a marker edge matches', () => {
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot,
             rows: [row({ id: 'r1', node: 'review', output: 'findings...\nVERDICT: BLOCKERS' })],
             completed: done({ id: 'r1', node: 'review', output: 'findings...\nVERDICT: BLOCKERS' }),
@@ -83,6 +86,8 @@ describe('nextTransition', () => {
 
     it('rests when no rule matches — marker absence is a first-class outcome', () => {
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot,
             rows: [row({ id: 'r1', node: 'review', output: 'looks fine, no marker emitted' })],
             completed: done({ id: 'r1', node: 'review', output: 'looks fine, no marker emitted' }),
@@ -100,6 +105,8 @@ describe('nextTransition', () => {
     it('derives gate-failed from the stored gates jsonb, distinguishable from an agent failure', () => {
         const gates = [gate('test', 'passed', 0), gate('lint', 'failed', 1, 'eslint output')];
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot,
             rows: [row({ id: 'r1', node: 'implement' })],
             completed: done({ id: 'r1', status: 'failed', gates }),
@@ -112,6 +119,8 @@ describe('nextTransition', () => {
     it('keeps agent-exit failure and gate failure distinguishable by declared order', () => {
         // A failed verdict with GREEN gates falls past gate-failed edges to a plain failure match.
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot: {
                 ...snapshot,
                 edges: [
@@ -127,6 +136,8 @@ describe('nextTransition', () => {
 
     it('evaluates rules in declared order, first match wins', () => {
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot: {
                 ...snapshot,
                 edges: [
@@ -150,6 +161,8 @@ describe('nextTransition', () => {
             row({ id: 'f', node: 'review' }),
         ];
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot: {
                 ...snapshot,
                 // The bound lives on the MATCHING edge; the count is rows for the TARGET node, so
@@ -172,6 +185,8 @@ describe('nextTransition', () => {
             row({ id: 'e', node: 'fix' }),
         ];
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot: {
                 ...snapshot,
                 edges: [{ from: 'fix', to: 'review', when: 'succeeded', max: 2 }],
@@ -185,6 +200,8 @@ describe('nextTransition', () => {
 
     it('re-enters the graph at the halted node when an off-graph follow-up completes', () => {
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot,
             rows: [
                 row({ id: 'a', node: 'implement' }),
@@ -199,23 +216,61 @@ describe('nextTransition', () => {
     });
 
     it('rests off_graph when neither the row nor the thread carries a node', () => {
-        const t = nextTransition({ snapshot, rows: [row({ id: 'r1' })], completed: done({ id: 'r1', node: null }) });
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot,
+            rows: [row({ id: 'r1' })],
+            completed: done({ id: 'r1', node: null }),
+        });
         expect(t).toEqual({ action: 'rest', reason: 'off_graph' });
     });
 
     it('carries the publish flag only from the target node', () => {
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot,
             rows: [row({ id: 'r1', node: 'review', output: 'all good\nVERDICT: CLEAN' })],
             completed: done({ id: 'r1', node: 'review', output: 'all good\nVERDICT: CLEAN' }),
         });
         expect(t).toMatchObject({ action: 'insert', node: { name: 'publish' }, publish: true });
     });
+
+    it('fills {{param.*}} from the frozen values and {{command}} from the root command in a successor prompt', () => {
+        const parammed = {
+            entry: 'fetch',
+            params: [{ name: 'issue', pattern: '#\\d+' }],
+            nodes: [
+                { name: 'fetch', kind: 'agent' as const, session: 'resume' as const, prompt: 'fetch {{param.issue}}' },
+                {
+                    name: 'work',
+                    kind: 'agent' as const,
+                    session: 'resume' as const,
+                    prompt: 'issue {{param.issue}}; asked: {{command}}',
+                    publish: true,
+                },
+            ],
+            edges: [{ from: 'fetch', to: 'work', when: 'succeeded' as const }],
+        };
+        const t = nextTransition({
+            snapshot: parammed,
+            params: { issue: '#42' },
+            command: 'fetch #42 — the entry prompt the member launched',
+            rows: [row({ id: 'r1', node: 'fetch', output: 'the issue body' })],
+            completed: done({ id: 'r1', node: 'fetch' }),
+        });
+        expect(t).toMatchObject({ action: 'insert', node: { name: 'work' } });
+        if (t.action !== 'insert') return;
+        expect(t.command).toBe('issue #42; asked: fetch #42 — the entry prompt the member launched');
+    });
 });
 
 describe('bounded interpolation', () => {
     it('substitutes the most recent stored output of the named node', () => {
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot: {
                 ...snapshot,
                 edges: [{ from: 'fetch-issue', to: 'implement', when: 'succeeded' }],
@@ -233,7 +288,13 @@ describe('bounded interpolation', () => {
 
     it('hard-truncates a substituted tail to its share, with a visible marker', () => {
         const long = 'x'.repeat(INTERP_TAIL_LIMIT + 500);
-        const command = interpolate('{{a.output}}', { nodeOutput: () => long, gateName: '', gateOutput: '' });
+        const command = interpolate('{{a.output}}', {
+            nodeOutput: () => long,
+            gateName: '',
+            gateOutput: '',
+            param: () => '',
+            command: '',
+        });
         expect(command).toBe('x'.repeat(INTERP_TAIL_LIMIT) + TRUNCATION_MARKER);
         expect(command.length).toBeLessThanOrEqual(INTERP_TAIL_LIMIT + TRUNCATION_MARKER.length);
     });
@@ -253,6 +314,8 @@ describe('bounded interpolation', () => {
             ),
         };
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot: wide,
             rows: ['a', 'b', 'c', 'd', 'e'].map((node, i) =>
                 row({ id: `r${i}`, node, output: 'y'.repeat(INTERP_TAIL_LIMIT) })
@@ -308,6 +371,8 @@ describe('the base workflow walkthrough', () => {
 
         // fetch-issue succeeded → implement
         let t = nextTransition({
+            params: {},
+            command: '',
             snapshot: BASE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'fetch', node: 'fetch-issue' }),
@@ -321,6 +386,8 @@ describe('the base workflow walkthrough', () => {
         // implement succeeded → review
         rows[rows.length - 1] = row({ id: 'impl', node: 'implement', output: 'implemented; suite green' });
         t = nextTransition({
+            params: {},
+            command: '',
             snapshot: BASE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'impl', node: 'implement' }),
@@ -333,6 +400,8 @@ describe('the base workflow walkthrough', () => {
         // review names blockers → fix, carrying the review's output
         rows[rows.length - 1] = row({ id: 'rev1', node: 'review', output: '1. src/x.ts is wrong\nVERDICT: BLOCKERS' });
         t = nextTransition({
+            params: {},
+            command: '',
             snapshot: BASE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'rev1', node: 'review', output: '1. src/x.ts is wrong\nVERDICT: BLOCKERS' }),
@@ -352,6 +421,8 @@ describe('the base workflow walkthrough', () => {
         rows.push(insert(t, 'rev2'));
         rows[rows.length - 1] = row({ id: 'rev2', node: 'review', output: 'all good\nVERDICT: CLEAN' });
         t = nextTransition({
+            params: {},
+            command: '',
             snapshot: BASE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'rev2', node: 'review', output: 'all good\nVERDICT: CLEAN' }),
@@ -366,6 +437,8 @@ describe('the base workflow walkthrough', () => {
     it('walks gate-failed into gate-fix, filling both gate placeholders', () => {
         const rows: EngineRow[] = [row({ id: 'impl', node: 'implement', sessionId: 'primary' })];
         const t = nextTransition({
+            params: {},
+            command: '',
             snapshot: BASE_WORKFLOW.definition,
             rows,
             completed: done({
@@ -388,6 +461,35 @@ describe('the base workflow walkthrough', () => {
             expect(node.publish === true).toBe(node.name === 'publish');
             expect(node.session === 'fresh').toBe(node.name === 'review');
         }
+    });
+});
+
+describe('the seeded issue parameter', () => {
+    it('declares a required issue param accepting a bare #number or an issues URL', () => {
+        expect(validateDefinition(BASE_WORKFLOW.definition).ok).toBe(true);
+        expect(BASE_WORKFLOW.definition.params).toEqual([{ name: 'issue', pattern: expect.any(String) }]);
+        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: '#127' }).ok).toBe(true);
+        expect(
+            checkWorkflowParams(BASE_WORKFLOW.definition, { issue: 'https://github.com/acme/widget/issues/44' }).ok
+        ).toBe(true);
+        // The bare form keeps its '#': the driver's issue parse and the branch/commit issue
+        // references read it off the interpolated prompt.
+        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: '127' }).ok).toBe(false);
+        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: 'issues 44' }).ok).toBe(false);
+        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: 'x#44' }).ok).toBe(false);
+        // A param-less launch is refused — the point of the declaration.
+        expect(checkWorkflowParams(BASE_WORKFLOW.definition, {}).ok).toBe(false);
+    });
+
+    it("fetches the declared param and carries the member's words, with no mining fallback", () => {
+        const fetchNode = BASE_WORKFLOW.definition.nodes[0]!;
+        expect(fetchNode.name).toBe('fetch-issue');
+        expect(fetchNode.prompt).toContain('{{param.issue}}');
+        expect(fetchNode.prompt).toContain('{{command}}');
+        expect(fetchNode.prompt).not.toContain('if none was given');
+        // The command block passes the declared param itself — no placeholder left to re-derive.
+        expect(fetchNode.prompt).not.toContain('<url-or-number>');
+        expect(fetchNode.prompt).toContain('gh issue view {{param.issue}}');
     });
 });
 
@@ -430,5 +532,242 @@ describe('validateDefinition', () => {
                 edges: [],
             })
         ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_NODE' } });
+    });
+});
+
+describe('workflow parameters', () => {
+    const parammed = {
+        entry: 'a',
+        params: [{ name: 'issue', pattern: '#\\d+' }, { name: 'notes' }],
+        nodes: [
+            {
+                name: 'a',
+                kind: 'agent' as const,
+                session: 'resume' as const,
+                prompt: 'issue {{param.issue}} asked {{command}} notes {{param.notes}}',
+                publish: true,
+            },
+        ],
+        edges: [],
+    };
+
+    it('accepts a definition declaring params, with {{param.*}} anywhere and {{command}} at the entry', () => {
+        expect(validateDefinition(parammed)).toMatchObject({
+            ok: true,
+            definition: { params: [{ name: 'issue', pattern: '#\\d+' }, { name: 'notes' }] },
+        });
+    });
+
+    it('normalizes an absent params declaration to an empty list', () => {
+        const check = validateDefinition({
+            entry: 'a',
+            nodes: [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true }],
+            edges: [],
+        });
+        expect(check).toMatchObject({ ok: true, definition: { params: [] } });
+    });
+
+    it('refuses a malformed params declaration, each by name', () => {
+        const nodes = [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true }];
+        expect(validateDefinition({ entry: 'a', nodes, edges: [], params: 'issue' })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS' },
+        });
+        expect(validateDefinition({ entry: 'a', nodes, edges: [], params: [{}] })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS' },
+        });
+        expect(validateDefinition({ entry: 'a', nodes, edges: [], params: [{ name: 'Issue' }] })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS' },
+        });
+        expect(
+            validateDefinition({ entry: 'a', nodes, edges: [], params: [{ name: 'issue' }, { name: 'issue' }] })
+        ).toMatchObject({ ok: false, refusal: { code: 'BAD_PARAMS' } });
+        expect(
+            validateDefinition({ entry: 'a', nodes, edges: [], params: [{ name: 'issue', pattern: '[' }] })
+        ).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS' },
+        });
+        expect(
+            validateDefinition({ entry: 'a', nodes, edges: [], params: [{ name: 'issue' }, 'issue'] })
+        ).toMatchObject({ ok: false, refusal: { code: 'BAD_PARAMS' } });
+        // Unknown keys fail loudly anywhere — a param object is no exception.
+        expect(
+            validateDefinition({
+                entry: 'a',
+                nodes,
+                edges: [],
+                params: [{ name: 'issue', pattern: '#\\d+', extra: 1 }],
+            })
+        ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_KEY' } });
+    });
+
+    it('accepts {{command}} in any node — it resolves from the thread root command', () => {
+        expect(
+            validateDefinition({
+                entry: 'a',
+                params: [{ name: 'issue', pattern: '#\\d+' }],
+                nodes: [
+                    { name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true },
+                    { name: 'b', kind: 'agent', session: 'resume', prompt: 're-anchor on {{command}}' },
+                ],
+                edges: [],
+            })
+        ).toMatchObject({ ok: true });
+    });
+
+    it('refuses {{param.undeclared}}, by placeholder', () => {
+        expect(
+            validateDefinition({
+                entry: 'a',
+                params: [{ name: 'issue', pattern: '#\\d+' }],
+                nodes: [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x {{param.nothing}}', publish: true }],
+                edges: [],
+            })
+        ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_PLACEHOLDER' } });
+    });
+
+    it('refuses "param" as a node name — {{param.*}} is the parameter namespace', () => {
+        expect(
+            validateDefinition({
+                entry: 'a',
+                nodes: [{ name: 'param', kind: 'agent', session: 'resume', prompt: 'x', publish: true }],
+                edges: [],
+            })
+        ).toMatchObject({ ok: false, refusal: { code: 'BAD_NODE' } });
+    });
+});
+
+describe('the parameter pattern grammar — a safe subset, refused on any doubt', () => {
+    const nodes = [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true }];
+    const withPattern = (pattern: string) =>
+        validateDefinition({ entry: 'a', nodes, edges: [], params: [{ name: 'issue', pattern }] });
+
+    it('accepts the shapes honest shapes need: literals, classes, escapes, alternation, bounded runs', () => {
+        expect(withPattern('#\\d+').ok).toBe(true);
+        expect(withPattern('https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\\d+').ok).toBe(true);
+        expect(withPattern('(?:foo|bar)-[0-9]{2,4}').ok).toBe(true);
+        expect(withPattern('v\\d+\\.\\d+\\.\\d+').ok).toBe(true);
+        // Two chained quantified atoms are within the ambiguity budget — quadratic at worst.
+        expect(withPattern('a*a*').ok).toBe(true);
+    });
+
+    it('refuses the ambiguous constructs catastrophic backtracking feeds on', () => {
+        expect(withPattern('(a+)*').ok).toBe(false); // quantified group
+        expect(withPattern('(a|aa)+').ok).toBe(false); // quantified group
+        expect(withPattern('a*?').ok).toBe(false); // a quantifier after a quantifier
+        expect(withPattern('a*a*a*a*').ok).toBe(false); // ambiguity run over the cap
+        expect(withPattern('(a+)(a+)(a+)(a+)').ok).toBe(false); // the same run, through groups
+        expect(withPattern('\\d+\\d+\\d+\\d+\\d+').ok).toBe(false); // more than four quantified atoms
+    });
+
+    it('refuses alternation-stacked patterns — branch boundaries carry their own budget', () => {
+        // `(a|aa)(a|aa)…` composes 2ⁿ match paths without a single quantifier, so unquantified
+        // groups may not stack: two branch boundaries, and the pattern is refused.
+        expect(withPattern('(a|aa)(a|aa)(a|aa)').ok).toBe(false);
+        expect(withPattern('a|aa|aaa|aaaa').ok).toBe(false); // three boundaries at the top level
+        // The reported attack: overlap groups repeated to the pattern-size cap.
+        expect(withPattern('(a|aa)'.repeat(42)).ok).toBe(false);
+    });
+
+    it('refuses syntax outside the subset, even when JavaScript would allow it', () => {
+        expect(withPattern('^\\d+$').ok).toBe(false); // anchors are implicit in the full match
+        expect(withPattern('(?=a)b').ok).toBe(false); // lookahead
+        expect(withPattern('(?!a)b').ok).toBe(false); // negative lookahead
+        expect(withPattern('\\1').ok).toBe(false); // backreference
+        expect(withPattern('\\u1234').ok).toBe(false); // unicode escape outside the allowlist
+        expect(withPattern('a{2,700}').ok).toBe(false); // bound over the cap
+        expect(withPattern('a{2,}').ok).toBe(false); // open-ended repetition: write {2,64} or +
+        expect(withPattern('a{2,').ok).toBe(false); // malformed quantifier, not a literal brace
+        expect(withPattern('a{').ok).toBe(false); // a bare brace must be escaped
+        expect(withPattern('[]').ok).toBe(false); // empty class
+    });
+
+    it('does not over-refuse: a mandatory atom between quantified atoms breaks the ambiguity run', () => {
+        expect(withPattern('x*y*b[c]+d+').ok).toBe(true); // true runs: 2, then 1, then 1
+        expect(withPattern('(a|aa)(a|aa)').ok).toBe(true); // two branch boundaries, at the cap
+        // The seeded issue pattern: one boundary and four run-broken quantifiers.
+        expect(withPattern('#\\d+|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\\d+').ok).toBe(true);
+    });
+});
+
+describe('checkWorkflowParams', () => {
+    const def = validateDefinition({
+        entry: 'a',
+        params: [{ name: 'issue', pattern: '#\\d+' }, { name: 'notes' }],
+        nodes: [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true }],
+        edges: [],
+    });
+    if (!def.ok) throw new Error('fixture definition refused');
+    const definition = def.definition;
+
+    it('accepts full matches and trims the stored values', () => {
+        expect(checkWorkflowParams(definition, { issue: ' #42 ', notes: 'login page' })).toEqual({
+            ok: true,
+            values: { issue: '#42', notes: 'login page' },
+        });
+    });
+
+    it('accepts a param-less definition with no body at all and with an empty one', () => {
+        expect(checkWorkflowParams({ ...definition, params: [] }, undefined)).toEqual({ ok: true, values: {} });
+        expect(checkWorkflowParams({ ...definition, params: [] }, {})).toEqual({ ok: true, values: {} });
+    });
+
+    it('refuses, each by name: non-object, missing declared, unknown key, non-string, empty, over-length, non-matching', () => {
+        const refused = (raw: unknown) => checkWorkflowParams(definition, raw);
+        expect(refused(undefined)).toMatchObject({ ok: false, refusal: { code: 'BAD_WORKFLOW_PARAMS' } });
+        expect(refused('issue')).toMatchObject({ ok: false, refusal: { code: 'BAD_WORKFLOW_PARAMS' } });
+        expect(refused({ issue: '#42' })).toMatchObject({ ok: false, refusal: { code: 'BAD_WORKFLOW_PARAMS' } });
+        expect(refused({ issue: '#42', notes: 'n', repo: 'x/y' })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_WORKFLOW_PARAMS' },
+        });
+        expect(refused({ issue: 42, notes: 'n' })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_WORKFLOW_PARAMS' },
+        });
+        expect(refused({ issue: '   ', notes: 'n' })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_WORKFLOW_PARAMS' },
+        });
+        expect(refused({ issue: '#42', notes: 'x'.repeat(513) })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_WORKFLOW_PARAMS' },
+        });
+        expect(refused({ issue: '42', notes: 'n' })).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_WORKFLOW_PARAMS' },
+        });
+    });
+
+    it('accepts a value at the length cap and refuses one over it', () => {
+        expect(checkWorkflowParams(definition, { issue: '#42', notes: 'x'.repeat(512) }).ok).toBe(true);
+        expect(checkWorkflowParams(definition, { issue: '#42', notes: 'x'.repeat(513) }).ok).toBe(false);
+    });
+});
+
+describe('parameter interpolation', () => {
+    it('fills {{param.*}} and {{command}}', () => {
+        const out = interpolate('{{param.issue}} from {{command}}', {
+            nodeOutput: () => '',
+            gateName: '',
+            gateOutput: '',
+            param: (name) => (name === 'issue' ? '#42' : ''),
+            command: 'fix #42 please',
+        });
+        expect(out).toBe('#42 from fix #42 please');
+    });
+
+    it('bounds a substituted parameter like every other substitution', () => {
+        const out = interpolate('{{param.notes}}', {
+            nodeOutput: () => '',
+            gateName: '',
+            gateOutput: '',
+            param: () => 'x'.repeat(INTERP_TAIL_LIMIT + 500),
+            command: '',
+        });
+        expect(out).toBe('x'.repeat(INTERP_TAIL_LIMIT) + TRUNCATION_MARKER);
     });
 });

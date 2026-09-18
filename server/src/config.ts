@@ -388,7 +388,7 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         publicUrl: origin.origin,
         ingestToken,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
-        // a phishing vector; as an environment variable it stays a test seam that index.ts logs
+        // a phishing vector; as an environment variable it stays a test seam that main.ts logs
         // loudly when it is used.
         authorizeUrl: env.GITHUB_OAUTH_AUTHORIZE_URL?.trim() || 'https://github.com/login/oauth/authorize',
         tokenUrl: env.GITHUB_OAUTH_TOKEN_URL?.trim() || 'https://github.com/login/oauth/access_token',
@@ -462,7 +462,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
      */
     if (env.ORG_ID?.trim()) {
         throw new Error(
-            "ORG_ID is no longer supported: organizations are the GitHub App installations now — one installation per org, created at sign-in and named after its account. Remove the line. To adopt an existing database into an installation's org: npm run adopt -- --installation <id>."
+            'ORG_ID is no longer supported: organizations are the GitHub App installations now — one installation per org, created at sign-in and named after its account. Remove the line.'
         );
     }
     if (env.ORG_NAME?.trim()) {

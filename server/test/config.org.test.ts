@@ -24,10 +24,9 @@ describe('the organization', () => {
         expect(LOCAL_ORG_ID).toBe('default');
     });
 
-    it('refuses ORG_ID, naming the adoption CLI for legacy data', () => {
+    it('refuses ORG_ID: the orgs are the installations now', () => {
         // A variable that worked yesterday must not silently no-op — the ORG_REPOS precedent.
         expect(() => loadConfig(env({ ORG_ID: 'acme' }))).toThrow(/ORG_ID is no longer supported/);
-        expect(() => loadConfig(env({ ORG_ID: 'acme' }))).toThrow(/npm run adopt/);
         // An empty value is not an override, here as everywhere: compose passes these empty.
         expect(() => loadConfig(env({ ORG_ID: '' }))).not.toThrow();
         expect(() => loadConfig(env({ ORG_ID: '  ' }))).not.toThrow();

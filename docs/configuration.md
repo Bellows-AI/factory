@@ -42,7 +42,7 @@ One source: environment variables (`.env` via `--env-file-if-exists`, compose, o
   deployment served or who could sign in; an ignored one boots a deployment that silently serves a
   different set of organizations. The orgs are the App's installations now, materialized at
   sign-in — the App's Setup URL should point at `<publicUrl>/api/auth/github/setup` so the install
-  round trip returns. Legacy data is re-homed with `npm run adopt -- --installation <id>`.
+  round trip returns.
 - **`resolveConfig` reads `GITHUB_APP_PRIVATE_KEY_FILE`, and `loadConfig` never learns a file
   exists.** The whole `describe('loadConfig')` suite depends on the validator being a pure function
   of its argument, and an App private key normally arrives as a path — so the read happens in

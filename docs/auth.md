@@ -61,11 +61,10 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   the selection materialized at the last sign-in IS the materialized fact — and since #123, the
   sweep at sign-in deletes a membership of ANY org outside the passed selection, whether because
   GitHub stopped reporting it or because the account deselected it: one predicate, two meanings
-  of "this account does not reach here". A pre-#99 legacy org is reported by nothing, ever, so it
-  is always in the swept set; legacy orgs are adoption territory (docs/organizations.md), never
-  switchable ones. The choice is never an authorization decision — it bounds only what this
-  account's sign-in materializes, never another member's reach, and re-selecting restores reach
-  through the same upsert.
+  of "this account does not reach here", and an org row no installation reports (the none-mode
+  local row, a husk in an upgraded database) can never list an account twice. The choice is never
+  an authorization decision — it bounds only what this account's sign-in materializes, never
+  another member's reach, and re-selecting restores reach through the same upsert.
 - **Removal is GitHub's own report first, sign-in second — and the join is still the security
   property.** GitHub delivers `organization.member_removed` to `POST /api/github/webhook`, whose
   credential is the `GITHUB_WEBHOOK_SECRET` HMAC over the raw body; the route deletes the
