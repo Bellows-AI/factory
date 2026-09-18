@@ -36,15 +36,25 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('attempts 0');
     });
 
-    it('the truncate waits for the seeded workflow, proven by the named warm-up answering 400', () => {
+    it('the truncate waits for the seeded workflow, proven by the refusal body, not the 400 alone', () => {
         // seedBase() fires un-awaited at runtime build (orgs.ts), so a one-shot warm-up gates
         // nothing: a NAMED create answers 404 UNKNOWN_WORKFLOW while `fix-issue` is still missing
-        // — the unsafe state — and 400, the missing "issue" parameter refusal, only once it is in
-        // the table. The truncate sits behind that proof, and a seed that never lands stops the run.
+        // and 400 once SOME row answers — but a stale row refuses 400 too: an older boot's
+        // entry-less definition comes back BAD_WORKFLOW "workflow has no entry node" (jobs.ts),
+        // indistinguishable from the fresh seed by status. Only the body — BAD_WORKFLOW_PARAMS
+        // carrying the missing "issue" refusal the current template answers with — proves the
+        // row this build ships has landed; anything else keeps polling, and a seed that never
+        // lands stops the run instead of truncating into a repopulating table.
         expect(SCRIPT).toContain(
             `warm="$(api POST /api/jobs '{"command":"warm the org runtime","workflow":"fix-issue"}')"`
         );
         expect(SCRIPT).toMatch(/\[ "\$\(status "\$warm"\)" = '400' \]/);
+        // The gate is the case arm on the body — and the quotes escape in the raw JSON text:
+        // the message arrives as missing required workflow parameter \"issue\". The refusal body
+        // is {error,code}, so the two needles are pinned matched in either order.
+        expect(SCRIPT).toMatch(
+            /\*BAD_WORKFLOW_PARAMS\*'missing required workflow parameter \\"issue\\"'\*\|\*'missing required workflow parameter \\"issue\\"'\*BAD_WORKFLOW_PARAMS\*\)\s+seeded=1/
+        );
         expect(SCRIPT).toContain('the seeded workflow never landed; refusing to truncate');
         expect(SCRIPT.indexOf('warm="$(api POST /api/jobs')).toBeLessThan(SCRIPT.indexOf('truncate job, workflow'));
     });
