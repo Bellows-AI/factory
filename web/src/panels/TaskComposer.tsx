@@ -382,7 +382,16 @@ export function TaskComposer({
                             </label>
                         ))}
                         {missingParams.length > 0 ? (
-                            <span className="muted">needs: {missingParams.map((param) => param.name).join(', ')}</span>
+                            <span className="muted">
+                                needs:{' '}
+                                {missingParams
+                                    .map((param) =>
+                                        param.pattern !== undefined
+                                            ? `${param.name} (must match ${param.pattern})`
+                                            : param.name
+                                    )
+                                    .join(', ')}
+                            </span>
                         ) : null}
                     </div>
                 ) : null}

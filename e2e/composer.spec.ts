@@ -92,6 +92,12 @@ test.describe('the task composer', () => {
         const issue = composer.getByRole('textbox', { name: 'issue' });
         await expect(issue).toHaveAttribute('placeholder', 'required');
 
+        // A bare number is a valid issue number to a reader but not to the declaration: the
+        // pattern demands the `#` (or a full issues URL), and the hint must say so.
+        await issue.fill('12');
+        await expect(send).toBeDisabled();
+        await expect(composer.getByText('must match #')).toBeVisible();
+
         // A value the declaration refuses keeps Send dark and keeps the reason on screen.
         await issue.fill('not an issue reference');
         await expect(send).toBeDisabled();

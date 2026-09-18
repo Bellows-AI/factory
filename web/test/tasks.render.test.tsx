@@ -236,7 +236,7 @@ describe('TaskComposer', () => {
                 },
             ],
         });
-        expect(html).toContain('needs: issue, notes');
+        expect(html).toContain('needs: issue (must match #\\d+), notes');
         // The declaration's regex source is developer-speak in a form field: the placeholder is
         // a word, and the exact shape it must match rides the hover title instead — only where
         // a shape was declared at all.
