@@ -219,6 +219,29 @@ describe('TaskComposer', () => {
         // Unchosen means the BOARD decides its default; the select's value is the empty option.
         expect(html).toContain('<option value="" selected="">— none —</option>');
     });
+
+    it('names the parameter a default workflow is waiting for while Send is dark', () => {
+        // An unnamed task resolves the scope stack's default, and a default that declares
+        // parameters keeps Send dark until they validate — a dark button with no reason on
+        // screen is a task that cannot start. The composer must say what it is waiting for.
+        const html = renderComposer({
+            repos: [],
+            workflows: [
+                {
+                    id: 'w1',
+                    name: 'fix-issue',
+                    scope: 'org',
+                    isDefault: true,
+                    params: [{ name: 'issue', pattern: '#\\d+' }],
+                },
+            ],
+        });
+        expect(html).toContain('needs: issue');
+        // The declaration's regex source is developer-speak in a form field: the placeholder is
+        // a word, and the exact shape it must match rides the hover title instead.
+        expect(html).toContain('placeholder="required"');
+        expect(html).toContain('title="must match #\\d+"');
+    });
 });
 
 describe('TaskDetail', () => {

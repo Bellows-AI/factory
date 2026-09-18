@@ -72,4 +72,37 @@ test.describe('the task composer', () => {
         await page.screenshot({ path: `${SHOTS}/composer-params.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
+
+    test('a dark Send names the parameter the default workflow still needs', async ({ page }) => {
+        const problems = watchConsole(page);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks');
+
+        const composer = page.locator('.composer');
+        // Nothing chosen: the board's org default (fix-issue) resolves for the task and demands
+        // its parameter. This is the state a member lands in — not the explicit choice above.
+        await expect(page.getByLabel('Workflow')).toHaveValue('');
+        await page.getByPlaceholder('Describe the task…').fill('fix the login crash');
+
+        const send = page.getByRole('button', { name: 'Send' });
+        await expect(send).toBeDisabled();
+        // Send is dark by design, and the composer must say what it is waiting for — at the
+        // field, in words, not in the declaration's regex source.
+        await expect(composer.getByText('needs: issue')).toBeVisible();
+        const issue = composer.getByRole('textbox', { name: 'issue' });
+        await expect(issue).toHaveAttribute('placeholder', 'required');
+
+        // A value the declaration refuses keeps Send dark and keeps the reason on screen.
+        await issue.fill('not an issue reference');
+        await expect(send).toBeDisabled();
+        await expect(composer.getByText('needs: issue')).toBeVisible();
+
+        // A value the declaration accepts lights Send and retires the reason.
+        await issue.fill('#12');
+        await expect(send).toBeEnabled();
+        await expect(composer.getByText('needs: issue')).toBeHidden();
+
+        await page.screenshot({ path: `${SHOTS}/composer-default-needs-param.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
 });
