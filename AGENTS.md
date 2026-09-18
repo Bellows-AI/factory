@@ -77,8 +77,9 @@ npm run lint           # biome check — lint + format verification over the fou
 npm run format         # biome format --write — fixes format drift
 npm run lint:fix       # biome check --write — fixes what lint flags
 
-# Real browser (chromium, headless). Builds, SEEDS factory_e2e, serves the SPA from the API on
-# 8123 and walks every date range. Still offline — no token, no quota, no network — but by way of
+# Real browser (chromium, headless). Builds, RESETS and seeds factory_e2e — the seed is additive,
+# so the reset is what keeps one run's data from stacking on the last run's — then serves the SPA
+# from the API on 8123 and walks every date range. Still offline — no token, no quota, no network — but by way of
 # a seeded database rather than a replayed payload. Screenshots to artifacts/ui/ — read them; a
 # passing assertion says the DOM was right, only the image says the layout was.
 #
