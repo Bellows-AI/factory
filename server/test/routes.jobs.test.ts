@@ -709,6 +709,24 @@ describe('POST /api/jobs/claim', () => {
         expect(second.json().command).toBe('from-b');
     });
 
+    // The driver polls the reclaim queue between job polls, so the two scans must not share one
+    // rotation counter: each interleaved reclaim poll would advance the job scan's phase, and
+    // with two orgs every job claim would start at the same org and starve the other.
+    it('rotates job claims independently of the interleaved reclaim polls', async () => {
+        const fromA: Claim = { ...claim, command: 'from-a' };
+        const fromB: Claim = { ...claim, command: 'from-b' };
+        const instance = await harnessOfBoards([
+            ['org-a', stubStore({ claim: fromA })],
+            ['org-b', stubStore({ claim: fromB })],
+        ]);
+        await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        const first = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        const second = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(first.json().command).toBe('from-a');
+        expect(second.json().command).toBe('from-b');
+    });
+
     it('requires a worker id, because a stuck job has to be traceable to a container', async () => {
         const instance = await harnessWith(stubStore({ claim }));
         const response = await post(instance, '/api/jobs/claim', { leaseSeconds: 300 });
