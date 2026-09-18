@@ -229,8 +229,12 @@ issue instead of improvising. The bare form keeps its `#` so the reference survi
 command the driver parses and the branch/commit messages cite. Each block carries only its agentic
 content plus the output contract an edge needs; the loop limits live on the edges, enforced by the
 board, no longer model discipline. The board seeds it at boot (idempotent by name, org-level, the
-org default); seeding populates, never overwrites — an existing param-less definition stays until
-deleted, and the next boot re-seeds the current shape.
+org default); the row is the board's, so it tracks the shipped template — a definition an older
+boot seeded refreshes to the current shape, because a stale row would serve a process the code no
+longer ships with no way for a member to fix it (no workflow edit UI exists). The refresh moves
+the definition only: the default slot stays a member decision, and a member's own same-named
+definition in another scope is never touched. Running threads are safe regardless — they froze
+their snapshot at creation.
 
 Templates interpolate at row-insert time, bounded: `{{nodeName.output}}` — that node's most
 recent stored output tail, hard-truncated to its 4 KiB share with a visible `[…truncated by the

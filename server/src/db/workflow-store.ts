@@ -286,9 +286,23 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
 
         async seedBase() {
             await gate();
-            // The base workflow ships with the board, org-level and the org's default, idempotent
-            // by name and default-slot: an existing definition (edited or re-seeded over) is left
-            // exactly as it is — seeding populates, it never overwrites.
+            // The base workflow ships with the board, org-level and the org's default. Its row is
+            // the board's, so it tracks the board's code: a definition an older boot seeded (a
+            // pre-parameter shape, say) refreshes to what this build ships instead of serving a
+            // stale process forever — there is no edit path for the member to out-vote, and a
+            // running thread is safe regardless, having frozen its snapshot at creation. The
+            // refresh moves the definition only: which workflow is the scope's default stays a
+            // member decision, never the boot's. Idempotent by name and default-slot — the
+            // `is distinct from` guard makes a matching row a no-op, and the insert populates
+            // only an absent row.
+            await sql`
+                update workflow
+                set definition = ${sql.json(BASE_WORKFLOW.definition as never)}, updated_at = now()
+                where org_id = ${orgId}
+                  and name = ${BASE_WORKFLOW.name}
+                  and user_id is null and repo_owner is null and repo_name is null
+                  and definition is distinct from ${sql.json(BASE_WORKFLOW.definition as never)}
+            `;
             await sql`
                 insert into workflow (org_id, name, definition, is_default)
                 values (${orgId}, ${BASE_WORKFLOW.name}, ${BASE_WORKFLOW.definition as never}, true)
