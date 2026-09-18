@@ -5,7 +5,7 @@ import { EnvVarsPanel } from '../src/panels/EnvVarsPanel.js';
 /** The same contract panels.render.test.tsx pins: a placeholder never leaks into the markup. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
-const noop = async () => null;
+const noop = async () => ({ error: null, vars: [] });
 
 describe('the env vars panel', () => {
     it('offers an empty scope a way in', () => {
