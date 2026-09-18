@@ -92,7 +92,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `JOB_BOARD_URL` | `http://127.0.0.1:8080` | Must be http(s); the scheme is checked, because `new URL('dashboard:8080')` parses. |
-| `JOB_BOARD_TOKEN` | unset | The worker token, from `npm run worker-token -- --org <installation-id> --name <worker>`. Required against a board running `AUTH_MODE=github`; unset against an open one, where the header is **omitted rather than sent empty** — an empty Bearer is a credential that failed, not one that was never offered. It is also how the board knows which organization this driver works for. |
+| `JOB_BOARD_TOKEN` | unset | The shared board secret — the same value the dashboard validates against, both sides from one `.env` entry (chart: one Secret key). **Required against a board running `AUTH_MODE=github`** (the board itself refuses to boot without it); unset against an open one, where the header is **omitted rather than sent empty** — an empty Bearer is a credential that failed, not one that was never offered. |
 | `EXECUTOR_IMAGE` | `claude-executor` | The runner image. `opencode-executor` under `RUNNER_CLI=opencode`, unless set explicitly. |
 | `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run [--session <id>] <prompt>`. Explicit enum. Under `opencode` no session is minted — the runner scrapes the id the run used and reports it at close — and Remote Control and skip-permissions are refused at startup. Both executors carry both CLIs; the cache watch is the one opencode feature that stays docker-only (see `RUNNER_CACHE_WATCH`). |
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
@@ -780,7 +780,7 @@ practice, since a drivable job parks on silence before its lease can expire.
 
 ## Stop and remove: winding a task down, and deleting it
 
-Two person-gated actions (session cookie, like `follow-up`/`done` — a worker token must never move a
+Two person-gated actions (session cookie, like `follow-up`/`done` — the board secret must never move a
 thread the driver does not hold). Both reuse what exists: stopping lands on the suspend machinery,
 removing lands on the worktree-reclaim machinery.
 
@@ -1038,7 +1038,7 @@ tree via the worktree script run as the sync's twin — a throwaway `docker run`
 and the tree, or a reclaim Job over the PVC whose name carries the lease token. The driver does
 not ask the board for the thread any more: an earlier shape read `GET /api/jobs/:id/thread`
 after the verdict, which put the whole thread's commands, output and session ids on a route the
-worker token could reach — audit data of jobs the driver never held — and computing the answer
+board secret could reach — audit data of jobs the driver never held — and computing the answer
 at the verdict moment also closes a race the read had: a follow-up inserted between the verdict
 and the read made the thread non-terminal at the last possible moment, where the verdict-moment
 answer is final. A follow-up still queued, parked, or running keeps `threadDone` false and
@@ -1235,9 +1235,10 @@ command is exactly what a hook intercepts.
   that; a volume per job would make the login a template to copy rather than a mount.
 - **No per-JOB authorization.** There is authentication now — see [auth.md](auth.md) — and the two
   credentials are disjoint: a session cookie queues, follows up, marks done, stops, removes and
-  reads, a `Bearer fwt_…` worker token claims, heartbeats, streams output, suspends, completes,
+  reads, a `Bearer $JOB_BOARD_TOKEN` (the shared board secret) claims, heartbeats, streams output,
+  suspends, completes,
   and drains the reclaim queue. A session on `/claim`
-  would let any member take work away from the driver running it; a worker token on `POST /api/jobs`
+  would let any member take work away from the driver running it; the board secret on `POST /api/jobs`
   would produce a job with no author. But **membership is not a sandbox**: every member can queue a
   command that runs against their own checkouts, follow up on their own tasks, and close any task —
   and `job.created_by` records who did rather than limiting what they may do. Follow-ups are the one

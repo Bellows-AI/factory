@@ -185,8 +185,12 @@ npm run build -w core >/dev/null 2>&1 && npm run build -w server >/dev/null 2>&1
 echo 'building the stub runner images'
 # The OK stub prints two env probes BEFORE echoing its arguments, so the output proves both the
 # argv path (prompt, session id) and the env path (the claim's stacked environment) reached the
-# container.
-printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo \\"$@\\"","sh"]\n' >"$work/Dockerfile.ok"
+# container. It then re-echoes the LAST argument — the prompt — on its own final line: the
+# workflow engine's marker edges match the run's final non-empty line (docs/workflows.md, the
+# contract a real model honours by emitting the marker last), and the one-line `echo "$@"` puts
+# the driver's `--session-id <uuid> -p` flags ahead of the prompt on that line, so every marker
+# edge missed and the stub-walk graph stalled after its first review round.
+printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' >"$work/Dockerfile.ok"
 printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo boom >&2; exit 3"]\n' >"$work/Dockerfile.fail"
 docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null || {
@@ -231,9 +235,32 @@ echo '# board'
 # The queue is FIFO, so every check below depends on what is already in it. A reused database, or
 # a job left by a failed run, would otherwise hand the claim a different job than the one under
 # test — which reads as a broken lease rather than a dirty fixture. workflow is truncated with it:
-# the board seeds the org-default `fix-issue` at boot, and a default here would make every
-# workflow-less queue below walk the graph instead of the pipeline these phases pin.
-docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1
+# the board seeds the org-default `fix-issue` when the org runtime is first built, and a default
+# here would make every workflow-less queue below walk the graph instead of the pipeline these
+# phases pin. The warm-up is what makes the truncate honest: it forces that first build BEFORE
+# the truncate. But the seed is fired without an await (orgs.ts), so "the runtime answers" is not
+# "the seed has landed" — and the proof is readable off the warm-up itself: a workflow-less create
+# answers 201 while `fix-issue` is still missing (the unsafe state) and 400, the missing "issue"
+# parameter refusal, once it is in the table. The truncate runs only behind that answer; if it
+# never comes, stop here rather than assert against a queue whose fixture is a lie.
+seeded=""
+for _ in $(seq 1 30); do
+    warm="$(api POST /api/jobs '{"command":"warm the org runtime"}')"
+    [ "$(status "$warm")" = '400' ] && {
+        seeded=1
+        break
+    }
+    sleep 1
+done
+[ -n "$seeded" ] || {
+    echo 'test-jobs: the org-default workflow never seeded; refusing to truncate'
+    tail -20 "$work/server.log"
+    exit 1
+}
+docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1 || {
+    echo 'test-jobs: could not truncate job, workflow'
+    exit 1
+}
 
 expect_status 'health answers'            200 GET /api/health
 expect_status 'refuses an empty command'  400 POST /api/jobs '{"command":""}'
@@ -707,6 +734,7 @@ env DATABASE_URL="$DATABASE_URL" PORT="$AUTH_PORT" HOST=127.0.0.1 \
     AUTH_MODE=github \
     GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
     SESSION_SECRET=a-job-harness-session-secret-32-chars \
+    JOB_BOARD_TOKEN=a-job-harness-board-secret-32-chars \
     node server/dist/offline.js >"$work/auth-server.log" 2>&1 &
 server_pid=$!
 
@@ -733,19 +761,14 @@ else
     expect_status_at "$AUTH_BASE" 'queueing a job needs a login' 401 POST /api/jobs '{"command":"rm -rf /"}'
     expect_status_at "$AUTH_BASE" 'claiming needs a worker token' 401 POST /api/jobs/claim '{"worker":"driver-1"}'
 
-    # Minted the way an operator mints one: printed once, only its hash stored.
-    token="$(env DATABASE_URL="$DATABASE_URL" \
-        node server/dist/admin/worker-token.js --name harness-driver 2>>"$work/auth-server.log" |
-        sed -n 's/.*JOB_BOARD_TOKEN=//p' | tr -d ' \r')"
-    case "$token" in
-    fwt_*) ok 'a worker token was minted' ;;
-    *) bad 'a worker token was minted' "got '$token'" ;;
-    esac
+    # The shared secret the board was started with above — the same value in both processes is
+    # the whole credential model now, so the harness presents exactly what the board holds.
+    token=a-job-harness-board-secret-32-chars
 
     claim="$(AUTH_HEADER="Bearer $token" BASE="$AUTH_BASE" api POST /api/jobs/claim '{"worker":"harness-driver"}')"
     case "$(status "$claim")" in
-    200 | 204) ok 'a worker token claims' ;;
-    *) bad 'a worker token claims' "got $(status "$claim"): $(body "$claim")" ;;
+    200 | 204) ok 'the board secret claims' ;;
+    *) bad 'the board secret claims' "got $(status "$claim"): $(body "$claim")" ;;
     esac
 
     # The other direction, and the one that is easy to get wrong: a credential that may claim work

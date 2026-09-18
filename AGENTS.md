@@ -137,10 +137,9 @@ npm run test:k8s
 # .env, because that stack holds the checkouts. Set the App's Setup URL to
 # <PUBLIC_URL>/api/auth/github/setup so the install round trip returns.
 
-# The driver's credential, printed once — only its hash is stored. A CLI and not a route, because it
-# issues something that claims work and reports results with no human anywhere. One token per org:
-# the token IS the org binding.
-npm run worker-token -- --org <installation-id> --name driver-1 [--revoke]
+# The driver's credential is one shared secret: JOB_BOARD_TOKEN in .env, read by BOTH the
+# dashboard (validates it on the worker routes) and the driver (presents it). Set it once —
+# openssl rand -hex 32 — and a fresh `docker compose up` just works.
 
 # Import history from ~/.claude/projects/*/*.jsonl. Idempotent; safe to re-run.
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_dev npm run backfill

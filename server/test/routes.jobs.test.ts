@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
+import { staticRepoSource } from '../src/github/repo-source.js';
+import type { OrgRuntime } from '../src/orgs.js';
+import { createStatsService } from '../src/stats-service.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type {
     Claim,
@@ -16,7 +19,15 @@ import type {
     StopResult,
 } from '../src/db/job-store.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
-import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    githubAuth,
+    memoryAuthStore,
+    signedIn,
+    staticRegistry,
+    stubTelemetryClient,
+    testConfig,
+    TEST_JOB_BOARD_TOKEN,
+} from './helpers.js';
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -234,6 +245,45 @@ async function harnessWith(jobs?: StoreStub, workflows?: WorkflowStore) {
 
 const post = (instance: FastifyInstance, url: string, payload: unknown) =>
     instance.inject({ method: 'POST', url, payload: payload as object });
+
+/**
+ * A github-mode harness whose registry lists one organization PER board stub — the shape a worker
+ * claim actually sees: the shared secret authenticates the driver, not an org, so the poll is
+ * offered every org's queue in the registry's order.
+ */
+async function harnessOfBoards(boards: readonly (readonly [string, StoreStub])[]) {
+    const config = testConfig({ auth: githubAuth() });
+    const runtimes = new Map<string, OrgRuntime>(
+        boards.map(([orgId, jobs]): [string, OrgRuntime] => {
+            const repos = staticRepoSource([]);
+            const telemetry = stubTelemetryClient();
+            return [
+                orgId,
+                { orgId, repos, telemetry, service: createStatsService({ config, repos, telemetry }), jobs },
+            ];
+        })
+    );
+    const instance = await buildApp({
+        config,
+        auth: memoryAuthStore(),
+        orgs: {
+            for: async (orgId) => runtimes.get(orgId) ?? null,
+            list: async () => boards.map(([orgId]) => ({ id: orgId, name: orgId, installationId: null })),
+            warmAll: async () => {},
+        },
+    });
+    app = instance;
+    return instance;
+}
+
+/** The worker's credential: the shared board secret, so the poll names no org and reaches every board. */
+const postAsWorker = (instance: FastifyInstance, url: string, payload: unknown) =>
+    instance.inject({
+        method: 'POST',
+        url,
+        payload: payload as object,
+        headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+    });
 
 describe('POST /api/jobs', () => {
     it('queues a command', async () => {
@@ -605,6 +655,76 @@ describe('POST /api/jobs/claim', () => {
         const response = await post(instance, '/api/jobs/claim', { worker: 'w1' });
         expect(response.statusCode).toBe(204);
         expect(response.body).toBe('');
+    });
+
+    // One org's claim preparation can fail alone (an installation-token mint): the poll must
+    // still reach the other orgs' boards instead of dying in a 503 before them.
+    it('keeps polling later boards when one board fails', async () => {
+        const failing = stubStore();
+        failing.claim = async () => {
+            throw new Error('mint failed');
+        };
+        const healthy = stubStore({ claim });
+        const instance = await harnessOfBoards([
+            ['org-a', failing],
+            ['org-b', healthy],
+        ]);
+        const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(claim);
+    });
+
+    // Every board down is still a broken board, not an idle one: the guard's 503 is what tells
+    // the driver the poll failed, and it survives the per-board tolerance above.
+    it('answers 503 when every board fails', async () => {
+        const down = (reason: string): StoreStub => {
+            const store = stubStore();
+            store.claim = async () => {
+                throw new Error(reason);
+            };
+            return store;
+        };
+        const instance = await harnessOfBoards([
+            ['org-a', down('a is down')],
+            ['org-b', down('b is down')],
+        ]);
+        const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    // The registry lists organizations in a stable order, so a fixed first board would let one
+    // busy org fill every driver slot while later orgs starve: the scan rotates one position
+    // per poll.
+    it('rotates the starting board across polls', async () => {
+        const fromA: Claim = { ...claim, command: 'from-a' };
+        const fromB: Claim = { ...claim, command: 'from-b' };
+        const instance = await harnessOfBoards([
+            ['org-a', stubStore({ claim: fromA })],
+            ['org-b', stubStore({ claim: fromB })],
+        ]);
+        const first = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        const second = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(first.json().command).toBe('from-a');
+        expect(second.json().command).toBe('from-b');
+    });
+
+    // The driver polls the reclaim queue between job polls, so the two scans must not share one
+    // rotation counter: each interleaved reclaim poll would advance the job scan's phase, and
+    // with two orgs every job claim would start at the same org and starve the other.
+    it('rotates job claims independently of the interleaved reclaim polls', async () => {
+        const fromA: Claim = { ...claim, command: 'from-a' };
+        const fromB: Claim = { ...claim, command: 'from-b' };
+        const instance = await harnessOfBoards([
+            ['org-a', stubStore({ claim: fromA })],
+            ['org-b', stubStore({ claim: fromB })],
+        ]);
+        await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        const first = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        const second = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(first.json().command).toBe('from-a');
+        expect(second.json().command).toBe('from-b');
     });
 
     it('requires a worker id, because a stuck job has to be traceable to a container', async () => {
@@ -1268,6 +1388,36 @@ describe('POST /api/reclaims/claim', () => {
         const instance = await harnessWith(stubStore({ fail: true }));
         const response = await post(instance, '/api/reclaims/claim', { worker: 'w1' });
         expect(response.statusCode).toBe(503);
+    });
+
+    // The same scan the job claim walks (the registry's order is stable, so the pattern is shared):
+    // one board's failure must not block the others, and the starting board must rotate.
+    it('keeps polling later boards when one board fails', async () => {
+        const failing = stubStore();
+        failing.claimReclaim = async () => {
+            throw new Error('mint failed');
+        };
+        const healthy = stubStore({ reclaimClaim: claim });
+        const instance = await harnessOfBoards([
+            ['org-a', failing],
+            ['org-b', healthy],
+        ]);
+        const response = await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(claim);
+    });
+
+    it('rotates the starting board across polls', async () => {
+        const fromA: ReclaimClaim = { ...claim, repo: 'acme/a' };
+        const fromB: ReclaimClaim = { ...claim, repo: 'acme/b' };
+        const instance = await harnessOfBoards([
+            ['org-a', stubStore({ reclaimClaim: fromA })],
+            ['org-b', stubStore({ reclaimClaim: fromB })],
+        ]);
+        const first = await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        const second = await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(first.json().repo).toBe('acme/a');
+        expect(second.json().repo).toBe('acme/b');
     });
 });
 

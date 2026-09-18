@@ -99,7 +99,7 @@ the database; a board built without an env resolver simply omits `env` from the 
 driver reads that as "no environment" (`?? {}`).
 
 - **The values cross the board→driver hop inside the claim JSON.** That hop already carries the
-  worker token's authority, supports https (`JOB_BOARD_URL` checks the scheme), and under
+  board secret's authority, supports https (`JOB_BOARD_URL` checks the scheme), and under
   `AUTH_MODE=none` the whole board is open anyway — the bind address is the access control
   ([security.md](security.md)). Env on the claim is not a new class of exposure; it is the same
   hop carrying more of what it is for.

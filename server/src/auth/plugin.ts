@@ -1,21 +1,21 @@
 import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { LOCAL_ORG_ID, type AppConfig } from '../config.js';
+import { LOCAL_ORG_ID, UUID, type AppConfig } from '../config.js';
 import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
-import type { AuthStore, Caller, OrgTokenIdentity, WorkerIdentity } from './store.js';
+import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
 
 /**
  * Who is making a request.
  *
  * A union, because the job board has callers with nothing in common and the credentials that
  * identify them are deliberately disjoint: a session cookie accepted on `/claim` would let any
- * member steal another worker's lease, and a worker token accepted on `POST /api/jobs` would produce
- * a job with no author on the one route docs/security.md describes as remote code execution. No
- * route accepts both: an earlier exception for the thread read let a worker token read the audit
- * and session data of jobs it never held a lease on, so it is gone — the driver's one need from
- * that read rides the lease-guarded complete response instead.
+ * member steal another worker's lease, and a worker secret accepted on `POST /api/jobs` would
+ * produce a job with no author on the one route docs/security.md describes as remote code
+ * execution. No route accepts both: an earlier exception for the thread read let a worker read the
+ * audit and session data of jobs it never held a lease on, so it is gone — the driver's one need
+ * from that read rides the lease-guarded complete response instead.
  *
  * The third kind is an organization access token (`oat_`): it names the org but no person, so it
  * is not a Caller — `callerOf` keeps returning null for it and every person-gated route refuses it
@@ -28,7 +28,7 @@ import type { AuthStore, Caller, OrgTokenIdentity, WorkerIdentity } from './stor
  */
 export type Principal =
     | { kind: 'user'; caller: Caller }
-    | { kind: 'worker'; worker: WorkerIdentity }
+    | { kind: 'worker'; orgId: string | null }
     | { kind: 'org'; token: OrgTokenIdentity }
     | { kind: 'job'; orgId: string };
 
@@ -44,7 +44,7 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/reclaims\/claim$/,
     /^\/api\/reclaims\/[^/]+\/ack$/,
     // `stop`, `follow-up`, `done` and `remove` are person actions: the driver is told to stop
-    // through the heartbeat it already holds, and a worker token moving or deleting the audit
+    // through the heartbeat it already holds, and the board secret moving or deleting the audit
     // rows of jobs it never held would be the thread-read hole again.
     /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread|publish-token)$/,
 ];
@@ -145,6 +145,15 @@ export interface AuthPluginDeps {
      * predate it, where no pair resolves and the route falls through to the bearer.
      */
     orgOfLease?: ((jobId: string, leaseToken: string) => Promise<string | null>) | undefined;
+    /**
+     * The org resolvers for the worker routes, built in main.ts from the same org-less SQL as
+     * `orgOfLease`. The shared secret authenticates the DRIVER, not an org — so the org a
+     * job-scoped worker call operates on comes from the row it names (`createOrgOfJob`,
+     * `createOrgOfReclaim`), the same direction the branch route resolves in. Absent in the route
+     * tests, where no id resolves and the principal carries null.
+     */
+    orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
+    orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
 }
 
 /**
@@ -229,12 +238,17 @@ async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store
  * exercises, and `job.created_by` would be null in exactly the environment where the feature is
  * developed. One code path downstream, in both modes.
  */
-export async function registerAuth(app: FastifyInstance, { config, store, orgOfLease }: AuthPluginDeps): Promise<void> {
+export async function registerAuth(
+    app: FastifyInstance,
+    { config, store, orgOfLease, orgOfJob, orgOfReclaim }: AuthPluginDeps
+): Promise<void> {
     const { auth } = config;
     await app.register(fastifyCookie);
 
     const resolveUser = createUserResolver({ config, store });
     const leaseOrgOf = orgOfLease ?? (async () => null);
+    const jobOrgOf = orgOfJob ?? (async () => null);
+    const reclaimOrgOf = orgOfReclaim ?? (async () => null);
 
     app.decorateRequest('auth', null);
 
@@ -282,22 +296,42 @@ export async function registerAuth(app: FastifyInstance, { config, store, orgOfL
         }
 
         if (requirement === 'worker') {
-            // Open in `none` mode, like every other route in it. Requiring a worker token here
-            // would buy nothing — anyone who can reach this port can already queue a command that
-            // an agent runs — while breaking `npm run driver` against a local board, which is the
-            // ordinary way this is developed. The two credentials are disjoint when there ARE
-            // credentials; `none` means there are none.
+            // Open in `none` mode, like every other route in it. Requiring a secret here would buy
+            // nothing — anyone who can reach this port can already queue a command that an agent
+            // runs — while breaking `npm run driver` against a local board, which is the ordinary
+            // way this is developed. The two credentials are disjoint when there ARE credentials;
+            // `none` means there are none.
             if (auth.mode === 'none') return;
 
+            // One shared secret, the same value in the board's and the driver's environment
+            // (JOB_BOARD_TOKEN on both sides). Constant-time, and checked before any database
+            // round trip — a wrong guess costs a compare, not a query. There is no token row and
+            // no org binding: the secret is the deployment's driver credential, so the org a
+            // call operates on comes from the row it names.
             const token = bearer(request);
-            const worker = token ? await store.findWorkerToken(hashToken(token)) : null;
-            // The token IS the org binding (#99): the org_id it leads with scopes everything the
-            // driver does, and any organization in this database is legitimate — a token from
-            // another database simply hashes to nothing here.
-            if (!worker) {
+            if (!token || !secretsMatch(token, auth.jobBoardToken)) {
                 return reply.code(401).send({ error: 'Invalid worker token', code: 'UNAUTHENTICATED' });
             }
-            request.auth = { kind: 'worker', worker };
+
+            // The two claim routes name no row — they ASK for work — so their principal carries
+            // null and the route offers every org's queue. Every other worker route carries the
+            // job (or reclaim) id in its URL, and the org comes from that row; an id that
+            // resolves to nothing is the route's own 404, answered here to keep the store lookup
+            // from inventing a runtime for a row that does not exist. The segment is captured
+            // before any shape check, so a MALFORMED id is refused on the same terms instead of
+            // slipping through with a null org — which the route's storeOf() would turn into a
+            // 503 before its own id validation ran — and so a resolver is never handed a string
+            // postgres would refuse to cast.
+            const path = pathOf(request.url);
+            const rowId = path.match(/^\/api\/jobs\/([^/]+)\//)?.[1] ?? path.match(/^\/api\/reclaims\/([^/]+)\//)?.[1];
+            let orgId: string | null = null;
+            if (rowId && UUID.test(rowId)) {
+                orgId = path.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
+            }
+            if (rowId && !orgId) {
+                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
+            }
+            request.auth = { kind: 'worker', orgId };
             return;
         }
 
@@ -321,7 +355,7 @@ export async function registerAuth(app: FastifyInstance, { config, store, orgOfL
     });
 }
 
-/** The signed-in user behind a request, or null when a worker token got it here. */
+/** The signed-in user behind a request, or null when the board secret got it here. */
 export const callerOf = (request: FastifyRequest): Caller | null =>
     request.auth?.kind === 'user' ? request.auth.caller : null;
 
@@ -337,7 +371,12 @@ export const orgOf = (request: FastifyRequest): string => {
     const auth = request.auth;
     if (!auth) return LOCAL_ORG_ID;
     if (auth.kind === 'user') return auth.caller.org.id;
-    if (auth.kind === 'worker') return auth.worker.orgId;
+    if (auth.kind === 'worker') {
+        // Null only on the two claim routes, which never consult orgOf: they offer every org's
+        // queue in the route layer instead. Every other worker route arrives with the org the
+        // auth hook resolved from the row its URL names.
+        return auth.orgId!;
+    }
     if (auth.kind === 'job') return auth.orgId;
     return auth.token.orgId;
 };

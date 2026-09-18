@@ -10,12 +10,20 @@ import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
 import type { MemoryAuthStore } from './helpers.js';
-import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    githubAuth,
+    memoryAuthStore,
+    signedIn,
+    staticRegistry,
+    stubTelemetryClient,
+    testConfig,
+    TEST_JOB_BOARD_TOKEN,
+} from './helpers.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
-const WORKER_TOKEN = 'fwt_test-worker-token';
+const WORKER_TOKEN = TEST_JOB_BOARD_TOKEN;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -70,17 +78,27 @@ const telemetryStub = (): TelemetryStore => ({
     async recordBranch() {},
 });
 
-async function build(auth: AuthConfig, store: MemoryAuthStore, orgOfLease?: AppDeps['orgOfLease']) {
+async function build(
+    auth: AuthConfig,
+    store: MemoryAuthStore,
+    orgOfLease?: AppDeps['orgOfLease'],
+    // When set, the registry answers null for every org id outside it — the production shape,
+    // where an org that does not exist resolves to nothing.
+    orgsFor?: readonly string[]
+) {
     const config = testConfig({ auth });
     app = await buildApp({
         config,
-        orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
+        orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient(), orgsFor }),
         store: telemetryStub(),
         auth: store,
         // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
         // attempt the constants below describe; a test passes its own to model a lost lease.
         orgOfLease:
             orgOfLease ?? (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? ORG : null)),
+        // The worker routes' org resolvers: the one job the constants describe, nothing else.
+        orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
+        orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
     });
     return app;
 }
@@ -262,9 +280,8 @@ describe('the two credentials are disjoint', () => {
         expect(response.statusCode).toBe(401);
     });
 
-    it('accepts a worker token on the claim route', async () => {
+    it('accepts the shared board secret on the claim route', async () => {
         const store = memoryAuthStore();
-        store.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
         const server = await build(githubAuth(), store);
 
         const response = await server.inject({
@@ -274,12 +291,74 @@ describe('the two credentials are disjoint', () => {
             headers: { authorization: `Bearer ${WORKER_TOKEN}` },
         });
 
+        // No org binding and no token row: the secret IS the driver credential, and the claim is
+        // offered every org's queue.
         expect(response.statusCode).toBe(200);
     });
 
-    it('refuses a worker token on a human route', async () => {
+    it('resolves a job-scoped worker call from the row its URL names', async () => {
         const store = memoryAuthStore();
-        store.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/heartbeat`,
+            payload: { leaseToken: LEASE },
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        expect(response.statusCode).toBe(200);
+    });
+
+    it('404s a job-scoped worker call whose job does not exist', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/jobs/99999999-9999-4999-8999-999999999999/heartbeat',
+            payload: { leaseToken: LEASE },
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        // Authenticated (the secret matched) but routed nowhere: the org read from the row is
+        // the only honest answer, and there is no row.
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('404s a job-scoped worker call whose id is not a uuid', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store, undefined, [ORG]);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/jobs/not-a-uuid/heartbeat',
+            payload: { leaseToken: LEASE },
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        // A malformed id names no row either. Letting it through with a null org hands the
+        // route's storeOf() an org that does not exist, and the driver reads a 503
+        // JOBS_UNAVAILABLE where the route's own id validation should have spoken.
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('404s a reclaim ack whose id is not a uuid', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store, undefined, [ORG]);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/reclaims/not-a-uuid/ack',
+            payload: { worker: 'driver-1' },
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('refuses the worker secret on a human route', async () => {
+        const store = memoryAuthStore();
         const server = await build(githubAuth(), store);
 
         const response = await server.inject({
@@ -289,7 +368,7 @@ describe('the two credentials are disjoint', () => {
             headers: { authorization: `Bearer ${WORKER_TOKEN}` },
         });
 
-        // A job queued by a worker token would have no author, silently breaking the audit trail.
+        // A job queued by the driver would have no author, silently breaking the audit trail.
         expect(response.statusCode).toBe(401);
     });
 
@@ -309,12 +388,10 @@ describe('the two credentials are disjoint', () => {
             ).statusCode
         ).toBe(200);
 
-        // A worker token on the full thread read would let the driver read commands, output and
-        // session ids of jobs it never held a lease on — the thread is audit data, and the worker's
-        // only need from it (the reclaim terminality) rides the complete response instead.
-        const tokenStore = memoryAuthStore();
-        tokenStore.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
-        const tokenServer = await build(githubAuth(), tokenStore);
+        // The worker secret on the full thread read would let the driver read commands, output
+        // and session ids of jobs it never held a lease on — the thread is audit data, and the
+        // driver's only need from it (the reclaim terminality) rides the complete response.
+        const tokenServer = await build(githubAuth(), memoryAuthStore());
         expect(
             (
                 await tokenServer.inject({
@@ -326,9 +403,8 @@ describe('the two credentials are disjoint', () => {
         ).toBe(401);
     });
 
-    it("refuses a worker token on the single-job read, which stays a person's", async () => {
+    it("refuses the worker secret on the single-job read, which stays a person's", async () => {
         const store = memoryAuthStore();
-        store.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
         const server = await build(githubAuth(), store);
 
         const response = await server.inject({
@@ -338,42 +414,24 @@ describe('the two credentials are disjoint', () => {
         });
 
         // The job row — command, output, verdict — is a person's view of their audit trail; a
-        // worker token reaching it would make a member's session no stronger than any leaked one.
+        // worker secret reaching it would make a member's session no stronger than any leaked one.
         expect(response.statusCode).toBe(401);
     });
 
-    it('refuses a revoked worker token', async () => {
+    it('refuses a wrong secret', async () => {
         const store = memoryAuthStore();
-        store.seedWorkerToken(ORG, 'driver-1', WORKER_TOKEN);
-        const server = await build(githubAuth(), store);
-        await store.revokeWorkerToken(ORG, 'driver-1');
-
-        const response = await server.inject({
-            method: 'POST',
-            url: '/api/jobs/claim',
-            payload: { worker: 'driver-1' },
-            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
-        });
-
-        expect(response.statusCode).toBe(401);
-    });
-
-    it('accepts a worker token of ANOTHER organization — the token is the org binding (#99)', async () => {
-        // One database serves many orgs now, and the token IS how a process says which one it
-        // works for: any org in this database is legitimate, and the org it names scopes the
-        // claim. A token from a DIFFERENT database hashes to nothing here and stays a 401.
-        const store = memoryAuthStore();
-        store.seedWorkerToken('some-other-org', 'driver-1', WORKER_TOKEN);
         const server = await build(githubAuth(), store);
 
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs/claim',
             payload: { worker: 'driver-1' },
-            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+            headers: { authorization: 'Bearer fwt_a-token-from-another-deployment' },
         });
 
-        expect(response.statusCode).toBe(200);
+        // There is no row to be revoked: the secret simply matches or it does not. A deployment
+        // rotates by changing the value on both sides.
+        expect(response.statusCode).toBe(401);
     });
 });
 

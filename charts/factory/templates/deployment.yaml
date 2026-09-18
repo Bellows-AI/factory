@@ -111,6 +111,16 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: github-webhook-secret
+                      # The shared board secret — the same value the driver presents. Required in
+                      # github mode: the server refuses to boot without it, which is what names
+                      # the missing key. Optional here so the AUTH_MODE=none local profile, which
+                      # validates no secret, boots without it.
+                      - name: JOB_BOARD_TOKEN
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: job-board-token
+                                optional: true
                   {{- with .Values.dashboard.resources }}
                   resources:
                       {{- toYaml . | nindent 20 }}

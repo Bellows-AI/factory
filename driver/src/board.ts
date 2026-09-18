@@ -245,7 +245,7 @@ export function createBoard({
     url: string;
     leaseSeconds: number;
     /**
-     * The worker token, when the board requires one. Empty against a board with AUTH_MODE=none.
+     * The shared board secret, when the board requires one. Empty against a board with AUTH_MODE=none.
      *
      * This is the driver's entire share of authentication: one header. It stays that way on purpose
      * — this process depends on nothing, `core` included, because it is a client of an HTTP board

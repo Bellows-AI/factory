@@ -129,6 +129,9 @@ export default defineConfig({
                 GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
                 GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',
                 SESSION_SECRET: 'an-e2e-session-secret-of-at-least-32-chars',
+                // Required in github mode: the board refuses to boot without its driver secret,
+                // even where no driver ever connects.
+                JOB_BOARD_TOKEN: 'an-e2e-board-secret-of-at-least-32-chars',
                 PUBLIC_URL: `http://127.0.0.1:${AUTH_PORT}`,
                 // The three overrides that point the exchange at the stub. Environment only — and
                 // the server logs loudly when they are in use, because a configurable authorize

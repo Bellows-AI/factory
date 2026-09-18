@@ -36,6 +36,29 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('attempts 0');
     });
 
+    it('the truncate waits for the org-default seed, proven by the warm-up answering 400', () => {
+        // seedBase() fires un-awaited at runtime build (orgs.ts), so a one-shot warm-up gates
+        // nothing: a workflow-less create answers 201 while `fix-issue` is still missing — the
+        // unsafe state — and 400, the missing "issue" parameter refusal, only once it is in the
+        // table. The truncate sits behind that proof, and a seed that never lands stops the run.
+        expect(SCRIPT).not.toContain(`{"command":"warm the org runtime"}' >/dev/null`);
+        expect(SCRIPT).toContain(`warm="$(api POST /api/jobs '{"command":"warm the org runtime"}')"`);
+        expect(SCRIPT).toMatch(/\[ "\$\(status "\$warm"\)" = '400' \]/);
+        expect(SCRIPT).toContain('the org-default workflow never seeded; refusing to truncate');
+        expect(SCRIPT.indexOf('warm="$(api POST /api/jobs')).toBeLessThan(SCRIPT.indexOf('truncate job, workflow'));
+    });
+
+    it('the truncate must succeed before the queue checks run', () => {
+        // Every warm-up that answered 201 queued a real job, and the truncate is the only cleanup:
+        // run unchecked, a failed truncate leaves those rows — and the seeded workflow — in place,
+        // and the claim checks below then fail with queue or lease symptoms instead of naming the
+        // fixture as the cause. A failed truncate stops the harness.
+        expect(SCRIPT).toMatch(/truncate job, workflow' >\/dev\/null 2>&1 \|\| \{/);
+        expect(SCRIPT).toContain("echo 'test-jobs: could not truncate job, workflow'");
+        // No bare statement: the truncate line must carry the guard, not end there.
+        expect(SCRIPT).not.toMatch(/'truncate job, workflow' >\/dev\/null 2>&1\n/);
+    });
+
     it('the leftover checks are scoped to the jobs this run created', () => {
         // create_job runs inside a command-substitution subshell, so an assignment there would be
         // thrown away — the ids have to survive through the $work tempdir file the sweep reads.

@@ -70,6 +70,9 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 
 export const TEST_SESSION_SECRET = 'test-session-secret-of-at-least-32-chars';
 
+/** The shared board secret github-mode tests present as `Bearer $JOB_BOARD_TOKEN`. */
+export const TEST_JOB_BOARD_TOKEN = 'test-job-board-token-of-at-least-32-chars';
+
 /** A github-mode [auth] block, so a test does not have to restate eleven fields to change one. */
 export function githubAuth(overrides: Partial<Extract<AuthConfig, { mode: 'github' }>> = {}): AuthConfig {
     return {
@@ -81,6 +84,7 @@ export function githubAuth(overrides: Partial<Extract<AuthConfig, { mode: 'githu
         cookieSecure: false,
         publicUrl: 'http://127.0.0.1:8080',
         ingestToken: null,
+        jobBoardToken: TEST_JOB_BOARD_TOKEN,
         authorizeUrl: 'https://github.test/login/oauth/authorize',
         tokenUrl: 'https://github.test/login/oauth/access_token',
         userUrl: 'https://api.github.test/user',
@@ -497,7 +501,6 @@ export interface MemoryAuthStore extends AuthStore {
     removeMembership(orgId: string, userId: string): void;
     /** Every live session's user id, so a test can assert one was created — or was not. */
     sessions(): string[];
-    seedWorkerToken(orgId: string, name: string, token: string): void;
     /**
      * Plants an access token and returns its plaintext, so a test can present the Bearer header
      * without driving the settings route to mint one.
@@ -563,7 +566,6 @@ export function memoryAuthStore(): MemoryAuthStore {
     const orgs = new Map<string, Org>();
     const members: Member[] = [];
     const sessions = new Map<string, { userId: string; orgId: string; expiresAt: number }>();
-    const workerTokens: { orgId: string; id: string; name: string; hash: string; revoked: boolean }[] = [];
     interface AccessTokenRow {
         orgId: string;
         id: string;
@@ -590,7 +592,7 @@ export function memoryAuthStore(): MemoryAuthStore {
     let trackedRepoWritesUntilFailure: number | null = null;
     let nextId = 1;
 
-    /** A fixed stamp, the same trick listWorkerTokens uses: timestamps are not what most tests vary. */
+    /** A fixed stamp: timestamps are not what most tests vary. */
     const STAMP = '2026-08-21T12:00:00.000Z';
 
     /**
@@ -735,16 +737,6 @@ export function memoryAuthStore(): MemoryAuthStore {
         },
 
         sessions: () => [...sessions.values()].map((s) => s.userId),
-
-        seedWorkerToken(orgId, name, token) {
-            workerTokens.push({
-                orgId,
-                id: `worker-${workerTokens.length + 1}`,
-                name,
-                hash: key(hashToken(token)),
-                revoked: false,
-            });
-        },
 
         seedAccessToken(orgId, kind, options = {}) {
             const token = `${kind === 'personal' ? 'fat_' : 'oat_'}seed-${accessTokenRows.length + 1}`;
@@ -955,11 +947,6 @@ export function memoryAuthStore(): MemoryAuthStore {
             return user ? memberOf(user.id, orgId) : null;
         },
 
-        async findWorkerToken(tokenHash) {
-            const found = workerTokens.find((t) => t.hash === key(tokenHash) && !t.revoked);
-            return found ? { orgId: found.orgId, id: found.id, name: found.name } : null;
-        },
-
         async createAccessToken(input) {
             const row: AccessTokenRow = {
                 orgId: input.orgId,
@@ -1022,25 +1009,6 @@ export function memoryAuthStore(): MemoryAuthStore {
             if (!row) return 'missing';
             row.revokedAt = now();
             return 'revoked';
-        },
-
-        async createWorkerToken(orgId, name, tokenHash) {
-            const id = `worker-${workerTokens.length + 1}`;
-            workerTokens.push({ orgId, id, name, hash: key(tokenHash), revoked: false });
-            return { id };
-        },
-
-        async revokeWorkerToken(orgId, name) {
-            const found = workerTokens.find((t) => t.orgId === orgId && t.name === name && !t.revoked);
-            if (!found) return 'missing';
-            found.revoked = true;
-            return 'revoked';
-        },
-
-        async listWorkerTokens(orgId) {
-            return workerTokens
-                .filter((t) => t.orgId === orgId)
-                .map((t) => ({ name: t.name, createdAt: '2026-08-21T12:00:00.000Z', revoked: t.revoked }));
         },
     };
     return store;

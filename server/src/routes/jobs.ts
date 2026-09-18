@@ -197,13 +197,70 @@ export const jobRoutes =
     async (app) => {
         /**
          * The job board a request lands on is its caller's org's (#99): the session, the personal
-         * token or the worker token each names one, and the runtime resolved from it carries that
-         * org's store. Absent in the route-test mode with no stores behind the registry.
+         * token or the worker secret's resolved org each names one, and the runtime resolved from
+         * it carries that org's store. Absent in the route-test mode with no stores behind the
+         * registry.
          */
         const storeOf = async (request: FastifyRequest): Promise<JobStore | null> => {
             const rt = await orgs.for(orgOf(request));
             return rt?.jobs ?? null;
         };
+        /**
+         * The boards a WORKER call may reach. The shared secret authenticates the driver, not an
+         * org, so a claim names no row and no org: it is offered EVERY org's queue, first claim
+         * wins and the empty orgs cost one idle poll each. Every other worker route arrives with
+         * the org the auth hook read from the row its URL names, and is a one-element list.
+         */
+        const boardsOf = async (request: FastifyRequest): Promise<JobStore[]> => {
+            if (request.auth?.kind === 'worker' && request.auth.orgId === null) {
+                const boards: JobStore[] = [];
+                for (const org of await orgs.list()) {
+                    const rt = await orgs.for(org.id);
+                    if (rt?.jobs) boards.push(rt.jobs);
+                }
+                return boards;
+            }
+            const store = await storeOf(request);
+            return store ? [store] : [];
+        };
+        /**
+         * The scan a worker poll walks across the org boards. The registry lists organizations in
+         * a stable order, so the starting board rotates one position per poll — a fixed first
+         * board would let one busy org fill every driver slot while later orgs starve. The job
+         * and the reclaim scans each carry their OWN counter: the driver polls both queues
+         * concurrently, and one shared counter would let every interleaved poll advance the
+         * other's phase — with two orgs and one reclaim poll per job poll, every job claim would
+         * start at the same org and starve the other. A board that throws costs itself the poll,
+         * not the others: claim preparation can fail for one org alone (an installation-token
+         * mint), and one unhealthy org must not block the rest. Every board failing is still a
+         * broken board, not an idle one: the last error is rethrown, so the guard's 503 — the
+         * driver's log-and-repoll signal — survives.
+         */
+        const boardScan = () => {
+            let turn = 0;
+            return async <T>(
+                boards: readonly JobStore[],
+                log: (e: Error) => void,
+                claimOf: (board: JobStore) => Promise<T | null>
+            ): Promise<T | null> => {
+                const start = turn++ % boards.length;
+                let failed: Error | null = null;
+                for (let i = 0; i < boards.length; i++) {
+                    const board = boards[(start + i) % boards.length]!;
+                    try {
+                        const claimed = await claimOf(board);
+                        if (claimed !== null) return claimed;
+                    } catch (e) {
+                        failed = e as Error;
+                        log(failed);
+                    }
+                }
+                if (failed) throw failed;
+                return null;
+            };
+        };
+        const firstJobClaim = boardScan();
+        const firstReclaimClaim = boardScan();
         /** The workflow definitions the create may resolve against — the caller's org's (#99). */
         const workflowsOf = async (request: FastifyRequest) => {
             const rt = await orgs.for(orgOf(request));
@@ -347,8 +404,8 @@ export const jobRoutes =
         // POST, not GET: claiming mutates. The worker id is required — it is the only thing that
         // says which container is holding a job when one has to be found and killed.
         app.post('/api/jobs/claim', { bodyLimit: 4096 }, async (request, reply) => {
-            const store = await storeOf(request);
-            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
+            const boards = await boardsOf(request);
+            if (!boards.length) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const { worker, leaseSeconds: requested } = body(request.body);
             if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
                 return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
@@ -358,10 +415,9 @@ export const jobRoutes =
                 return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
             }
 
-            const claim = await guard(
-                reply,
-                (e) => request.log.error({ err: e }, 'job claim failed'),
-                () => store.claim(worker, lease)
+            const claimFailed = (e: Error) => request.log.error({ err: e }, 'job claim failed');
+            const claim = await guard(reply, claimFailed, () =>
+                firstJobClaim(boards, claimFailed, (board) => board.claim(worker, lease))
             );
             if (!claim.ok) return reply;
             // 204, not 200 with a null: an idle poll is the common case and it should not have to
@@ -760,7 +816,7 @@ export const jobRoutes =
         });
 
         // The user's remove: the thread is gone and a worktree reclaim is queued. Person-gated like
-        // every job write here, not just because the driver has no use for it — a worker token
+        // every job write here, not just because the driver has no use for it — the board secret
         // deleting the audit rows of jobs it never held would be exactly the thread-read hole again.
         app.post('/api/jobs/:id/remove', { bodyLimit: 4096 }, async (request, reply) => {
             const store = await storeOf(request);
@@ -792,8 +848,8 @@ export const jobRoutes =
         // claim/complete are, and the body matches: the worker name is required (it is queued for
         // exactly this claim), and an idle poll answers 204 rather than a parsed null.
         app.post('/api/reclaims/claim', { bodyLimit: 4096 }, async (request, reply) => {
-            const store = await storeOf(request);
-            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
+            const boards = await boardsOf(request);
+            if (!boards.length) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const { worker, leaseSeconds: requested } = body(request.body);
             if (typeof worker !== 'string' || !worker.trim() || worker.length > 128) {
                 return bad(reply, 'BAD_WORKER', 'worker must be a non-empty string');
@@ -803,10 +859,9 @@ export const jobRoutes =
                 return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
             }
 
-            const claim = await guard(
-                reply,
-                (e) => request.log.error({ err: e }, 'reclaim claim failed'),
-                () => store.claimReclaim(worker, lease)
+            const reclaimFailed = (e: Error) => request.log.error({ err: e }, 'reclaim claim failed');
+            const claim = await guard(reply, reclaimFailed, () =>
+                firstReclaimClaim(boards, reclaimFailed, (board) => board.claimReclaim(worker, lease))
             );
             if (!claim.ok) return reply;
             if (claim.value === null) return reply.code(204).send();

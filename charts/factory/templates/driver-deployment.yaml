@@ -2,37 +2,29 @@
 The driver — this is the "operator for runners": a process that watches the job board and
 reconciles a runner Job per claimed job, in this namespace, with no CRD and no second control
 loop. Its ServiceAccount carries exactly the Role above.
+
+One driver per deployment: the board secret is the deployment's driver credential, not an org
+binding — a claim is offered every organization's queue, and the org a call operates on comes
+from the job row it names. The dashboard holds the same secret and validates against it.
 */}}
-{{/*
-One driver per organization (#99): the worker token IS the org binding, so a driver working for
-two orgs would need two credentials on one claim route — it has one JOB_BOARD_TOKEN. The map in
-`.Values.secret.jobBoardTokens` is org name → token; each entry renders its own Deployment, its
-own headless Service (the gate DNS name is per-driver), and its own Secret key. Everything else
-about the driver is shared.
-*/}}
-{{- range $org, $token := .Values.secret.jobBoardTokens }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-    name: {{ include "factory.fullname" $ }}-driver-{{ $org }}
+    name: {{ include "factory.fullname" $ }}-driver
     labels:
         {{- include "factory.labels" $ | nindent 8 }}
         app.kubernetes.io/component: driver
-        app.kubernetes.io/org: {{ $org | quote }}
 spec:
     replicas: {{ $.Values.driver.replicas }}
     selector:
         matchLabels:
             {{- include "factory.labels" $ | nindent 12 }}
             app.kubernetes.io/component: driver
-            app.kubernetes.io/org: {{ $org | quote }}
     template:
         metadata:
             labels:
                 {{- include "factory.labels" $ | nindent 16 }}
                 app.kubernetes.io/component: driver
-                app.kubernetes.io/org: {{ $org | quote }}
         spec:
             serviceAccountName: {{ include "factory.fullname" $ }}-driver
             containers:
@@ -45,19 +37,16 @@ spec:
                       # with nothing but this URL and its namespace.
                       - name: JOB_BOARD_URL
                         value: http://{{ include "factory.fullname" $ }}:{{ $.Values.dashboard.port }}
-                      # The org binding (#99): this driver works for exactly the organization
-                      # this Deployment is named after.
+                      # The shared board secret — the dashboard validates the same value. Optional
+                      # so a bring-your-own Secret without this key still boots: against an open
+                      # board (AUTH_MODE=none, the local profile) the driver omits the header
+                      # rather than sending it blank.
                       - name: JOB_BOARD_TOKEN
                         valueFrom:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" $ }}
-                                key: job-board-token-{{ $org }}
-                                {{- if not $token }}
-                                # The key exists but is empty against an open board — the driver
-                                # omits the header rather than sending it blank. Optional so a
-                                # bring-your-own Secret without this key still boots.
+                                key: job-board-token
                                 optional: true
-                                {{- end }}
                       # Runners are Jobs in THIS namespace, discovered from the pod's own identity
                       # rather than pinned in values — the chart cannot know where the release lands.
                       - name: K8S_NAMESPACE
@@ -101,7 +90,7 @@ spec:
                       # loopback would leave it reachable from nothing inside the pod. See
                       # docs/jobs.md, Gates.
                       - name: GATE_ADVERTISE_URL
-                        value: http://{{ include "factory.fullname" $ }}-driver-{{ $org }}
+                        value: http://{{ include "factory.fullname" $ }}-driver
                       - name: GATE_LISTEN_HOST
                         value: 0.0.0.0
                       # Auxiliary services (.bellows.yaml): on by default, '0' in values opts out,
@@ -131,4 +120,3 @@ spec:
                   resources:
                       {{- toYaml . | nindent 20 }}
                   {{- end }}
-{{- end }}
