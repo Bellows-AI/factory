@@ -77,8 +77,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 await loop.start();
 // The drain above lets in-flight jobs finish — including their gates — and only then does the
 // docker environment go. Tearing down on the signal instead would kill the containers every
-// draining gated job is about to exec into. (The kubernetes manager's stop is a no-op: its gate
-// runs leave nothing behind.)
+// draining gated job is about to exec into. (The kubernetes manager's stop only reaps the
+// attempts' leftover gate-env Secrets — its gate runs leave no containers.)
 await gates.manager.stop();
 // The ad-hoc socket holds the event loop open; without this the process never exits after a
 // graceful drain once any gated job has run.

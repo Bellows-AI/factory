@@ -28,8 +28,8 @@ either bucket the cache by range or force the selector to be cosmetic.
 Server wiring (`server/src/main.ts`): `resolveConfig()` → GitHub App client (or the code-only `none`
 arm) → pool + `migrate()` (un-awaited) → telemetry client (`postgres`, `fixture` or `off`) → ingest
 store → repo source → job/workspace/env/auth stores → `createStatsService()` → `buildApp()` →
-`ensureFresh()` (warms the cache so the first visitor does not eat the cold read) →
-`cloneQueue.start()` (un-awaited) → `listen()`. `buildApp` deliberately does not `listen`, which is
+`orgs.warmAll()` (un-awaited; warms every known org's cache so the first visitor does not eat the
+cold read) → `listen()`. `buildApp` deliberately does not `listen`, which is
 what lets `server/test/` drive the whole app in-process via `app.inject()` with stubbed clients.
 
 **The GitHub App stack stays, and none of it fetches pull requests any more.** `github/app-token.ts`

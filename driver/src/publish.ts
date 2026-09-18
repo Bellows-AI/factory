@@ -162,8 +162,8 @@ export function repoPath(config: DriverConfig, job: BoardJob): string | null {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The workspace half, COPIED from docker.ts's WORKSPACE_PATH (which copied it from the server's
- * ORG_ID_PATTERN): the value becomes the agent's working directory, and a validator narrower
+ * The workspace half, COPIED from docker.ts's WORKSPACE_PATH (both restating the org-id shape
+ * server/src/auth/github.ts documents): the value becomes the agent's working directory, and a validator narrower
  * than the input domain would fail every job on a legally-named workspace — the trap every
  * copied pattern here exists to avoid.
  */

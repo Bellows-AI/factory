@@ -110,7 +110,7 @@ EXECUTOR_ENABLED: ${EXECUTOR_ENABLED:-}
 EXECUTOR_API_TOKENS: ${EXECUTOR_API_TOKENS:-}
 ```
 
-**Empty-defaulted**, joining the `ORG_*` pair, for exactly the reason stated there: an unset value
+**Empty-defaulted**, joining the `ORG_*` three, for exactly the reason stated there: an unset value
 stays unset. A literal default here would either **silently enable an RCE endpoint** or silently
 disable the token on it.
 
@@ -159,7 +159,7 @@ an hour later.
 
 ## 5. The controller must NOT call `migrate()`
 
-`server/src/index.ts` already warns that two migration runners race each other.
+`server/src/main.ts` already warns that two migration runners race each other.
 
 `executor/src/db/ready.ts` instead polls:
 

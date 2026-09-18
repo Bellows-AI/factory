@@ -60,8 +60,8 @@ store on its own rows:
   distinguishable outcomes.
 - `{"marker": "…"}` — an exact match against the output tail: the final non-empty line of the
   stored output must EQUAL the marker, trimmed. Blocks that need a semantic distinction emit a
-  strict final line (`VERDICT: CLEAN` / `VERDICT: BLOCKERS` — the same contract
-  `driver/src/scripts/pr-summary.cjs` already relies on).
+  strict final line (`VERDICT: CLEAN` / `VERDICT: BLOCKERS` — the exact markers
+  `server/src/db/workflow-templates.ts` defines and the board's marker edges match).
 
 Rules evaluate in the definition's declared order, first match wins — the one deliberate
 simplification; no precedence algebra. A bound-exhausted edge RESTS the thread; it does not fall

@@ -388,7 +388,7 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         publicUrl: origin.origin,
         ingestToken,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
-        // a phishing vector; as an environment variable it stays a test seam that index.ts logs
+        // a phishing vector; as an environment variable it stays a test seam that main.ts logs
         // loudly when it is used.
         authorizeUrl: env.GITHUB_OAUTH_AUTHORIZE_URL?.trim() || 'https://github.com/login/oauth/authorize',
         tokenUrl: env.GITHUB_OAUTH_TOKEN_URL?.trim() || 'https://github.com/login/oauth/access_token',

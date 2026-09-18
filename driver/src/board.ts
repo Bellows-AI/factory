@@ -212,7 +212,7 @@ export interface Board {
      * when the close-time read lifted the run's last words — what the run did, for the
      * recently-completed view; omitted stays null on the board. The answer carries
      * `threadDone` — whether
-     * EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead') AND the user has
+     * EVERY job of the task's thread is terminal ('succeeded'/'failed'/'dead'/'stopped') AND the user has
      * closed the thread (a `done_at` on some member), computed by the board in the SAME
      * lease-guarded transaction as the verdict — which is the signal a worker uses right after a
      * verdict to decide the task worktree can be reclaimed (issue #47). A follow-up still
