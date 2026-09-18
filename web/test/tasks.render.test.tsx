@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
-import { TaskComposer } from '../src/panels/TaskComposer.js';
+import {
+    type WorkflowParamChoice,
+    paramsComplete,
+    paramValueMatches,
+    TaskComposer,
+    valuesForWorkflow,
+} from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 
 /**
@@ -51,7 +57,15 @@ interface ComposerArgs {
     workspaceError?: string | null;
     executors?: { name: string; type: string }[];
     /** The workflow choices for the repo context; null hides the select (no workflows served). */
-    workflows?: readonly { id: string; name: string; scope: 'org' | 'user' | 'repo' }[] | null;
+    workflows?:
+        | readonly {
+              id: string;
+              name: string;
+              scope: 'org' | 'user' | 'repo';
+              isDefault?: boolean;
+              params?: WorkflowParamChoice[];
+          }[]
+        | null;
     actionError?: string | null;
     sending?: boolean;
 }
@@ -1151,5 +1165,93 @@ describe('thread derivations', () => {
                 threadPublish([withCommand('x', { output: '[driver] published fix/5 — javascript:alert(1)' })])
             ).toEqual({ branch: 'fix/5', url: 'javascript:alert(1)' });
         });
+    });
+});
+
+describe('composer parameters', () => {
+    /** The fixture mirrors the seeded fix-issue declaration the API now serves. */
+    const parammed = [
+        {
+            id: 'wf-1',
+            name: 'fix-issue',
+            scope: 'org' as const,
+            isDefault: false,
+            params: [{ name: 'issue', pattern: '#\\d+' }],
+        },
+    ];
+
+    it('renders no parameter inputs while no workflow is chosen', () => {
+        // The composer starts unchosen and the list's fix-issue is NOT the default, so nothing
+        // param-shaped may sit in the markup before the member picks a process.
+        const html = renderComposer({ workflows: parammed });
+        expect(html).not.toContain('composer-param');
+        expect(html).toContain('fix-issue');
+    });
+
+    it('renders the default workflow parameter inputs even while nothing is chosen', () => {
+        // The board resolves the scope-stack default for an unnamed workflow and REFUSES a
+        // launch without its declared parameters — so the inputs must be on screen before
+        // submit, labelled with the default's name, or every bare launch 400s unfixably.
+        const html = renderComposer({
+            workflows: [{ id: 'wf-1', name: 'fix-issue', scope: 'org', isDefault: true, params: parammed[0]!.params }],
+        });
+        expect(html).toContain('composer-param');
+        expect(html).toContain('fix-issue · issue');
+    });
+});
+
+describe('composer param validation — the client mirror of the board check', () => {
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+    const free: WorkflowParamChoice = { name: 'notes' };
+
+    it('accepts when every declared param is present and full-matches its pattern', () => {
+        expect(paramsComplete([issue, free], { issue: '#42', notes: 'login page' })).toBe(true);
+        expect(paramsComplete([], {})).toBe(true);
+    });
+
+    it('refuses a missing, empty or whitespace value', () => {
+        expect(paramsComplete([issue], {})).toBe(false);
+        expect(paramsComplete([issue], { issue: '' })).toBe(false);
+        expect(paramsComplete([issue], { issue: '   ' })).toBe(false);
+    });
+
+    it('refuses a value that does not fully match the declared pattern', () => {
+        // Same refusals the server makes: a bare number without the '#', a prefixed one, a
+        // trailing word — a partial match is a guess, and a guess is what this feature removes.
+        expect(paramsComplete([issue], { issue: '42' })).toBe(false);
+        expect(paramsComplete([issue], { issue: 'x#42' })).toBe(false);
+        expect(paramsComplete([issue], { issue: '#42 trailing' })).toBe(false);
+    });
+
+    it('accepts any non-empty value when the param declares no pattern', () => {
+        expect(paramsComplete([free], { notes: 'anything at all' })).toBe(true);
+    });
+
+    it('answers false for a pattern the client cannot compile — the board decides', () => {
+        expect(paramValueMatches({ name: 'x', pattern: '[' }, 'y')).toBe(false);
+    });
+});
+
+describe('composer params are scoped to the effective workflow identity', () => {
+    // The review's leak: `#12` typed for repo A's default workflow stays valid when a repo switch
+    // makes repo B's default effective — the same list refetch, zero select interactions — and
+    // Send launches B's process with A's issue. Values are stored against the identity of the
+    // workflow they were typed for, and read back only while that workflow is still effective.
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+
+    it('hands values back only while the workflow they were typed for is still effective', () => {
+        const stored = { workflowId: 'wf-repo-a', values: { issue: '#12' } };
+        expect(valuesForWorkflow(stored, 'wf-repo-a')).toEqual({ issue: '#12' });
+        // Repo B's default is a DIFFERENT definition (a different row id) even at the same name:
+        // the typed value must vanish from the inputs and from the Send gate alike.
+        expect(valuesForWorkflow(stored, 'wf-repo-b')).toEqual({});
+        expect(paramsComplete([issue], valuesForWorkflow(stored, 'wf-repo-b'))).toBe(false);
+    });
+
+    it('answers empty when nothing is effective, and stores nothing before any workflow is', () => {
+        const stored = { workflowId: 'wf-1', values: { issue: '#12' } };
+        expect(valuesForWorkflow(stored, null)).toEqual({});
+        // The mount state: no workflow has ever been effective, so nothing can leak anywhere.
+        expect(valuesForWorkflow({ workflowId: null, values: {} }, 'wf-1')).toEqual({});
     });
 });

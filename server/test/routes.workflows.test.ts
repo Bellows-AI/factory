@@ -21,6 +21,7 @@ const WF_ID = '99999999-9999-4999-8999-999999999999';
 
 const definition: WorkflowDefinition = {
     entry: 'a',
+    params: [],
     nodes: [
         { name: 'a', kind: 'agent', session: 'resume', prompt: 'work' },
         { name: 'b', kind: 'agent', session: 'fresh', prompt: 'check', publish: true },
@@ -35,6 +36,7 @@ const record: WorkflowRecord = {
     userId: null,
     repo: null,
     isDefault: false,
+    params: [{ name: 'issue', pattern: '#\\d+' }],
     createdAt: '2026-09-15T00:00:00.000Z',
     updatedAt: '2026-09-15T00:00:00.000Z',
     definition,

@@ -2,6 +2,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import {
     type DefinitionRefusal,
     type WorkflowDefinition,
+    type WorkflowParam,
     WORKFLOW_NAME,
     SCOPE_SEGMENT,
     validateDefinition,
@@ -27,6 +28,11 @@ export interface WorkflowSummary {
     userId: string | null;
     repo: string | null;
     isDefault: boolean;
+    /**
+     * The declared launch parameters — what the composer renders as explicit inputs and what
+     * `POST /api/jobs` requires beside the command. [] on a param-less definition.
+     */
+    params: WorkflowParam[];
     createdAt: string;
     updatedAt: string;
 }
@@ -70,6 +76,9 @@ const toSummary = (row: WorkflowRow): WorkflowSummary => ({
     userId: row.user_id,
     repo: row.repo_owner !== null && row.repo_name !== null ? `${row.repo_owner}/${row.repo_name}` : null,
     isDefault: row.is_default,
+    // `?? []` is the grammar's own normalization (absent in the JSON = []), applied to rows whose
+    // jsonb was stored before parameters existed.
+    params: row.definition.params ?? [],
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
 });
@@ -213,7 +222,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         async listVisible(target) {
             await gate();
             const rows = await sql<WorkflowRow[]>`
-                select id, name, user_id, repo_owner, repo_name, is_default, created_at, updated_at
+                select id, name, user_id, repo_owner, repo_name, is_default, definition, created_at, updated_at
                 from workflow
                 where org_id = ${orgId} ${visibleWhere(sql, target)}
                 order by name asc

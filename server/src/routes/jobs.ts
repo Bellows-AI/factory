@@ -1,7 +1,13 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { GateReport, JobOutcome, JobStatus, JobStore, RuntimeVitals, ServiceStatus } from '../db/job-store.js';
-import type { WorkflowDefinition } from '../db/workflow-schema.js';
+import {
+    type ParamValues,
+    type WorkflowDefinition,
+    checkWorkflowParams,
+    interpolate,
+    nodeOf,
+} from '../db/workflow-schema.js';
 import type { OrgRegistry } from '../orgs.js';
 import { UUID, bad, badSegment, body, guard } from './helpers.js';
 
@@ -207,13 +213,16 @@ export const jobRoutes =
             const store = await storeOf(request);
             if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const fields = body(request.body);
-            const command = fields.command;
-            if (typeof command !== 'string' || !command.trim()) {
+            const rawCommand = fields.command;
+            if (typeof rawCommand !== 'string' || !rawCommand.trim()) {
                 return bad(reply, 'BAD_COMMAND', 'command must be a non-empty string');
             }
-            if (command.length > COMMAND_LIMIT) {
+            if (rawCommand.length > COMMAND_LIMIT) {
                 return bad(reply, 'BAD_COMMAND', `command exceeds ${COMMAND_LIMIT} characters`);
             }
+            // The command the task runs: the member's line verbatim — or, when a workflow
+            // resolves, the interpolated ENTRY prompt built below.
+            let command: string = rawCommand;
 
             // Absent and explicit null both mean "not given" — what every job queued before the
             // chat carries.
@@ -244,7 +253,7 @@ export const jobRoutes =
              * no read, a byte-identical row and claim.
              */
             const workflowsStore = await workflowsOf(request);
-            let workflow: { id: string; node: string; snapshot: WorkflowDefinition } | null = null;
+            let workflow: { id: string; node: string; snapshot: WorkflowDefinition; params: ParamValues } | null = null;
             if (workflowsStore) {
                 const resolve = async () => {
                     const target = {
@@ -280,12 +289,45 @@ export const jobRoutes =
                     );
                 }
                 if (resolved.value.found !== null) {
+                    const definition = resolved.value.found.definition;
+                    // The declared parameters are code-enforced, not prompt-discipline: a
+                    // parametrized workflow must never launch on a guess, so a missing or
+                    // malformed value refuses HERE — a 400 to the composer, not a runner
+                    // improvising (issue #127).
+                    const checked = checkWorkflowParams(definition, fields.workflowParams);
+                    if (!checked.ok) {
+                        return bad(reply, checked.refusal.code, checked.refusal.message);
+                    }
+                    // The root row runs the ENTRY node's prompt, interpolated now with the
+                    // member's own words — the graph's first run IS the task. `{{command}}`
+                    // carries the chat line; `{{param.*}}` the validated values; `{{node.*}}`
+                    // is empty HERE by definition (no run of this thread exists yet — an entry
+                    // re-entered later by an edge interpolates real outputs, in complete()).
+                    // The same cap applies to the built command as to a raw one.
+                    const entry = nodeOf(definition, definition.entry);
+                    if (!entry) return bad(reply, 'BAD_WORKFLOW', 'workflow has no entry node');
+                    command = interpolate(entry.prompt, {
+                        nodeOutput: () => '',
+                        gateName: '',
+                        gateOutput: '',
+                        param: (name) => checked.values[name] ?? '',
+                        command,
+                    });
+                    if (command.length > COMMAND_LIMIT) {
+                        return bad(reply, 'BAD_COMMAND', `command exceeds ${COMMAND_LIMIT} characters`);
+                    }
                     workflow = {
                         id: resolved.value.found.id,
-                        node: resolved.value.found.definition.entry,
-                        snapshot: resolved.value.found.definition,
+                        node: definition.entry,
+                        snapshot: definition,
+                        params: checked.values,
                     };
                 }
+            }
+            // Parameters are workflow-bound: sent beside a task that resolves no workflow, they
+            // are a client bug — refused, never silently dropped.
+            if (fields.workflowParams !== undefined && fields.workflowParams !== null && workflow === null) {
+                return bad(reply, 'BAD_WORKFLOW_PARAMS', 'workflowParams requires a resolved workflow');
             }
 
             const created = await guard(

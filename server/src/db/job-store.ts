@@ -2,7 +2,7 @@ import type { Fragment, Sql, TransactionSql } from 'postgres';
 import type { UserRef } from '@factory-ai/core';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
-import { type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
+import { type ParamValues, type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
 
 export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
@@ -396,7 +396,15 @@ export interface JobStore {
         target: {
             repo: string | null;
             executor: string | null;
-            workflow?: { id: string; node: string; snapshot: WorkflowDefinition } | null;
+            /**
+             * When the task runs a workflow: the resolved workflow — the id, the ENTRY node the
+             * thread's first run walks, the definition SNAPSHOT frozen onto the root row, and the
+             * validated launch parameter values (`{{param.*}}` resolves from them on every row of
+             * the thread). The route validates the values against the definition's declarations
+             * before calling; the store freezes them as given. Null when no workflow resolved,
+             * which is the ordinary create and behaves exactly as it did before 027.
+             */
+            workflow?: { id: string; node: string; snapshot: WorkflowDefinition; params: ParamValues } | null;
         }
     ): Promise<{ id: string }>;
     /**
@@ -912,15 +920,17 @@ export function createJobStore({
             // id and root_job_id are the SAME uuid, computed once in the select so the column can
             // be not null from insert — the root's root is itself (022). The workflow triple rides
             // the same insert when a workflow resolved: workflow_id names what the task walks,
-            // workflow_node is the entry the first run carries, and the snapshot freezes the
-            // graph onto the root — where every transition decision reads it. All three are null
-            // on a workflow-less create, byte-identical to the pre-027 insert.
+            // workflow_node is the entry the first run carries, the snapshot freezes the graph onto
+            // the root — where every transition decision reads it — and workflow_params freezes the
+            // validated launch values beside it (030). All null on a workflow-less create,
+            // byte-identical to the pre-027 insert.
             const rows = await sql<{ id: string }[]>`
-                insert into job (org_id, command, created_by, repo, executor, id, root_job_id, workflow_id, workflow_node, workflow_snapshot)
+                insert into job (org_id, command, created_by, repo, executor, id, root_job_id, workflow_id, workflow_node, workflow_snapshot, workflow_params)
                 select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
                        ${target.workflow?.id ?? null},
                        ${target.workflow?.node ?? null},
-                       ${target.workflow ? sql.json(target.workflow.snapshot as never) : null}
+                       ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
+                       ${target.workflow ? sql.json(target.workflow.params as never) : null}
                 from (select gen_random_uuid() as x) s
                 returning id
             `;
@@ -1785,11 +1795,13 @@ export function createJobStore({
                     {
                         workflow_id: string | null;
                         workflow_snapshot: WorkflowDefinition | null;
+                        workflow_params: ParamValues | null;
+                        command: string;
                         created_by: string | null;
                         repo: string | null;
                     }[]
                 >`
-                    select workflow_id, workflow_snapshot, created_by, repo from job
+                    select workflow_id, workflow_snapshot, workflow_params, command, created_by, repo from job
                     where org_id = ${orgId} and id = ${rootJobId}
                 `;
                 if (root?.workflow_snapshot) {
@@ -1841,6 +1853,11 @@ export function createJobStore({
 
                     const transition = nextTransition({
                         snapshot: root.workflow_snapshot,
+                        // The launch values frozen on the root (030): `{{param.*}}` resolves from
+                        // them on every row of the thread, and `{{command}}` from the root's own
+                        // command — for a workflow thread, the interpolated entry prompt.
+                        params: root.workflow_params ?? {},
+                        command: root.command,
                         rows: engineRows,
                         completed: completedRun,
                     });
