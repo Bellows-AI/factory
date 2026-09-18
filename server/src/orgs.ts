@@ -8,6 +8,7 @@ import { createUserRepoStore, type UserRepoStore } from './db/user-repo-store.js
 import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
+import { trackedRepos } from './db/tracked-repos.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflow-store.js';
 import { createStatsService, type StatsService } from './stats-service.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
@@ -85,6 +86,10 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
         const repos = createRepoSource({
             client,
             stored: () => storedRepoNames({ sql, orgId, ready }),
+            // The onboarding screen's per-org choice (#125): the installation report intersected
+            // with `tracked_repo`. Empty table = track everything, so a deployment that never
+            // narrows reads exactly as it did before the screen existed.
+            allowlist: () => trackedRepos({ sql, orgId, ready }),
         });
 
         const telemetry =

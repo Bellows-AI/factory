@@ -49,14 +49,22 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   protocol with no credential at all. The two credentials are disjoint when there *are* credentials.
 ## Membership
 
-- **The GitHub App's installations are the member roster.** At every sign-in the callback asks
-  `GET /user/installations` with the signing-in person's own token, and `store.signIn` upserts one
-  `organization` row (id = the installation id, name = the account login) and one membership per
-  reported installation. There is no invite, no auto-join flag, no bootstrap admin: what GitHub
-  reported at the last sign-in IS the materialized fact — and since #123, that fact covers ANY
-  membership the account holds, not only of installation orgs: sign-in deletes a membership of an
-  org GitHub does not report, whatever kind of org it is, so an org row no installation reports
-  (the none-mode local row, a husk in an upgraded database) can never list an account twice.
+- **The GitHub App's installations are the member roster, narrowed by the sign-in choice (#125).**
+  At every sign-in the callback asks `GET /user/installations` with the signing-in person's own
+  token, and `store.signIn` upserts one `organization` row (id = the installation id, name = the
+  account login) and one membership per **selected** installation — not automatically every
+  reported one. A first sign-in with two or more installations parks the round trip and asks the
+  person what to track (see The OAuth flow); one installation signs straight in; a stored choice
+  is reused without re-prompting, and the membership rows ARE that stored choice — "has a
+  selection" and "has memberships" are the same fact, so an abandoned screen leaves nothing
+  behind. There is no invite, no auto-join flag, no bootstrap admin, and no roster sweep: what
+  the selection materialized at the last sign-in IS the materialized fact — and since #123, the
+  sweep at sign-in deletes a membership of ANY org outside the passed selection, whether because
+  GitHub stopped reporting it or because the account deselected it: one predicate, two meanings
+  of "this account does not reach here", and an org row no installation reports (the none-mode
+  local row, a husk in an upgraded database) can never list an account twice. The choice is never
+  an authorization decision — it bounds only what this account's sign-in materializes, never
+  another member's reach, and re-selecting restores reach through the same upsert.
 - **Removal is GitHub's own report first, sign-in second — and the join is still the security
   property.** GitHub delivers `organization.member_removed` to `POST /api/github/webhook`, whose
   credential is the `GITHUB_WEBHOOK_SECRET` HMAC over the raw body; the route deletes the
@@ -104,7 +112,8 @@ A random 32-byte token in a signed, httpOnly cookie, with a row keyed by its **s
   stateless token reaches that only with a denylist, and a denylist is this table with worse
   ergonomics.
 - **The row carries its organization (`session.org_id`, 028), and that is what the caller reads
-  through.** Stamped at sign-in (first reported installation, or the `?org=` deep link), moved by
+  through.** Stamped at sign-in (the first selected installation — the first reported one before
+  #125 — or the `?org=` deep link, validated against the selection), moved by
   `POST /api/auth/org` — only ever to an org the user is a member of, which is what makes the
   switch safe. NULL on rows predating 028, and the read joins on it, so an upgrade signs everybody
   out rather than guessing an org for anybody: fail closed.
@@ -139,8 +148,13 @@ A random 32-byte token in a signed, httpOnly cookie, with a row keyed by its **s
 
 ## The OAuth flow
 
-`GET /api/auth/github?returnTo=&org=` → GitHub → `GET /api/auth/github/callback` →
-`GET /user/installations` → organizations + memberships upserted → session (org-bound) → redirect.
+`GET /api/auth/github?returnTo=&org=[&reselect=1]` → GitHub → `GET /api/auth/github/callback` →
+`GET /user/installations` → then, since #125, one of three outcomes: **zero installations** redirects
+to the install page; **one installation, or a stored selection** signs straight in (organizations +
+memberships upserted for the selection → session, org-bound); **a first sign-in with two or more**
+parks the identity and report in a `pending_sign_in` row and redirects to `/onboarding`, where
+`GET /api/auth/github/pending` feeds the screen and `POST /api/auth/github/complete` materializes
+the posted choice and finishes the sign-in.
 Plus `GET /api/auth/github/setup` (the App's Setup URL target), `POST /api/auth/org` (switch),
 `POST /api/auth/logout` and `GET /api/auth/me`.
 
@@ -154,14 +168,37 @@ Plus `GET /api/auth/github/setup` (the App's Setup URL target), `POST /api/auth/
   signature covers the nonce, the destination and the org, and the destination is validated as a
   same-origin absolute path. `//evil.test` is the subtle case: a URL to another origin that merely
   looks like a path. Without that check the callback is an open redirect for anyone who can craft a
-  login link. The `?org=` deep link is only a preference: the callback validates it against the
-  installations GitHub actually reported and falls back to the first.
+  login link. The `?org=` deep link is only a preference: it is validated against what GitHub
+  actually reported and what the person chose (on the screen it is pre-marked), falling back to the
+  first selected installation.
 - **Zero installations is the install page, not a refusal.** The callback redirects to
   `https://github.com/apps/<slug>/installations/new` — the slug from `GET /app`, JWT-authenticated
   and cached for the process's life. Offline (no App client) or on a slug failure it reports
   `?auth_error=install` instead of dead-ending on a redirect to nowhere. The App's **Setup URL**
   must be configured to `<publicUrl>/api/auth/github/setup`: an install returns there and the flow
   restarts; a return without an installation id reports `install_cancelled` on the sign-in screen.
+- **The selection screen survives the single-use code in a row, not a cookie payload (#125).** The
+  OAuth `code` is spent by the time the installations report is in hand, and the person then spends
+  seconds-to-minutes choosing — so the identity and report ride a `pending_sign_in` row keyed by
+  the hash of an opaque token in a signed, short-lived cookie (the `PENDING_COOKIE`), the same
+  at-rest rule as the session. Not the state cookie's payload: a browser cookie is capped around
+  4KB, and the report this flow exists for is the enterprise account with many installations. The
+  row is single-use — the completion route claims it with one atomic `delete … returning` before
+  anything is materialized, so only one of two completions racing the same cookie can get past it —
+  expires in ten minutes, is reaped at boot — and its read spends an expired row on sight, so a
+  stale cookie can never complete even before the reaper runs.
+- **The screen is a first-sign-in affair; changing the choice is a re-run (#125).** The stored
+  choice is the membership set, so an account that has one signs straight in — re-prompting every
+  sign-in would be hostile. There is deliberately no in-place editor on the settings page: the
+  GitHub user token that enumerated the installations is discarded at sign-in, so the list cannot
+  be re-asked outside an OAuth round trip. The settings surface is a link that restarts the flow
+  with `?reselect=1`, which reopens the screen pre-checked with the stored choice. One
+  installation is never a screen — there is nothing to choose, whatever was asked.
+- **The completion route is the one auth route that answers JSON instead of redirecting.** The
+  callback is a top-level navigation, so its failures carry `?auth_error=`; the completion route is
+  reached by the onboarding page's `fetch`, which would swallow a 302 — so it answers
+  `401 NO_PENDING` / `400 BAD_SELECTION` / `400 REPOS_UNAVAILABLE` / `400 UNKNOWN_REPO` as JSON,
+  with the pending row left alive on every refusal so the same screen can re-post.
 - **`POST /api/auth/org` is the selector's write.** It verifies membership, moves the session row's
   org, and answers `{organization}`; unknown org is `400 UNKNOWN_ORG`, a known org the caller
   cannot see is `403 FORBIDDEN`, and an anonymous caller is `401`.

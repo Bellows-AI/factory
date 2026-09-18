@@ -86,6 +86,7 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 | Range | `range-selector`, `range-presets`, `range-option.active`, `range-custom` | The date-range picker |
 | Org | `org-selector`, `org-select` | The organization dropdown in the topbar |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
+| Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
 | User menu | `user-menu`, `user-menu-login`, `user-menu-panel` | The topbar identity disclosure |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
 | Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-actions` | The native `<dialog>` repo/executor pickers; backdrop uses `--overlay` |
@@ -168,6 +169,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `ByUserPanel.tsx` | by-user, chart-wrap, task-avatar |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
+| `TrackedOrgsPanel.tsx` | panel, login-button |
 | `RecentTasksPanel.tsx` | panel, alert, muted, chart-wrap, by-user, task-avatar |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill, task head |
@@ -185,6 +187,7 @@ Pages:
 | --- | --- |
 | `DashboardPage.tsx` | dashboard-controls |
 | `EnvPage.tsx` | panel |
+| `OnboardingPage.tsx` | onboarding, panel, status, muted |
 | `SettingsPage.tsx` | panel |
 | `TaskComposerPage.tsx` | status |
 | `TaskDetailPage.tsx` | status |

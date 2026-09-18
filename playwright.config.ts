@@ -16,6 +16,15 @@ const PORT = 8123;
 export const AUTH_PORT = 8124;
 const IDP_PORT = 8125;
 const E2E_LOGIN = 'e2e-user';
+/**
+ * A fresh GitHub identity every run. The seed leaves auth tables alone, so a fixed id would keep
+ * its stored selection between runs and the selection screen (issue 125) would only ever be
+ * driven on the first run against a fresh database. A per-run id makes every run's first sign-in
+ * a first sign-in; the login stays the same, and rows accumulate only in the disposable database.
+ * Full millisecond precision — a modulus would make two runs collide by birthday bound and the
+ * second would inherit the first's stored selection.
+ */
+const E2E_USER_ID = 420000 + Date.now();
 
 const shared = {
     WEB_ROOT: `${root}web/dist`,
@@ -40,6 +49,10 @@ export default defineConfig({
     outputDir: './artifacts/ui/trace',
     // A visual check that passes on a retry is not a visual check.
     retries: 0,
+    // One worker, and this is not about speed: the auth project's spec files sign in as the SAME
+    // stub account, so the first sign-in's selection screen (issue 125) and the stored choice the
+    // later sign-ins reuse must not race each other. Serial is the deterministic arrangement.
+    workers: 1,
     reporter: [['list']],
     use: {
         baseURL: `http://127.0.0.1:${PORT}`,
@@ -88,7 +101,15 @@ export default defineConfig({
             command: 'node e2e/stub-idp.mjs',
             url: `http://127.0.0.1:${IDP_PORT}/user`,
             cwd: root,
-            env: { STUB_IDP_PORT: String(IDP_PORT), STUB_IDP_LOGIN: E2E_LOGIN },
+            // Two installations, so the first sign-in of the run has something to choose on the
+            // selection screen (issue 125) — one would sign straight in, which the specs that
+            // follow the first rely on.
+            env: {
+                STUB_IDP_PORT: String(IDP_PORT),
+                STUB_IDP_LOGIN: E2E_LOGIN,
+                STUB_IDP_USER_ID: String(E2E_USER_ID),
+                STUB_IDP_INSTALLATIONS: '999999,888888',
+            },
             reuseExistingServer: false,
             stdout: 'ignore',
             stderr: 'pipe',

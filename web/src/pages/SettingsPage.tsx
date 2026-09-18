@@ -1,6 +1,7 @@
 import { useSession } from '../api/useSession.js';
 import { AccessTokensSection } from '../panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../panels/IdentityPanel.js';
+import { TrackedOrgsPanel } from '../panels/TrackedOrgsPanel.js';
 
 /**
  * The member's own account: identity, then the access tokens minted from here (#70). Sections
@@ -9,7 +10,9 @@ import { IdentityPanel } from '../panels/IdentityPanel.js';
  *
  * Both token sections are hidden under `AUTH_MODE=none`: the hook ignores every credential there,
  * so a mint button would issue a token nothing honours. The org section is admin-gated, and a
- * member gets the sentence saying who manages it rather than a disabled editor.
+ * member gets the sentence saying who manages it rather than a disabled editor. The tracked-
+ * organizations section (issue 125) is github-mode only for the same reason: `none` has exactly one
+ * local org and no sign-in choice to change.
  */
 export function SettingsPage() {
     // Unreachable null: LoginGate only mounts the app once a session exists. The hook re-checks
@@ -27,6 +30,7 @@ export function SettingsPage() {
             </section>
             {github ? (
                 <>
+                    <TrackedOrgsPanel session={session} />
                     <AccessTokensSection scope="personal" />
                     {session.role === 'admin' ? (
                         <AccessTokensSection scope="org" />

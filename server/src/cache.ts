@@ -10,6 +10,14 @@ export interface Cache<T> {
     /** Runs `produce` at most once concurrently, no matter how many callers arrive. */
     refresh(): Promise<CacheEntry<T>>;
     inFlight(): boolean;
+    /**
+     * Ages the entry past its TTL without dropping it: `isStale()` turns true, so the next read
+     * re-produces — while `peek()` keeps serving the last good value until that lands. An
+     * external fact changed underneath the cache (a rewritten allowlist, #125); this is how the
+     * cache is told without a window in which readers see nothing. A refresh already in flight is
+     * discarded rather than published, so it cannot re-validate the pre-invalidation value.
+     */
+    expire(): void;
 }
 
 export interface CacheDeps<T> {
@@ -26,6 +34,9 @@ export interface CacheDeps<T> {
 export function createCache<T>({ ttlMs, produce, now = Date.now }: CacheDeps<T>): Cache<T> {
     let entry: CacheEntry<T> | null = null;
     let pending: Promise<CacheEntry<T>> | null = null;
+    // Bumped by expire(). A produce that started before the bump answers the pre-invalidation
+    // question, so its result must never be published — the refresh re-produces instead.
+    let generation = 0;
     const ttl = typeof ttlMs === 'function' ? ttlMs : () => ttlMs;
 
     return {
@@ -34,15 +45,24 @@ export function createCache<T>({ ttlMs, produce, now = Date.now }: CacheDeps<T>)
         inFlight: () => pending !== null,
         refresh() {
             if (pending) return pending;
-            pending = produce()
-                .then((value) => {
+            const attempt = (): Promise<CacheEntry<T>> => {
+                const startedAt = generation;
+                return produce().then((value) => {
+                    // expire() landed mid-produce: discard the stale answer and re-produce rather
+                    // than store it as fresh.
+                    if (generation !== startedAt) return attempt();
                     entry = { value, fetchedAt: now() };
                     return entry;
-                })
-                .finally(() => {
-                    pending = null;
                 });
+            };
+            pending = attempt().finally(() => {
+                pending = null;
+            });
             return pending;
+        },
+        expire() {
+            generation += 1;
+            if (entry) entry = { ...entry, fetchedAt: now() - ttl() - 1 };
         },
     };
 }

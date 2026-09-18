@@ -101,6 +101,11 @@ describe('the route table', () => {
         // route verifies itself — so the session hook must not demand a cookie of it.
         ['/api/github/webhook', 'open'],
         ['/api/auth/github/callback', 'open'],
+        // The onboarding screen's read and write (#125): the pending cookie IS the credential
+        // here — these run before any session exists, which is the whole point of the step.
+        ['/api/auth/github/pending', 'open'],
+        ['/api/auth/github/pending/installations/123/repos', 'open'],
+        ['/api/auth/github/complete', 'open'],
         ['/api/auth/me', 'open'],
         ['/', 'open'],
         ['/index.html', 'open'],

@@ -4,6 +4,7 @@ import type { Session } from '../src/api/useSession.js';
 import type { AccessTokenView } from '../src/api/useAccessTokens.js';
 import { AccessTokensPanel } from '../src/panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../src/panels/IdentityPanel.js';
+import { TrackedOrgsPanel } from '../src/panels/TrackedOrgsPanel.js';
 
 /** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
@@ -20,6 +21,10 @@ const session: Session = {
     membership: { invitedAt: '2026-01-15T09:30:00.000Z', claimedAt: '2026-01-16T10:00:00.000Z' },
     account: { createdAt: '2026-01-15T09:30:00.000Z', lastLoginAt: '2026-08-21T12:00:00.000Z' },
     organization: { id: 'bellows', name: 'Bellows AI' },
+    organizations: [
+        { id: 'bellows', name: 'Bellows AI' },
+        { id: '888888', name: 'other-org' },
+    ],
     workspacePath: '/workspaces/bellows/00000000-0000-4000-8000-000000000001',
     mode: 'github',
 };
@@ -145,5 +150,23 @@ describe('AccessTokensPanel', () => {
         expect(html).toContain('Create token');
         expect(html).toContain('Acts for the organization.');
         expect(html).not.toContain('Shown once');
+    });
+});
+
+describe('TrackedOrgsPanel', () => {
+    it('names the tracked organizations and links the reselect round trip', () => {
+        const html = renderToStaticMarkup(<TrackedOrgsPanel session={session} />);
+        expect(html).toContain('Tracked organizations');
+        expect(html).toContain('Tracking 2 organizations: Bellows AI, other-org.');
+        // The change surface restarts the OAuth round trip with the reselect flag, returning to
+        // the settings page — there is no in-place editor to link to. SSR escapes the ampersand.
+        expect(html).toContain('href="/api/auth/github?returnTo=%2Fsettings&amp;reselect=1"');
+        expect(html).toContain('Change what you track');
+    });
+
+    it('renders the empty roster without a placeholder', () => {
+        const html = renderToStaticMarkup(<TrackedOrgsPanel session={{ ...session, organizations: [] }} />);
+        expect(html).toContain('No organizations are tracked yet.');
+        for (const forbidden of FORBIDDEN) expect(html, forbidden).not.toContain(forbidden);
     });
 });

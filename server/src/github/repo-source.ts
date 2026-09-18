@@ -29,6 +29,12 @@ export interface RepoSource {
     lastError(): string | null;
     /** When the cached list was fetched, or null if it never was. */
     fetchedAt(): number | null;
+    /**
+     * Ages the cached produce past its TTL so the next read re-runs it — the allowlist
+     * intersection included (#125). The stale entry keeps serving until the refresh lands, so
+     * there is no empty-snapshot window between the invalidate and the re-produce.
+     */
+    invalidate(): void;
 }
 
 /**
@@ -55,6 +61,15 @@ export interface RepoSourceDeps {
      * empty dashboard — which is what `npm run seed` followed by `npm run verify:ui` is.
      */
     readonly stored?: (() => Promise<readonly string[]>) | undefined;
+    /**
+     * The org's tracked-repo allowlist (#125), as "owner/name" — the onboarding screen's per-org
+     * checkbox answer, read from `tracked_repo`. Empty or absent means everything the
+     * installation reports: the default, and the reason a confirm-with-everything-checked writes
+     * nothing. The intersection is applied to whatever the source produced (client listing or
+     * stored fallback), so stats scoping, `otherRepoSessions` and the workspace/env writes all
+     * follow one truth — a session on an unselected repo stays counted, in `otherRepoSessions`.
+     */
+    readonly allowlist?: (() => Promise<readonly string[]>) | undefined;
     readonly ttlMs?: number;
     readonly now?: () => number;
 }
@@ -77,11 +92,26 @@ function parseFullName(name: string): InstallationRepo | null {
 export function createRepoSource({
     client,
     stored,
+    allowlist,
     ttlMs = INSTALLATION_REPOS_TTL_MS,
     now = Date.now,
 }: RepoSourceDeps): RepoSource {
     const empty = Object.freeze([]) as readonly InstallationRepo[];
     let error: string | null = null;
+
+    // The one place the allowlist bites: whatever the cache produces is narrowed here, so every
+    // accessor — snapshot, list, detail — carries the same tracked set. Re-read per produce, so a
+    // changed allowlist lands on the next refresh rather than being cached with the list.
+    const narrow = async (listing: {
+        repos: readonly InstallationRepo[];
+        installation: Installation | null;
+    }): Promise<{ repos: readonly InstallationRepo[]; installation: Installation | null }> => {
+        if (!allowlist) return listing;
+        const tracked = await allowlist();
+        if (tracked.length === 0) return listing;
+        const allowed = new Set(tracked);
+        return { ...listing, repos: Object.freeze(listing.repos.filter((repo) => allowed.has(fullName(repo)))) };
+    };
 
     const cache = createCache<{ repos: readonly InstallationRepo[]; installation: Installation | null }>({
         ttlMs,
@@ -91,12 +121,12 @@ export function createRepoSource({
                 if (!stored) return { repos: empty, installation: null };
                 const names = await stored();
                 const repos = names.map(parseFullName).filter((repo): repo is InstallationRepo => repo !== null);
-                return { repos: Object.freeze(repos), installation: null };
+                return narrow({ repos: Object.freeze(repos), installation: null });
             }
             try {
                 const listing = await client.listRepositories();
                 error = null;
-                return { repos: listing.repos, installation: listing.installation };
+                return await narrow(listing);
             } catch (failure) {
                 // Recorded and rethrown. The cache keeps its last good entry either way; recording
                 // it here is what lets a route serve that entry AND say it is stale, rather than
@@ -129,14 +159,21 @@ export function createRepoSource({
         detail: load,
         lastError: () => error,
         fetchedAt: () => cache.peek()?.fetchedAt ?? null,
+        invalidate: () => cache.expire(),
     };
 }
 
 /** A fixed list. The route tests use this instead of reaching GitHub. */
-export function staticRepoSource(repos: readonly Repo[]): RepoSource {
+export interface StaticRepoSource extends RepoSource {
+    /** How many times the source was invalidated — the route tests' observable. */
+    invalidations(): number;
+}
+
+export function staticRepoSource(repos: readonly Repo[]): StaticRepoSource {
     const detailed = Object.freeze(
         repos.map((repo) => Object.freeze({ ...repo, private: false, defaultBranch: null, pushedAt: null }))
     ) as readonly InstallationRepo[];
+    let invalidations = 0;
     return {
         snapshot: () => detailed,
         snapshotNames: () => detailed.map(fullName),
@@ -144,5 +181,9 @@ export function staticRepoSource(repos: readonly Repo[]): RepoSource {
         detail: async () => ({ repos: detailed, installation: null }),
         lastError: () => null,
         fetchedAt: () => 0,
+        invalidate: () => {
+            invalidations += 1;
+        },
+        invalidations: () => invalidations,
     };
 }

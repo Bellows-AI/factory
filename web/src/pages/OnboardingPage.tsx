@@ -1,0 +1,386 @@
+import { useEffect, useState } from 'react';
+
+/** What GET /api/auth/github/pending answers for a parked sign-in (issue 125). */
+export interface PendingSignInPayload {
+    identity: { login: string; displayName: string | null; avatarUrl: string | null };
+    /**
+     * One entry per reported installation. `tracked` is the org's stored repo allowlist — null
+     * when it tracks everything — reported as stored, so a reselect SHOWS the narrowing it is
+     * asking about. It may name repos the installation no longer reports: the screen intersects
+     * with the live listing when seeding and before posting, so a name the listing cannot
+     * render is never shown as a checkbox and never submitted.
+     */
+    installations: { id: string; account: string; tracked: string[] | null }[];
+    /** The installation ids that arrive pre-checked: the stored choice on a reselect, all otherwise. */
+    selected: string[];
+    reselect: boolean;
+    org: string | null;
+    returnTo: string;
+}
+
+/** What GET /api/auth/github/pending/installations/:id/repos answers for one org. */
+export interface RepoListing {
+    repos: string[];
+    source: 'app' | 'none';
+}
+
+/**
+ * `chosen` narrowed to what the listing still carries — the one intersection the screen acts
+ * through. Seeding uses it (a stored name the listing cannot render must neither display nor
+ * ride into the POST) and so does the UNKNOWN_REPO recovery: the submission was refused because
+ * the installation's listing changed under the loaded checkboxes, and this is what makes the
+ * retry post only names that still exist instead of the identical rejected body.
+ */
+export const reconciled = (chosen: ReadonlySet<string>, listing: RepoListing): Set<string> =>
+    new Set([...chosen].filter((name) => listing.repos.includes(name)));
+
+/**
+ * The org's standing checked set: its stored narrowing intersected with the live listing —
+ * or the whole listing when the org tracks everything. The one seed the checkboxes display, a
+ * first touch expands, and the submit posts, so the three cannot drift apart.
+ */
+export const standingRepos = (tracked: string[] | null, listing: RepoListing): Set<string> =>
+    tracked === null ? new Set(listing.repos) : reconciled(new Set(tracked), listing);
+
+/**
+ * The expired-pending state: the one recovery is restarting the OAuth round trip. Rendered
+ * whenever the server answers NO_PENDING — before the screen loads, or after the person spent
+ * longer choosing than the pending row's TTL — and carrying the return path forward so starting
+ * over does not lose where they were headed.
+ */
+export function StartAgainPanel({ returnTo }: { returnTo?: string | undefined }) {
+    return (
+        <p className="status">
+            That sign-in expired.{' '}
+            <a href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo ?? '/')}`}>Start again</a> to choose the
+            organizations this dashboard tracks.
+        </p>
+    );
+}
+
+/**
+ * The sign-in selection screen (issue 125): the step between the OAuth round trip and the session.
+ *
+ * Everything arrives pre-checked — the stored choice on a reselect, every reported installation
+ * on a first sign-in — so confirming the default is exactly what sign-in did before this screen
+ * existed. Per-org repo checkboxes load lazily when an org is expanded, seeded from the org's
+ * stored narrowing intersected with the live listing when it has one — a stored name the listing
+ * cannot render is neither seeded nor posted, so an untouched fully-stale org posts nothing (its
+ * rows are retained) and touching the live checkboxes is the explicit revision. A narrowed org
+ * posts its checked set; an org whose checkboxes
+ * all read checked posts an empty list, which clears any stored narrowing — that is the widening
+ * move. An org nobody narrowed and never touched posts nothing at all, which keeps "track
+ * everything, future repos included" distinct from "track today's list".
+ *
+ * The Continue is a fetch, not a navigation — the completion route answers JSON and mints the
+ * session cookie itself; the page then assigns the return path as a full load, the same posture
+ * as the org switch.
+ */
+export function OnboardingPage({
+    payload: initial,
+    listings: initialListings,
+}: {
+    payload?: PendingSignInPayload;
+    /** The listings seam, beside `payload`: initial per-org listings, so a render test can reach the repo checkboxes. */
+    listings?: Record<string, RepoListing | 'loading'>;
+}) {
+    const [payload, setPayload] = useState<PendingSignInPayload | null>(initial ?? null);
+    const [expired, setExpired] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [submitting, setSubmitting] = useState(false);
+    // The org checkboxes: initialized from the payload's pre-checked ids once it has loaded.
+    const [checked, setChecked] = useState<Set<string>>(new Set(initial?.selected ?? []));
+    // Per-org repo listings, fetched lazily on first expand — never for orgs nobody opened.
+    const [listings, setListings] = useState<Record<string, RepoListing | 'loading'>>(initialListings ?? {});
+    // Orgs whose repo checkboxes were touched, plus every org with a stored narrowing — only
+    // these post a repos key at all.
+    const [narrowed, setNarrowed] = useState<Set<string>>(new Set());
+    const [repoChecked, setRepoChecked] = useState<Record<string, Set<string>>>({});
+
+    useEffect(() => {
+        // The `payload` prop is the render-test seam; a real mount fetches its own sign-in.
+        if (initial) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const response = await fetch('/api/auth/github/pending');
+                if (!cancelled && response.status === 401) {
+                    setExpired(true);
+                    return;
+                }
+                if (!cancelled && !response.ok) {
+                    setError(`Could not load the sign-in (${response.status})`);
+                    return;
+                }
+                if (cancelled) return;
+                const loaded = (await response.json()) as PendingSignInPayload;
+                setPayload(loaded);
+                setChecked(new Set(loaded.selected));
+            } catch (e) {
+                if (!cancelled) setError((e as Error).message);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [initial]);
+
+    if (expired) {
+        return (
+            <main className="onboarding">
+                <section className="panel">
+                    <div className="panel-head">
+                        <h2>Choose what to track</h2>
+                    </div>
+                    <StartAgainPanel returnTo={payload?.returnTo ?? undefined} />
+                </section>
+            </main>
+        );
+    }
+
+    if (!payload) {
+        return (
+            <main className="onboarding">
+                <section className="panel">
+                    <div className="panel-head">
+                        <h2>Choose what to track</h2>
+                    </div>
+                    {error ? <p className="status">{error}</p> : <p className="muted">Loading…</p>}
+                </section>
+            </main>
+        );
+    }
+
+    const toggleOrg = (id: string) => {
+        setChecked((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const loadRepos = async (id: string) => {
+        if (listings[id]) return;
+        setListings((prev) => ({ ...prev, [id]: 'loading' }));
+        const response = await fetch(`/api/auth/github/pending/installations/${id}/repos`);
+        if (response.status === 401) {
+            setExpired(true);
+            return;
+        }
+        if (!response.ok) {
+            setError('Could not load the repositories for this organization.');
+            setListings((prev) => {
+                const next = { ...prev };
+                delete next[id];
+                return next;
+            });
+            return;
+        }
+        const listing = (await response.json()) as RepoListing;
+        setListings((prev) => ({ ...prev, [id]: listing }));
+    };
+
+    const toggleRepo = (orgId: string, repo: string) => {
+        setNarrowed((prev) => new Set(prev).add(orgId));
+        setRepoChecked((prev) => {
+            // First touch seeds the set from the org's standing state — its stored narrowing
+            // intersected with the live listing, so an unlisted stored name cannot ride in
+            // through a touch either; everything otherwise.
+            const installation = payload.installations.find((i) => i.id === orgId);
+            const listing = listings[orgId];
+            const seeded =
+                prev[orgId] ??
+                (installation && listing && listing !== 'loading' && listing.source === 'app'
+                    ? standingRepos(installation.tracked, listing)
+                    : new Set<string>());
+            const next = new Set(seeded);
+            if (next.has(repo)) next.delete(repo);
+            else next.add(repo);
+            return { ...prev, [orgId]: next };
+        });
+    };
+
+    const submit = async () => {
+        setSubmitting(true);
+        setError(null);
+        const repos: Record<string, string[]> = {};
+        // Orgs whose repo set must travel: touched ones that are still selected, and selected
+        // ones carrying a stored narrowing. The latter only actually post when their listing has
+        // been fetched (a collapsed org was never listed, so its untouched narrowing rides as-is
+        // — visible only when the org is expanded).
+        const considered = new Set([...narrowed].filter((orgId) => checked.has(orgId)));
+        for (const installation of payload.installations) {
+            if (installation.tracked && checked.has(installation.id)) considered.add(installation.id);
+        }
+        for (const orgId of considered) {
+            const installation = payload.installations.find((i) => i.id === orgId);
+            const listing = listings[orgId];
+            if (!installation || !listing || listing === 'loading' || listing.source !== 'app') continue;
+            // Untouched orgs post their standing set — the narrowing intersected with the
+            // listing — so a name the listing cannot render is never submitted.
+            const chosen = [...(repoChecked[orgId] ?? standingRepos(installation.tracked, listing))];
+            // Checking nothing is not a state this route can express — tracking no repo of a
+            // selected org is what deselecting the org is for. A TOUCHED org standing at nothing
+            // is refused loudly (the response must match what the screen showed); an untouched
+            // org with a fully-stale narrowing also stands at nothing, and omitting it is what
+            // keeps those rows retained until the person actually revises.
+            if (chosen.length === 0) {
+                if (narrowed.has(orgId)) {
+                    setError('Select at least one repository, or deselect the organization.');
+                    setSubmitting(false);
+                    return;
+                }
+                continue;
+            }
+            // All-checked means track everything, future repos included: posted as an empty
+            // list, which clears any stored narrowing rather than pinning today's list. Mutual
+            // set inclusion, not a length compare — a set must not read as "everything" merely
+            // because it is as long as the listing.
+            const everything =
+                listing.repos.every((name) => chosen.includes(name)) &&
+                chosen.every((name) => listing.repos.includes(name));
+            repos[orgId] = everything ? [] : chosen;
+        }
+        try {
+            const response = await fetch('/api/auth/github/complete', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ orgs: [...checked], repos }),
+            });
+            if (response.status === 401) {
+                setExpired(true);
+                return;
+            }
+            if (!response.ok) {
+                const body = (await response.json().catch(() => null)) as { code?: string } | null;
+                if (body?.code === 'UNKNOWN_REPO') {
+                    // The installation's listing changed under the loaded checkboxes: the refused
+                    // body carried at least one name that no longer exists, and re-posting it
+                    // verbatim would loop forever. Re-fetch what this submission relied on and
+                    // reconcile every touched set against the fresh names, so the retry — and
+                    // the checkboxes behind it — carry only what still exists.
+                    for (const orgId of considered) {
+                        const current = listings[orgId];
+                        if (!current || current === 'loading' || current.source !== 'app') continue;
+                        const response = await fetch(`/api/auth/github/pending/installations/${orgId}/repos`).catch(
+                            () => null
+                        );
+                        if (!response || !response.ok) continue;
+                        const fresh = (await response.json()) as RepoListing;
+                        if (fresh.source !== 'app') continue;
+                        setListings((prev) => ({ ...prev, [orgId]: fresh }));
+                        setRepoChecked((prev) => {
+                            const chosen = prev[orgId];
+                            if (!chosen) return prev;
+                            return { ...prev, [orgId]: reconciled(chosen, fresh) };
+                        });
+                    }
+                    setError(
+                        'The repositories of an organization changed while you were choosing. The lists were refreshed — review your selection and try again.'
+                    );
+                } else if (body?.code === 'REPOS_UNAVAILABLE') {
+                    setError(
+                        'The repositories of one of the chosen organizations could not be listed, so its narrowing was refused. Try again.'
+                    );
+                } else {
+                    setError('The selection could not be saved. Try again.');
+                }
+                return;
+            }
+            const done = (await response.json()) as { returnTo: string };
+            window.location.assign(done.returnTo || '/');
+        } catch (e) {
+            setError((e as Error).message);
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    return (
+        <main className="onboarding">
+            <section className="panel">
+                <div className="panel-head">
+                    <h2>Choose what to track</h2>
+                </div>
+                <p className="muted">
+                    Signing in as {payload.identity.displayName ?? payload.identity.login}. Choose the organizations —
+                    and their repositories — this dashboard tracks.
+                    {payload.reselect ? ' Your current choice is pre-checked.' : ''}
+                </p>
+                <ul className="onboarding-orgs">
+                    {payload.installations.map((installation) => {
+                        const listing = listings[installation.id];
+                        const chosenRepos = repoChecked[installation.id];
+                        return (
+                            <li key={installation.id} className="onboarding-org">
+                                <label>
+                                    <input
+                                        type="checkbox"
+                                        checked={checked.has(installation.id)}
+                                        onChange={() => toggleOrg(installation.id)}
+                                    />{' '}
+                                    {installation.account}
+                                    {payload.org === installation.id ? ' (asked for)' : ''}
+                                </label>
+                                {checked.has(installation.id) ? (
+                                    <details
+                                        onToggle={(event) => {
+                                            if ((event.target as HTMLDetailsElement).open)
+                                                void loadRepos(installation.id);
+                                        }}
+                                    >
+                                        <summary className="muted">Repositories</summary>
+                                        {listing === undefined || listing === 'loading' ? (
+                                            <p className="muted">Loading…</p>
+                                        ) : listing.source === 'none' ? (
+                                            <p className="muted">
+                                                Repository tracking is unavailable for this organization right now —
+                                                everything it reports will be tracked.
+                                            </p>
+                                        ) : (
+                                            <div className="onboarding-repos">
+                                                {listing.repos.map((name) => (
+                                                    <label key={name}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={
+                                                                chosenRepos
+                                                                    ? chosenRepos.has(name)
+                                                                    : standingRepos(installation.tracked, listing).has(
+                                                                          name
+                                                                      )
+                                                            }
+                                                            onChange={() => toggleRepo(installation.id, name)}
+                                                        />{' '}
+                                                        {name}
+                                                    </label>
+                                                ))}
+                                                {chosenRepos && chosenRepos.size === 0 ? (
+                                                    <p className="status">
+                                                        At least one repository stays tracked. Deselect the organization
+                                                        instead to track none of it.
+                                                    </p>
+                                                ) : null}
+                                            </div>
+                                        )}
+                                    </details>
+                                ) : null}
+                            </li>
+                        );
+                    })}
+                </ul>
+                {error ? <p className="status">{error}</p> : null}
+                <button
+                    type="button"
+                    className="primary"
+                    disabled={submitting || checked.size === 0}
+                    onClick={() => void submit()}
+                >
+                    {submitting ? 'Signing in…' : 'Continue'}
+                </button>
+                {checked.size === 0 ? <p className="muted">Choose at least one organization to sign in.</p> : null}
+            </section>
+        </main>
+    );
+}

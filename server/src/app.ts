@@ -4,6 +4,7 @@ import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
+import type { InstallationRepo } from './github/app-client.js';
 import type { OrgRegistry } from './orgs.js';
 import { createFactsCache } from './workspace/facts.js';
 import { authRoutes } from './routes/auth.js';
@@ -51,6 +52,11 @@ export interface AppDeps {
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
     appSlug?: (() => Promise<string>) | undefined;
+    /**
+     * Repos one installation can see, for the onboarding screen (#125). Absent means the screen
+     * reports repo tracking as unavailable — the offline shape, where there is no App client.
+     */
+    installationListing?: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
     logger?: boolean;
@@ -83,6 +89,7 @@ export async function buildApp({
     orgOfLease,
     identity,
     appSlug,
+    installationListing,
     now = Date.now,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
@@ -103,7 +110,7 @@ export async function buildApp({
 
     await app.register(healthRoutes());
     if (auth) {
-        await app.register(authRoutes({ config, store: auth, identity, appSlug }));
+        await app.register(authRoutes({ config, store: auth, orgs, identity, appSlug, installationListing }));
         // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
         // credential, so a token minted here would be inert at best — and a live personal
         // credential the day the same database flips to `github`. The settings page hides both

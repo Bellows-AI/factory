@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
 
 /** What the callback redirects back with when it could not sign somebody in. */
@@ -20,10 +21,16 @@ const REASONS: Record<string, string> = {
  */
 export function LoginGate({ children }: { children: ReactNode }) {
     const { session, loading, error } = useSession();
+    const { pathname } = useLocation();
 
     // Nothing at all until the first answer. A sign-in screen that flashes for 80ms on every load
     // for somebody who is already signed in reads as a bug.
     if (loading) return null;
+    // The onboarding screen (issue 125) steps past the gate in both of its states: a first sign-in's
+    // caller holds no session at all — the pending cookie is what the page stands on — and a
+    // reselect arrives with a live session that must not be required to pass a gate it is about
+    // to re-answer. Either way the page answers for itself.
+    if (pathname === '/onboarding') return <>{children}</>;
     if (session) return <>{children}</>;
 
     const params = new URLSearchParams(window.location.search);
