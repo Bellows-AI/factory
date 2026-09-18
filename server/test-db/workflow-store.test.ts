@@ -228,7 +228,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect((await store.resolveDefault(anonymous))?.name).toBe('org-def');
     });
 
-    it('seeds the base workflow once, org-level and default, and never overwrites an edit', async () => {
+    it('seeds the base workflow org-level and default, and refreshes a stale board-owned shape', async () => {
         await store.seedBase();
         await store.seedBase();
 
@@ -237,9 +237,53 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(rows[0]).toMatchObject({ name: BASE_WORKFLOW.name, scope: 'org', isDefault: true });
         expect((await store.get(rows[0]!.id))?.definition).toEqual(BASE_WORKFLOW.definition);
 
-        await sql`update workflow set definition = '{"entry":"x","nodes":[],"edges":[]}'::jsonb where name = ${BASE_WORKFLOW.name}`;
+        // The template is the board's, so its row tracks the board's code: a shape an older boot
+        // seeded (the pre-parameter definition, say) refreshes instead of serving a stale process
+        // forever. Only the definition moves — the default slot stays a member's decision, never
+        // the boot's.
+        await sql`update workflow set definition = '{"entry":"x","nodes":[],"edges":[]}'::jsonb, is_default = false where name = ${BASE_WORKFLOW.name}`;
         await store.seedBase();
         const after = await store.get(rows[0]!.id);
-        expect(after?.definition).toEqual({ entry: 'x', nodes: [], edges: [], params: [] });
+        expect(after?.definition).toEqual(BASE_WORKFLOW.definition);
+        expect(after?.isDefault).toBe(false);
+
+        // A member's own workflow may share the template's name; the boot never touches it.
+        const mine = await store.create({
+            name: BASE_WORKFLOW.name,
+            scope: { kind: 'user', userId: ALICE },
+            definition,
+            isDefault: false,
+            createdBy: ALICE,
+        });
+        if ('refused' in mine) throw new Error('the member-scope workflow was refused');
+        await sql`update workflow set definition = '{"entry":"x","nodes":[],"edges":[]}'::jsonb where id = ${mine.id}`;
+        await store.seedBase();
+        // Still the stale shape: the refresh's where clause names the board's own scope, and a
+        // member's definition is not the boot's to correct.
+        expect((await store.get(mine.id))?.definition).toEqual({ entry: 'x', nodes: [], edges: [], params: [] });
+    });
+
+    it('reserves the base workflow name in the org scope for the shipped template', async () => {
+        await store.seedBase();
+        const [board] = await store.listVisible({ userId: null, repo: null });
+
+        // An admin may delete org-level workflows, and the slot is then free until the next boot:
+        // the unique index no longer stands in the way, so nothing but a reservation keeps an
+        // admin definition out of the one row seedBase refreshes every boot.
+        await store.remove(board!.id);
+        const admin = await store.create({
+            name: BASE_WORKFLOW.name,
+            scope: { kind: 'org' },
+            definition,
+            createdBy: ALICE,
+        });
+        expect(admin).toMatchObject({ refused: true, code: 'NAME_TAKEN' });
+
+        // The next boot seeds the board's own template into the freed slot — and overwrites
+        // nothing of the admin's, because nothing of the admin's could exist there.
+        await store.seedBase();
+        const rows = await store.listVisible({ userId: null, repo: null });
+        expect(rows).toHaveLength(1);
+        expect((await store.get(rows[0]!.id))?.definition).toEqual(BASE_WORKFLOW.definition);
     });
 });

@@ -172,6 +172,17 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
                     }
                 }
             }
+            // The base workflow's org slot is the board's: seedBase refreshes that one row to the
+            // shipped template every boot, so an admin definition here would be silently replaced
+            // on the next start. The name stays reserved in the org scope; sibling scopes keep
+            // their own same-named definitions untouched.
+            if (scope.kind === 'org' && name.trim() === BASE_WORKFLOW.name) {
+                return {
+                    refused: true,
+                    code: 'NAME_TAKEN',
+                    message: `"${BASE_WORKFLOW.name}" is reserved for the board's own org-level workflow`,
+                };
+            }
             const check = validateDefinition(definition);
             if (!check.ok) return { refused: true, code: check.refusal.code, message: check.refusal.message };
 
@@ -286,9 +297,23 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
 
         async seedBase() {
             await gate();
-            // The base workflow ships with the board, org-level and the org's default, idempotent
-            // by name and default-slot: an existing definition (edited or re-seeded over) is left
-            // exactly as it is — seeding populates, it never overwrites.
+            // The base workflow ships with the board, org-level and the org's default. Its row is
+            // the board's, so it tracks the board's code: a definition an older boot seeded (a
+            // pre-parameter shape, say) refreshes to what this build ships instead of serving a
+            // stale process forever — the name is reserved in the org scope (create refuses it),
+            // so there is no edit path and no admin row for the refresh to run over. A running
+            // thread is safe regardless, having frozen its snapshot at creation. The refresh moves
+            // the definition only: which workflow is the scope's default stays a member decision,
+            // never the boot's. Idempotent by name and default-slot — the `is distinct from` guard
+            // makes a matching row a no-op, and the insert populates only an absent row.
+            await sql`
+                update workflow
+                set definition = ${sql.json(BASE_WORKFLOW.definition as never)}, updated_at = now()
+                where org_id = ${orgId}
+                  and name = ${BASE_WORKFLOW.name}
+                  and user_id is null and repo_owner is null and repo_name is null
+                  and definition is distinct from ${sql.json(BASE_WORKFLOW.definition as never)}
+            `;
             await sql`
                 insert into workflow (org_id, name, definition, is_default)
                 values (${orgId}, ${BASE_WORKFLOW.name}, ${BASE_WORKFLOW.definition as never}, true)
