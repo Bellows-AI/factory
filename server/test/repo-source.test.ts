@@ -94,4 +94,41 @@ describe('the tracked-repo allowlist (#125)', () => {
             (await staticRepoSource([{ owner: 'acme', name: 'web' }]).list()).map((r) => `${r.owner}/${r.name}`)
         ).toEqual(['acme/web']);
     });
+
+    it('invalidate() re-reads the listing (and with it the allowlist) on the next list', async () => {
+        // A selection change (#125) rewrites tracked_repo under a runtime whose cache may hold a
+        // ten-minute-old produce; completion invalidates so the next read cannot keep serving the
+        // pre-choice truth.
+        let clock = 1_000;
+        const names = ['acme/web', 'acme/other'];
+        const source = createRepoSource({
+            client: {
+                async listRepositories() {
+                    return {
+                        repos: names.map(repo),
+                        installation: { id: '123', account: 'acme', repositorySelection: null },
+                    };
+                },
+            },
+            ttlMs: 10_000,
+            now: () => clock,
+        });
+        expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web', 'acme/other']);
+
+        // Within the TTL, and with the underlying answer grown, the cache still serves old.
+        names.push('acme/new');
+        clock += 100;
+        expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web', 'acme/other']);
+
+        source.invalidate();
+        // The stale entry still serves the snapshot while the refresh is pending — no empty window.
+        expect(source.snapshotNames()).toEqual(['acme/web', 'acme/other']);
+        clock += 100;
+        expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual([
+            'acme/web',
+            'acme/other',
+            'acme/new',
+        ]);
+        expect(source.snapshotNames()).toEqual(['acme/web', 'acme/other', 'acme/new']);
+    });
 });

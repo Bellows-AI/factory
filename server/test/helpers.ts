@@ -1273,6 +1273,8 @@ export async function harness({
     });
     return {
         app,
+        orgs,
+        repos,
         service,
         telemetry,
         executors,

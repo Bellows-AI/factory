@@ -23,14 +23,14 @@ async function setup({
     seed(auth);
     const identity = stubIdentityClient();
     identity.installationsAnswer = installations;
-    const { app } = await harness({
+    const { app, orgs, repos } = await harness({
         config: { auth: githubAuth() },
         auth,
         identity,
         appSlug: async () => 'stub-app',
         installationListing,
     });
-    return { app, auth, identity };
+    return { app, auth, identity, orgs, repos };
 }
 
 /** Starts a flow and returns the state cookie the browser would be holding. */
@@ -904,6 +904,23 @@ describe('the selection screen (#125)', () => {
         expect(response.headers.location).toBe('/');
         expect(response.cookies.find((c) => c.name === PENDING_COOKIE)).toBeUndefined();
         expect(response.cookies.find((c) => c.name === SESSION_COOKIE)?.value).toBeTruthy();
+    });
+
+    it('completing invalidates the org runtime\u2019s repo cache, so the choice is served at once', async () => {
+        // The per-org runtime caches its repo list — the installation report intersected with
+        // tracked_repo — on a ten-minute TTL. A reselect that rewrote the allowlist without
+        // invalidating would leave stats, the picker and the validation reads serving the
+        // pre-choice truth until the TTL ran out.
+        const { app, orgs, repos } = await setup({ installations: TWO });
+        const runtime = await orgs.for(ORG);
+        expect(runtime?.repos).toBe(repos);
+        const before = repos.invalidations();
+
+        const cookie = await beginOnboarding(app);
+        const done = await finishOnboarding(app, cookie, { orgs: [ORG] });
+        expect(done.statusCode).toBe(200);
+
+        expect(repos.invalidations()).toBe(before + 1);
     });
 
     it("serves an installation's repos through the App seam, or source none without one", async () => {

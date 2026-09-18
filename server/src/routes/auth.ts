@@ -24,10 +24,17 @@ import {
 } from '../auth/session.js';
 import type { AuthStore, Caller, PendingSignIn } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
+import type { OrgRegistry } from '../orgs.js';
 
 export interface AuthRouteDeps {
     config: AppConfig;
     store: AuthStore;
+    /**
+     * The per-org runtimes, for one job: invalidating an org's cached repo source when its
+     * tracked-repo allowlist is rewritten (#125), so a reselect is served on the next read
+     * instead of when the ten-minute TTL happens to run out.
+     */
+    orgs?: OrgRegistry | undefined;
     /** Absent under AUTH_MODE=none, where there is no exchange to make. */
     identity?: GitHubIdentityClient | undefined;
     /**
@@ -67,7 +74,7 @@ interface PendingInstallation {
 }
 
 export const authRoutes =
-    ({ config, store, identity, appSlug, installationListing }: AuthRouteDeps): FastifyPluginAsync =>
+    ({ config, store, orgs, identity, appSlug, installationListing }: AuthRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const { auth } = config;
         const resolveUser = createUserResolver({ config, store });
@@ -515,6 +522,14 @@ export const authRoutes =
                     rewroteAllowlist.push(orgId);
                 }
                 await startSession(request, reply, caller);
+                // The org runtimes cache their repo list with the allowlist intersection folded
+                // in — without this poke, a reselect would keep serving the pre-choice truth
+                // until the ten-minute TTL ran out. Expire, don't drop: the stale list serves
+                // until the next read re-produces, so no poll sees an empty dashboard.
+                for (const orgId of orgIds) {
+                    const runtime = await orgs?.for(orgId);
+                    runtime?.repos.invalidate();
+                }
             } catch (e) {
                 request.log.error({ err: e }, 'onboarding completion failed');
                 // THE ROLLBACK. These writes are separate transactions, so a failure partway

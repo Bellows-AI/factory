@@ -10,6 +10,13 @@ export interface Cache<T> {
     /** Runs `produce` at most once concurrently, no matter how many callers arrive. */
     refresh(): Promise<CacheEntry<T>>;
     inFlight(): boolean;
+    /**
+     * Ages the entry past its TTL without dropping it: `isStale()` turns true, so the next read
+     * re-produces — while `peek()` keeps serving the last good value until that lands. An
+     * external fact changed underneath the cache (a rewritten allowlist, #125); this is how the
+     * cache is told without a window in which readers see nothing.
+     */
+    expire(): void;
 }
 
 export interface CacheDeps<T> {
@@ -43,6 +50,9 @@ export function createCache<T>({ ttlMs, produce, now = Date.now }: CacheDeps<T>)
                     pending = null;
                 });
             return pending;
+        },
+        expire() {
+            if (entry) entry = { ...entry, fetchedAt: now() - ttl() - 1 };
         },
     };
 }

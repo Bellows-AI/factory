@@ -29,6 +29,12 @@ export interface RepoSource {
     lastError(): string | null;
     /** When the cached list was fetched, or null if it never was. */
     fetchedAt(): number | null;
+    /**
+     * Ages the cached produce past its TTL so the next read re-runs it — the allowlist
+     * intersection included (#125). The stale entry keeps serving until the refresh lands, so
+     * there is no empty-snapshot window between the invalidate and the re-produce.
+     */
+    invalidate(): void;
 }
 
 /**
@@ -153,14 +159,21 @@ export function createRepoSource({
         detail: load,
         lastError: () => error,
         fetchedAt: () => cache.peek()?.fetchedAt ?? null,
+        invalidate: () => cache.expire(),
     };
 }
 
 /** A fixed list. The route tests use this instead of reaching GitHub. */
-export function staticRepoSource(repos: readonly Repo[]): RepoSource {
+export interface StaticRepoSource extends RepoSource {
+    /** How many times the source was invalidated — the route tests' observable. */
+    invalidations(): number;
+}
+
+export function staticRepoSource(repos: readonly Repo[]): StaticRepoSource {
     const detailed = Object.freeze(
         repos.map((repo) => Object.freeze({ ...repo, private: false, defaultBranch: null, pushedAt: null }))
     ) as readonly InstallationRepo[];
+    let invalidations = 0;
     return {
         snapshot: () => detailed,
         snapshotNames: () => detailed.map(fullName),
@@ -168,5 +181,9 @@ export function staticRepoSource(repos: readonly Repo[]): RepoSource {
         detail: async () => ({ repos: detailed, installation: null }),
         lastError: () => null,
         fetchedAt: () => 0,
+        invalidate: () => {
+            invalidations += 1;
+        },
+        invalidations: () => invalidations,
     };
 }
