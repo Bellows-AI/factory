@@ -3,11 +3,9 @@ import type { ConsoleMessage, Page } from '@playwright/test';
 
 const SHOTS = 'artifacts/ui';
 
-/**
- * The states the Environment page can be in, one interaction per state, a screenshot per state.
+/** The states the Environment page can be in, one interaction per state, a screenshot per state.
  * `npm test` renders the panel with react-dom/server and proves it does not throw; only a browser
- * proves the inputs accept typing and Save writes.
- */
+ * proves the inputs accept typing and Save writes. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 function watchConsole(page: Page): string[] {

@@ -180,9 +180,16 @@ each is answered in place:
 
 ## The page
 
-`/env` on the SPA: three editors (Core, My workspace, Per repository) fed by one `GET /api/env` on
-mount and after each save — **no polling**, because the list only changes when somebody edits it,
-and a poll would race the editors' draft state. Whole-list PUTs, the repos/executors idiom. The
+`/env` on the SPA: three editors (Core, My workspace, Per repository). Each is fed by `GET /api/env`
+on mount; the editor that saves adopts the stored rows its PUT echoes back (`{ vars }`), which is
+what blanks a typed secret and shows the stored truth — so the panels must NOT be remounted on
+save: a `key` bump there fires before the editor's own continuation and silently eats the "Saved."
+confirmation (that remount was the bug this paragraph replaces). The after-save GET stays for the
+repository select's options; the editors that did not save keep their drafts, so a concurrent
+admin's write to another scope appears only on reload or repo switch — and that scope's next
+whole-list PUT clobbers it, the standing trade of draft survival. **No polling**, because the list
+only changes when somebody edits it, and a poll would race the editors' draft state. Whole-list
+PUTs, the repos/executors idiom. The
 Variables tab edits through a `raw` toggle: on, the table is replaced by a textarea holding the
 scope's non-secret variables one `NAME=value` per line, and toggling off parses it with the same
 strict rules the server enforces — valid text replaces the draft's variable rows (a deleted line
