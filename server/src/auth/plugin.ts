@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { LOCAL_ORG_ID, type AppConfig } from '../config.js';
+import { LOCAL_ORG_ID, UUID, type AppConfig } from '../config.js';
 import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
@@ -317,17 +317,19 @@ export async function registerAuth(
             // null and the route offers every org's queue. Every other worker route carries the
             // job (or reclaim) id in its URL, and the org comes from that row; an id that
             // resolves to nothing is the route's own 404, answered here to keep the store lookup
-            // from inventing a runtime for a row that does not exist.
+            // from inventing a runtime for a row that does not exist. The segment is captured
+            // before any shape check, so a MALFORMED id is refused on the same terms instead of
+            // slipping through with a null org — which the route's storeOf() would turn into a
+            // 503 before its own id validation ran — and so a resolver is never handed a string
+            // postgres would refuse to cast.
             const path = pathOf(request.url);
-            const rowId =
-                path.match(/^\/api\/jobs\/([0-9a-f-]{36})\//)?.[1] ??
-                path.match(/^\/api\/reclaims\/([0-9a-f-]{36})\//)?.[1];
+            const rowId = path.match(/^\/api\/jobs\/([^/]+)\//)?.[1] ?? path.match(/^\/api\/reclaims\/([^/]+)\//)?.[1];
             let orgId: string | null = null;
-            if (rowId) {
+            if (rowId && UUID.test(rowId)) {
                 orgId = path.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
-                if (!orgId) {
-                    return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
-                }
+            }
+            if (rowId && !orgId) {
+                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
             }
             request.auth = { kind: 'worker', orgId };
             return;

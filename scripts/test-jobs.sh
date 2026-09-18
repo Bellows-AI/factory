@@ -185,8 +185,12 @@ npm run build -w core >/dev/null 2>&1 && npm run build -w server >/dev/null 2>&1
 echo 'building the stub runner images'
 # The OK stub prints two env probes BEFORE echoing its arguments, so the output proves both the
 # argv path (prompt, session id) and the env path (the claim's stacked environment) reached the
-# container.
-printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo \\"$@\\"","sh"]\n' >"$work/Dockerfile.ok"
+# container. It then re-echoes the LAST argument — the prompt — on its own final line: the
+# workflow engine's marker edges match the run's final non-empty line (docs/workflows.md, the
+# contract a real model honours by emitting the marker last), and the one-line `echo "$@"` puts
+# the driver's `--session-id <uuid> -p` flags ahead of the prompt on that line, so every marker
+# edge missed and the stub-walk graph stalled after its first review round.
+printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' >"$work/Dockerfile.ok"
 printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo boom >&2; exit 3"]\n' >"$work/Dockerfile.fail"
 docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null || {
@@ -234,8 +238,25 @@ echo '# board'
 # the board seeds the org-default `fix-issue` when the org runtime is first built, and a default
 # here would make every workflow-less queue below walk the graph instead of the pipeline these
 # phases pin. The warm-up is what makes the truncate honest: it forces that first build BEFORE
-# the truncate, so the seed is already in the table and cannot reappear after it.
-api POST /api/jobs '{"command":"warm the org runtime"}' >/dev/null
+# the truncate. But the seed is fired without an await (orgs.ts), so "the runtime answers" is not
+# "the seed has landed" — and the proof is readable off the warm-up itself: a workflow-less create
+# answers 201 while `fix-issue` is still missing (the unsafe state) and 400, the missing "issue"
+# parameter refusal, once it is in the table. The truncate runs only behind that answer; if it
+# never comes, stop here rather than assert against a queue whose fixture is a lie.
+seeded=""
+for _ in $(seq 1 30); do
+    warm="$(api POST /api/jobs '{"command":"warm the org runtime"}')"
+    [ "$(status "$warm")" = '400' ] && {
+        seeded=1
+        break
+    }
+    sleep 1
+done
+[ -n "$seeded" ] || {
+    echo 'test-jobs: the org-default workflow never seeded; refusing to truncate'
+    tail -20 "$work/server.log"
+    exit 1
+}
 docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1
 
 expect_status 'health answers'            200 GET /api/health

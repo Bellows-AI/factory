@@ -78,11 +78,18 @@ const telemetryStub = (): TelemetryStore => ({
     async recordBranch() {},
 });
 
-async function build(auth: AuthConfig, store: MemoryAuthStore, orgOfLease?: AppDeps['orgOfLease']) {
+async function build(
+    auth: AuthConfig,
+    store: MemoryAuthStore,
+    orgOfLease?: AppDeps['orgOfLease'],
+    // When set, the registry answers null for every org id outside it — the production shape,
+    // where an org that does not exist resolves to nothing.
+    orgsFor?: readonly string[]
+) {
     const config = testConfig({ auth });
     app = await buildApp({
         config,
-        orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
+        orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient(), orgsFor }),
         store: telemetryStub(),
         auth: store,
         // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
@@ -316,6 +323,37 @@ describe('the two credentials are disjoint', () => {
 
         // Authenticated (the secret matched) but routed nowhere: the org read from the row is
         // the only honest answer, and there is no row.
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('404s a job-scoped worker call whose id is not a uuid', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store, undefined, [ORG]);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/jobs/not-a-uuid/heartbeat',
+            payload: { leaseToken: LEASE },
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        // A malformed id names no row either. Letting it through with a null org hands the
+        // route's storeOf() an org that does not exist, and the driver reads a 503
+        // JOBS_UNAVAILABLE where the route's own id validation should have spoken.
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('404s a reclaim ack whose id is not a uuid', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store, undefined, [ORG]);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/reclaims/not-a-uuid/ack',
+            payload: { worker: 'driver-1' },
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
         expect(response.statusCode).toBe(404);
     });
 
