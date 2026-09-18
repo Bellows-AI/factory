@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useEnv, type EnvVarInput } from '../api/useEnv.js';
+import { useEnv } from '../api/useEnv.js';
 import { useRepos } from '../api/useRepos.js';
 import { useSession } from '../api/useSession.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
@@ -24,21 +24,6 @@ export function EnvPage() {
     const [pickingRepo, setPickingRepo] = useState(false);
     const repos = useRepos(pickingRepo);
     const [selectedRepo, setSelectedRepo] = useState<{ owner: string; name: string } | null>(null);
-    /**
-     * Bumped after every successful save so the editors remount from the refetched payload —
-     * otherwise the draft survives the save (typed secret values linger in their inputs) and
-     * another admin's concurrent edit never appears. The key is what makes the panel's
-     * initialize-once state honest.
-     */
-    const [version, setVersion] = useState(0);
-    /** Wraps a save so a success also bumps the remount key — see the comment above. */
-    const saved =
-        (save: (vars: EnvVarInput[]) => Promise<string | null>) =>
-        async (vars: EnvVarInput[]): Promise<string | null> => {
-            const failure = await save(vars);
-            if (failure === null) setVersion((v) => v + 1);
-            return failure;
-        };
 
     const isAdmin = session?.role === 'admin';
     const repoScope = data?.repos.find(
@@ -66,7 +51,6 @@ export function EnvPage() {
             </section>
 
             <EnvVarsPanel
-                key={`org-${version}`}
                 title="Core (organization)"
                 hint={
                     isAdmin
@@ -74,16 +58,15 @@ export function EnvPage() {
                         : 'An admin configures the core environment; it is shown here read-only.'
                 }
                 initialVars={data?.org ?? []}
-                onSave={saved(saveOrg)}
+                onSave={saveOrg}
                 disabled={!isAdmin}
             />
 
             <EnvVarsPanel
-                key={`workspace-${version}`}
                 title="My workspace"
                 hint="Your own defaults, on every task you queue."
                 initialVars={data?.workspace ?? []}
-                onSave={saved(saveWorkspace)}
+                onSave={saveWorkspace}
             />
 
             <section className="panel">
@@ -125,11 +108,11 @@ export function EnvPage() {
                 {repos.error ? <p className="status">Could not reach GitHub: {repos.error}</p> : null}
                 {selectedRepo ? (
                     <EnvVarsPanel
-                        key={`${selectedRepo.owner}/${selectedRepo.name}-${version}`}
+                        key={`${selectedRepo.owner}/${selectedRepo.name}`}
                         title={`${selectedRepo.owner}/${selectedRepo.name}`}
                         hint=""
                         initialVars={repoScope?.vars ?? []}
-                        onSave={saved((vars) => saveRepo(selectedRepo, vars))}
+                        onSave={(vars) => saveRepo(selectedRepo, vars)}
                         disabled={!isAdmin}
                     />
                 ) : null}

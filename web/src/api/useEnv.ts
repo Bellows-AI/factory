@@ -27,15 +27,25 @@ export interface EnvVarInput {
     isSecret: boolean;
 }
 
+/**
+ * What a save resolves to. On success `vars` is the scope's stored rows — the PUT's own response —
+ * so the editor can adopt exactly what is stored without a remount wiping its "Saved." confirmation
+ * mid-render.
+ */
+export interface EnvSaveResult {
+    error: string | null;
+    vars: EnvVarView[];
+}
+
 export interface UseEnv {
     data: EnvPayload | null;
     loading: boolean;
     error: string | null;
     saving: boolean;
     refresh: () => void;
-    saveOrg: (vars: EnvVarInput[]) => Promise<string | null>;
-    saveWorkspace: (vars: EnvVarInput[]) => Promise<string | null>;
-    saveRepo: (repo: { owner: string; name: string }, vars: EnvVarInput[]) => Promise<string | null>;
+    saveOrg: (vars: EnvVarInput[]) => Promise<EnvSaveResult>;
+    saveWorkspace: (vars: EnvVarInput[]) => Promise<EnvSaveResult>;
+    saveRepo: (repo: { owner: string; name: string }, vars: EnvVarInput[]) => Promise<EnvSaveResult>;
 }
 
 /**
@@ -90,7 +100,7 @@ export function useEnv(): UseEnv {
         return () => controller.current?.abort();
     }, [refresh]);
 
-    const put = useCallback(async (url: string, body: unknown): Promise<string | null> => {
+    const put = useCallback(async (url: string, body: unknown): Promise<EnvSaveResult> => {
         setSaving(true);
         try {
             const response = await fetch(url, {
@@ -100,45 +110,47 @@ export function useEnv(): UseEnv {
             });
             if (response.status === 401) {
                 reportUnauthenticated();
-                return 'Your session expired';
+                return { error: 'Your session expired', vars: [] };
             }
             if (!response.ok) {
                 const body = (await response.json().catch(() => ({}))) as { error?: string };
-                return body.error ?? `Could not save (${response.status})`;
+                return { error: body.error ?? `Could not save (${response.status})`, vars: [] };
             }
-            return null;
+            const saved = (await response.json()) as { vars: EnvVarView[] };
+            return { error: null, vars: saved.vars };
         } catch (e) {
-            return (e as Error).message;
+            return { error: (e as Error).message, vars: [] };
         } finally {
             setSaving(false);
         }
     }, []);
 
-    // Each save refetches on success, so the panel remounts showing exactly what is stored —
-    // including a secret that just went from null-keep to set.
+    // Each save refetches on success, so the page-level data (the repository select's options,
+    // in particular) tracks the store. The editor that saved adopts the PUT's own rows instead
+    // of waiting on this — a remount here would wipe its "Saved." confirmation.
     const saveOrg = useCallback(
         async (vars: EnvVarInput[]) => {
-            const failure = await put('/api/env/org', { vars });
-            if (failure === null) refresh();
-            return failure;
+            const result = await put('/api/env/org', { vars });
+            if (result.error === null) refresh();
+            return result;
         },
         [put, refresh]
     );
 
     const saveWorkspace = useCallback(
         async (vars: EnvVarInput[]) => {
-            const failure = await put('/api/env/workspace', { vars });
-            if (failure === null) refresh();
-            return failure;
+            const result = await put('/api/env/workspace', { vars });
+            if (result.error === null) refresh();
+            return result;
         },
         [put, refresh]
     );
 
     const saveRepo = useCallback(
         async (repo: { owner: string; name: string }, vars: EnvVarInput[]) => {
-            const failure = await put('/api/env/repo', { repo, vars });
-            if (failure === null) refresh();
-            return failure;
+            const result = await put('/api/env/repo', { repo, vars });
+            if (result.error === null) refresh();
+            return result;
         },
         [put, refresh]
     );

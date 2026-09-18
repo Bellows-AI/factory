@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { EnvSaveResult } from '../api/useEnv.js';
 import { parseEnvRaw, serializeEnv } from './env-raw.js';
 
 /**
@@ -17,7 +18,8 @@ export interface EnvVarsPanelProps {
     /** One sentence on what this scope is for; rendered under the heading. */
     hint: string;
     initialVars: EnvVarDraft[];
-    onSave: (vars: { name: string; value: string | null; isSecret: boolean }[]) => Promise<string | null>;
+    /** Resolves to the scope's stored rows on success — the panel adopts them as its new draft. */
+    onSave: (vars: { name: string; value: string | null; isSecret: boolean }[]) => Promise<EnvSaveResult>;
     /** Rendered read-only while the PUT is in flight or the scope is not the caller's to edit. */
     disabled?: boolean;
 }
@@ -114,9 +116,16 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                     value: row.isSecret && (row.value === '' || row.value === null) ? null : (row.value ?? ''),
                     isSecret: row.isSecret,
                 }));
-            const failure = await onSave(payload);
-            if (failure) setError(failure);
-            else setSaved(true);
+            const result = await onSave(payload);
+            if (result.error) {
+                setError(result.error);
+            } else {
+                // Adopt the stored rows the PUT echoed back — a typed secret value becomes the
+                // blank "set — leave blank to keep" input, and the draft is exactly the store.
+                // The confirmation survives because nothing remounts to deliver it.
+                setRows(result.vars.map((row) => ({ ...row })));
+                setSaved(true);
+            }
         } finally {
             setSaving(false);
         }
