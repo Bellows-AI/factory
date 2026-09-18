@@ -267,8 +267,11 @@ export const authRoutes =
 
                 // THE SELECTION STEP. A first sign-in — no stored choice — with two or more
                 // installations parks the round trip and asks what to track; so does an explicit
-                // `?reselect=1`. One installation has nothing to choose, whatever was asked.
-                if ((remembered.length === 0 || decoded.reselect) && reported.length >= 2) {
+                // `?reselect=1`, whatever the report's size — for a single-installation account
+                // that link is the only lever on `tracked_repo`, since completion is the only
+                // production writer of it. A first sign-in with one installation has nothing to
+                // choose, whatever was asked.
+                if ((remembered.length === 0 && reported.length >= 2) || decoded.reselect) {
                     const token = await store.createPendingSignIn({
                         identity: who,
                         installations: reported,
@@ -351,10 +354,22 @@ export const authRoutes =
                         // Nothing to intersect with: show the stored names as they are, so the
                         // screen still says what the org narrowed to even while offline.
                         const seeded = listed === null ? narrowed : narrowed.filter((name) => listed.includes(name));
+                        // A narrowing whose every entry GitHub stopped reporting is dead weight
+                        // with no way out: an untouched confirmation posts no repos key for an
+                        // empty seed set, and a visible-but-empty narrowing would have the screen
+                        // seed nothing checked — while the repo source, still filtering against
+                        // names that no longer exist, would read the org as tracking nothing. The
+                        // read retires the dead rows — read-time repair, the same contract as
+                        // findPendingSignIn spending an expired row — and THEN null is the
+                        // truthful track-everything answer.
+                        if (listed !== null && seeded.length === 0) {
+                            await store.replaceTrackedRepos(install.id, []);
+                            return { id: install.id, account: install.name, tracked: null };
+                        }
                         return {
                             id: install.id,
                             account: install.name,
-                            tracked: seeded.length > 0 ? seeded : null,
+                            tracked: seeded,
                         };
                     })
                 ),
@@ -403,7 +418,9 @@ export const authRoutes =
          * errors, not `?auth_error=` redirects — this route is reached by the SPA's fetch, not by
          * a top-level navigation, so a redirect would be swallowed by it. Everything else about
          * the failure rule stays: an expired or missing pending sign-in is one answer ("start
-         * again"), and every refusal leaves the pending row alive so the person can re-post.
+         * again"), every refusal up to the claim leaves the pending row alive so the person can
+         * re-post — and a failure past the claim rolls the materialization back, so "start
+         * again" is what actually happens rather than a half-committed sign-in.
          */
         app.post('/api/auth/github/complete', { bodyLimit: 1048576 }, async (request, reply) => {
             const resolved = await pendingFrom(request);
@@ -471,13 +488,16 @@ export const authRoutes =
                 }
             }
 
-            let caller: Caller;
+            let caller: Caller | undefined;
+            // What this completion has rewritten so far — the rollback's map of what to undo.
+            const rewroteAllowlist: string[] = [];
             try {
                 // THE CLAIM. Atomically spends the pending row before anything is materialized,
                 // so only one of two completions racing the same cookie can get past it — the
                 // docs' single-use is a property, not a description of the happy path. Every
                 // validation refusal above left the row alive; from here the row is spent, and a
-                // failure means starting the flow again.
+                // failure rolls the materialization back (below) so the only path is, in truth,
+                // starting the flow again.
                 const claimed = await store.deletePendingSignIn(hashToken(resolved.token));
                 if (!claimed) {
                     return reply.code(401).send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
@@ -492,13 +512,32 @@ export const authRoutes =
                 caller = await store.signIn(pending.identity, selected, selection);
                 for (const [orgId, names] of reposByOrg) {
                     await store.replaceTrackedRepos(orgId, names);
+                    rewroteAllowlist.push(orgId);
                 }
-                // Inside the claim's try: a session-mint failure (database gone dark after a
-                // successful claim) answers the same JSON shape as every other completion
-                // failure — the row is spent either way, so the only path is starting again.
                 await startSession(request, reply, caller);
             } catch (e) {
                 request.log.error({ err: e }, 'onboarding completion failed');
+                // THE ROLLBACK. These writes are separate transactions, so a failure partway
+                // would otherwise leave the memberships committed — and the next OAuth attempt,
+                // seeing a stored selection, would bypass onboarding and silently lose the repo
+                // choice. Undo what landed, best-effort: the allowlist rows back to the
+                // track-everything default, then the memberships signIn materialized, which
+                // returns the account to "no stored choice" and parks the next sign-in on the
+                // screen again. The pending row stays spent either way — one completion, one
+                // materialization, whatever the outcome.
+                for (const orgId of rewroteAllowlist) {
+                    await store
+                        .replaceTrackedRepos(orgId, [])
+                        .catch((err: Error) => request.log.error({ err }, 'onboarding rollback failed'));
+                }
+                if (caller) {
+                    for (const install of pending.installations) {
+                        if (!orgIds.includes(install.id)) continue;
+                        await store
+                            .removeMember(install.id, pending.identity.githubUserId)
+                            .catch((err: Error) => request.log.error({ err }, 'onboarding rollback failed'));
+                    }
+                }
                 return reply.code(500).send({ error: 'Could not complete the sign-in', code: 'COMPLETE_FAILED' });
             }
 

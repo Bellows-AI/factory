@@ -660,6 +660,65 @@ describe('the selection screen (#125)', () => {
         ]);
     });
 
+    it('a narrowing whose every entry went stale is cleared by the read, not left active', async () => {
+        // Every stored entry removed on GitHub's side. Reporting the empty intersection as null
+        // would be a LIE while the rows live: the screen seeds every checkbox checked, an
+        // untouched confirmation posts no repos key, and the stale rows stay active — the repo
+        // source then filters the current listing against names that no longer exist and the org
+        // reads as empty. And leaving them as a visible-but-empty narrowing posts nothing either:
+        // the screen's untouched confirm skips an empty seed set by design. So the read itself
+        // retires the dead rows — read-time repair, the same contract as findPendingSignIn
+        // spending an expired row — and THEN reports track-everything truthfully.
+        const listing: Record<string, InstallationRepo[] | null> = {
+            [ORG]: [
+                { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
+                { owner: 'acme', name: 'other', private: false, defaultBranch: null, pushedAt: null },
+            ],
+            '888888': null,
+        };
+        const { app, auth } = await setup({
+            installations: TWO,
+            installationListing: async (id) => listing[id] ?? null,
+        });
+        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/also-gone']);
+
+        const cookie = await beginOnboarding(app, '/', undefined, true);
+        const screen = await pendingRoute(app, cookie);
+        const orgs = screen.json().installations as { id: string; tracked: string[] | null }[];
+        expect(orgs).toEqual([
+            { id: '888888', account: 'other-org', tracked: null },
+            { id: ORG, account: 'acme', tracked: null },
+        ]);
+        // The dead rows are gone, so the repo source's empty allowlist really is track-everything.
+        expect(await auth.trackedRepos(ORG)).toEqual([]);
+    });
+
+    it('a partially stale narrowing keeps its surviving entries — the read only retires dead rows', async () => {
+        // One live entry, one gone: the narrowing is still meaningful, so nothing is cleared and
+        // the screen seeds from the survivor.
+        const listing: Record<string, InstallationRepo[] | null> = {
+            [ORG]: [
+                { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
+                { owner: 'acme', name: 'other', private: false, defaultBranch: null, pushedAt: null },
+            ],
+            '888888': null,
+        };
+        const { app, auth } = await setup({
+            installations: TWO,
+            installationListing: async (id) => listing[id] ?? null,
+        });
+        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/web']);
+
+        const cookie = await beginOnboarding(app, '/', undefined, true);
+        const screen = await pendingRoute(app, cookie);
+        const orgs = screen.json().installations as { id: string; tracked: string[] | null }[];
+        expect(orgs).toEqual([
+            { id: '888888', account: 'other-org', tracked: null },
+            { id: ORG, account: 'acme', tracked: ['acme/web'] },
+        ]);
+        expect(await auth.trackedRepos(ORG)).toEqual(['acme/gone', 'acme/web']);
+    });
+
     it('completing tracks only the chosen orgs, signs in, and spends the pending row', async () => {
         const { app, auth } = await setup({ installations: TWO });
         const cookie = await beginOnboarding(app);
@@ -680,6 +739,38 @@ describe('the selection screen (#125)', () => {
         expect(auth.pendingSignIns()).toEqual([]);
         const replay = await finishOnboarding(app, cookie, { orgs: [ORG] });
         expect(replay.statusCode).toBe(401);
+    });
+
+    it('a completion failure after the claim undoes the materialization, so the choice is re-asked', async () => {
+        // The claim is spent before signIn and the allowlist writes run. If a later write fails
+        // and the memberships stayed, the next OAuth attempt would see a stored selection and
+        // bypass onboarding — silently losing the repo choice the person made. The route rolls
+        // the materialization back instead: memberships removed, allowlist rows cleared, and the
+        // next sign-in parks at the screen again.
+        const listing: Record<string, InstallationRepo[] | null> = {
+            [ORG]: [{ owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null }],
+            '888888': null,
+        };
+        const { app, auth } = await setup({
+            installations: TWO,
+            installationListing: async (id) => listing[id] ?? null,
+        });
+        const cookie = await beginOnboarding(app);
+        auth.failNextTrackedRepoWrite();
+
+        const response = await finishOnboarding(app, cookie, { orgs: [ORG], repos: { [ORG]: ['acme/web'] } });
+        expect(response.statusCode).toBe(500);
+        expect(response.json().code).toBe('COMPLETE_FAILED');
+
+        // Nothing half-landed: no session, no membership, no allowlist row.
+        expect(auth.sessions()).toEqual([]);
+        expect(await auth.storedSelection(4242)).toEqual([]);
+        expect(await auth.trackedRepos(ORG)).toEqual([]);
+
+        // And the next sign-in re-enters the screen rather than bypassing it.
+        const state = await begin(app);
+        const next = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
+        expect(next.headers.location).toBe('/onboarding');
     });
 
     it('refuses an empty or foreign selection, an expired row, and no cookie at all', async () => {
@@ -774,6 +865,45 @@ describe('the selection screen (#125)', () => {
         expect(screen.json().reselect).toBe(true);
         // The stored choice, not everything reported: the screen opens pre-checked with it.
         expect(screen.json().selected).toEqual([ORG]);
+    });
+
+    it('reselect=1 opens the screen for a single installation too — the link is their only lever', async () => {
+        // Onboarding completion is the only production writer of tracked_repo, and the settings
+        // page's reselect link is the only surface that re-opens it. Gating the park on
+        // `reported.length >= 2` made following that link a no-op for a single-installation
+        // account: it signed straight back in, and the repos it tracks could never change.
+        const { app } = await setup({
+            installationListing: async () => [
+                { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
+            ],
+        });
+        await signIn(app);
+
+        const state = await begin(app, '/settings', undefined, true);
+        const response = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
+        expect(response.headers.location).toBe('/onboarding');
+        const cookie = response.cookies.find((c) => c.name === PENDING_COOKIE)?.value;
+        expect(cookie).toBeTruthy();
+
+        // The screen works with one org, and completing it narrows what the installation tracks.
+        const done = await finishOnboarding(app, cookie!, {
+            orgs: [ORG],
+            repos: { [ORG]: ['acme/web'] },
+        });
+        expect(done.statusCode).toBe(200);
+    });
+
+    it('a first sign-in with a single installation still goes straight in', async () => {
+        // The other half of the gate: with nothing stored and one installation there is nothing
+        // to choose, so the round trip must not park.
+        const { app } = await setup();
+
+        const state = await begin(app);
+        const response = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
+        expect(response.statusCode).toBe(302);
+        expect(response.headers.location).toBe('/');
+        expect(response.cookies.find((c) => c.name === PENDING_COOKIE)).toBeUndefined();
+        expect(response.cookies.find((c) => c.name === SESSION_COOKIE)?.value).toBeTruthy();
     });
 
     it("serves an installation's repos through the App seam, or source none without one", async () => {

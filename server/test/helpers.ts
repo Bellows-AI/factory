@@ -521,6 +521,12 @@ export interface MemoryAuthStore extends AuthStore {
     pendingSignIns(): { githubUserId: number; installations: string[]; expiresAt: number }[];
     /** Ages every pending row past its expiry, standing in for the TTL a real wait would run. */
     expirePendingSignIns(): void;
+    /**
+     * Arms the next replaceTrackedRepos to throw — standing in for a database failure
+     * mid-completion, so a test can hold the route at the exact write whose failure would
+     * otherwise leave a half-materialized sign-in behind.
+     */
+    failNextTrackedRepoWrite(): void;
 }
 
 /**
@@ -580,6 +586,7 @@ export function memoryAuthStore(): MemoryAuthStore {
     }
     const pendingRows: PendingRow[] = [];
     const trackedRepoRows = new Map<string, string[]>();
+    let failTrackedRepoWrites = false;
     let nextId = 1;
 
     /** A fixed stamp, the same trick listWorkerTokens uses: timestamps are not what most tests vary. */
@@ -777,6 +784,10 @@ export function memoryAuthStore(): MemoryAuthStore {
             for (const row of pendingRows) row.expiresAt = Date.now() - 1;
         },
 
+        failNextTrackedRepoWrite: () => {
+            failTrackedRepoWrites = true;
+        },
+
         async storedSelection(githubUserId) {
             const user = users.find((u) => u.githubUserId === githubUserId);
             if (!user) return [];
@@ -829,6 +840,10 @@ export function memoryAuthStore(): MemoryAuthStore {
         },
 
         async replaceTrackedRepos(orgId, repos) {
+            if (failTrackedRepoWrites) {
+                failTrackedRepoWrites = false;
+                throw new Error('tracked_repo write failed');
+            }
             trackedRepoRows.set(orgId, [...repos]);
         },
 
