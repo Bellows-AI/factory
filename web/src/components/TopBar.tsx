@@ -1,21 +1,8 @@
 import type { StatsPayload } from '../api/useStats.js';
 import type { Session } from '../api/useSession.js';
+import { describeRepos } from '../format.js';
 import { OrgSelector } from './OrgSelector.js';
 import { UserMenu } from './UserMenu.js';
-
-/**
- * Names every repo rather than reporting a count. "3 repositories combined" hides which three,
- * and the figures below are only interpretable if you know what went into them.
- */
-function describeRepos(repos: { owner: string; name: string }[]): string {
-    if (!repos.length) return 'no repositories configured';
-    const owners = new Set(repos.map((r) => r.owner));
-    // One owner is the common case, so repeating it on every entry is noise.
-    if (owners.size === 1 && repos.length > 1) {
-        return `${[...owners][0]}/{${repos.map((r) => r.name).join(', ')}}`;
-    }
-    return repos.map((r) => `${r.owner}/${r.name}`).join(', ');
-}
 
 export function TopBar({
     data,
