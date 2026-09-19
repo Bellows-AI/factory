@@ -499,8 +499,9 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
         // Read-only: the script only cats. Scoped to the job's own `<orgId>/<userId>` subtree —
         // the same boundary the kubernetes readout's subPath mount enforces, and the same
         // string shape docker.ts builds for its own mounts: COPIED rather than imported, one
-        // direction only (docker imports services, never the reverse).
-        `type=volume,src=${config.workspaceVolume},volume-subpath=${path},target=${config.workspaceMount},readonly`,
+        // direction only (docker imports services, never the reverse). The target is the
+        // subtree's own path, so BELLOWS_ROOT — the same string — resolves inside the container.
+        `type=volume,src=${config.workspaceVolume},volume-subpath=${path},target=${config.workspaceMount}/${path},readonly`,
         ...Object.entries(bellowsReadEnv(config, job)).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         '--entrypoint',
         'sh',

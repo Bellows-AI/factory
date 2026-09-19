@@ -118,7 +118,7 @@ describe('the runner job spec', () => {
         // parent every member's checkout lives under.
         expect(container.volumeMounts).toContainEqual({
             name: 'workspaces',
-            mountPath: '/workspaces',
+            mountPath: `/workspaces/bellows/${USER}`,
             subPath: `bellows/${USER}`,
         });
     });
@@ -702,7 +702,7 @@ describe('the worktree sync', () => {
         // Read-write: the Job's whole purpose is creating the worktree. Scoped to the job's own
         // subtree like every other mount — the sync is a writer on THIS member's tree only.
         expect(container.volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
         expect(s.spec.template.spec.volumes).toContainEqual({
             name: 'workspaces',
@@ -1114,7 +1114,7 @@ describe('the worktree reclaim', () => {
         // No BRANCH, no credential-helper code, no envFrom: reclaim authenticates nothing.
         expect(container.envFrom).toBeUndefined();
         expect(container.volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
         expect(s.spec.backoffLimit).toBe(0);
         expect(s.spec.template.spec.restartPolicy).toBe('Never');
@@ -1273,7 +1273,7 @@ describe('publishing the produced work', () => {
         // Read-write (add/commit write the tree), scoped to the job's own subtree like every
         // other mount.
         expect(container.volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
         expect(spec.spec.template.spec.automountServiceAccountToken).toBe(false);
         expect(spec.spec.backoffLimit).toBe(0);
@@ -4671,7 +4671,7 @@ describe('the gate job spec', () => {
     it("mounts the checkout's own subtree only — the same scoping the runner gets", () => {
         const container = gateSpec().spec.template.spec.containers[0];
         expect(container.volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
     });
 
@@ -4971,7 +4971,12 @@ describe('the .bellows.yaml readout job spec', () => {
         const s = bellowsJobSpec(cfg(), job);
         const container = s.spec.template.spec.containers[0];
         expect(container.volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces', readOnly: true, subPath: `bellows/${USER}` },
+            {
+                name: 'workspaces',
+                mountPath: `/workspaces/bellows/${USER}`,
+                readOnly: true,
+                subPath: `bellows/${USER}`,
+            },
         ]);
         expect(s.spec.template.spec.volumes).toEqual([
             { name: 'workspaces', persistentVolumeClaim: { claimName: 'factory-ai_workspaces' } },
@@ -5340,7 +5345,7 @@ describe('the opencode session readout job', () => {
     it('mounts the workspaces volume READ-WRITE: a WAL needing recovery has to write it', () => {
         const spec = opencodeReadoutJobSpec(config, job, START);
         expect(spec.spec.template.spec.containers[0].volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
         expect(spec.spec.template.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined();
     });
@@ -5390,7 +5395,7 @@ describe('the close-time claude-code turn read under kubernetes', () => {
             { name: 'RUN_STARTED_AT', value: START },
         ]);
         expect(container.volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
         ]);
     });
 

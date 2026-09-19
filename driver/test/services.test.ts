@@ -425,7 +425,7 @@ describe('the bellows readout arguments', () => {
             '--mount',
             // Read-only: the script only cats. Scoped to the job's own `<orgId>/<userId>`
             // subtree — this readout sees one member's checkouts, never the whole volume.
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces,readonly`,
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER},readonly`,
             // The readout's parameters travel as env values, never interpolated into the
             // script text: the member tree to walk, the size bound, and the error marker —
             // the last passed from the splitter's own constant, so they cannot drift.

@@ -55,12 +55,13 @@ why that distinction is load-bearing.
 
 **Checkouts are per member, and the isolation is the mount itself.** Each person's clones live under
 their own `app_user.id`, and every container the driver starts — runner, gate, worktree sync,
-readout, publish step — mounts the workspaces volume with that job's own `<orgId>/<userId>` subtree
-as the mount root: `subPath` on the kubernetes volumeMount, `volume-subpath` on the docker `--mount`
-(docker ≥ 26.1). The boundary is the kernel's bind mount, not a convention: an agent running
-arbitrary code inside the container cannot reach another member's or another org's source,
-transcripts or session state, whatever the code attempts, and `WORKDIR=<mount>/<org>/<user id>` —
-never `<mount>` or `<mount>/<org>`, both the *parent* of everybody's tree — sits inside that subtree.
+readout, publish step — mounts exactly that job's own `<orgId>/<userId>` subtree of the workspaces
+volume, at its own path: `subPath` on the kubernetes volumeMount, `volume-subpath` on the docker
+`--mount` (docker ≥ 26.1), target `<mount>/<org>/<user id>`. The boundary is the kernel's bind
+mount, not a convention: an agent running arbitrary code inside the container cannot reach another
+member's or another org's source, transcripts or session state, whatever the code attempts — the
+rest of the volume is absent from its filesystem, and `WORKDIR=<mount>/<org>/<user id>` — never
+`<mount>` or `<mount>/<org>`, both the *parent* of everybody's tree — is the mount root itself.
 A job whose author cannot be resolved is failed rather than run somewhere broader, and the driver
 re-asserts the whole `<org>/<uuid>` shape before interpolating it into an argv. A mount whose target
 directory does not exist fails the container loudly — a pod stuck in creation, a `docker run` mount

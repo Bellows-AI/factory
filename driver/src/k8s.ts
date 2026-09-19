@@ -364,7 +364,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             imagePullPolicy: config.imagePullPolicy,
                             env,
                             args,
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount, subPath: path }],
+                            volumeMounts: [
+                                { name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -542,7 +544,9 @@ export function gateJobSpec(
                             workingDir: `${config.workspaceMount}/${key}`,
                             env: [{ name: 'HOME', value: GATE_HOME }],
                             ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount, subPath }],
+                            volumeMounts: [
+                                { name: 'workspaces', mountPath: `${config.workspaceMount}/${subPath}`, subPath },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -632,7 +636,7 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                             volumeMounts: [
                                 {
                                     name: 'workspaces',
-                                    mountPath: config.workspaceMount,
+                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
                                     readOnly: true,
                                     subPath: workspaceSubPathOf(job),
                                 },
@@ -721,7 +725,7 @@ export function claudeTurnsJobSpec(
                             volumeMounts: [
                                 {
                                     name: 'workspaces',
-                                    mountPath: config.workspaceMount,
+                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
                                     subPath: workspaceSubPathOf(job),
                                 },
                             ],
@@ -780,7 +784,7 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
                             volumeMounts: [
                                 {
                                     name: 'workspaces',
-                                    mountPath: config.workspaceMount,
+                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
                                     subPath: workspaceSubPathOf(job),
                                 },
                             ],
@@ -872,7 +876,7 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                             volumeMounts: [
                                 {
                                     name: 'workspaces',
-                                    mountPath: config.workspaceMount,
+                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
                                     subPath: workspaceSubPathOf(job),
                                 },
                             ],
@@ -939,7 +943,7 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                             volumeMounts: [
                                 {
                                     name: 'workspaces',
-                                    mountPath: config.workspaceMount,
+                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
                                     subPath: workspaceSubPathOf(job),
                                 },
                             ],
@@ -1022,7 +1026,7 @@ export function publishStepJobSpec(
                             volumeMounts: [
                                 {
                                     name: 'workspaces',
-                                    mountPath: config.workspaceMount,
+                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
                                     subPath: workspaceSubPathOf(job),
                                 },
                             ],

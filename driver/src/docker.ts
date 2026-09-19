@@ -254,9 +254,17 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
  * The `--mount` argv that scopes the workspaces volume to one member's `<orgId>/<userId>` subtree
  * — the kernel-enforced boundary every container this runner starts works behind (docker ≥ 26.1,
  * where `volume-subpath` landed). One shape for the runner and every aux container, so the
- * executors and the containers cannot drift on what a job may reach: the mount root IS the
- * member's tree, and a target that does not exist yet fails the container loudly — never a
+ * executors and the containers cannot drift on what a job may reach: the selected subtree is what
+ * the mount serves, and a target that does not exist yet fails the container loudly — never a
  * fallback to the whole volume, which would be the cross-tenant read this exists to close.
+ *
+ * The target is the subtree's OWN volume path (`${mount}/${subPath}`, review finding on #151):
+ * every consumer path this driver composes — WORKDIR, the sync's REPO/WORKTREE, the readouts'
+ * database and transcript paths, BELLOWS_ROOT, the gate's working directory — is the string
+ * `${config.workspaceMount}/${subPath}/…`, shared verbatim between argv/env and the scripts.
+ * Mounting the subtree there keeps every one of those paths resolving inside the container,
+ * while the rest of the volume is absent from its filesystem entirely: `/workspaces` holds only
+ * the member's own `bellows/<user>` and no sibling or foreign path resolves.
  *
  * `readOnly` is the readout variant (the `.bellows.yaml` read), which the `--mount` form spells
  * as an option rather than a `:ro` suffix. services.ts builds the same string itself — it cannot
@@ -265,7 +273,7 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
  */
 const workspacesMountArgs = (config: DriverConfig, subPath: string, readOnly = false): string[] => [
     '--mount',
-    `type=volume,src=${config.workspaceVolume},volume-subpath=${subPath},target=${config.workspaceMount}${
+    `type=volume,src=${config.workspaceVolume},volume-subpath=${subPath},target=${config.workspaceMount}/${subPath}${
         readOnly ? ',readonly' : ''
     }`,
 ];
@@ -1157,10 +1165,10 @@ export function dockerArgs(
         // handing that to a container that may be running --dangerously-skip-permissions is a
         // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
         `WORKDIR=${runWorkingDir(config, job)}`,
-        // Scoped to the job's own `<orgId>/<userId>` subtree: the container's volume root is
-        // the member's tree, enforced by the mount itself — an agent running arbitrary code
-        // inside cannot cross it, whatever the code attempts. `<mount>` and `<mount>/<orgId>`
-        // are unreachable as mount roots for the same reason they are unreachable as WORKDIRs.
+        // Scoped to the job's own `<orgId>/<userId>` subtree, mounted AT the path WORKDIR names:
+        // every consumer path below it resolves, and the rest of the volume — every other
+        // member's and org's tree — is absent from the container's filesystem. Enforced by the
+        // mount itself; an agent running arbitrary code inside cannot cross it.
         ...workspacesMountArgs(config, workspacePath(job)),
     ];
 

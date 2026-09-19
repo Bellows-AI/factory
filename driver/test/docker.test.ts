@@ -111,7 +111,7 @@ describe('the docker run arguments', () => {
         expect(args()).toEqual(
             expect.arrayContaining([
                 '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
                 `WORKDIR=/workspaces/bellows/${USER}`,
             ])
         );
@@ -560,7 +560,7 @@ describe('the close-time claude-code turn count', () => {
             'run',
             '--rm',
             '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
             `CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
             '-e',
@@ -901,7 +901,7 @@ describe('an opencode runner', () => {
                 '--label',
                 `factory.lease=${job.leaseToken}`,
                 '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
                 `WORKDIR=/workspaces/bellows/${USER}`,
                 '-e',
                 'ANTHROPIC_API_KEY',
@@ -935,7 +935,7 @@ describe('scraping the session opencode used', () => {
             'run',
             '--rm',
             '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
             `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
             '-e',
@@ -1086,7 +1086,7 @@ describe('the cache watch', () => {
             'run',
             '--rm',
             '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
             `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
             '-e',
@@ -1251,7 +1251,7 @@ describe('the gate environment container', () => {
         expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
             expect.arrayContaining([
                 '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
                 '-w',
                 `/workspaces/${KEY}`,
             ])
@@ -3183,7 +3183,7 @@ describe('publishing the produced work', () => {
         expect(run).toEqual(
             expect.arrayContaining([
                 '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             ])
         );
     });
@@ -3293,7 +3293,7 @@ describe('publishing the produced work', () => {
         expect(run).toEqual(
             expect.arrayContaining([
                 '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             ])
         );
         // Reclaim touches no credential and no branch: the thread is terminal, so there is no
@@ -3547,7 +3547,7 @@ describe('publishing the produced work', () => {
                 expect(call).toEqual(
                     expect.arrayContaining([
                         '--mount',
-                        `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces`,
+                        `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
                     ])
                 );
             }
