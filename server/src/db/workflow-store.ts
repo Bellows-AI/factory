@@ -27,7 +27,6 @@ export interface WorkflowSummary {
     /** The scope's own labels — the owning account, or the `owner/name` the repo row names. */
     userId: string | null;
     repo: string | null;
-    isDefault: boolean;
     /**
      * The declared launch parameters — what the composer renders as explicit inputs and what
      * `POST /api/jobs` requires beside the command. [] on a param-less definition.
@@ -51,7 +50,7 @@ export interface WorkflowTarget {
 
 /** Why a create was refused. Every code is named — a bad definition is diagnosable from the answer. */
 export interface WorkflowRefusal {
-    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | 'DEFAULT_TAKEN' | DefinitionRefusal['code'];
+    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | DefinitionRefusal['code'];
     message: string;
 }
 
@@ -64,7 +63,6 @@ interface WorkflowRow {
     repo_owner: string | null;
     repo_name: string | null;
     definition: WorkflowDefinition;
-    is_default: boolean;
     created_at: Date;
     updated_at: Date;
 }
@@ -75,7 +73,6 @@ const toSummary = (row: WorkflowRow): WorkflowSummary => ({
     scope: row.user_id !== null ? 'user' : row.repo_owner !== null ? 'repo' : 'org',
     userId: row.user_id,
     repo: row.repo_owner !== null && row.repo_name !== null ? `${row.repo_owner}/${row.repo_name}` : null,
-    isDefault: row.is_default,
     // `?? []` is the grammar's own normalization (absent in the JSON = []), applied to rows whose
     // jsonb was stored before parameters existed.
     params: row.definition.params ?? [],
@@ -100,30 +97,16 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         name: string;
         scope: WorkflowScope;
         definition: unknown;
-        isDefault?: boolean;
         createdBy: string | null;
     }): Promise<CreateResult>;
     listVisible(target: WorkflowTarget): Promise<WorkflowSummary[]>;
     get(id: string): Promise<WorkflowRecord | null>;
     remove(id: string): Promise<boolean>;
     findByName(name: string, target: WorkflowTarget): Promise<WorkflowRecord | null>;
-    resolveDefault(target: WorkflowTarget): Promise<WorkflowRecord | null>;
     seedBase(): Promise<void>;
 } {
     const gate = async () => {
         if (ready) await ready;
-    };
-
-    /** The row predicate for "scoped to exactly this scope", off whichever executor runs it. */
-    const scopeWhere = (exec: Sql | TransactionSql, scope: WorkflowScope) => {
-        switch (scope.kind) {
-            case 'org':
-                return exec`and user_id is null and repo_owner is null and repo_name is null`;
-            case 'user':
-                return exec`and user_id = ${scope.userId}`;
-            case 'repo':
-                return exec`and repo_owner = ${scope.owner} and repo_name = ${scope.name}`;
-        }
     };
 
     /**
@@ -141,7 +124,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
             )`;
     };
 
-    /** Repo over user over org — the one precedence rule, shared by findByName and resolveDefault. */
+    /** Repo over user over org — the one precedence rule, findByName's tie-break. */
     const PRECEDENCE = sql`
         order by case
             when repo_owner is not null then 0
@@ -150,7 +133,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         end asc`;
 
     return {
-        async create({ name, scope, definition, isDefault = false, createdBy }) {
+        async create({ name, scope, definition, createdBy }) {
             await gate();
             if (typeof name !== 'string' || !WORKFLOW_NAME.test(name.trim()) || name.trim() !== name) {
                 return { refused: true, code: 'BAD_NAME', message: 'name must be 1..100 characters without padding' };
@@ -186,44 +169,23 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
             const check = validateDefinition(definition);
             if (!check.ok) return { refused: true, code: check.refusal.code, message: check.refusal.message };
 
-            // The default slot moves atomically with the insert: clearing the scope's previous
-            // default and writing the new one is one transaction. The unique-violation mapping
-            // lives OUTSIDE the transaction on purpose — a 23505 leaves the tx aborted, so the
-            // catch cannot stay inside the begin callback and still return a value; the begin
-            // rolls the failed insert (and the default clear with it) back, leaving no half move.
+            const values = {
+                org_id: orgId,
+                name: name.trim(),
+                user_id: scope.kind === 'user' ? scope.userId : null,
+                repo_owner: scope.kind === 'repo' ? scope.owner : null,
+                repo_name: scope.kind === 'repo' ? scope.name : null,
+                definition: check.definition as never,
+                created_by: createdBy,
+            };
             try {
-                return await sql.begin(async (tx) => {
-                    if (isDefault) {
-                        await tx`
-                            update workflow set is_default = false
-                            where org_id = ${orgId} ${scopeWhere(tx, scope)} and is_default
-                        `;
-                    }
-                    const values = {
-                        org_id: orgId,
-                        name: name.trim(),
-                        user_id: scope.kind === 'user' ? scope.userId : null,
-                        repo_owner: scope.kind === 'repo' ? scope.owner : null,
-                        repo_name: scope.kind === 'repo' ? scope.name : null,
-                        definition: check.definition as never,
-                        is_default: isDefault,
-                        created_by: createdBy,
-                    };
-                    const rows = await tx`
-                        insert into workflow ${tx([values], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'is_default', 'created_by')}
-                        returning id
-                    `;
-                    return { id: (rows as unknown as { id: string }[])[0]!.id };
-                });
+                const rows = await sql`
+                    insert into workflow ${sql([values], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'created_by')}
+                    returning id
+                `;
+                return { id: (rows as unknown as { id: string }[])[0]!.id };
             } catch (e) {
-                const err = e as { code?: string; constraint_name?: string };
-                if (err.code === '23505' && err.constraint_name === 'workflow_default_uk') {
-                    return {
-                        refused: true,
-                        code: 'DEFAULT_TAKEN',
-                        message: 'this scope already has another default workflow',
-                    };
-                }
+                const err = e as { code?: string };
                 if (err.code === '23505') {
                     return {
                         refused: true,
@@ -238,7 +200,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         async listVisible(target) {
             await gate();
             const rows = await sql<WorkflowRow[]>`
-                select id, name, user_id, repo_owner, repo_name, is_default, definition, created_at, updated_at
+                select id, name, user_id, repo_owner, repo_name, definition, created_at, updated_at
                 from workflow
                 where org_id = ${orgId} ${visibleWhere(sql, target)}
                 order by name asc
@@ -265,9 +227,9 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         async findByName(name, target) {
             await gate();
             // An explicit name resolves within the caller's VISIBLE scopes, repo over user over
-            // org — the same name in two scopes resolves to the more specific, the default
-            // resolution's own order. A name matching nothing visible answers null, which the
-            // route turns into the named refusal the selection spec asks for.
+            // org — the same name in two scopes resolves to the more specific. A name matching
+            // nothing visible answers null, which the route turns into the named refusal the
+            // selection spec asks for.
             const rows = await sql<WorkflowRow[]>`
                 select * from workflow
                 where org_id = ${orgId}
@@ -279,33 +241,17 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
             return rows[0] ? toRecord(rows[0]) : null;
         },
 
-        async resolveDefault(target) {
-            await gate();
-            // The default a task runs when it names none: repo default > user default > org
-            // default > none. One default per scope is a database fact (workflow_default_uk), so
-            // the precedence is the whole tie-break there is.
-            const rows = await sql<WorkflowRow[]>`
-                select * from workflow
-                where org_id = ${orgId}
-                  and is_default
-                  ${visibleWhere(sql, target)}
-                  ${PRECEDENCE}
-                limit 1
-            `;
-            return rows[0] ? toRecord(rows[0]) : null;
-        },
-
         async seedBase() {
             await gate();
-            // The base workflow ships with the board, org-level and the org's default. Its row is
-            // the board's, so it tracks the board's code: a definition an older boot seeded (a
-            // pre-parameter shape, say) refreshes to what this build ships instead of serving a
-            // stale process forever — the name is reserved in the org scope (create refuses it),
-            // so there is no edit path and no admin row for the refresh to run over. A running
-            // thread is safe regardless, having frozen its snapshot at creation. The refresh moves
-            // the definition only: which workflow is the scope's default stays a member decision,
-            // never the boot's. Idempotent by name and default-slot — the `is distinct from` guard
-            // makes a matching row a no-op, and the insert populates only an absent row.
+            // The base workflow ships with the board, org-level. Its row is the board's, so it
+            // tracks the board's code: a definition an older boot seeded (a pre-parameter shape,
+            // say) refreshes to what this build ships instead of serving a stale process forever
+            // — the name is reserved in the org scope (create refuses it), so there is no edit
+            // path and no admin row for the refresh to run over. A running thread is safe
+            // regardless, having frozen its snapshot at creation. A member's own same-named
+            // definition in another scope is never touched. Idempotent by name — the
+            // `is distinct from` guard makes a matching row a no-op, and the insert populates
+            // only an absent row.
             await sql`
                 update workflow
                 set definition = ${sql.json(BASE_WORKFLOW.definition as never)}, updated_at = now()
@@ -315,8 +261,8 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
                   and definition is distinct from ${sql.json(BASE_WORKFLOW.definition as never)}
             `;
             await sql`
-                insert into workflow (org_id, name, definition, is_default)
-                values (${orgId}, ${BASE_WORKFLOW.name}, ${BASE_WORKFLOW.definition as never}, true)
+                insert into workflow (org_id, name, definition)
+                values (${orgId}, ${BASE_WORKFLOW.name}, ${BASE_WORKFLOW.definition as never})
                 on conflict do nothing
             `;
         },

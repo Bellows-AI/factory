@@ -45,8 +45,8 @@ function repoReason(value: string): string | null {
  * - `DELETE /api/workflows/:id` — an admin, the owning member, or any member within repo scope.
  *
  * Refusals carry named codes: a pasted foreign pipeline fails loudly (UNKNOWN_KEY, UNKNOWN_NODE,
- * BAD_RULE, … are the validator's own), and NAME_TAKEN / DEFAULT_TAKEN answer 409 — the request
- * was well-formed, the name was gone.
+ * BAD_RULE, … are the validator's own), and NAME_TAKEN answers 409 — the request was
+ * well-formed, the name was gone.
  */
 export const workflowRoutes =
     ({ orgs }: WorkflowRouteDeps): FastifyPluginAsync =>
@@ -92,7 +92,6 @@ export const workflowRoutes =
 
             const fields = body(request.body);
             const { name, definition } = fields;
-            const isDefault = fields.isDefault === true;
             if (typeof name !== 'string') return bad(reply, 'BAD_NAME', 'name must be a string');
 
             // Exactly one scope, named in the body like an env-var PUT names its path. Org-level
@@ -124,11 +123,10 @@ export const workflowRoutes =
                           ? { kind: 'user', userId: caller.user.id }
                           : { kind: 'repo', owner: repo!.split('/')[0]!, name: repo!.split('/')[1]! },
                 definition,
-                isDefault,
                 createdBy: caller.user.id,
             });
             if ('refused' in created) {
-                const taken = created.code === 'NAME_TAKEN' || created.code === 'DEFAULT_TAKEN';
+                const taken = created.code === 'NAME_TAKEN';
                 return bad(reply, created.code, created.message, taken ? 409 : 400);
             }
             const record = await store.get(created.id);

@@ -5,6 +5,9 @@ import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
 import {
     type WorkflowParamChoice,
+    clampedWorkflow,
+    ComposerParamRow,
+    freshWorkflowDraft,
     paramsComplete,
     paramValueMatches,
     TaskComposer,
@@ -62,7 +65,6 @@ interface ComposerArgs {
               id: string;
               name: string;
               scope: 'org' | 'user' | 'repo';
-              isDefault?: boolean;
               params?: WorkflowParamChoice[];
           }[]
         | null;
@@ -205,6 +207,25 @@ describe('TaskComposer', () => {
         expect(html).not.toContain('Workflow');
     });
 
+    it('runs the raw prompt when no workflow is chosen: no params, no gate', () => {
+        // An unnamed task resolves NO workflow — the member's words are the whole command. A
+        // parametrized workflow sitting in the list must not reach into an unchosen composer.
+        const html = renderComposer({
+            repos: [],
+            workflows: [
+                {
+                    id: 'w1',
+                    name: 'fix-issue',
+                    scope: 'org',
+                    params: [{ name: 'issue', pattern: '#\\d+' }],
+                },
+            ],
+        });
+        expect(html).toContain('<textarea');
+        expect(html).not.toContain('needs:');
+        expect(html).not.toContain('composer-param');
+    });
+
     it('offers the workflow dropdown beside repo and executor, unchosen by default', () => {
         const html = renderComposer({
             workflows: [
@@ -216,7 +237,7 @@ describe('TaskComposer', () => {
         expect(html).toContain('>— none —<');
         expect(html).toContain('fix-issue');
         expect(html).toContain('mine');
-        // Unchosen means the BOARD decides its default; the select's value is the empty option.
+        // Unchosen means NO process: the select's value is the empty option.
         expect(html).toContain('<option value="" selected="">— none —</option>');
     });
 });
@@ -1175,28 +1196,16 @@ describe('composer parameters', () => {
             id: 'wf-1',
             name: 'fix-issue',
             scope: 'org' as const,
-            isDefault: false,
             params: [{ name: 'issue', pattern: '#\\d+' }],
         },
     ];
 
     it('renders no parameter inputs while no workflow is chosen', () => {
-        // The composer starts unchosen and the list's fix-issue is NOT the default, so nothing
-        // param-shaped may sit in the markup before the member picks a process.
+        // An unchosen workflow means NO process: the member's words run verbatim, so nothing
+        // param-shaped may sit in the markup before the member picks a process by name.
         const html = renderComposer({ workflows: parammed });
         expect(html).not.toContain('composer-param');
         expect(html).toContain('fix-issue');
-    });
-
-    it('renders the default workflow parameter inputs even while nothing is chosen', () => {
-        // The board resolves the scope-stack default for an unnamed workflow and REFUSES a
-        // launch without its declared parameters — so the inputs must be on screen before
-        // submit, labelled with the default's name, or every bare launch 400s unfixably.
-        const html = renderComposer({
-            workflows: [{ id: 'wf-1', name: 'fix-issue', scope: 'org', isDefault: true, params: parammed[0]!.params }],
-        });
-        expect(html).toContain('composer-param');
-        expect(html).toContain('fix-issue · issue');
     });
 });
 
@@ -1232,26 +1241,112 @@ describe('composer param validation — the client mirror of the board check', (
     });
 });
 
-describe('composer params are scoped to the effective workflow identity', () => {
-    // The review's leak: `#12` typed for repo A's default workflow stays valid when a repo switch
-    // makes repo B's default effective — the same list refetch, zero select interactions — and
-    // Send launches B's process with A's issue. Values are stored against the identity of the
-    // workflow they were typed for, and read back only while that workflow is still effective.
+describe('the workflow choice is clamped to the choices the list offers', () => {
+    // A repository switch refetches the list for the new context, and a chosen name the answered
+    // list no longer offers must not survive in state: its parameter inputs vanish, the vacuous
+    // param gate lights Send, and the launch carries a name the board refuses with
+    // UNKNOWN_WORKFLOW. The same clamp rule the executor and repository selects already live by.
+    const list = [
+        { id: 'w1', name: 'fix-issue', scope: 'org' as const },
+        { id: 'w2', name: 'triage', scope: 'repo' as const },
+    ];
+
+    it('resets a chosen name the answered list does not offer back to unchosen', () => {
+        expect(clampedWorkflow('fix-issue', [])).toBe('');
+        expect(clampedWorkflow('triage', [list[0]!])).toBe('');
+    });
+
+    it('keeps a name the list still offers, and holds off while the fetch is in flight', () => {
+        expect(clampedWorkflow('fix-issue', list)).toBe('fix-issue');
+        // `null` is "not answered yet" — it says nothing about the new context, so a choice
+        // survives the wait and is judged the moment the list lands.
+        expect(clampedWorkflow('fix-issue', null)).toBe('fix-issue');
+        expect(clampedWorkflow('', list)).toBe('');
+    });
+});
+
+describe('the composer parameter row', () => {
+    // The row renders only once a workflow is chosen — composer state the offline suite cannot
+    // drive — so it is its own exported component: same props-in-markup-out contract, rendered
+    // and pinned here directly.
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+    const renderRow = (params: WorkflowParamChoice[], values: Record<string, string>) =>
+        renderToStaticMarkup(<ComposerParamRow params={params} values={values} onInput={() => {}} />);
+
+    it('marks the blocking inputs invalid and points them at the named needs message', () => {
+        // The gate's reason must reach assistive technology: the blocking field carries
+        // `aria-invalid`, the message carries a stable id, and the field references it — a
+        // screen-reader member learns WHICH field is dark and WHY, not just that Send is.
+        const html = renderRow([issue], {});
+        expect(html).toContain('aria-invalid="true"');
+        expect(html).toContain('aria-describedby="composer-param-error"');
+        expect(html).toContain('id="composer-param-error"');
+        expect(html).toContain('aria-live="polite"');
+        expect(html).toContain('>needs: issue (must match #\\d+)<');
+    });
+
+    it('keeps the announcement region mounted, silent and unmarked, once every value validates', () => {
+        // A live region can only announce a change it survives, so the region outlives the
+        // message; a valid field carries no invalid state and no error reference.
+        const html = renderRow([issue], { issue: '#12' });
+        expect(html).toContain('id="composer-param-error"');
+        expect(html).not.toContain('aria-invalid');
+        expect(html).not.toContain('aria-describedby');
+        expect(html).not.toContain('needs:');
+    });
+
+    it('never emits a placeholder value', () => {
+        const html = renderRow([issue], { issue: '#12' });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+describe('composer params are scoped to the chosen workflow identity', () => {
+    // The review's leak: `#12` typed for one workflow stays valid when a repo switch refetches
+    // the list and a DIFFERENT same-named definition resolves — zero select interactions — and
+    // Send launches the other process with the first one's issue. Values are stored against the
+    // identity of the workflow they were typed for, and read back only while it is still chosen.
     const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
 
-    it('hands values back only while the workflow they were typed for is still effective', () => {
+    it('hands values back only while the workflow they were typed for is still chosen', () => {
         const stored = { workflowId: 'wf-repo-a', values: { issue: '#12' } };
         expect(valuesForWorkflow(stored, 'wf-repo-a')).toEqual({ issue: '#12' });
-        // Repo B's default is a DIFFERENT definition (a different row id) even at the same name:
-        // the typed value must vanish from the inputs and from the Send gate alike.
+        // Repo B's same-named definition is a DIFFERENT row: the typed value must vanish from
+        // the inputs and from the Send gate alike.
         expect(valuesForWorkflow(stored, 'wf-repo-b')).toEqual({});
         expect(paramsComplete([issue], valuesForWorkflow(stored, 'wf-repo-b'))).toBe(false);
     });
 
-    it('answers empty when nothing is effective, and stores nothing before any workflow is', () => {
+    it('answers empty when nothing is chosen, and stores nothing before any workflow is', () => {
         const stored = { workflowId: 'wf-1', values: { issue: '#12' } };
         expect(valuesForWorkflow(stored, null)).toEqual({});
-        // The mount state: no workflow has ever been effective, so nothing can leak anywhere.
+        // The mount state: no workflow has ever been chosen, so nothing can leak anywhere.
         expect(valuesForWorkflow({ workflowId: null, values: {} }, 'wf-1')).toEqual({});
+    });
+});
+
+describe('composer workflow draft resets on a repository change', () => {
+    // The review's window: `useWorkflows` keeps the previous list while the new repository's
+    // request is pending, the page hands that stale list straight through, and the chosen
+    // workflow and its typed values survive the switch — Send can put repo A's workflow name and
+    // A-typed values into a task stamped with repo B. The reset is keyed to the composer's own
+    // repo state, so it covers every path a change arrives by: the member's select, the
+    // autoselect, the clamp. Effects never run under renderToStaticMarkup, so what pins offline
+    // is the exact state the reset leaves behind — the state Send reads through, with the stale
+    // list's default still effective, which is exactly what is effective while the window is open.
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+
+    it('resets to the mount shape — unchosen workflow, no stored values — so the mount run is a no-op', () => {
+        expect(freshWorkflowDraft()).toEqual({ workflow: '', storedParams: { workflowId: null, values: {} } });
+    });
+
+    it('sends no workflow name and hands no values back for whatever the stale list still declares', () => {
+        const reset = freshWorkflowDraft();
+        // An empty choice travels as null: the board resolves its default for the NEW repository.
+        expect(reset.workflow).toBe('');
+        // The values typed against the old list are gone for ANY effective id; with them gone, a
+        // workflow that declares params leaves Send dark — the member picks again and retypes.
+        expect(valuesForWorkflow(reset.storedParams, 'wf-stale-default')).toEqual({});
+        expect(paramsComplete([issue], valuesForWorkflow(reset.storedParams, 'wf-stale-default'))).toBe(false);
     });
 });

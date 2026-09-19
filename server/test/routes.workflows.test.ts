@@ -7,7 +7,7 @@ import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryCli
 
 /**
  * Offline: the HTTP contract of the workflow routes against an in-memory store double. The store's
- * own rules — the strict validator, the scope uniqueness, the default slot — are covered by
+ * own rules — the strict validator, the scope uniqueness — are covered by
  * server/test-db/workflow-store.test.ts, which needs a container.
  */
 
@@ -35,7 +35,6 @@ const record: WorkflowRecord = {
     scope: 'org',
     userId: null,
     repo: null,
-    isDefault: false,
     params: [{ name: 'issue', pattern: '#\\d+' }],
     createdAt: '2026-09-15T00:00:00.000Z',
     updatedAt: '2026-09-15T00:00:00.000Z',
@@ -44,18 +43,17 @@ const record: WorkflowRecord = {
 
 /** The in-memory double: the route tests are about the HTTP contract, not the SQL. */
 function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean } = {}): WorkflowStore & {
-    created: { name: string; scope: string; createdBy: string | null; isDefault: boolean }[];
+    created: { name: string; scope: string; createdBy: string | null }[];
     removed: string[];
 } {
     const stub = {
-        created: [] as { name: string; scope: string; createdBy: string | null; isDefault: boolean }[],
+        created: [] as { name: string; scope: string; createdBy: string | null }[],
         removed: [] as string[],
-        async create(input: { name: string; scope: { kind: string }; isDefault?: boolean; createdBy: string | null }) {
+        async create(input: { name: string; scope: { kind: string }; createdBy: string | null }) {
             stub.created.push({
                 name: input.name,
                 scope: input.scope.kind,
                 createdBy: input.createdBy,
-                isDefault: input.isDefault === true,
             });
             return { id: WF_ID };
         },
@@ -70,9 +68,6 @@ function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean 
             return options.remove ?? true;
         },
         async findByName() {
-            return null;
-        },
-        async resolveDefault() {
             return null;
         },
         async seedBase() {},

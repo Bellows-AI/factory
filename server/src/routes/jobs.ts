@@ -301,52 +301,34 @@ export const jobRoutes =
             const createdBy = caller?.user.id ?? null;
 
             /*
-             * The workflow the task will walk, resolved by the board (docs/workflows.md): a named
-             * workflow within the caller's visible scopes — repo over user over org when the name
-             * exists in several — or, unnamed, the scope stack's default. The resolution is also
-             * what freezes the snapshot: the store's create stamps the resolved definition onto
-             * the root row, and a later edit of the workflow never moves a running thread. A
-             * create that resolves NO workflow calls the store exactly as before 027 — no field,
-             * no read, a byte-identical row and claim.
+             * The workflow the task walks: exactly the name the body carries, within the caller's
+             * visible scopes — repo over user over org when the name exists in several. An unnamed
+             * task resolves NO workflow: the member's words are the whole command, the row and
+             * claim byte-identical to pre-027. Naming one is what freezes the snapshot: the store's
+             * create stamps the resolved definition onto the root row, and a later edit of the
+             * workflow never moves a running thread.
              */
             const workflowsStore = await workflowsOf(request);
             let workflow: { id: string; node: string; snapshot: WorkflowDefinition; params: ParamValues } | null = null;
-            if (workflowsStore) {
-                const resolve = async () => {
-                    const target = {
-                        userId: createdBy,
-                        repo: typeof repo === 'string' ? repo : null,
-                    };
-                    if (fields.workflow !== undefined && fields.workflow !== null) {
-                        if (typeof fields.workflow !== 'string' || !fields.workflow.trim()) {
-                            return { bad: 'BAD_WORKFLOW' as const };
-                        }
-                        return {
-                            found: await workflowsStore.findByName(fields.workflow, target),
-                            wanted: fields.workflow,
-                        };
-                    }
-                    return { found: await workflowsStore.resolveDefault(target), wanted: null };
-                };
-                const resolved = await guard(
-                    reply,
-                    (e) => request.log.error({ err: e }, 'workflow resolution failed'),
-                    resolve
-                );
-                if (!resolved.ok) return reply;
-                if ('bad' in resolved.value) {
+            if (workflowsStore && fields.workflow !== undefined && fields.workflow !== null) {
+                if (typeof fields.workflow !== 'string' || !fields.workflow.trim()) {
                     return bad(reply, 'BAD_WORKFLOW', 'workflow must be a non-empty string');
                 }
-                if (resolved.value.found === null && resolved.value.wanted !== null) {
-                    return bad(
-                        reply,
-                        'UNKNOWN_WORKFLOW',
-                        `"${resolved.value.wanted}" is not a workflow you can use`,
-                        404
-                    );
+                const target = {
+                    userId: createdBy,
+                    repo: typeof repo === 'string' ? repo : null,
+                };
+                const found = await guard(
+                    reply,
+                    (e) => request.log.error({ err: e }, 'workflow resolution failed'),
+                    () => workflowsStore.findByName(fields.workflow as string, target)
+                );
+                if (!found.ok) return reply;
+                if (found.value === null) {
+                    return bad(reply, 'UNKNOWN_WORKFLOW', `"${fields.workflow}" is not a workflow you can use`, 404);
                 }
-                if (resolved.value.found !== null) {
-                    const definition = resolved.value.found.definition;
+                {
+                    const definition = found.value.definition;
                     // The declared parameters are code-enforced, not prompt-discipline: a
                     // parametrized workflow must never launch on a guess, so a missing or
                     // malformed value refuses HERE — a 400 to the composer, not a runner
@@ -374,7 +356,7 @@ export const jobRoutes =
                         return bad(reply, 'BAD_COMMAND', `command exceeds ${COMMAND_LIMIT} characters`);
                     }
                     workflow = {
-                        id: resolved.value.found.id,
+                        id: found.value.id,
                         node: definition.entry,
                         snapshot: definition,
                         params: checked.values,

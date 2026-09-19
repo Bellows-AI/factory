@@ -235,25 +235,32 @@ echo '# board'
 # The queue is FIFO, so every check below depends on what is already in it. A reused database, or
 # a job left by a failed run, would otherwise hand the claim a different job than the one under
 # test — which reads as a broken lease rather than a dirty fixture. workflow is truncated with it:
-# the board seeds the org-default `fix-issue` when the org runtime is first built, and a default
-# here would make every workflow-less queue below walk the graph instead of the pipeline these
-# phases pin. The warm-up is what makes the truncate honest: it forces that first build BEFORE
-# the truncate. But the seed is fired without an await (orgs.ts), so "the runtime answers" is not
-# "the seed has landed" — and the proof is readable off the warm-up itself: a workflow-less create
-# answers 201 while `fix-issue` is still missing (the unsafe state) and 400, the missing "issue"
-# parameter refusal, once it is in the table. The truncate runs only behind that answer; if it
-# never comes, stop here rather than assert against a queue whose fixture is a lie.
+# the board seeds the org-level `fix-issue` when the org runtime is first built, and leaving it
+# would clash with the definitions the workflow phase creates below. The warm-up is what makes the
+# truncate honest: it forces that first build BEFORE the truncate. But the seed is fired without an
+# await (orgs.ts), so "the runtime answers" is not "the seed has landed" — and the proof is
+# readable off the warm-up itself: a NAMED create answers 404 UNKNOWN_WORKFLOW while `fix-issue` is
+# still missing (the unsafe state) and 400, the missing "issue" parameter refusal, once it is in
+# the table. But the 400 alone is no proof: a STALE `fix-issue` — an entry-less definition an
+# older boot left in the table — refuses 400 too, as BAD_WORKFLOW "workflow has no entry node",
+# so the body must carry BAD_WORKFLOW_PARAMS and the missing "issue" refusal before the truncate
+# may run. The truncate runs only behind that answer; if it never comes, stop here rather than
+# assert against a queue whose fixture is a lie.
 seeded=""
 for _ in $(seq 1 30); do
-    warm="$(api POST /api/jobs '{"command":"warm the org runtime"}')"
-    [ "$(status "$warm")" = '400' ] && {
+    warm="$(api POST /api/jobs '{"command":"warm the org runtime","workflow":"fix-issue"}')"
+    # The body decides, not the status — and the raw JSON escapes the quotes: `parameter \"issue\"`.
+    # The refusal body is {error,code}, so the two needles are matched in either order.
+    [ "$(status "$warm")" = '400' ] && case "$(body "$warm")" in
+    *BAD_WORKFLOW_PARAMS*'missing required workflow parameter \"issue\"'*|*'missing required workflow parameter \"issue\"'*BAD_WORKFLOW_PARAMS*)
         seeded=1
         break
-    }
+        ;;
+    esac
     sleep 1
 done
 [ -n "$seeded" ] || {
-    echo 'test-jobs: the org-default workflow never seeded; refusing to truncate'
+    echo 'test-jobs: the seeded workflow never landed; refusing to truncate'
     tail -20 "$work/server.log"
     exit 1
 }
