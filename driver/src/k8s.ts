@@ -95,7 +95,7 @@ export interface RunnerJobSpec {
                     imagePullPolicy: string;
                     env: EnvVar[];
                     args: string[];
-                    volumeMounts: { name: string; mountPath: string }[];
+                    volumeMounts: { name: string; mountPath: string; subPath: string }[];
                 }[];
                 volumes: { name: string; persistentVolumeClaim: { claimName: string } }[];
             };
@@ -138,6 +138,25 @@ const REQUEST_TIMEOUT_MS = 30_000;
 
 /** The tail of the runner's output the board is told about — bounded in lines and, below, in bytes. */
 const LOG_TAIL_LINES = 1_000;
+
+/**
+ * The volumeMount's `subPath`: the claim's `<orgId>/<userId>` subtree, asserted before it
+ * becomes part of any pod spec — the same refusal the docker runner makes before the same value
+ * joins its `volume-subpath` (D4 of the mount-scoping design: a malformed `workspacePath` is
+ * refused before any container exists, never mounted somewhere unintended). Every workspaces
+ * mount this file emits carries it, which is what makes "mounted broader" a shape the spec
+ * cannot express: the kubelet fails a pod whose subPath is missing, loudly, rather than falling
+ * back to the whole volume.
+ */
+const workspaceSubPathOf = (job: BoardJob): string => {
+    const path = workspacePathOf(job);
+    if (!path) {
+        throw new Error(
+            `refusing to run job ${job.id}: the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
+        );
+    }
+    return path;
+};
 
 /**
  * The full Job object. Pure, and exported, because it is the part worth pinning in a test:
@@ -345,7 +364,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             imagePullPolicy: config.imagePullPolicy,
                             env,
                             args,
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount, subPath: path }],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -395,7 +414,7 @@ export interface AuxJobSpec {
                     env?: EnvVar[];
                     /** The whole claim env at once, by reference — never the values. */
                     envFrom?: { secretRef: { name: string } }[];
-                    volumeMounts: { name: string; mountPath: string; readOnly?: boolean }[];
+                    volumeMounts: { name: string; mountPath: string; subPath: string; readOnly?: boolean }[];
                 }[];
                 volumes: { name: string; persistentVolumeClaim: { claimName: string } }[];
             };
@@ -484,6 +503,9 @@ export function gateJobSpec(
     }
     const jobName = gateJobName(job, gateName, run);
     const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    // The mount is scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree
+    // the job's runner mounts. Both segments are asserted by GATE_KEY before the split.
+    const subPath = key.split('/').slice(0, 2).join('/');
     return {
         apiVersion: 'batch/v1',
         kind: 'Job',
@@ -520,7 +542,7 @@ export function gateJobSpec(
                             workingDir: `${config.workspaceMount}/${key}`,
                             env: [{ name: 'HOME', value: GATE_HOME }],
                             ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount, subPath }],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -607,7 +629,14 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                             // constants shared with the splitter, never a credential (the same
                             // justification the sync's REPO/WORKTREE/BRANCH literals give).
                             env: Object.entries(bellowsReadEnv(config, job)).map(([name, value]) => ({ name, value })),
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount, readOnly: true }],
+                            volumeMounts: [
+                                {
+                                    name: 'workspaces',
+                                    mountPath: config.workspaceMount,
+                                    readOnly: true,
+                                    subPath: workspaceSubPathOf(job),
+                                },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -689,7 +718,13 @@ export function claudeTurnsJobSpec(
                                 // The per-run delta bound, exactly as docker passes it.
                                 { name: 'RUN_STARTED_AT', value: startedAt },
                             ],
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                            volumeMounts: [
+                                {
+                                    name: 'workspaces',
+                                    mountPath: config.workspaceMount,
+                                    subPath: workspaceSubPathOf(job),
+                                },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -742,7 +777,13 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
                                 // this run wrote may count as its turns.
                                 { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
                             ],
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                            volumeMounts: [
+                                {
+                                    name: 'workspaces',
+                                    mountPath: config.workspaceMount,
+                                    subPath: workspaceSubPathOf(job),
+                                },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -828,7 +869,13 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                                     : []),
                             ],
                             ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                            volumeMounts: [
+                                {
+                                    name: 'workspaces',
+                                    mountPath: config.workspaceMount,
+                                    subPath: workspaceSubPathOf(job),
+                                },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -889,7 +936,13 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                                 { name: 'REPO', value: clone },
                                 { name: 'WORKTREE', value: worktree },
                             ],
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                            volumeMounts: [
+                                {
+                                    name: 'workspaces',
+                                    mountPath: config.workspaceMount,
+                                    subPath: workspaceSubPathOf(job),
+                                },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
@@ -964,8 +1017,15 @@ export function publishStepJobSpec(
                                 ? { env: Object.entries(publish.envLiterals).map(([name, value]) => ({ name, value })) }
                                 : {}),
                             ...(publish.env && envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
-                            // Read-write: add/commit write the tree the run edited.
-                            volumeMounts: [{ name: 'workspaces', mountPath: config.workspaceMount }],
+                            // Read-write: add/commit write the tree the run edited. Scoped to the
+                            // job's own subtree like every other mount — asserted before the spec.
+                            volumeMounts: [
+                                {
+                                    name: 'workspaces',
+                                    mountPath: config.workspaceMount,
+                                    subPath: workspaceSubPathOf(job),
+                                },
+                            ],
                         },
                     ],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],

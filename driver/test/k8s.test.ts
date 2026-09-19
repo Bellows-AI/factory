@@ -113,7 +113,14 @@ describe('the runner job spec', () => {
             name: 'workspaces',
             persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
         });
-        expect(container.volumeMounts).toContainEqual({ name: 'workspaces', mountPath: '/workspaces' });
+        // The mount is scoped to the job's own `<orgId>/<userId>` subtree — both segments
+        // asserted — so the container's volume root is the member's tree, never the shared
+        // parent every member's checkout lives under.
+        expect(container.volumeMounts).toContainEqual({
+            name: 'workspaces',
+            mountPath: '/workspaces',
+            subPath: `bellows/${USER}`,
+        });
     });
 
     // Executor parity for the task worktree (issue #35): a repo job starts in the thread's
@@ -692,8 +699,11 @@ describe('the worktree sync', () => {
             value: `/workspaces/bellows/${USER}/.worktrees/${repoJob.id}`,
         });
         expect(container.env).toContainEqual({ name: 'BRANCH', value: `factory/${repoJob.id}` });
-        // Read-write: the Job's whole purpose is creating the worktree.
-        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        // Read-write: the Job's whole purpose is creating the worktree. Scoped to the job's own
+        // subtree like every other mount — the sync is a writer on THIS member's tree only.
+        expect(container.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+        ]);
         expect(s.spec.template.spec.volumes).toContainEqual({
             name: 'workspaces',
             persistentVolumeClaim: { claimName: 'factory-ai_workspaces' },
@@ -1103,7 +1113,9 @@ describe('the worktree reclaim', () => {
         ]);
         // No BRANCH, no credential-helper code, no envFrom: reclaim authenticates nothing.
         expect(container.envFrom).toBeUndefined();
-        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        expect(container.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+        ]);
         expect(s.spec.backoffLimit).toBe(0);
         expect(s.spec.template.spec.restartPolicy).toBe('Never');
     });
@@ -1258,7 +1270,11 @@ describe('publishing the produced work', () => {
         ]);
         expect(container.workingDir).toBe(WT);
         expect(container.envFrom).toEqual([{ secretRef: { name: publishEnvSecretName(ISSUE_JOB) } }]);
-        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        // Read-write (add/commit write the tree), scoped to the job's own subtree like every
+        // other mount.
+        expect(container.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+        ]);
         expect(spec.spec.template.spec.automountServiceAccountToken).toBe(false);
         expect(spec.spec.backoffLimit).toBe(0);
         expect(spec.spec.template.spec.restartPolicy).toBe('Never');
@@ -4649,6 +4665,16 @@ describe('the gate job spec', () => {
         ]);
     });
 
+    // The gate mounts the same per-job subtree the job's runner does — the checkout key's own
+    // `<orgId>/<userId>` half — so the gate reads and writes one checkout and no sibling's or
+    // foreign org's tree is reachable from it.
+    it("mounts the checkout's own subtree only — the same scoping the runner gets", () => {
+        const container = gateSpec().spec.template.spec.containers[0];
+        expect(container.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+        ]);
+    });
+
     it('carries the attempt labels and no ServiceAccount token', () => {
         const s = gateSpec();
         expect(s.metadata.labels).toEqual({
@@ -4936,6 +4962,27 @@ describe('the kubernetes gate manager', () => {
 // name, alive for exactly the attempt.
 // ==============================================================================================
 
+describe('the .bellows.yaml readout job spec', () => {
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
+
+    // The readout cats every checkout's .bellows.yaml — for THIS member, whose tree is all it
+    // sees: read-only, and scoped to the job's own subtree like every other mount.
+    it("runs the read script over a read-only mount scoped to the job's own subtree", () => {
+        const s = bellowsJobSpec(cfg(), job);
+        const container = s.spec.template.spec.containers[0];
+        expect(container.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: '/workspaces', readOnly: true, subPath: `bellows/${USER}` },
+        ]);
+        expect(s.spec.template.spec.volumes).toEqual([
+            { name: 'workspaces', persistentVolumeClaim: { claimName: 'factory-ai_workspaces' } },
+        ]);
+    });
+
+    it('refuses a claim whose workspace path cannot be asserted', () => {
+        expect(() => bellowsJobSpec(cfg(), { ...job, workspacePath: '../other-org' })).toThrow(/workspace path/);
+    });
+});
+
 describe('the service pod and DNS specs', () => {
     const cache: ServiceSpec = {
         name: 'cache',
@@ -5129,6 +5176,73 @@ describe('the kubernetes services flow', () => {
  * session scrape as an aux Job. The spec tests pin the shapes; the runner tests pin that the
  * scrape rides the run's outcome the way docker's verdict does.
  */
+describe("scoping the kubernetes mounts to the job's own subtree", () => {
+    const cfg = () => loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+
+    // Every volumeMount this executor emits names the job's own `<orgId>/<userId>` subtree as
+    // its subPath. That is what makes a missing target fail loud — the kubelet cannot start a
+    // pod whose subPath does not exist and leaves it stuck in ContainerCreating — and what
+    // makes a broader fallback mount structurally impossible: there is no spec shape here that
+    // mounts the workspaces PVC without a subPath.
+    it('mounts nothing broader than the member subtree — every spec names the exact target', () => {
+        const specs = [
+            runnerJobSpec(cfg(), job, { id: SESSION, resume: false }),
+            gateJobSpec(
+                cfg(),
+                job,
+                `bellows/${USER}/.worktrees/${job.id}`,
+                'node:24',
+                't',
+                'npm test',
+                1,
+                null,
+                30_000
+            ),
+            bellowsJobSpec(cfg(), job),
+            opencodeReadoutJobSpec(cfg(), job, '2026-09-01T00:00:00Z'),
+            claudeTurnsJobSpec(cfg(), job, SESSION, '2026-09-01T00:00:00Z'),
+            syncJobSpec(cfg(), repoJob, null),
+            reclaimJobSpec(cfg(), repoJob),
+            publishStepJobSpec(
+                cfg(),
+                repoJob,
+                1,
+                { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                null,
+                '/wt'
+            ),
+        ];
+        for (const s of specs) {
+            const mount = s.spec.template.spec.containers[0].volumeMounts.find((m) => m.name === 'workspaces');
+            expect(mount?.subPath, s.metadata.name).toBe(`bellows/${USER}`);
+            expect(mount?.subPath.split('/').length, s.metadata.name).toBe(2);
+        }
+    });
+
+    // A claim whose workspace path fails the segment assertions is refused before any pod spec
+    // exists — the mount can never name a path the assertions did not clear.
+    it('refuses to build any pod spec for a claim with a malformed workspace path', () => {
+        const broken = { ...job, workspacePath: '../../etc' };
+        expect(() => runnerJobSpec(cfg(), broken, { id: SESSION, resume: false })).toThrow(/workspace path/);
+        expect(() => bellowsJobSpec(cfg(), broken)).toThrow(/workspace path/);
+        expect(() => opencodeReadoutJobSpec(cfg(), broken, '2026-09-01T00:00:00Z')).toThrow(/workspace path/);
+        expect(() => claudeTurnsJobSpec(cfg(), broken, SESSION, '2026-09-01T00:00:00Z')).toThrow();
+        expect(() => syncJobSpec(cfg(), { ...broken, repo: 'Bellows-AI/factory' }, null)).toThrow();
+        expect(() => reclaimJobSpec(cfg(), { ...broken, repo: 'Bellows-AI/factory' })).toThrow();
+        expect(() =>
+            publishStepJobSpec(
+                cfg(),
+                { ...broken, repo: 'Bellows-AI/factory' },
+                1,
+                { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                null,
+                '/wt'
+            )
+        ).toThrow(/workspace path/);
+    });
+});
+
 describe('the runner job spec under opencode', () => {
     const ocConfig = loadDriverConfig({
         EXECUTOR: 'kubernetes',
@@ -5226,7 +5340,7 @@ describe('the opencode session readout job', () => {
     it('mounts the workspaces volume READ-WRITE: a WAL needing recovery has to write it', () => {
         const spec = opencodeReadoutJobSpec(config, job, START);
         expect(spec.spec.template.spec.containers[0].volumeMounts).toEqual([
-            { name: 'workspaces', mountPath: '/workspaces' },
+            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
         ]);
         expect(spec.spec.template.spec.containers[0].volumeMounts[0].readOnly).toBeUndefined();
     });
@@ -5275,7 +5389,9 @@ describe('the close-time claude-code turn read under kubernetes', () => {
             // The per-run delta bound: the transcript carries earlier runs' turns too.
             { name: 'RUN_STARTED_AT', value: START },
         ]);
-        expect(container.volumeMounts).toEqual([{ name: 'workspaces', mountPath: '/workspaces' }]);
+        expect(container.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: '/workspaces', subPath: `bellows/${USER}` },
+        ]);
     });
 
     it('bounds itself with a deadline of its own and reaps its pod', () => {

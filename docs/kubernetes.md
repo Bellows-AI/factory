@@ -20,7 +20,7 @@ The two implementations decide the same things and are pinned the same way:
 
 | | docker (`dockerArgs`) | kubernetes (`runnerJobSpec`) |
 | --- | --- | --- |
-| Workspace | `-v factory-ai_workspaces:/workspaces`, `WORKDIR=<mount>/<org>/<uuid>` | PVC `<claim>` mounted at `<mount>`, same `WORKDIR` env |
+| Workspace | `--mount type=volume,src=…,volume-subpath=<org>/<uuid>,target=<mount>`, `WORKDIR=<mount>/<org>/<uuid>` | PVC `<claim>` mounted at `<mount>` with `subPath: <org>/<uuid>`, same `WORKDIR` env |
 | Credentials | `-e NAME`, value read from the driver's own env | `valueFrom.secretKeyRef` against `RUNNER_CREDENTIALS_SECRET`, one key per `RUNNER_ENV` name |
 | Claim env | `-e NAME` merged in, value in the child env | `secretKeyRef` against a per-attempt Secret (`factory-job-<id>-<lease token>-env`), created before the Job, reaped with it |
 | Orphan visibility | `--label factory.job=<id>` plus `--label factory.lease=<token>` | the same two labels on the Job and its pod template — job for the fence's sweep, lease to scope every per-attempt operation |
@@ -65,6 +65,21 @@ container that may run `--dangerously-skip-permissions` holding job-creating cre
 docker socket riding along with the dashboard, which `docs/security.md` refuses for exactly that
 reason. Runner pods set `automountServiceAccountToken: false`; the driver's own pod keeps its
 token and its namespace-scoped Role.
+
+**Every workspaces mount is scoped to the job's own `<orgId>/<userId>` subtree.** The runner, the
+gates, the sync, the reclaim, the readouts and the publish steps all set `subPath: <org>/<uuid>` on
+their `workspaces` volumeMount — docker's twin option is `volume-subpath` on the `--mount` (docker
+≥ 26.1; see [jobs.md](jobs.md)). The boundary is the kubelet's bind mount, so agent code inside the
+container cannot cross it, and the dashboard pod's whole-volume mount stays as the deliberate
+exception: provisioning and org-level analysis are the dashboard's own job. Two consequences worth
+knowing before they surprise an operator. A missing target fails loud — the kubelet cannot start a
+pod whose `subPath` does not exist yet and leaves it stuck in `ContainerCreating` with a volume
+error; the board only reports a `workspacePath` for a provisioned member (the tree is created at
+sign-in), so a stuck pod is a provisioning regression, surfaced honestly rather than papered over
+with a broader mount. And online PVC expansion is slow or blocked while pods hold subPath mounts of
+the claim — resize the shared 20Gi with a pod roll (offline expansion), which is also why per-org
+storage budgets are the quotas work item, not this. The chart needs no edit for any of this: the
+driver Deployment never mounts the volume, and the dashboard's whole mount is the exception above.
 
 **Re-claims fence by claiming the checkout, atomically.** A job id is only reused when a lease
 expired and the row was reclaimed, so a re-claim means two attempts contending for one writable
