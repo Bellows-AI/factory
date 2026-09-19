@@ -26,6 +26,10 @@ const payload = {
     telemetry: null,
     tasks: null,
     meta: {
+        // The fields the dashboard page itself reads (repo coverage, freshness) — the toggle's
+        // subject is the session mode, but the page renders what the payload really carries.
+        fetchedAt: '2026-08-21T12:00:00.000Z',
+        repos: [{ owner: 'test-org', name: 'repo' }],
         range: { preset: 'all', from: null, to: null },
         telemetry: { status: 'empty', reason: null, unattributedSessions: 0 },
     },

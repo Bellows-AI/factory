@@ -45,4 +45,22 @@ describe('AppShell', () => {
     it('labels the persistent navigation Primary', () => {
         expect(renderShell('/tasks')).toContain('aria-label="Primary"');
     });
+
+    it('carries a global app bar, and no topbar and no page-level h1', () => {
+        // The app bar is chrome, not content: no h1 in it — the routed page owns the page's
+        // heading — and the old "Factory stats" topbar is gone entirely (issue 160).
+        const html = renderShell('/');
+        expect(html).toContain('class="appbar"');
+        expect(html).not.toContain('topbar');
+        expect(html).not.toContain('<h1');
+    });
+
+    it('exposes the drawer trigger with its contracts, ahead of the actions', () => {
+        const html = renderShell('/');
+        expect(html).toContain('aria-expanded="false"');
+        expect(html).toContain('aria-controls="mobile-nav"');
+        expect(html).toContain('Open navigation');
+        // Trigger first in DOM order: on mobile it is the bar's first control.
+        expect(html.indexOf('appbar-trigger')).toBeLessThan(html.indexOf('appbar-actions'));
+    });
 });

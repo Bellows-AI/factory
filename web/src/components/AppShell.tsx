@@ -9,7 +9,7 @@ import type { Session } from '../api/useSession.js';
 import { DEFAULT_RANGE, DEFAULT_SCOPE, statsQuery } from './RangeSelector.js';
 import type { RangeSelection, ScopeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
-import { TopBar } from './TopBar.js';
+import { AppBar } from './AppBar.js';
 
 /**
  * Everything both pages share: the range, the scope, the one `/api/stats` poll, and the chrome
@@ -75,10 +75,15 @@ export function AppShell() {
     const onTasks = pathname === '/tasks' || pathname.startsWith('/tasks/');
     const tasks = useJobs(onTasks);
 
-    // The session for the topbar's user menu. A second `useSession` instance next to the gate's —
+    // The session for the app bar's user menu. A second `useSession` instance next to the gate's —
     // the account page already does the same; the module-level listener they
     // register is a Set for exactly this reason.
     const { session } = useSession();
+
+    // The mobile navigation drawer's open state (issue 160). It lives HERE — above both the app
+    // bar, whose trigger mirrors it as aria-expanded, and the dialog itself — so neither chrome
+    // piece owns state the other renders.
+    const [navOpen, setNavOpen] = useState(false);
 
     const context: ShellContext = {
         data,
@@ -106,7 +111,12 @@ export function AppShell() {
             </a>
             <SideNav tasks={onTasks ? tasks.jobs : null} />
             <div className="shell-main">
-                <TopBar data={data} refreshing={refreshing} onRefresh={refresh} session={session} />
+                <AppBar
+                    meta={data?.meta ?? null}
+                    session={session}
+                    navOpen={navOpen}
+                    onOpenNav={() => setNavOpen(true)}
+                />
                 {/* The routed page's one main region. The `.page` container — not the bare element
                     selector — carries the padding and width cap, so a dialog or a nested main can
                     never inherit page chrome by accident. Pages render fragments into it. */}

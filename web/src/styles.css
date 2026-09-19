@@ -253,23 +253,33 @@
         color: var(--lamp-stop);
     }
 
-    .topbar {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 16px;
-        padding: 16px 24px;
-        border-bottom: 1px solid var(--line);
-        flex-wrap: wrap;
-    }
-
-    .topbar p {
-        margin: 4px 0 0;
-    }
-
-    .topbar-actions {
-        display: flex;
+    /* The global app bar (issue 160): chrome only, sticky, on the raised surface. The navigation
+       trigger and the brand are mobile content — the persistent nav is visible on desktop, so
+       the trigger would be a second way to the same place; they reveal at the 900px breakpoint
+       below. z-index sits under the popovers (30) and dialogs (40) so a menu opened from the bar
+       floats above it. */
+    .appbar {
         align-items: center;
+        background: var(--surface-raised);
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        min-height: 48px;
+        padding: 8px 24px;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+    }
+
+    .appbar-trigger,
+    .appbar-brand {
+        display: none;
+    }
+
+    .appbar-actions {
+        align-items: center;
+        display: flex;
         gap: 12px;
     }
 
@@ -350,8 +360,8 @@
         gap: 6px;
     }
 
-    /* The topbar wraps at narrow widths, and a long organization name must not push Refresh onto a
-       second line before the charts have become illegible anyway (~700px). */
+    /* The app bar wraps at narrow widths, and a long organization name must not push the account
+       menu onto a second line before the charts have become illegible anyway (~700px). */
     .org-select {
         max-width: 220px;
     }
