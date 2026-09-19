@@ -136,6 +136,11 @@ describe('the route table', () => {
         ['/api/stats', 'user'],
         ['/api/refresh', 'user'],
         ['/api/jobs', 'user'],
+        // The task read model (#157): a person's inbox view over the same board. It falls through
+        // to `user` by the safe default rather than being listed anywhere — pinned here because a
+        // worker token reading every task summary of the board would be the thread-read hole
+        // again, one level up.
+        ['/api/tasks', 'user'],
         [`/api/jobs/${JOB_ID}`, 'user'],
         // Both are person's actions on a finished task — a follow-up asks for adjustments, done
         // declares the task finished by hand — and both fall through to `user`.

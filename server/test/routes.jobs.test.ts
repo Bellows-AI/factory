@@ -229,6 +229,13 @@ function stubStore(
             stub.listed.push(filter);
             return options.job ? [options.job] : [];
         },
+        async listTasks() {
+            boom();
+            return {
+                navigation: { counts: { running: 0, review: 0, past: 0 }, running: [], review: [] },
+                page: { items: [], nextCursor: null },
+            };
+        },
     };
     return stub;
 }
