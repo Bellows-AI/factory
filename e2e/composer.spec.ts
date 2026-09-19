@@ -72,4 +72,51 @@ test.describe('the task composer', () => {
         await page.screenshot({ path: `${SHOTS}/composer-params.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
+
+    test('an unchosen workflow runs the raw prompt; a chosen one demands its parameters', async ({ page }) => {
+        const problems = watchConsole(page);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks');
+
+        const composer = page.locator('.composer');
+        // Nothing chosen: NO process resolves — the member's words are the whole command, and
+        // Send lights on the draft alone.
+        await expect(page.getByLabel('Workflow')).toHaveValue('');
+        await page.getByPlaceholder('Describe the task…').fill('fix the login crash');
+        const send = page.getByRole('button', { name: 'Send' });
+        await expect(send).toBeEnabled();
+        await expect(composer.locator('.composer-param')).toHaveCount(0);
+        await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
+
+        // Choosing the parametrized process is the member's explicit act — and it is the only
+        // thing that engages the parameter gate.
+        await page.getByLabel('Workflow').selectOption('fix-issue');
+        const issue = composer.getByRole('textbox', { name: 'issue' });
+        await expect(issue).toBeVisible();
+        await expect(send).toBeDisabled();
+        // Send is dark by design, and the composer must say what it is waiting for — at the
+        // field, in words, not in the declaration's regex source.
+        await expect(composer.getByText('needs: issue')).toBeVisible();
+        await expect(issue).toHaveAttribute('placeholder', 'required');
+
+        // A bare number is a valid issue number to a reader but not to the declaration: the
+        // pattern demands the `#` (or a full issues URL), and the hint must say so.
+        await issue.fill('12');
+        await expect(send).toBeDisabled();
+        await expect(composer.getByText('must match #')).toBeVisible();
+
+        // A value the declaration refuses keeps Send dark and keeps the reason on screen.
+        await issue.fill('not an issue reference');
+        await expect(send).toBeDisabled();
+        await expect(composer.getByText('needs: issue')).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/composer-send-dark-reason.png`, fullPage: true });
+
+        // A value the declaration accepts lights Send and retires the reason.
+        await issue.fill('#12');
+        await expect(send).toBeEnabled();
+        await expect(composer.getByText('needs: issue')).toBeHidden();
+
+        await page.screenshot({ path: `${SHOTS}/composer-default-needs-param.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
 });

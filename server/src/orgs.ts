@@ -147,10 +147,10 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
             runtime.cloneQueue = cloneQueue;
             runtime.jobs = jobs;
             // Workflow definitions (027): the process a task walks, stored per scope inside this
-            // org. The base `fix-issue` workflow seeds here too — org-level and the org's
-            // default, idempotent by name and default-slot, fired with the same posture as the
-            // clone queue: not awaited, because no route on the read path needs it, and a task
-            // queued in the seeding's first seconds simply resolves no default yet.
+            // org. The base `fix-issue` workflow seeds here too — org-level, idempotent by name,
+            // fired with the same posture as the clone queue: not awaited, because no route on
+            // the read path needs it, and a task naming `fix-issue` in the seeding's first
+            // seconds simply refuses with UNKNOWN_WORKFLOW yet.
             const workflows = createWorkflowStore({ sql, orgId, ready });
             runtime.workflows = workflows;
             void workflows.seedBase().catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));

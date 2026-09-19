@@ -161,8 +161,8 @@ describe.skipIf(!enabled)('the workflow store', () => {
         // a ::jsonb target, storing quoted text where an object belongs.
         const legacy = sql.json({ entry: 'first', nodes: definition.nodes, edges: definition.edges });
         await sql`
-            insert into workflow (org_id, name, definition, is_default)
-            values (${ORG}, 'legacy', ${legacy}::jsonb, true)
+            insert into workflow (org_id, name, definition)
+            values (${ORG}, 'legacy', ${legacy}::jsonb)
         `;
 
         const resolved = await store.findByName('legacy', { userId: null, repo: null });
@@ -171,58 +171,28 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(checkWorkflowParams(resolved!.definition, undefined)).toEqual({ ok: true, values: {} });
     });
 
-    it('moves the default slot within a scope and resolves it repo over user over org', async () => {
-        await store.create({ name: 'org-def', scope: { kind: 'org' }, definition, isDefault: true, createdBy: ALICE });
-        await store.create({
-            name: 'user-def',
-            scope: { kind: 'user', userId: ALICE },
-            definition,
-            isDefault: true,
-            createdBy: ALICE,
-        });
-        await store.create({
-            name: 'repo-def',
-            scope: { kind: 'repo', ...REPO },
-            definition,
-            isDefault: true,
-            createdBy: ALICE,
-        });
-
-        const target = { userId: ALICE, repo: `${REPO.owner}/${REPO.name}` };
-        expect((await store.resolveDefault(target))?.name).toBe('repo-def');
-
-        const noRepo = { userId: ALICE, repo: null };
-        expect((await store.resolveDefault(noRepo))?.name).toBe('user-def');
-
-        const anonymous = { userId: null, repo: null };
-        expect((await store.resolveDefault(anonymous))?.name).toBe('org-def');
-    });
-
-    it('seeds the base workflow org-level and default, and refreshes a stale board-owned shape', async () => {
+    it('seeds the base workflow org-level, and refreshes a stale board-owned shape', async () => {
         await store.seedBase();
         await store.seedBase();
 
         const rows = await store.listVisible({ userId: null, repo: null });
         expect(rows).toHaveLength(1);
-        expect(rows[0]).toMatchObject({ name: BASE_WORKFLOW.name, scope: 'org', isDefault: true });
+        expect(rows[0]).toMatchObject({ name: BASE_WORKFLOW.name, scope: 'org' });
         expect((await store.get(rows[0]!.id))?.definition).toEqual(BASE_WORKFLOW.definition);
 
         // The template is the board's, so its row tracks the board's code: a shape an older boot
         // seeded (the pre-parameter definition, say) refreshes instead of serving a stale process
-        // forever. Only the definition moves — the default slot stays a member's decision, never
-        // the boot's.
-        await sql`update workflow set definition = '{"entry":"x","nodes":[],"edges":[]}'::jsonb, is_default = false where name = ${BASE_WORKFLOW.name}`;
+        // forever.
+        await sql`update workflow set definition = '{"entry":"x","nodes":[],"edges":[]}'::jsonb where name = ${BASE_WORKFLOW.name}`;
         await store.seedBase();
         const after = await store.get(rows[0]!.id);
         expect(after?.definition).toEqual(BASE_WORKFLOW.definition);
-        expect(after?.isDefault).toBe(false);
 
         // A member's own workflow may share the template's name; the boot never touches it.
         const mine = await store.create({
             name: BASE_WORKFLOW.name,
             scope: { kind: 'user', userId: ALICE },
             definition,
-            isDefault: false,
             createdBy: ALICE,
         });
         if ('refused' in mine) throw new Error('the member-scope workflow was refused');
