@@ -243,6 +243,19 @@ describe('SideNav task tree', () => {
         expect(html).not.toContain('No tasks yet');
         expect(html).not.toContain('href="/tasks/22222222-2222-4222-8222-222222222222"');
     });
+
+    it('never renders more than five preview rows per section, whatever the poll returns', () => {
+        // A hundred running tasks must not become a hundred links in the navigation column — the
+        // preview caps, while the headers keep speaking the full counts.
+        const tasks = Array.from({ length: 100 }, (_, i) =>
+            job(running({ id: `33333333-3333-4333-8333-${String(i).padStart(12, '0')}`, command: `task ${i}` }))
+        );
+        const html = render('/tasks', tasks);
+        expect(html).toContain('Running (100)');
+        const rows = html.match(/href="\/tasks\/33333333-/g) ?? [];
+        expect(rows.length).toBeLessThanOrEqual(15);
+        expect(rows.length).toBeGreaterThan(0);
+    });
 });
 
 describe('SideNav status dots', () => {

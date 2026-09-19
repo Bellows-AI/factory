@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
+import { NAV_ITEMS, SETTINGS_SECTIONS, preview } from '../nav-model.js';
 import { taskDotClass, taskSections } from '../task-tree.js';
 import type { TaskTreeEntry } from '../task-tree.js';
 
@@ -27,27 +28,6 @@ import type { TaskTreeEntry } from '../task-tree.js';
  * The one non-tree row is the New task link pinned above the Running rows: it opens the composer
  * (`/tasks`) and is not a task, so the activity ordering can never slide a fresh task above it.
  */
-
-interface Item {
-    readonly to: string;
-    readonly label: string;
-    /** True for `/`, which would otherwise match every path below it. */
-    readonly end?: boolean;
-}
-
-const ITEMS: readonly Item[] = [
-    { to: '/', label: 'Dashboard', end: true },
-    { to: '/settings', label: 'Settings' },
-    { to: '/tasks', label: 'Tasks' },
-];
-
-/** The Settings tree's sections, in the issue's order. Static — no data behind them. */
-const SETTINGS_SECTIONS: readonly Item[] = [
-    { to: '/settings/organization', label: 'Organization' },
-    { to: '/settings/workspace', label: 'Workspace' },
-    { to: '/settings/repos', label: 'Repositories' },
-    { to: '/settings/executors', label: 'Executors' },
-];
 
 /*
  * No "n cloning" badge, deliberately.
@@ -83,12 +63,12 @@ function TaskRow({ entry }: { entry: TaskTreeEntry }) {
     );
 }
 
-/** A section's rows, or the sentence that says the section is empty. */
+/** A section's rows — capped at the preview limit — or the sentence that says it is empty. */
 function SectionRows({ entries, empty }: { entries: readonly TaskTreeEntry[]; empty: string }) {
     if (entries.length === 0) return <p className="sidenav-empty">{empty}</p>;
     return (
         <ul className="sidenav-subitems">
-            {entries.map((entry) => (
+            {preview(entries).map((entry) => (
                 <TaskRow key={entry.id} entry={entry} />
             ))}
         </ul>
@@ -109,7 +89,7 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
         <nav className="sidenav" aria-label="Sections">
             <div className="sidenav-brand">Factory</div>
             <ul className="sidenav-items">
-                {ITEMS.map((item) => (
+                {NAV_ITEMS.map((item) => (
                     <li key={item.to}>
                         <NavLink
                             to={item.to}
@@ -169,7 +149,7 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
                                     </button>
                                     {sections.past.length > 0 ? (
                                         <ul className="sidenav-subitems" id="sidenav-past" hidden={!pastOpen}>
-                                            {sections.past.map((entry) => (
+                                            {preview(sections.past).map((entry) => (
                                                 <TaskRow key={entry.id} entry={entry} />
                                             ))}
                                         </ul>
