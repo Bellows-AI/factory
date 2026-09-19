@@ -1,53 +1,71 @@
-import { isTerminal } from './api/useJobs.js';
 import type { Job, JobStatus } from './api/useJobs.js';
+import type { TaskNavigation, TaskSummary } from './api/useTasks.js';
 
 /**
- * The task tree's model — the pure half of the left panel's task list.
- *
- * The tree is organized not by manual groups but by what a task IS right now: running, finished
- * and waiting for the reader's verdict, or done and past. The three sections are computed from
- * the poll's rows on every render, so a task finishing simply moves from Running to the top of
- * Need review — there is no arrangement to maintain, nothing to persist, and every browser sees
- * the same tree. One task's state is its thread's newest run, resolved through the served root
- * the same way the detail page resolves a conversation.
+ * The pure half of the task UI, shared by the sidenav preview, the inbox rows and the detail
+ * view: how a task is titled, how its state is labelled, and what the sidenav's five-row preview
+ * holds. The thread grouping this file used to do browser-side (`taskSections`) is gone — the
+ * server's task-summary read model answers one row per task with the head's state already
+ * resolved, and `useTasks` is the single poll that serves it.
  */
 
-/** What the status dot of a task shows: the NEWEST run's state — the conversation's present tense. */
+/**
+ * What the status dot of a task shows: the NEWEST run's state — the conversation's present
+ * tense. The server derives it; this is only the rendering shape the dot and the label share.
+ */
 export interface TaskStatus {
     status: JobStatus | null;
     cancelRequestedAt: string | null;
     doneAt: string | null;
 }
 
-const NO_STATUS: TaskStatus = { status: null, cancelRequestedAt: null, doneAt: null };
-
 /**
- * A task's status — the NEWEST member of its follow-up chain, resolved from ANY member's id the
- * way the detail page resolves a thread: the board serves `rootJobId` on every row (022), so the
- * members of one conversation are the rows sharing it, and a link on some adjustment answers
- * for the whole conversation. The sidenav paints one dot per task, not per run.
- *
- * The resolution lives in `chainHead`, shared with `taskSummary`, so the dot and the summary
- * always answer for the same run.
+ * A task's one-line title: the first line of the command that was asked, trimmed — multi-line
+ * prose must not swallow the title. The ONE derivation for the sidenav, the inbox and the detail
+ * view; every panel that used to split the command itself calls this.
  */
-export function taskStatus(id: string, jobs: readonly Job[] | null): TaskStatus {
-    const head = chainHead(id, jobs);
-    return head === null
-        ? NO_STATUS
-        : { status: head.status, cancelRequestedAt: head.cancelRequestedAt, doneAt: head.doneAt };
+export function taskTitleFromCommand(command: string): string {
+    return command.split('\n')[0]!.trim();
 }
 
 /**
- * The head of a task's thread — the newest run, the member with the highest `createdAt` (id as
- * tie-break, matching the board's own ordering) — resolved from ANY member's id. Every member
- * carries the root even when the poll's capped window no longer holds the root ROW itself, so a
- * long conversation stays resolvable. Null when the id names no polled job at all.
+ * The visible status label: workflow state and execution result as TEXT, never color alone —
+ * the dot is supplementary. The issue's table: Running / Queued / Parked / Stopping, then the
+ * terminal verdicts, with `· Needs review` marking a result the user has not closed yet. A done
+ * task reads Done; `dead` (the board's verdict for a worker that vanished) reads as the failure
+ * it is.
  */
-export function chainHead(id: string, jobs: readonly Job[] | null): Job | null {
+export function taskStatusLabel(status: TaskStatus): string {
+    if (status.status === null) return '—';
+    if (status.status === 'running') return status.cancelRequestedAt !== null ? 'Stopping' : 'Running';
+    if (status.status === 'queued') return 'Queued';
+    if (status.status === 'standby') return 'Parked';
+    if (status.doneAt !== null) return 'Done';
+    switch (status.status) {
+        case 'succeeded':
+            return 'Succeeded · Needs review';
+        case 'failed':
+        case 'dead':
+            return 'Failed · Needs review';
+        case 'stopped':
+            return 'Stopped · Needs review';
+    }
+}
+
+/**
+ * A task's live summary — what the agent is doing right now — for the nav and the top of the
+ * task view: the head run's `runtime.activity` line, and only while that run is running. A
+ * parked or finished run's last activity is a stale line that would lie about a run no longer
+ * going.
+ *
+ * Takes the thread as a list, because the detail page holds the WHOLE chain from its own poll —
+ * the head of a summary row's chain is already resolved server-side and rides the row itself.
+ */
+export function taskSummary(id: string, jobs: readonly Job[] | null): string | null {
     if (jobs === null) return null;
     const named = jobs.find((job) => job.id === id);
     if (named === undefined) return null;
-
+    // The newest member: highest createdAt, id as tie-break — the board's own ordering.
     let head: Job | undefined;
     for (const job of jobs) {
         if (job.rootJobId !== named.rootJobId) continue;
@@ -59,112 +77,16 @@ export function chainHead(id: string, jobs: readonly Job[] | null): Job | null {
             head = job;
         }
     }
-    return head ?? null;
-}
-
-/** A tree row's label: the task's command once the poll knows it, a short id until then. */
-export function taskTitle(id: string, jobs: readonly Job[] | null): string {
-    const found = jobs?.find((job) => job.id === id);
-    return found !== undefined ? found.command : id.slice(0, 8);
-}
-
-/**
- * A task's live summary — what the agent is doing right now — for the left nav and
- * the top of the task view: the head run's `runtime.activity` line, and only while that run is
- * running. A parked or finished run's last activity is a stale line that would lie about a run no
- * longer going, and the activity also disappears while a task is still queued.
- */
-export function taskSummary(id: string, jobs: readonly Job[] | null): string | null {
-    const head = chainHead(id, jobs);
-    if (head === null || head.status !== 'running') return null;
+    if (head === undefined || head.status !== 'running') return null;
     const activity = head.runtime?.activity ?? null;
     return activity !== null && activity.trim() !== '' ? activity : null;
-}
-
-/** One listed task: the link target plus everything the row renders, resolved once. */
-export interface TaskTreeEntry {
-    readonly id: string;
-    readonly title: string;
-    readonly summary: string | null;
-    readonly status: TaskStatus;
-    /** Who queued the task — the ROOT row's author, the person the conversation belongs to. */
-    readonly author: string | null;
-}
-
-export interface TaskSections {
-    readonly running: readonly TaskTreeEntry[];
-    readonly review: readonly TaskTreeEntry[];
-    readonly past: readonly TaskTreeEntry[];
-}
-
-/**
- * When the task last changed: the head run's newest of its four stamps. `createdAt` is always
- * there; the rest fill in as the run moves. ISO stamps compare as strings, the same convention
- * `chainHead` sorts by.
- */
-function activityKey(head: Job): string {
-    let key = head.createdAt;
-    for (const stamp of [head.startedAt, head.finishedAt, head.doneAt]) {
-        if (stamp !== null && stamp > key) key = stamp;
-    }
-    return key;
-}
-
-/**
- * The three sections of the task tree, from the poll's rows.
- *
- * Only thread roots are listed — a follow-up is a new row on the board but continues the
- * conversation it was asked on, so it folds into its root's entry through `chainHead`. The
- * section is the HEAD's, not the root row's: a follow-up queued on a done task resurrects the
- * conversation into Running, and the done verdict the user stamped on the thread does not pull a
- * still-moving run into the past. Within a section the entries sort newest activity first, so the
- * task that just changed is the first thing the reader sees.
- */
-export function taskSections(jobs: readonly Job[] | null): TaskSections {
-    type Resolved = { entry: TaskTreeEntry; key: string; section: 'running' | 'review' | 'past' };
-    const resolved: Resolved[] = [];
-    if (jobs !== null) {
-        for (const root of jobs) {
-            if (root.followUpTo !== null) continue;
-            const head = chainHead(root.id, jobs);
-            if (head === null) continue;
-            const status: TaskStatus = {
-                status: head.status,
-                cancelRequestedAt: head.cancelRequestedAt,
-                doneAt: head.doneAt,
-            };
-            resolved.push({
-                entry: {
-                    id: root.id,
-                    title: taskTitle(root.id, jobs),
-                    summary: taskSummary(root.id, jobs),
-                    status,
-                    author: root.author?.login ?? null,
-                },
-                key: activityKey(head),
-                section: isTerminal(head.status) ? (head.doneAt === null ? 'review' : 'past') : 'running',
-            });
-        }
-    }
-
-    // Newest first, id descending on an equal stamp — the same direction `chainHead` breaks ties.
-    const byNewest = (a: Resolved, b: Resolved): number => {
-        if (a.key !== b.key) return a.key < b.key ? 1 : -1;
-        return a.entry.id < b.entry.id ? 1 : -1;
-    };
-    const pick = (section: Resolved['section']): readonly TaskTreeEntry[] =>
-        resolved
-            .filter((task) => task.section === section)
-            .sort(byNewest)
-            .map((task) => task.entry);
-    return { running: pick('running'), review: pick('review'), past: pick('past') };
 }
 
 /**
  * What the dot beside a task wears: a live run breathes, a parked or queued one holds grey, a
  * failed/dead one is red, and anything finished or declared done is solid green. A stopped task
- * stays on the plain dot — the user ended that turn themselves, and neither a failure's red nor a
- * done task's green would say that.
+ * stays on the plain dot — the user ended that turn themselves, and neither a failure's red nor
+ * a done task's green would say that.
  */
 export function taskDotClass(status: TaskStatus): string {
     if (status.doneAt !== null || status.status === 'succeeded') return 'sidenav-dot-done';
@@ -173,4 +95,40 @@ export function taskDotClass(status: TaskStatus): string {
     if (status.status === 'standby' || status.status === 'queued') return 'sidenav-dot-paused';
     if (status.status === 'failed' || status.status === 'dead') return 'sidenav-dot-failed';
     return '';
+}
+
+/** The sidenav's preview: the rows chosen, plus how many review tasks did not fit. */
+export interface SidenavPreview {
+    rows: TaskSummary[];
+    /** counts.review minus the review rows shown — zero means every review task is visible. */
+    moreReview: number;
+}
+
+const PREVIEW_ROWS = 5;
+const PREVIEW_RUNNING = 3;
+
+/**
+ * Which tasks the compact sidenav preview shows, from the org-wide navigation alone — a pure
+ * selection, tested here and rendered verbatim: up to 3 running first, the remaining slots
+ * filled with the newest needs-review, five rows total, never Past. A task the member is
+ * LOOKING at stays visible: if the open task is running or in review but outside the five
+ * chosen rows, it is injected and the last non-active row evicted to make room. Whatever review
+ * rows did not fit collapse into the `+N more need review` summary the caller renders.
+ */
+export function sidenavPreview(navigation: TaskNavigation | null, activeId: string | null): SidenavPreview {
+    if (navigation === null) return { rows: [], moreReview: 0 };
+    const running = navigation.running.slice(0, PREVIEW_RUNNING);
+    const reviewSlots = PREVIEW_ROWS - running.length;
+    const review = navigation.review.slice(0, reviewSlots);
+    const rows = [...running, ...review];
+
+    if (activeId !== null && !rows.some((task) => task.id === activeId)) {
+        const active = [...navigation.running, ...navigation.review].find((task) => task.id === activeId);
+        if (active !== undefined) {
+            // Evict from the end, never the active row itself (it is not among them yet).
+            if (rows.length >= PREVIEW_ROWS) rows.pop();
+            rows.push(active);
+        }
+    }
+    return { rows, moreReview: Math.max(0, navigation.counts.review - review.length) };
 }

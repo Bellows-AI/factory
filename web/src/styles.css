@@ -988,6 +988,206 @@
         color: var(--accent);
     }
 
+    /* The task inbox at /tasks (issue 158). One responsive grid per row — status mark, title, repo,
+       author, relative age — that wraps the metadata under the title on narrow screens instead of
+       scrolling the page sideways. The row grammar: the status carries a VISIBLE label (color is
+       supplementary), the whole title is the one link, the age rides a precise <time> in its title. */
+    .inbox {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        padding: 24px;
+    }
+
+    .inbox-head {
+        align-items: flex-start;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        justify-content: space-between;
+    }
+
+    .inbox-head h1 {
+        font-size: 20px;
+        margin: 0;
+    }
+
+    .inbox-meta {
+        color: var(--ink-muted);
+        margin: 4px 0 0;
+    }
+
+    .inbox-new {
+        background: var(--accent);
+        border-radius: var(--radius-lg);
+        color: var(--surface);
+        padding: 6px 14px;
+        text-decoration: none;
+    }
+
+    .inbox-filters {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .inbox-tabs,
+    .inbox-sort {
+        align-items: center;
+        display: flex;
+        gap: 4px;
+    }
+
+    .inbox-tab {
+        border: 1px solid transparent;
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        padding: 4px 10px;
+        text-decoration: none;
+    }
+
+    .inbox-tab:hover {
+        background: var(--surface-raised);
+    }
+
+    .inbox-tab.is-active {
+        background: var(--surface-raised);
+        border-color: var(--line);
+        color: var(--accent);
+    }
+
+    .inbox-search {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .inbox-search label,
+    .inbox-sort .muted {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .inbox-search input,
+    .inbox-search select {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        padding: 4px 8px;
+    }
+
+    .inbox-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .inbox-row {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        column-gap: 12px;
+        display: grid;
+        grid-template-columns: 170px minmax(200px, 1fr) 180px 110px 90px;
+        padding: 8px 4px;
+        row-gap: 4px;
+    }
+
+    .inbox-status {
+        align-items: center;
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 12px;
+        gap: 6px;
+    }
+
+    .inbox-title {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .inbox-title a {
+        color: var(--ink);
+        overflow: hidden;
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .inbox-title a:hover {
+        color: var(--accent);
+    }
+
+    .inbox-activity {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .inbox-repo,
+    .inbox-author,
+    .inbox-when {
+        color: var(--ink-muted);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Below the desktop tracks the metadata wraps under the title: one column, the status line on
+       top, the precise age riding the <time> title attribute. */
+    @media (max-width: 900px) {
+        .inbox-row {
+            grid-template-columns: 1fr;
+        }
+
+        .inbox-when {
+            justify-self: start;
+        }
+    }
+
+    .inbox-empty {
+        align-items: center;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 32px 0;
+    }
+
+    .inbox-empty p {
+        color: var(--ink-muted);
+        margin: 0;
+    }
+
+    .inbox-error {
+        align-items: center;
+        color: var(--lamp-stop);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .inbox-error p {
+        margin: 0;
+    }
+
+    .inbox-note {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 0;
+        min-height: 1em;
+    }
+
     /* Below this the two columns stop fitting side by side: 220 of nav leaves under 700 for a grid
        whose track floor is 440, so the panels would already be one-up and the nav is just tax. */
     @media (max-width: 900px) {

@@ -1155,6 +1155,49 @@ a refusal there would fail every claimed job. Under
 `AUTH_MODE=none` a board with no `GITHUB_TOKEN` in any env scope will fail the publish at push
 with the daemon's authentication error — the work stays local, loudly.
 
+## Task summaries vs run threads (`GET /api/tasks`, issues #157/#158)
+
+**A task is a conversation; a job is a run.** The job table's rows are runs — a follow-up is a
+new row continuing its parent's conversation — and until the task-summary read model existed the
+web rebuilt tasks from a 50-run window browser-side, which could not answer organization-wide
+counts, paginate, or search history at all.
+
+`GET /api/tasks` answers **one summary row per thread root** (`id = root_job_id`), with:
+
+- **Head semantics** — the present tense is the chain's NEWEST run (`created_at desc, id desc
+  limit 1`, the `chainHead` rule): the head's `status`, `summary`, `cancelRequestedAt` and
+  `doneAt`. The head's `doneAt`, specifically — NOT the thread max. A done task a queued
+  follow-up resurrects reads running, because the thing actually moving is the head.
+- **`activityAt`** — the head's newest of created/started/finished/done, the same four stamps
+  the web's `activityKey()` used to take. It is what orders the list and what the cursor rides.
+- **Bucket** — `queued`/`running`/`standby` → Running; terminal with `doneAt === null` → Needs
+  review; terminal with a done stamp → Past. Exactly `taskSections()`'s rule, decided once where
+  the data lives now (`taskBucket()` in the store; the web's `taskSections()` is deleted).
+- **Navigation vs page** — `navigation` (counts + up to 3 running / 5 review preview summaries)
+  is organization-wide and filter-INdependent, computed in one statement from the same derived
+  set so a preview cannot contradict its count. `page` obeys every filter: state
+  (`attention` = running + review), root-command search, exact repo, case-insensitive root-author
+  login, sort. Filters apply to the TASK, never to individual runs — a follow-up's own repo or
+  command does not win over the root's.
+- **Keyset pagination** on `(activity_at, root_id)`, comparison direction following the sort,
+  never `OFFSET`; the cursor (base64url, versioned) binds its sort and normalized filters so a
+  cursor cannot silently be reused under a different question. `limit + 1` fetched, at most
+  `limit` returned, `nextCursor` null when the set is exhausted.
+- **Lean rows** — no `output`, no `gates`, no runtime config beyond the head's one activity
+  line: a list view that polls every few seconds cannot afford unbounded payloads.
+- **Auth** — the same person credential forms as every other human job read; the shared worker
+  token is refused, and the org comes from the credential, never the query.
+
+The consumer contract sits in the web's `useTasks.ts`: ONE poll instance, owned by the shell,
+gated to the tasks area, filters taken from the URL on `/tasks` exactly (defaults elsewhere),
+page data reset on a filter change while the navigation summary is kept until the fresh answer
+lands, and the poll cadence driven by the org's motion (3s while anything runs, 30s quiet,
+15s/60s in a hidden tab). `useThread` remains the detail page's separate poll — a conversation's
+whole chain is a different question with a different answer shape.
+
+The grouped terminal list (`GET /api/jobs?status=terminal`, the recently-completed view) is a
+different read with different rules — thread sums, thread-max stamps — and stays as it is.
+
 ## Decisions
 
 **Attribution is a read-time join, never a denormalised label (issue #67).** `author`,

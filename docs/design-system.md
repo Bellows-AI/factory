@@ -107,6 +107,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Shell | `shell`, `shell-main` | The two-column frame: sticky sidenav + scrolling main |
 | Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
+| Task inbox | `inbox`, `inbox-head`, `inbox-meta`, `inbox-new`, `inbox-filters`, `inbox-tabs`, `inbox-tab`, `inbox-search`, `inbox-sort`, `inbox-rows`, `inbox-row`, `inbox-status`, `inbox-title`, `inbox-activity`, `inbox-repo`, `inbox-author`, `inbox-when`, `inbox-empty`, `inbox-error`, `inbox-note` | The `/tasks` inbox: one responsive grid per row (status label, title link, repo, author, relative age in a `<time>`), URL-state filters, Load more |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | Topbar | `topbar`, `topbar-actions` | The page head row and its control cluster |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
@@ -240,6 +241,7 @@ Pages:
 | `SettingsWorkspacePage.tsx` | panel |
 | `TaskComposerPage.tsx` | status |
 | `TaskDetailPage.tsx` | status |
+| `TaskInboxPage.tsx` | inbox, inbox-head, inbox-meta, inbox-new, inbox-filters, inbox-tabs, inbox-tab, inbox-search, inbox-sort, inbox-rows, inbox-row, inbox-status, inbox-title, inbox-activity, inbox-repo, inbox-author, inbox-when, inbox-empty, inbox-error, inbox-note, sidenav-dot, muted |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
 
 Charts (`scale.ts` is the band/linear scale helper — no markup):

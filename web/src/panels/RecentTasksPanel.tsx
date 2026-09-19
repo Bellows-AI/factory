@@ -1,10 +1,11 @@
 import type { Job } from '../api/useJobs.js';
 import { taskTime, tokens, wallClock } from '../format.js';
+import { taskTitleFromCommand } from '../task-tree.js';
 
-/** The task's one-line identity: the summary when the agent gave one, the command when not. */
+/** The task's one-line identity: the summary when the agent gave one, the command's first line when not. */
 function title(job: Job): string {
     if (job.summary) return job.summary;
-    const first = job.command.split('\n')[0] ?? '';
+    const first = taskTitleFromCommand(job.command);
     return first.length > 120 ? `${first.slice(0, 120)}…` : first;
 }
 

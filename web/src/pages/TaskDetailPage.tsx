@@ -40,7 +40,7 @@ export function TaskDetailPage() {
             // The adjustment continues the NEWEST run — it is the one that is finished and
             // carries the session the child inherits. No executor on the body: the board binds
             // the follow-up to the executor that ran the task.
-            const result = await tasks.followUp(latest.id, command);
+            const result = await tasks.actions.followUp(latest.id, command);
             if (result.error !== null) {
                 setActionError(result.error);
                 return result.error;
@@ -55,7 +55,7 @@ export function TaskDetailPage() {
     };
     const doneTask = async (taskId: string) => {
         setActionError(null);
-        const message = await tasks.markDone(taskId);
+        const message = await tasks.actions.markDone(taskId);
         if (message !== null) {
             setActionError(message);
             return;
@@ -69,20 +69,20 @@ export function TaskDetailPage() {
 
     const stopTask = async (taskId: string) => {
         setActionError(null);
-        const message = await tasks.stop(taskId);
+        const message = await tasks.actions.stop(taskId);
         if (message !== null) setActionError(message);
         // Success needs no navigation: the polls repaint the parked run in place.
     };
 
     // The confirm lives here, with the navigation it owns: deleting a thread is not an accident the
     // sidebar should be able to make, and once the board has deleted the rows this page has nothing
-    // left to render — the area falls back to the composer. The refusal needs no confirm, so a
+    // left to render — the area falls back to the inbox. The refusal needs no confirm, so a
     // TASK_RUNNING state slid past the button just errors in place like every other refusal.
     const removeTask = async (taskId: string) => {
         setActionError(null);
         if (!window.confirm('Remove this task? Every run of the thread and its worktree are deleted.')) return;
         // The panel holds the in-flight guard, so a double confirmation cannot double-remove.
-        const message = await tasks.remove(taskId);
+        const message = await tasks.actions.remove(taskId);
         if (message !== null) {
             setActionError(message);
             return;

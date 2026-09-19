@@ -5,10 +5,11 @@ import { TaskComposer } from '../panels/TaskComposer.js';
 import { useTasksPage } from './TasksLayout.js';
 
 /**
- * `/tasks`, the area's index: the big composer, open by default, where a task is typed and started.
+ * `/tasks/new`, the composer: the big input where a task is typed and started (issue 158). The inbox
+ * is the area's index; this page is its own address below it.
  *
- * The task list it belongs to is in the sidenav (fed by the shell's poll), and the board answering
- * `201 { id }` is what makes the issue's third bullet one line: on success the page navigates
+ * The task list it belongs to is the sidenav's preview (fed by the shell's poll), and the board
+ * answering `201 { id }` is what makes the handoff one line: on success the page navigates
  * straight to the new task's detail view — output, status, and the composer for follow-ups.
  *
  * The workflow list is the page's own read (`GET /api/workflows`), re-fetched when the selected
@@ -34,7 +35,7 @@ export function TaskComposerPage() {
         setActionError(null);
         setSending(true);
         try {
-            const result = await tasks.queue(command, chosenRepo, executor, workflow, workflowParams);
+            const result = await tasks.actions.queue(command, chosenRepo, executor, workflow, workflowParams);
             if (result.error !== null) {
                 setActionError(result.error);
                 return result.error;

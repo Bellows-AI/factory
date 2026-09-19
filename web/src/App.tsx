@@ -10,6 +10,7 @@ import { SettingsRepositoriesPage } from './pages/SettingsRepositoriesPage.js';
 import { SettingsWorkspacePage } from './pages/SettingsWorkspacePage.js';
 import { TaskComposerPage } from './pages/TaskComposerPage.js';
 import { TaskDetailPage } from './pages/TaskDetailPage.js';
+import { TaskInboxPage } from './pages/TaskInboxPage.js';
 import { TasksLayout } from './pages/TasksLayout.js';
 
 /**
@@ -20,9 +21,10 @@ import { TasksLayout } from './pages/TasksLayout.js';
  * between them.
  *
  * Two areas nest the same way, each layout owning the polls its pages share: `TasksLayout` owns
- * the workspace poll for `/tasks` and its children, and `SettingsLayout` owns the workspace and
- * environment polls for `/settings/*` — the index route redirects to the workspace section, the
- * area's default pane, the composer's role for tasks.
+ * the workspace poll for `/tasks` and its children — the inbox, the composer, a task's detail —
+ * and `SettingsLayout` owns the workspace and environment polls for `/settings/*`. Each index
+ * route is its area's default pane: the inbox for tasks, the workspace section for settings
+ * (which redirects there).
  *
  * Deep links work with no server change — `server/src/app.ts` already serves index.html for any
  * non-`/api/` 404, and `requirementFor()` treats every path outside `/api/` as open, so
@@ -47,7 +49,11 @@ export function App() {
                     <Route path="executors" element={<SettingsExecutorsPage />} />
                 </Route>
                 <Route path="tasks" element={<TasksLayout />}>
-                    <Route index element={<TaskComposerPage />} />
+                    {/* The inbox is the index (issue 158); the composer is its own address below it —
+                        `new` MUST come before `:id`, or the router would hand the word "new" to
+                        the detail page. */}
+                    <Route index element={<TaskInboxPage />} />
+                    <Route path="new" element={<TaskComposerPage />} />
                     <Route path=":id" element={<TaskDetailPage />} />
                 </Route>
                 {/* The member's own account. Reached from the topbar's user menu, not the sidenav:
