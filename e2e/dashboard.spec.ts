@@ -194,7 +194,7 @@ test.describe('date range selector', () => {
 });
 
 test.describe('the organization selector', () => {
-    // Its own case because assertRendersCleanly only scans `main`, and the topbar is outside it.
+    // Its own case because assertRendersCleanly only scans `main`, and the app bar is outside it.
     test('names the organization and is inert', async ({ page }) => {
         await open(page);
 
@@ -207,9 +207,9 @@ test.describe('the organization selector', () => {
         await expect(select).toHaveText('default');
         await expect(select).toHaveAttribute('aria-label', 'Organization: default');
 
-        // Fitting beside Refresh without wrapping is a layout fact no assertion covers.
+        // Refresh now lives in the dashboard's page header; it must still be reachable.
         await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
-        await page.locator('.topbar').screenshot({ path: `${SHOTS}/topbar-org.png` });
+        await page.locator('.app-bar').screenshot({ path: `${SHOTS}/app-bar-org.png` });
     });
 });
 
@@ -226,6 +226,6 @@ test.describe('the user menu', () => {
         await expect(page.getByRole('menuitem', { name: 'Account' })).toBeVisible();
 
         await page.keyboard.press('Escape');
-        await page.locator('.topbar').screenshot({ path: `${SHOTS}/topbar-user-menu.png` });
+        await page.locator('.app-bar').screenshot({ path: `${SHOTS}/app-bar-user-menu.png` });
     });
 });

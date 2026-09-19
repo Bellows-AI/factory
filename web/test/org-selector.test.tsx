@@ -2,10 +2,9 @@ import type { OrganizationMeta } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
+import { AppBar } from '../src/components/AppBar.js';
 import { OrgSelector } from '../src/components/OrgSelector.js';
-import { TopBar } from '../src/components/TopBar.js';
 import type { Session } from '../src/api/useSession.js';
-import type { StatsPayload } from '../src/api/useStats.js';
 
 const CONFIG: OrganizationMeta = {
     mode: 'config',
@@ -20,6 +19,26 @@ const DIRECTORY: OrganizationMeta = {
         { id: 'bellows', name: 'Bellows AI' },
         { id: 'acme', name: 'Acme Inc' },
     ],
+};
+
+const SESSION: Session = {
+    user: {
+        id: '00000000-0000-4000-8000-000000000001',
+        login: 'octocat',
+        name: 'The Octocat',
+        githubUserId: 4242,
+        avatarUrl: null,
+    },
+    role: 'member',
+    membership: { invitedAt: null, claimedAt: null },
+    account: { createdAt: null, lastLoginAt: null },
+    organization: { id: 'bellows', name: 'Bellows AI' },
+    organizations: [
+        { id: 'bellows', name: 'Bellows AI' },
+        { id: 'acme', name: 'Acme Inc' },
+    ],
+    workspacePath: null,
+    mode: 'github',
 };
 
 const render = (organization: OrganizationMeta) => renderToStaticMarkup(<OrgSelector organization={organization} />);
@@ -68,68 +87,41 @@ describe('OrgSelector', () => {
     });
 });
 
-describe('TopBar', () => {
-    const payload = {
-        meta: {
-            fetchedAt: '2026-08-21T12:00:00.000Z',
-            stale: false,
-            source: 'live',
-            organization: CONFIG,
-            repos: [{ owner: 'Bellows-AI', name: 'bellows.ai' }],
-            baseBranch: 'dev',
-        },
-    } as unknown as StatsPayload;
-
-    const html = (session: Session | null = null) =>
+describe('AppBar', () => {
+    const html = (session: Session | null = null, organization: OrganizationMeta | null = CONFIG) =>
         renderToStaticMarkup(
             <MemoryRouter>
-                {/* The menu holds a NavLink, so the TopBar needs a router context to render it. */}
-                <TopBar data={payload} refreshing={false} onRefresh={() => {}} session={session} />
+                {/* The menu holds a NavLink, so the AppBar needs a router context to render it. */}
+                <AppBar session={session} organization={organization} />
             </MemoryRouter>
         );
 
-    it('puts the selector in the actions group, ahead of Refresh', () => {
-        const markup = html();
-        expect(markup.indexOf('org-select')).toBeGreaterThan(markup.indexOf('topbar-actions'));
-        expect(markup.indexOf('org-select')).toBeLessThan(markup.indexOf('Refresh'));
+    it('renders the selector and the menu, in that order', () => {
+        const markup = html(SESSION);
+        expect(markup).toContain('class="app-bar"');
+        expect(markup.indexOf('org-select')).toBeGreaterThan(-1);
+        expect(markup.indexOf('org-select')).toBeLessThan(markup.indexOf('user-menu-button'));
     });
 
-    it('keeps naming the repos rather than letting the organization name stand in for them', () => {
-        // The figures below are only interpretable if you know what went into them, and an
-        // organization name does not tell you that. Stops a later "the org name says it all".
-        expect(html()).toContain('bellows.ai');
+    it('carries no telemetry chrome: no heading, no timestamp, no Refresh, no repo names', () => {
+        // The exile, pinned: telemetry metadata lives in the dashboard's page header now — the
+        // app bar is identity and navigation only, on every page.
+        const markup = html(SESSION);
+        expect(markup).not.toContain('<h1');
+        expect(markup).not.toContain('Refresh');
+        expect(markup).not.toContain('data as of');
+        expect(markup).not.toContain('bellows.ai');
     });
 
     it('renders nothing before the first payload rather than an empty control', () => {
-        const markup = renderToStaticMarkup(
-            <TopBar data={null} refreshing={false} onRefresh={() => {}} session={null} />
-        );
+        const markup = html(null, null);
         expect(markup).not.toContain('org-select');
-        expect(markup).toContain('loading…');
+        expect(markup).not.toContain('user-menu-button');
     });
 
     it('renders the user menu once the session is known, and nothing before it', () => {
-        expect(html()).not.toContain('user-menu-button');
-        const withSession: Session = {
-            user: {
-                id: '00000000-0000-4000-8000-000000000001',
-                login: 'octocat',
-                name: 'The Octocat',
-                githubUserId: 4242,
-                avatarUrl: null,
-            },
-            role: 'member',
-            membership: { invitedAt: null, claimedAt: null },
-            account: { createdAt: null, lastLoginAt: null },
-            organization: { id: 'bellows', name: 'Bellows AI' },
-            organizations: [
-                { id: 'bellows', name: 'Bellows AI' },
-                { id: 'acme', name: 'Acme Inc' },
-            ],
-            workspacePath: null,
-            mode: 'github',
-        };
-        const markup = html(withSession);
+        expect(html(null)).not.toContain('user-menu-button');
+        const markup = html(SESSION);
         expect(markup).toContain('user-menu-button');
         expect(markup).toContain('octocat');
     });

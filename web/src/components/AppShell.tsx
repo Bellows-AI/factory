@@ -6,10 +6,10 @@ import { useJobs } from '../api/useJobs.js';
 import type { UseJobs } from '../api/useJobs.js';
 import { useSession } from '../api/useSession.js';
 import type { Session } from '../api/useSession.js';
+import { AppBar } from './AppBar.js';
 import { DEFAULT_RANGE, DEFAULT_SCOPE, statsQuery } from './RangeSelector.js';
 import type { RangeSelection, ScopeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
-import { TopBar } from './TopBar.js';
 
 /**
  * Everything both pages share: the range, the scope, the one `/api/stats` poll, and the chrome
@@ -75,7 +75,7 @@ export function AppShell() {
     const onTasks = pathname === '/tasks' || pathname.startsWith('/tasks/');
     const tasks = useJobs(onTasks);
 
-    // The session for the topbar's user menu. A second `useSession` instance next to the gate's —
+    // The session for the app bar's user menu. A second `useSession` instance next to the gate's —
     // the account page already does the same; the module-level listener they
     // register is a Set for exactly this reason.
     const { session } = useSession();
@@ -98,7 +98,7 @@ export function AppShell() {
         <div className="shell">
             <SideNav tasks={onTasks ? tasks.jobs : null} />
             <div className="shell-main">
-                <TopBar data={data} refreshing={refreshing} onRefresh={refresh} session={session} />
+                <AppBar session={session} organization={data?.meta.organization ?? null} />
                 <Outlet context={context} />
             </div>
         </div>

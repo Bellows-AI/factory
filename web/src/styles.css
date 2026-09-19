@@ -253,24 +253,44 @@
         color: var(--lamp-stop);
     }
 
-    .topbar {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 16px;
-        padding: 16px 24px;
-        border-bottom: 1px solid var(--line);
-        flex-wrap: wrap;
-    }
-
-    .topbar p {
-        margin: 4px 0 0;
-    }
-
-    .topbar-actions {
-        display: flex;
+    /* The global app bar: org switcher and user menu on desktop — identity and navigation only,
+       never page content. Compact on purpose: the page header below carries the page's title. */
+    .app-bar {
         align-items: center;
+        border-bottom: 1px solid var(--line);
+        display: flex;
         gap: 12px;
+        justify-content: flex-end;
+        padding: 10px 24px;
+    }
+
+    /* The mobile group — trigger and brand — renders only when the responsive shell (slice A
+       part 4) wires the trigger; until then neither exists and the desktop group fills the bar. */
+    .app-bar-mobile {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        margin-right: auto;
+    }
+
+    .app-bar-trigger {
+        line-height: 1;
+        padding: 6px 10px;
+    }
+
+    .app-bar-brand {
+        color: var(--ink-muted);
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
+    .app-bar-actions {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        min-width: 0;
     }
 
     /* The page's one heading and its slots: title and description lead, meta and actions trail.
@@ -405,8 +425,8 @@
         gap: 6px;
     }
 
-    /* The topbar wraps at narrow widths, and a long organization name must not push Refresh onto a
-       second line before the charts have become illegible anyway (~700px). */
+    /* The app bar wraps at narrow widths, and a long organization name must not push the user
+       menu onto a second line before the charts have become illegible anyway (~700px). */
     .org-select {
         max-width: 220px;
     }
@@ -1508,7 +1528,7 @@
         min-height: 160px;
     }
 
-    /* The topbar's user menu and the settings page's identity section. */
+    /* The app bar's user menu and the settings page's identity section. */
 
     /* The trigger is a real button, so the global button skin applies; this only lays the avatar and
        the login out and keeps the old summary's tighter padding. */

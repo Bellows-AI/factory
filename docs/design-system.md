@@ -108,7 +108,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
-| Topbar | `topbar`, `topbar-actions` | The page head row and its control cluster |
+| App bar | `app-bar`, `app-bar-actions`, `app-bar-mobile`, `app-bar-brand`, `app-bar-trigger` | The global bar above every page: org switcher and user menu on desktop; the trigger + brand group renders only once the responsive shell (slice A part 4) wires it |
 | Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
 
@@ -139,10 +139,10 @@ siblings of the heading, never children of it. An empty slot renders no wrapper,
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
 | Popover | `popover`, `popover-option` | The shared floating surface for the anchored Headless UI panels — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
 | Range | `range-selector`, `range-presets`, `range-option.active`, `range-custom` | The date-range picker |
-| Org | `org-selector`, `org-select` | The organization switcher in the topbar (Headless UI Listbox) |
+| Org | `org-selector`, `org-select` | The organization switcher in the app bar (Headless UI Listbox) |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
 | Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
-| User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The topbar identity disclosure (Headless UI Menu) |
+| User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar identity disclosure (Headless UI Menu) |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
 | Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox repo/executor pickers; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay` |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
@@ -200,6 +200,7 @@ Components:
 | File | Primitives |
 | --- | --- |
 | `AppShell.tsx` | shell |
+| `AppBar.tsx` | app-bar |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table |
 | `ExecutorDialog.tsx` | picker, status |
@@ -213,7 +214,6 @@ Components:
 | `ScopeToggle.tsx` | range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
-| `TopBar.tsx` | topbar |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
 
 Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a helper, not a panel):
