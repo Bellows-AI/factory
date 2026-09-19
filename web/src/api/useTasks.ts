@@ -253,7 +253,10 @@ export function useTasks(enabled: boolean): UseTasks {
     const start = useCallback(() => {
         if (!enabledRef.current) return;
         controller.current?.abort();
+        // Retire an in-flight Load more with it: its own finally skips on abort, so the flag
+        // would stay raised and hold the button disabled under the fresh chain.
         moreController.current?.abort();
+        setLoadingMore(false);
         stopChain();
         const own = new AbortController();
         controller.current = own;
