@@ -93,7 +93,12 @@ export function decodeCursor(raw: string, expected: TaskCursorFilters): TaskCurs
     for (const key of ['q', 'repo', 'author'] as const) {
         if (cursor[key] !== expected[key]) return null;
     }
-    if (typeof cursor.activityAt !== 'string' || Number.isNaN(Date.parse(cursor.activityAt))) return null;
+    // The minted shape is exact ISO — a parseable-but-non-ISO stamp would survive here and die
+    // later at the SQL cast, a 503 where BAD_CURSOR is the truthful answer.
+    const stamp = typeof cursor.activityAt === 'string' ? new Date(cursor.activityAt) : null;
+    if (stamp === null || Number.isNaN(stamp.getTime()) || stamp.toISOString() !== cursor.activityAt) {
+        return null;
+    }
     if (typeof cursor.rootId !== 'string' || !UUID.test(cursor.rootId)) return null;
     return cursor as unknown as TaskCursor;
 }

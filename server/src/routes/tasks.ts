@@ -81,7 +81,11 @@ export const taskRoutes =
                 if (author === '') {
                     author = undefined;
                 } else if (author.length > AUTHOR_MAX || !AUTHOR_SHAPE.test(author)) {
-                    return bad(reply, 'BAD_AUTHOR', `author must be a login of at most ${AUTHOR_MAX} characters`);
+                    return bad(
+                        reply,
+                        'BAD_AUTHOR',
+                        `author must be a login of letters, digits and dashes, at most ${AUTHOR_MAX} characters`
+                    );
                 } else {
                     // Logins compare case-insensitively; the normalized form is what the store
                     // filters by and what the cursor binds.

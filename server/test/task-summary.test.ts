@@ -163,6 +163,14 @@ describe('the task cursor', () => {
                 state: 'running',
             })
         ).toBeNull();
+        // Parseable but not the exact ISO shape the encoder mints: it would survive decode and
+        // die at the SQL cast later — a 503 where BAD_CURSOR is the truthful answer.
+        expect(
+            decodeCursor(mint({ v: 1, sort: 'newest', state: 'running', activityAt: 'Sept 5 2026', rootId: ID }), {
+                sort: 'newest',
+                state: 'running',
+            })
+        ).toBeNull();
         expect(
             decodeCursor(mint({ v: 1, sort: 'newest', state: 'running', activityAt: at(3), rootId: 'nope' }), {
                 sort: 'newest',
@@ -363,6 +371,21 @@ describe('memoryTaskList', () => {
             cursor = page.nextCursor;
         }
         expect(seen).toEqual([tid(1), tid(2), tid(3), tid(4), tid(5), tid(6), tid(7), tid(80), tid(79)]);
+    });
+
+    it('splits an exactly-tied pair across a page boundary', () => {
+        // Three roots on one activity stamp: the exclusive (activityAt, id) comparison must hand
+        // the third over whole — neither duplicated nor skipped.
+        const jobs = [
+            ...task(tid(3), { status: 'running', createdAt: at(30) }),
+            ...task(tid(2), { status: 'running', createdAt: at(30) }),
+            ...task(tid(1), { status: 'running', createdAt: at(30) }),
+        ];
+        const first = memoryTaskList(jobs, filters({ limit: 2 }));
+        expect(first.page.items.map((item) => item.id)).toEqual([tid(3), tid(2)]);
+        const second = memoryTaskList(jobs, { ...filters({ limit: 2 }), cursor: first.page.nextCursor! });
+        expect(second.page.items.map((item) => item.id)).toEqual([tid(1)]);
+        expect(second.page.nextCursor).toBeNull();
     });
 
     it('paginates oldest first under its own direction', () => {

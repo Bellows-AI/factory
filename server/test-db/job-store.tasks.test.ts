@@ -204,6 +204,28 @@ describe.skipIf(!enabled)('listTasks', () => {
         expect(ids[2]).toBe(older);
     });
 
+    it('splits an exactly-tied pair across a page boundary', async () => {
+        // Three roots on one stamp, limit 2: the exclusive (activity_at, id) comparison must hand
+        // the tied third over whole — neither duplicated nor skipped.
+        const stamp = new Date(Date.now() - 45 * 60_000).toISOString();
+        const craftTie = (): Promise<string> => craft({ status: 'running', at: { created: stamp, started: stamp } });
+        const tieA = await craftTie();
+        const tieB = await craftTie();
+        const tieC = await craftTie();
+        const expected = [tieA, tieB, tieC].sort().reverse();
+
+        const first = await store.listTasks({ state: 'running', sort: 'newest', limit: 2 });
+        expect(first.page.items.map((task) => task.id)).toEqual(expected.slice(0, 2));
+        const second = await store.listTasks({
+            state: 'running',
+            sort: 'newest',
+            limit: 2,
+            cursor: first.page.nextCursor!,
+        });
+        expect(second.page.items.map((task) => task.id)).toEqual(expected.slice(2));
+        expect(second.page.nextCursor).toBeNull();
+    });
+
     it('paginates forward on (activity_at, root id) without duplicates or omissions', async () => {
         for (let i = 0; i < 7; i++) {
             await craft({ status: 'running', createdMinutesAgo: 100 - i, startedMinutesAgo: 99 - i });
@@ -369,6 +391,11 @@ describe.skipIf(!enabled)('listTasks', () => {
         expect(navigation.counts).toEqual({ running: 1, review: 1, past: 1 });
         expect(navigation.running).toHaveLength(1);
         expect(navigation.review).toHaveLength(1);
+        // Preview rows arrive through the json path, where stamps read back as offset strings —
+        // the shape stampOf exists to normalize. A regression there would null these stamps.
+        expect(navigation.running[0]).toMatchObject({ repo: 'acme/one' });
+        expect(Math.abs(minutesAgo(navigation.running[0]!.createdAt) - 60)).toBeLessThan(2);
+        expect(Math.abs(minutesAgo(navigation.running[0]!.activityAt) - 59)).toBeLessThan(2);
         expect(page.items.map((task) => task.repo)).toEqual(['acme/two']);
     });
 
