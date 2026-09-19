@@ -251,6 +251,34 @@ export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * The `--mount` argv that scopes the workspaces volume to one member's `<orgId>/<userId>` subtree
+ * — the kernel-enforced boundary every container this runner starts works behind (docker ≥ 26.1,
+ * where `volume-subpath` landed). One shape for the runner and every aux container, so the
+ * executors and the containers cannot drift on what a job may reach: the selected subtree is what
+ * the mount serves, and a target that does not exist yet fails the container loudly — never a
+ * fallback to the whole volume, which would be the cross-tenant read this exists to close.
+ *
+ * The target is the subtree's OWN volume path (`${mount}/${subPath}`, review finding on #151):
+ * every consumer path this driver composes — WORKDIR, the sync's REPO/WORKTREE, the readouts'
+ * database and transcript paths, BELLOWS_ROOT, the gate's working directory — is the string
+ * `${config.workspaceMount}/${subPath}/…`, shared verbatim between argv/env and the scripts.
+ * Mounting the subtree there keeps every one of those paths resolving inside the container,
+ * while the rest of the volume is absent from its filesystem entirely: `/workspaces` holds only
+ * the member's own `bellows/<user>` and no sibling or foreign path resolves.
+ *
+ * `readOnly` is the readout variant (the `.bellows.yaml` read), which the `--mount` form spells
+ * as an option rather than a `:ro` suffix. services.ts builds the same string itself — it cannot
+ * import this module (one direction only), the same copied-regex rule the workspace path
+ * assertions already follow.
+ */
+const workspacesMountArgs = (config: DriverConfig, subPath: string, readOnly = false): string[] => [
+    '--mount',
+    `type=volume,src=${config.workspaceVolume},volume-subpath=${subPath},target=${config.workspaceMount}/${subPath}${
+        readOnly ? ',readonly' : ''
+    }`,
+];
+
+/**
  * `docker exec` argv for reading the bridge record out of a running runner. Pure and exported for
  * the same reason dockerArgs is: it interpolates a value into a shell command, and that is worth
  * pinning in one place.
@@ -587,8 +615,9 @@ export function gateEnvArgs(config: DriverConfig, key: string, image: string, en
         `${GATE_UID}:${GATE_GID}`,
         '-e',
         `HOME=${GATE_HOME}`,
-        '-v',
-        `${config.workspaceVolume}:${config.workspaceMount}`,
+        // Scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree the
+        // runner mounts, asserted by GATE_KEY above before the split.
+        ...workspacesMountArgs(config, key.split('/').slice(0, 2).join('/')),
         // The checkout the coding agent works in is the checkout the gates run in.
         '-w',
         `${config.workspaceMount}/${key}`,
@@ -670,8 +699,7 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
     return [
         'run',
         '--rm',
-        '-v',
-        `${config.workspaceVolume}:${config.workspaceMount}`,
+        ...workspacesMountArgs(config, workspacePath(job)),
         // The database path and the directory scope travel as env VALUES — the script
         // (opencode-readout.cjs) is static, so nothing board-derived is ever part of its text.
         // The scope is the run's own working directory (runWorkingDir — the same string opencode
@@ -772,8 +800,7 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
     return [
         'run',
         '--rm',
-        '-v',
-        `${config.workspaceVolume}:${config.workspaceMount}`,
+        ...workspacesMountArgs(config, workspacePath(job)),
         // Both travel as env VALUES — the script (claude-turns.cjs) is static, so nothing
         // board-derived is ever part of its text.
         '-e',
@@ -895,8 +922,7 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
     return [
         'run',
         '--rm',
-        '-v',
-        `${config.workspaceVolume}:${config.workspaceMount}`,
+        ...workspacesMountArgs(config, workspacePath(job)),
         // The database path and the turn count travel as env VALUES — the script
         // (opencode-cache-probe.cjs) is static, and the count comes from this module's constant,
         // so the trigger cannot drift between the probe and the code that judges the turns.
@@ -1139,8 +1165,11 @@ export function dockerArgs(
         // handing that to a container that may be running --dangerously-skip-permissions is a
         // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
         `WORKDIR=${runWorkingDir(config, job)}`,
-        '-v',
-        `${config.workspaceVolume}:${config.workspaceMount}`,
+        // Scoped to the job's own `<orgId>/<userId>` subtree, mounted AT the path WORKDIR names:
+        // every consumer path below it resolves, and the rest of the volume — every other
+        // member's and org's tree — is absent from the container's filesystem. Enforced by the
+        // mount itself; an agent running arbitrary code inside cannot cross it.
+        ...workspacesMountArgs(config, workspacePath(job)),
     ];
 
     // A gated job's runner reaches the driver's gate endpoint by the default
@@ -1557,8 +1586,7 @@ export function createDockerRunner(
                 const out = await execDocker([
                     'run',
                     '--rm',
-                    '-v',
-                    `${config.workspaceVolume}:${config.workspaceMount}`,
+                    ...workspacesMountArgs(config, workspacePath(job)),
                     ...(file ? (['--env-file', file] as string[]) : []),
                     '-e',
                     `REPO=${clone}`,
@@ -1615,8 +1643,7 @@ export function createDockerRunner(
                 const out = await execDocker([
                     'run',
                     '--rm',
-                    '-v',
-                    `${config.workspaceVolume}:${config.workspaceMount}`,
+                    ...workspacesMountArgs(config, workspacePath(job)),
                     '-e',
                     `REPO=${clone}`,
                     '-e',
@@ -1672,7 +1699,7 @@ export function createDockerRunner(
             const repo = worktreeDir(config, job);
             try {
                 return await publishCheckout(config, job, async (publish) => {
-                    const args = ['run', '--rm', '-v', `${config.workspaceVolume}:${config.workspaceMount}`];
+                    const args = ['run', '--rm', ...workspacesMountArgs(config, workspacePath(job))];
                     if (publish.inRepo && repo) args.push('-w', repo);
                     // Literal env values are paths and code (the probe's REPO) — the same class
                     // as the sync's three path literals, never a credential.

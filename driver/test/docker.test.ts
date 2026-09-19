@@ -104,8 +104,16 @@ describe('the docker run arguments', () => {
         // Was `/workspaces/<orgId>`, built from the driver's own ORG_ID — one tree every member's
         // agent shared. The board sends the path now, because it owns the layout; this process
         // only knows where the volume is mounted.
+        //
+        // The mount is scoped with volume-subpath to the job's own `<orgId>/<userId>` subtree:
+        // the container's volume root is the member's tree, enforced by the mount itself, not by
+        // where the WORKDIR happens to point.
         expect(args()).toEqual(
-            expect.arrayContaining(['-v', 'factory-ai_workspaces:/workspaces', `WORKDIR=/workspaces/bellows/${USER}`])
+            expect.arrayContaining([
+                '--mount',
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+                `WORKDIR=/workspaces/bellows/${USER}`,
+            ])
         );
     });
 
@@ -551,8 +559,8 @@ describe('the close-time claude-code turn count', () => {
         expect(line.slice(0, 12)).toEqual([
             'run',
             '--rm',
-            '-v',
-            'factory-ai_workspaces:/workspaces',
+            '--mount',
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
             `CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
             '-e',
@@ -892,8 +900,8 @@ describe('an opencode runner', () => {
                 `factory.job=${job.id}`,
                 '--label',
                 `factory.lease=${job.leaseToken}`,
-                '-v',
-                'factory-ai_workspaces:/workspaces',
+                '--mount',
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
                 `WORKDIR=/workspaces/bellows/${USER}`,
                 '-e',
                 'ANTHROPIC_API_KEY',
@@ -909,13 +917,25 @@ describe('scraping the session opencode used', () => {
      * node — the job container is already gone by the time it runs, and the driver has no host
      * path into a named volume. Pure and pinned for the same reason dockerArgs is.
      */
+    it('refuses to build a readout argv for a claim whose workspace path cannot be asserted', () => {
+        // The path lands in the mount's volume-subpath now, so it is asserted before any argv
+        // exists — a malformed claim produces no container, not one mounted somewhere unintended.
+        const broken = { ...job, workspacePath: '../../etc' };
+        expect(() => opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), broken, START)).toThrow(
+            /workspace path/
+        );
+        expect(() => opencodeCacheProbeArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), broken)).toThrow(
+            /workspace path/
+        );
+    });
+
     it('reads the session database out of the member’s data directory, root sessions only', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job, START);
         expect(line.slice(0, 10)).toEqual([
             'run',
             '--rm',
-            '-v',
-            'factory-ai_workspaces:/workspaces',
+            '--mount',
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
             `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
             '-e',
@@ -1065,8 +1085,8 @@ describe('the cache watch', () => {
         expect(line.slice(0, 8)).toEqual([
             'run',
             '--rm',
-            '-v',
-            'factory-ai_workspaces:/workspaces',
+            '--mount',
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
             '-e',
             `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
             '-e',
@@ -1226,8 +1246,15 @@ describe('the gate environment container', () => {
     });
 
     it('mounts the checkouts volume and works inside the worktree, like the coding agent does', () => {
+        // Scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree the
+        // runner and every other aux container get for this job.
         expect(gateEnvArgs(config, KEY, 'node:24')).toEqual(
-            expect.arrayContaining(['-v', 'factory-ai_workspaces:/workspaces', '-w', `/workspaces/${KEY}`])
+            expect.arrayContaining([
+                '--mount',
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+                '-w',
+                `/workspaces/${KEY}`,
+            ])
         );
     });
 
@@ -3151,6 +3178,14 @@ describe('publishing the produced work', () => {
             expect.arrayContaining(['-e', `WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`])
         );
         expect(run).toEqual(expect.arrayContaining(['-e', `BRANCH=factory/${job.id}`]));
+        // The sync container mounts the job's own subtree — the same scoping every other
+        // container this runner starts gets, nothing broader.
+        expect(run).toEqual(
+            expect.arrayContaining([
+                '--mount',
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            ])
+        );
     });
 
     // git reads no token from the environment, and the executor images ship no credential
@@ -3253,6 +3288,13 @@ describe('publishing the produced work', () => {
         );
         expect(run).toEqual(
             expect.arrayContaining(['--entrypoint', 'node', 'claude-executor', '-e', gitWorktreeRemoveScript])
+        );
+        // Scoped to the job's own subtree, like the sync it undoes.
+        expect(run).toEqual(
+            expect.arrayContaining([
+                '--mount',
+                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            ])
         );
         // Reclaim touches no credential and no branch: the thread is terminal, so there is no
         // fetch to authenticate and no follow-up branch to preserve.
@@ -3499,6 +3541,16 @@ describe('publishing the produced work', () => {
         const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
         expect(calls.length).toBeGreaterThan(0);
         for (const call of calls) {
+            // Every step container mounts the job's own subtree — the publish never sees
+            // another member's tree.
+            if (call[0] === 'run') {
+                expect(call).toEqual(
+                    expect.arrayContaining([
+                        '--mount',
+                        `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+                    ])
+                );
+            }
             if (call.some((x) => typeof x === 'string' && x.includes('shortstat'))) {
                 // The summarizer (issue #82) is anchored like every git step — `-w` at the task
                 // worktree, never the image default, where git would find no repo and the

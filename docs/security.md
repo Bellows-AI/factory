@@ -53,13 +53,24 @@ host, and that source then sits in a plain directory. It is passed to `git` thro
 environment and never on a command line or into `.git/config` — see [workspace.md](workspace.md) for
 why that distinction is load-bearing.
 
-**Checkouts are per member, and the isolation is a path.** Each person's clones live under their own
-`app_user.id`, and a runner is given `WORKDIR=<mount>/<org>/<user id>` — never `<mount>` or
-`<mount>/<org>`, both of which are the *parent* of everybody's tree. A job whose author cannot be
-resolved is failed rather than run somewhere broader, and the driver re-asserts the whole
-`<org>/<uuid>` shape before interpolating it into a `docker run`. This is a boundary against
-accident, not against a determined member: anyone who can queue a job can ask the agent to read any
-path the container can see.
+**Checkouts are per member, and the isolation is the mount itself.** Each person's clones live under
+their own `app_user.id`, and every container the driver starts — runner, gate, worktree sync,
+readout, publish step — mounts exactly that job's own `<orgId>/<userId>` subtree of the workspaces
+volume, at its own path: `subPath` on the kubernetes volumeMount, `volume-subpath` on the docker
+`--mount` (docker ≥ 26.1), target `<mount>/<org>/<user id>`. The boundary is the kernel's bind
+mount, not a convention: an agent running arbitrary code inside the container cannot reach another
+member's or another org's source, transcripts or session state, whatever the code attempts — the
+rest of the volume is absent from its filesystem, and `WORKDIR=<mount>/<org>/<user id>` — never
+`<mount>` or `<mount>/<org>`, both the *parent* of everybody's tree — is the mount root itself.
+A job whose author cannot be resolved is failed rather than run somewhere broader, and the driver
+re-asserts the whole `<org>/<uuid>` shape before interpolating it into an argv. A mount whose target
+directory does not exist fails the container loudly — a pod stuck in creation, a `docker run` mount
+error — and there is deliberately no fallback to a broader mount that would make a provisioning
+regression invisible. The one stated exception is the dashboard process itself, which mounts the
+whole volume read-write: it is the provisioning plane (it creates those member trees at sign-in) and
+the org-level analysis plane (disk statistics and transcript aggregation walk every org's tree by
+design). Within the member's own subtree the container runs as one shared uid 1000 — the accepted
+residual [workspace.md](workspace.md) documents.
 
 **Runner secrets are stored plaintext, and that is a stated tradeoff, not an oversight.** The env
 vars and secrets an operator configures for runners (see [env.md](env.md)) must be RETRIEVED to be

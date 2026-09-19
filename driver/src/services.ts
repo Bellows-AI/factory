@@ -489,12 +489,19 @@ export function collectServices(sections: { repo: string; text: string }[]): Ser
  * entrypoint is swapped away exactly as the opencode session readout does.
  */
 export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
+    // The workspace path is asserted before anything interpolates it — it names the mount's
+    // volume-subpath now, not only the script's BELLOWS_ROOT.
+    const path = assertedWorkspacePath(job);
     return [
         'run',
         '--rm',
-        '-v',
-        // Read-only: the script only cats, and the mount covers every member's tree.
-        `${config.workspaceVolume}:${config.workspaceMount}:ro`,
+        '--mount',
+        // Read-only: the script only cats. Scoped to the job's own `<orgId>/<userId>` subtree —
+        // the same boundary the kubernetes readout's subPath mount enforces, and the same
+        // string shape docker.ts builds for its own mounts: COPIED rather than imported, one
+        // direction only (docker imports services, never the reverse). The target is the
+        // subtree's own path, so BELLOWS_ROOT — the same string — resolves inside the container.
+        `type=volume,src=${config.workspaceVolume},volume-subpath=${path},target=${config.workspaceMount}/${path},readonly`,
         ...Object.entries(bellowsReadEnv(config, job)).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         '--entrypoint',
         'sh',
@@ -502,6 +509,21 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
         '-c',
         bellowsReadScript,
     ];
+}
+
+/**
+ * The claim's `<orgId>/<userId>`, asserted — or a refusal. The path becomes the readout mount's
+ * `volume-subpath` and the script's `BELLOWS_ROOT`; a malformed one must name which half failed
+ * before any argv or env exists.
+ */
+function assertedWorkspacePath(job: BoardJob): string {
+    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
+        throw new Error(
+            `refusing to read .bellows.yaml for job ${job.id}: ` +
+                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
+        );
+    }
+    return job.workspacePath;
 }
 
 /**
@@ -513,14 +535,9 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
  * process trusts with a fragment of a command.
  */
 export function bellowsReadEnv(config: DriverConfig, job: BoardJob): Record<string, string> {
-    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
-        throw new Error(
-            `refusing to read .bellows.yaml for job ${job.id}: ` +
-                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
-        );
-    }
+    const path = assertedWorkspacePath(job);
     return {
-        BELLOWS_ROOT: `${config.workspaceMount}/${job.workspacePath}`,
+        BELLOWS_ROOT: `${config.workspaceMount}/${path}`,
         BELLOWS_MAX_BYTES: String(MAX_BELLOWS_BYTES),
         // Passed from this constant rather than hardcoded in the script, so the marker the
         // splitter detects (sectionOf) and the marker the script prints cannot drift.

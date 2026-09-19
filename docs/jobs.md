@@ -485,6 +485,13 @@ connection and retry, which is what agents are for.
   in API 1.44; on older daemons `--network` is single-valued and the last one silently wins, which
   with `RUNNER_NETWORK` set would drop the runner's telemetry without an error. A deployment that
   runs services plus a telemetry network runs a current docker.
+- **The docker executor's volume mounts need Docker 26.1.** Every container the driver starts —
+  runner, gates, sync, readouts, publish steps — mounts the workspaces volume with
+  `--mount type=volume,…,volume-subpath=<orgId>/<userId>,target=<mount>/<orgId>/<userId>`, the
+  option's spelling of the kubernetes executor's `subPath`, so both executors grant a container
+  the same subtree at the same consumer paths. `volume-subpath` landed in Engine 26.1; on an older
+  daemon every claim fails on a mount error rather than running against a broader mount.
+  `docker version` before pointing a dev driver at a host daemon.
 - **The parse is strict to the point of rudeness, deliberately.** Unknown keys are refused, which
   is what makes a pasted Drone pipeline fail loudly instead of doing nothing — and `ports:` is an
   unknown key. There is no host port publishing and no volume mounting: the daemon executing these
