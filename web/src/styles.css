@@ -1555,7 +1555,7 @@
         min-height: 160px;
     }
 
-    /* The topbar's user menu and the settings page's identity section. */
+    /* The app bar's user menu and the settings page's identity section. */
 
     /* The trigger is a real button, so the global button skin applies; this only lays the avatar and
        the login out and keeps the old summary's tighter padding. */

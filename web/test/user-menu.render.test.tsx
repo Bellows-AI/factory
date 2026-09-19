@@ -37,7 +37,7 @@ describe('UserMenu', () => {
      * The Headless UI Menu server-renders the TRIGGER only — the panel (the Settings link, the
      * sign-out button) mounts client-side when the menu opens, and portals, so renderToStaticMarkup
      * never carries it. The panel's behavior is e2e/auth.spec.ts's: it opens the real menu and
-     * drives Sign out. What is pinned here is the trigger itself: identity in the topbar and the
+     * drives Sign out. What is pinned here is the trigger itself: identity in the app bar and the
      * avatar handling, which fail silently if they regress.
      */
     it('names the login on the trigger', () => {

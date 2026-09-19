@@ -1,7 +1,7 @@
 # Organizations
 
 Read before: touching `org_id` anywhere, `server/migrations/005_organizations.sql`,
-or the org selector in the topbar.
+or the org selector in the app bar.
 
 An **organization owns the repo list and partitions every stored row.** The organizations are the
 GitHub App's installations (#99): one installation = one organization, its id the installation id
