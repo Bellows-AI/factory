@@ -3,59 +3,102 @@
 Read before: adding or restyling anything under `web/src`, touching `web/src/styles.css`, or
 introducing a color.
 
-The web app's styling is one stylesheet, `web/src/styles.css`: a token set in `:root`, then the
-primitives that consume it. There is no CSS framework, no CSS-in-JS and no per-component files —
-a component participates by carrying primitive classes, and every color it renders flows through a
-token. `web/test/styles.test.ts` holds both lines: no color literal outside the `:root` block, and
-every class the stylesheet defines appears in this document (the inventory cannot silently rot).
+The web app's styling is one stylesheet, `web/src/styles.css`, compiled by Tailwind CSS v4
+(`@tailwindcss/vite`, registered in `web/vite.config.ts`). There is no CSS-in-JS and no
+per-component files — a component participates by carrying primitive classes, and every color it
+renders flows through a token. The stylesheet's order: `@import "tailwindcss"` (preflight and the
+utility engine), the two token blocks, the `@theme` exposures, then the primitives in
+`@layer components`. `web/test/styles.test.ts` holds the lines: no color literal outside the two
+token blocks, every defined token used, every class the stylesheet defines appears in this
+document (the inventory cannot silently rot).
+
+## Tailwind setup
+
+- **Engine, not vocabulary.** Utilities exist, but the primitives are the components'
+  vocabulary; markup does not carry utility classes. Tailwind supplies preflight, the `@theme`
+  token machinery and the build.
+- **`@theme inline` is what makes the runtime theme switch work.** The `--color-*` rows point at
+  `var(--surface)`-style tokens, so a utility's value is the variable itself: flipping
+  `data-theme="light"` on `<html>` swaps the palette with no CSS regeneration. The toggle,
+  persistence and `prefers-color-scheme` handling are issue 117; the light palette shipped with
+  the theme (#148).
+- **`color-scheme` lives in each theme block** (`:root` dark, `:root[data-theme="light"]`
+  light), so native controls — date-input popups, scrollbars — follow the page.
+- **Fonts are self-hosted** under `web/public/fonts/` with `@font-face` at the top of the
+  stylesheet: the CSP is `font-src 'self'`, and `verify:ui` runs offline, so a Google Fonts link
+  would silently fall back exactly where faces are checked (a guard test pins this).
+- **One ambient motion:** a running lamp breathes — `--animate-lamp` (2.4s ease-in-out,
+  opacity 1 → 0.45). Nothing else on the page moves by itself.
 
 ## Tokens
 
-All 21 live in the `:root` block of `styles.css` — dark values only today, and that block is the
-whole theme surface (issue 117 is a second `:root` block, not a restyle).
+Two `:root` blocks in `styles.css` — dark is the default, light rides
+`:root[data-theme="light"]` — and they are the whole theme surface, and the only place a color
+literal may appear. Base palette from issue 148 (the andon board), in `oklch`:
+
+| Token | Role | Dark | Light |
+| --- | --- | --- | --- |
+| `--surface` | Page canvas; also wells inside panels (chat output, textareas, inputs, list rows on hover) | `oklch(0.19 0.012 250)` | `oklch(0.975 0.004 250)` |
+| `--surface-raised` | Panels, menus, popovers, pickers | `oklch(0.235 0.014 250)` | `oklch(1 0 0)` |
+| `--surface-sunken` | One step below raised: controls, inline `code`, the avatar placeholder, hover fills | `oklch(0.16 0.012 250)` | `oklch(0.945 0.006 250)` |
+| `--line` | Every hairline: panel edges, table row rules, control outlines | `oklch(0.32 0.014 250)` | `oklch(0.89 0.008 250)` |
+| `--line-strong` | A hairline that must read harder (the picker dialog's edge, floating over the dimmed page) | `oklch(0.43 0.016 250)` | `oklch(0.78 0.012 250)` |
+| `--ink` | Primary foreground | `oklch(0.93 0.008 250)` | `oklch(0.24 0.02 250)` |
+| `--ink-muted` | Secondary foreground: labels, captions, ticks, disabled text | `oklch(0.73 0.014 250)` | `oklch(0.45 0.02 250)` |
+| `--ink-inverse` | Foreground on an accent fill | `oklch(0.19 0.012 250)` | `oklch(0.975 0.004 250)` |
+| `--accent` | The one blue: "a human is needed here", links, active controls, focus rings | `oklch(0.74 0.12 240)` | `oklch(0.52 0.16 250)` |
+| `--lamp-run` | Running / ready — the green lamp | `oklch(0.80 0.17 150)` | `oklch(0.58 0.15 150)` |
+| `--lamp-wait` | Queued / stopping / in flight — the amber lamp | `oklch(0.84 0.15 85)` | `oklch(0.70 0.15 75)` |
+| `--lamp-stop` | Failed / loud — the red lamp | `oklch(0.69 0.20 25)` | `oklch(0.56 0.21 27)` |
+| `--lamp-done` | Parked marks, done dots — the grey lamp | `oklch(0.66 0.03 250)` | `oklch(0.58 0.03 250)` |
+
+Derived tokens, mixed per theme with `color-mix(in oklab, …)` — the recipes are identical in
+both blocks and read against that block's tokens:
+
+| Token | Role | Recipe |
+| --- | --- | --- |
+| `--overlay` | Modal backdrop behind a Headless UI dialog (the `.dialog-backdrop` div) | ink 60% over transparent |
+| `--ok-border` | Status-tinted edge for a run state (pills, quiet banners) | lamp-run 30% over surface-raised |
+| `--warn-border` | Status-tinted edge for a wait state | lamp-wait 30% over surface-raised |
+| `--bad-border` | Status-tinted edge for a stop state | lamp-stop 30% over surface-raised |
+| `--on-warn` | Foreground on a lamp-wait fill (dark text) | black 88% over lamp-wait |
+| `--on-bad` | Foreground on a lamp-stop fill (light text, as in the pre-theme set) | white 92% over lamp-stop |
+| `--chart-grid` | Chart gridlines — a step behind `--line` (lines behind data, not edges) | line 60% over surface |
+| `--chart-primary` | Chart series fill and its legend swatch | accent 70% over black |
+| `--lamp-glow` | The halo behind a breathing lamp | currentColor 26% over transparent |
+
+Typography and shape tokens live in the static `@theme` block (`@theme static`, so they are
+emitted even where only a `var()` points at them):
 
 | Token | Role |
 | --- | --- |
-| `--bg` | Page canvas; also wells inside panels (chat output, textareas, list rows on hover) |
-| `--panel` | Card and panel surface |
-| `--panel-raised` | One step above `--panel`: controls, inline `code`, the avatar placeholder, hover fills |
-| `--border` | Every hairline: panel edges, table row rules, control outlines |
-| `--overlay` | Modal backdrop behind a Headless UI dialog (the `.dialog-backdrop` div) |
-| `--text` | Primary foreground |
-| `--muted` | Secondary foreground: labels, captions, ticks, disabled text |
-| `--primary` | The accent: links, active controls, the default chart bar |
-| `--on-primary` | Foreground on a `--primary` fill |
-| `--ok` | Success / running / done |
-| `--ok-border` | Status-tinted edge for an ok state (pills, quiet banners) |
-| `--warn` | In-flight / queued / stopping |
-| `--warn-border` | Status-tinted edge for a warn state |
-| `--on-warn` | Foreground on a `--warn` fill |
-| `--bad` | Failure / the synthetic-data badge |
-| `--bad-border` | Status-tinted edge for a bad state |
-| `--on-bad` | Foreground on a `--bad` fill |
-| `--chart-grid` | Chart gridlines (a step darker than `--border` — lines behind data, not edges) |
-| `--chart-neutral` | A data mark with no verdict: the parked scatter dot |
-| `--chart-primary` | Chart series fill in the primary color, and its legend swatch |
-| `--mono` | The monospace font stack — typography, not a color |
+| `--font-sans` | Barlow — body text |
+| `--font-display` | Barlow Semi Condensed — headings |
+| `--font-mono` | IBM Plex Mono — identifiers and logs |
+| `--radius-md` | 4px — chips, inline code, small controls |
+| `--radius-lg` | 6px — buttons, panels, inputs, everything panel-sized |
 
 Rules the token set carries:
 
-- **The surface ladder is `--bg` → `--panel` → `--panel-raised`, never a raw grey.** A new surface
-  picks the rung that matches its elevation; nothing sits between them.
+- **The surface ladder is `--surface` → `--surface-raised` → `--surface-sunken`, never a raw
+  grey.** Raised sits above the canvas (cards); sunken sits below it (controls, wells). A new
+  surface picks the rung that matches its elevation; nothing sits between them.
 - **`--on-*` is foreground-on-a-fill, and exists for each fill that carries text.** A new
-  text-bearing fill needs an `--on-*` token in the same change.
+  text-bearing fill needs an `--on-*` token in the same change (derived, like the rest).
 - **`--*-border` are the status edges** for controls that tint their outline instead of their
-  surface (pills, quiet banners). They pair 1:1 with `--ok`/`--warn`/`--bad`.
-- **`--primary` and `--chart-primary` are deliberately two blues.** The accent (`--primary`) colors
-  text and control states; the series fill (`--chart-primary`) colors chart marks and swatches.
-  `.bar`'s default and `button.primary` stay on `--primary` — unifying the two is a pixel change.
-- **`color-scheme: dark` lives in exactly one place** (the `.range-custom input, .org-select`
-  rule), so the native date inputs pop in the page's scheme — the org control carries it as part
-  of its skin. A themed build moves it with the block.
+  surface (pills, quiet banners). They pair 1:1 with `--lamp-run`/`--lamp-wait`/`--lamp-stop`.
+- **`--accent` and `--chart-primary` are deliberately two blues.** The accent colors text and
+  control states — it is the "a human is needed" blue, so it stays quiet; the series fill leans
+  on its hue but sits deeper. `.bar`'s default and `button.primary` stay on `--accent` —
+  unifying the two is a pixel change.
+- **Tokens with no call site do not exist.** The suite fails on a defined-but-unused token
+  (`--ink-faint` was pruned for exactly this; `--line-strong` stays because the picker's edge
+  uses it).
 
 ## Primitives
 
-What exists, and when to reach for which. Families first; one-offs at the end.
+What exists, and when to reach for which. Families first; one-offs at the end. The names are the
+pre-theme names (#148 re-tokenized them, it did not rename them), so the inventory rows stand.
 
 ### Layout
 
@@ -64,7 +107,7 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 | Shell | `shell`, `shell-main` | The two-column frame: sticky sidenav + scrolling main |
 | Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
-| Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping blink |
+| Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | Topbar | `topbar`, `topbar-actions` | The page head row and its control cluster |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
 
@@ -77,6 +120,7 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 | Status line | `status`, `alert`, `error`, `muted` | One-line state text; `muted` for secondary prose anywhere |
 | Badge | `badge`, `badge-warn` | Loud inline marker — reserved for synthetic data |
 | Limits | `limits` | The bulleted limitations list |
+| Halo | `lamp-glow` | The soft box-shadow halo in the lamp's own color (`currentColor`); worn by the breathing status dots |
 
 ### Controls
 
@@ -107,8 +151,8 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Frame | `chart-wrap`, `chart` | The overflow scroll and the SVG itself |
-| Grid | `grid`, `grid-alt`, `tick`, `axis-label` | Gridlines (alt = dashed), ticks and labels — all `--muted`/`--chart-grid` |
-| Marks | `bar` (+ `bar-primary`, `bar-ok`, `bar-warn`, `bar-bad`), `line`, `dot` (+ `dot-warn`, `dot-bad`) | Series fills; `dot` default is `--chart-neutral` |
+| Grid | `grid`, `grid-alt`, `tick`, `axis-label` | Gridlines (alt = dashed), ticks and labels — all `--ink-muted`/`--chart-grid` |
+| Marks | `bar` (+ `bar-primary`, `bar-ok`, `bar-warn`, `bar-bad`), `line`, `dot` (+ `dot-warn`, `dot-bad`) | Series fills; `dot` default is `--lamp-done` |
 | Legend | `legend`, `swatch`, `swatch-primary`, `swatch-ok` | The color key; swatches stay in step with their bars |
 
 ### Task conversation
@@ -118,7 +162,7 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 | Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit`, `chat-detail` | One turn: prompt, metadata, exit code |
 | Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
 | Gates | `chat-gates`, `chat-gate-list`, `gate-passed`, `gate-failed`, `gate-running` | The verification-gate tree |
-| Output | `chat-output` | The scrolled raw-run well (`--bg`) |
+| Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose` | The message input and its row; `task-compose` is the full-page variant |
 | Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The control row, the two-column frame, attribution |
@@ -208,5 +252,5 @@ Charts (`scale.ts` is the band/linear scale helper — no markup):
 | `Scatter.tsx` | dot, axis-label |
 | `scale.ts` | helper — no markup |
 
-A class used but not defined here (`visually-hidden`, `token-once`, …) is a hook
+A class used but not defined here (`visually-hidden`, `token-once`, `card-figure`, …) is a hook
 with no styles or a leftover — do not style it by inventing a rule without a row above.

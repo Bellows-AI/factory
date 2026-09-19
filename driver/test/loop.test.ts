@@ -967,6 +967,77 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // The park is the follow-up's launching pad, and a stopped opencode run's session id is
+    // learned only at close (the scrape) — so it must be reported BEFORE the park lands, while
+    // the row still runs under this lease. After it, the row is terminal, the report is refused,
+    // and the stopped task settles sessionless: nothing to follow up (issue #152).
+    it('reports the scraped session before parking a stopped opencode run', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const events: string[] = [];
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push(`parked with ${board.board.sessions.length} session(s) reported`);
+            return rawSuspend(claimed);
+        };
+        const runner = stubRunner(async () => {
+            // The stop lands once the run is live: the first beats answer false, the ones after
+            // this carry the flag, and the container is killed while the run is in flight.
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok({ sessionId: 'ses_stoppedrun00000000001' });
+        });
+
+        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+
+        expect(board.board.sessions).toEqual([
+            { id: job(1).id, sessionId: 'ses_stoppedrun00000000001', remoteSessionId: null },
+        ]);
+        expect(events).toEqual(['parked with 1 session(s) reported']);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    // An opencode run ALWAYS leaves a session, so an empty scrape on a stopped run is the
+    // readout having failed — said out loud on the stopped path too, because the cost is a
+    // task that can never take a follow-up (issue #152).
+    it('says so when a stopped opencode run has no session to report', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const logs: string[] = [];
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok({ readoutError: 'the readout container failed: boom' });
+        });
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) }, { RUNNER_CLI: 'opencode' });
+
+        expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(true);
+        expect(board.board.sessions).toEqual([]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    // A stopped claude-code run has no scrape and no empty-scrape notice: the session was minted
+    // and reported at spawn, and the helper must not fire the opencode-only complaint (issue #152).
+    it('reports nothing extra when a stopped claude-code run has no scraped session', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const logs: string[] = [];
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok();
+        });
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        // The spawn-time mint report only — nothing scraped, nothing added on the stopped path.
+        expect(board.board.sessions).toHaveLength(1);
+        expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(false);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
     // Issue #126: a stop issued while the dashboard says "Waiting for the executor…" — the claim
     // and setup phase, before any container exists — must stand the attempt down immediately.
     // With the flag already set at the first beat (which beats before sleeping, not after), the

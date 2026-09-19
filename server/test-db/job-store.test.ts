@@ -960,6 +960,21 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(claim).toMatchObject({ id, resumeSessionId: SESSION, followUp: true });
     });
 
+    // A STOPPED parent's follow-up claim carries the same pair (issue #152): the stop kept the
+    // session, and the follow-up is the restart-with-a-new-prompt — the claim resumes exactly
+    // the conversation the user ended.
+    it('hands a follow-up claim of a stopped task the parent session and the command to deliver', async () => {
+        const { id: parent } = await store.create('drive me', null, { repo: null, executor: null });
+        const parked = await store.claim('w1', 300);
+        await store.session(parent, parked!.leaseToken, SESSION, null);
+        await store.stop(parent, null);
+        expect(await store.suspend(parent, parked!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
+
+        const { id } = await mustFollowUp(parent, 'again', null);
+
+        expect(await store.claim('w2', 300)).toMatchObject({ id, resumeSessionId: SESSION, followUp: true });
+    });
+
     // A crashed follow-up attempt re-claims with the session kept and the command re-delivered:
     // the conversation survives the crash, and the adjustment still reaches the agent.
     it('re-delivers the command when a follow-up attempt is reclaimed', async () => {

@@ -161,7 +161,7 @@ export function taskSections(jobs: readonly Job[] | null): TaskSections {
 }
 
 /**
- * What the dot beside a task wears: a live run blinks, a parked or queued one holds grey, a
+ * What the dot beside a task wears: a live run breathes, a parked or queued one holds grey, a
  * failed/dead one is red, and anything finished or declared done is solid green. A stopped task
  * stays on the plain dot — the user ended that turn themselves, and neither a failure's red nor a
  * done task's green would say that.
