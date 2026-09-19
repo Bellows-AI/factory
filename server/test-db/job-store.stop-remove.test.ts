@@ -255,6 +255,49 @@ describe.skipIf(!enabled)('stopping a task', () => {
             followUp: true,
         });
     });
+
+    // The settle is committed on its own, before the claim transaction (review of PR #153): the
+    // transaction also carries the claim's PREPARATION — the env resolution, the token mint —
+    // and a throw there rolls the whole thing back, settlement included. Inside it, a board whose
+    // preparation keeps failing would keep the stamped zombie `running` forever, and the
+    // follow-up the member queued would keep answering not_finished — the exact stuck state this
+    // issue exists to end.
+    it("commits the settle even when the claim's preparation throws", async () => {
+        const zombie = await craft();
+        const token = (await store.claim('w1', 300))!.leaseToken;
+        const sid = randomUUID();
+        await store.session(zombie, token, sid, null);
+        await store.stop(zombie, null);
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${zombie}`;
+
+        // A healthy candidate behind it: the claim takes it, reaches preparation, and the
+        // resolver throws — the failure the claim route answers 503 to and the driver retries.
+        const fresh = await craft();
+        const failing = createJobStore({
+            sql,
+            orgId: ORG,
+            env: {
+                resolveFor: async () => {
+                    throw new Error('resolver down');
+                },
+            },
+        });
+        await expect(failing.claim('w2', 300)).rejects.toThrow('resolver down');
+
+        // The settle survived the rollback: the zombie is stopped with its session, and the
+        // follow-up it was blocking can be created.
+        const job = await store.get(zombie);
+        expect(job?.status).toBe('stopped');
+        expect(job?.sessionId).toBe(sid);
+        expect(job?.cancelRequestedAt).toBeNull();
+        const followUp = await store.createFollowUp(zombie, 'pick up', AUTHOR);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+
+        // And the failed claim's own candidate is back to queued, attempt unburned — the
+        // rollback still guards exactly the half-claim it always did.
+        expect(await store.get(fresh)).toMatchObject({ status: 'queued', attempts: 0 });
+        expect((await store.claim('w3', 300))?.id).toBe(fresh);
+    });
 });
 
 describe.skipIf(!enabled)('removing a task', () => {

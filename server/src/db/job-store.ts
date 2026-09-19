@@ -1239,6 +1239,43 @@ export function createJobStore({
             `;
 
             /*
+             * Settle the stops nobody could deliver, before looking for work (issue #152).
+             * A `running` row stamped `cancel_requested_at` whose lease has expired is a stop
+             * whose worker died before its heartbeat could carry the kill order: re-claiming
+             * it would burn an attempt and spawn a container for a command the member just
+             * cancelled — and wipe the session the follow-up continues. The claim is the poll
+             * that runs forever, so it is the settle point: the row lands `stopped` here,
+             * finished_at stamped, the stamp and the lease cleared, the session kept for the
+             * follow-up composer the member sees next. The attempt is handed back exactly as
+             * the delivered stop's suspend hands one back — a stop is a park, not a failed
+             * try — and the last segment banks with the same overcount the dead retirement
+             * accepts, because the board cannot know when the run actually stopped.
+             *
+             * Committed as its own statement, deliberately OUTSIDE the claim transaction below
+             * (review of PR #153): that transaction also carries the claim's preparation — the
+             * env resolution and the token mint, awaited calls that throw — and a throw there
+             * rolls the whole transaction back, settlement included. Inside it, a board whose
+             * preparation keeps failing would keep the stamped zombie `running` across every
+             * retried poll, and the follow-up the member queued would keep answering
+             * not_finished — the exact stuck state this settle exists to end. Committed first,
+             * the settle survives every failed preparation; the transaction below still rolls
+             * back exactly the half-claim it always did.
+             */
+            await sql`
+                update job set
+                    status             = 'stopped',
+                    finished_at        = now(),
+                    wall_clock_ms      = ${wallTick},
+                    attempts           = greatest(attempts - 1, 0),
+                    lease_token        = null,
+                    lease_expires_at   = now(),
+                    cancel_requested_at = null
+                where org_id = ${orgId} and status = 'running'
+                  and cancel_requested_at is not null
+                  and lease_expires_at <= now()
+            `;
+
+            /*
              * One transaction, not two autocommit statements. The UPDATE makes the job running
              * with a fresh lease before the env resolver and the token mint answer; if either
              * then throws, a half-claim must not survive — a row that is `running` with a lease
@@ -1258,33 +1295,6 @@ export function createJobStore({
              * round, exactly as a single statement skipped a row that was not claimable.
              */
             return sql.begin(async (tx) => {
-                /*
-                 * Settle the stops nobody could deliver, before looking for work (issue #152).
-                 * A `running` row stamped `cancel_requested_at` whose lease has expired is a stop
-                 * whose worker died before its heartbeat could carry the kill order: re-claiming
-                 * it would burn an attempt and spawn a container for a command the member just
-                 * cancelled — and wipe the session the follow-up continues. The claim is the poll
-                 * that runs forever, so it is the settle point: the row lands `stopped` here,
-                 * finished_at stamped, the stamp and the lease cleared, the session kept for the
-                 * follow-up composer the member sees next. The attempt is handed back exactly as
-                 * the delivered stop's suspend hands one back — a stop is a park, not a failed
-                 * try — and the last segment banks with the same overcount the dead retirement
-                 * accepts, because the board cannot know when the run actually stopped.
-                 */
-                await tx`
-                    update job set
-                        status             = 'stopped',
-                        finished_at        = now(),
-                        wall_clock_ms      = ${wallTick},
-                        attempts           = greatest(attempts - 1, 0),
-                        lease_token        = null,
-                        lease_expires_at   = now(),
-                        cancel_requested_at = null
-                    where org_id = ${orgId} and status = 'running'
-                      and cancel_requested_at is not null
-                      and lease_expires_at <= now()
-                `;
-
                 // Retire what has burned its attempts, before looking for work. Without this a
                 // command that kills its worker is reclaimed every time its lease expires, forever.
                 // The dead attempt's segment banks here: the row ran for real before its worker

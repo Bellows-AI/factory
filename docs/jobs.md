@@ -834,7 +834,7 @@ calling `/suspend` (#152): the report is accepted only while the row still runs 
 and a park-first order would settle the stopped task sessionless — `NO_SESSION` on follow-up, the
 composer never appearing. Both runners await the close-time scrape before the run's outcome
 resolves, so the id is final when the park lands, on docker and kubernetes alike. One narrow race
-is accepted: a lease that expires between the kill and the report lets another claimor's settle
+is accepted: a lease that expires between the kill and the report lets another claimer's settle
 sweep land the row first, so the report and the park both answer `lost` (both swallowed, as every
 superseded attempt's answer is) and the run settles stopped but sessionless — the same blast
 radius as a failed readout, and unreachable while the worker was still beating.
