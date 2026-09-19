@@ -1,3 +1,4 @@
+import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -5,20 +6,22 @@ import { useSettingsPage } from './SettingsLayout.js';
  * The Organization section of the settings tree: a stub, with the one org-level editor that
  * already exists mounted under it (issue 150).
  *
- * The core (organization) environment is admin-written — it reaches every member's runners — and
- * a member sees it read-only with the sentence saying why. The rest of the section is a stub on
- * purpose: organization settings beyond the environment are not built, and a panel saying so is
- * the honest placeholder, not a silent empty page.
+ * The page header says the section is a stub — the sentence is the description slot, and no
+ * panel repeats it. The core (organization) environment is admin-written — it reaches every
+ * member's runners — and a member sees it read-only with the sentence saying why. The rest of
+ * the section is a stub on purpose: organization settings beyond the environment are not built,
+ * and a sentence saying so is the honest placeholder, not a silent empty page.
  */
 export function SettingsOrganizationPage() {
     const { env, session } = useSettingsPage();
     const isAdmin = session?.role === 'admin';
     return (
         <main className="page">
-            <section className="panel">
-                <h2>Organization</h2>
-                <p className="muted">Organization settings are not built yet.</p>
-            </section>
+            <PageHeader
+                eyebrow="Settings"
+                title="Organization"
+                description="Organization settings are not built yet."
+            />
 
             {env.error ? <p className="status">{env.error}</p> : null}
             {/*

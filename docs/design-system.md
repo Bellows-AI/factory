@@ -243,15 +243,15 @@ Pages:
 
 | File | Primitives |
 | --- | --- |
-| `AccountPage.tsx` | panel |
+| `AccountPage.tsx` | page, page-header, panel |
 | `DashboardPage.tsx` | page, page-header, dashboard-controls |
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
-| `SettingsExecutorsPage.tsx` | panel |
+| `SettingsExecutorsPage.tsx` | page, page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
-| `SettingsOrganizationPage.tsx` | panel |
-| `SettingsRepositoriesPage.tsx` | panel |
-| `SettingsWorkspacePage.tsx` | panel |
-| `TaskComposerPage.tsx` | status |
+| `SettingsOrganizationPage.tsx` | page, page-header, panel |
+| `SettingsRepositoriesPage.tsx` | page, page-header, panel |
+| `SettingsWorkspacePage.tsx` | page, page-header, panel |
+| `TaskComposerPage.tsx` | page, page-header, status |
 | `TaskDetailPage.tsx` | page, page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { PageHeader } from '../components/PageHeader.js';
 import { RepoPickerDialog } from '../components/RepoPickerDialog.js';
 import { WorkspaceReposPanel } from '../panels/WorkspaceReposPanel.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
@@ -9,9 +10,12 @@ import { useSettingsPage } from './SettingsLayout.js';
  * checked out into it and the picker that selects them, and the member's own environment scope
  * (issue 150).
  *
+ * The page header carries the workspace sentence (where the checkouts live, or the no-root
+ * configuration note) and the picker button as its action; the panels below hold the lists.
+ *
  * The picker is offered automatically the first time the page is seen with nothing selected, and
  * only then — the dismissal is remembered for this page view, the persistent ways back in are the
- * button and the empty state.
+ * header's button and the empty state.
  */
 export function SettingsWorkspacePage() {
     const { workspace, env } = useSettingsPage();
@@ -19,7 +23,7 @@ export function SettingsWorkspacePage() {
     const [picking, setPicking] = useState(false);
     /**
      * Dismissal is remembered for this page view only, so "Not now" is not a decision somebody has
-     * to undo later. The persistent way back in is the button below and the empty state.
+     * to undo later. The persistent way back in is the header's button and the empty state.
      */
     const [dismissed, setDismissed] = useState(false);
 
@@ -39,54 +43,55 @@ export function SettingsWorkspacePage() {
         setDismissed(true);
     };
 
-    if (loading && !data) {
-        return (
-            <main className="page">
-                <p className="status">Loading your workspace…</p>
-            </main>
-        );
-    }
-
     // A deliberate configuration, not a failure — hence the sentence rather than an error. It
     // takes the place of the checkout panels only: the member's environment scope is unrelated
     // to whether a root is configured and still renders below (issue 150 — on the old Environment
     // page it rendered on every deployment, and this keeps that true).
     const noRoot = data !== null && data.root === null;
 
+    if (loading && !data) {
+        return (
+            <main className="page">
+                <PageHeader eyebrow="Settings" title="Workspace" />
+                <p className="status">Loading your workspace…</p>
+            </main>
+        );
+    }
+
     return (
         <main className="page">
+            <PageHeader
+                eyebrow="Settings"
+                title="Workspace"
+                description={
+                    noRoot ? (
+                        <>
+                            This deployment has no workspace root configured, so no repositories are checked out. Set{' '}
+                            <code>ORG_WORKSPACE_ROOT</code> to turn it on.
+                        </>
+                    ) : data ? (
+                        <>
+                            Your checkouts live at <code>{data.root}</code>. Agents you start run here.
+                        </>
+                    ) : undefined
+                }
+                actions={
+                    // The picker seeds itself from the workspace selection, so it exists only when
+                    // that selection is in hand AND there is a root to check out into — opened
+                    // over a failed poll it would read "nothing selected" and its whole-list save
+                    // would deselect every checkout.
+                    data && !noRoot ? (
+                        <button type="button" className="primary" onClick={() => setPicking(true)}>
+                            Select repositories
+                        </button>
+                    ) : undefined
+                }
+            />
+
             {error ? <p className="status">{error}</p> : null}
 
-            {noRoot ? (
-                <section className="panel">
-                    <h2>Workspace</h2>
-                    <p className="muted">
-                        This deployment has no workspace root configured, so no repositories are checked out. Set{' '}
-                        <code>ORG_WORKSPACE_ROOT</code> to turn it on.
-                    </p>
-                </section>
-            ) : (
+            {!noRoot ? (
                 <>
-                    <section className="panel">
-                        <div className="panel-head">
-                            <h2>Workspace</h2>
-                            {/* The picker seeds itself from the workspace selection, so it exists
-                                only when that selection is in hand — opened over a failed poll it
-                                would read "nothing selected" and its whole-list save would
-                                deselect every checkout. */}
-                            {data ? (
-                                <button type="button" className="primary" onClick={() => setPicking(true)}>
-                                    Select repositories
-                                </button>
-                            ) : null}
-                        </div>
-                        {data ? (
-                            <p className="muted">
-                                Your checkouts live at <code>{data.root}</code>. Agents you start run here.
-                            </p>
-                        ) : null}
-                    </section>
-
                     {data && data.repos.length ? (
                         <WorkspaceReposPanel repos={data.repos} />
                     ) : (
@@ -125,7 +130,7 @@ export function SettingsWorkspacePage() {
                         saving={saving}
                     />
                 </>
-            )}
+            ) : null}
 
             {env.error ? <p className="status">{env.error}</p> : null}
             {/* Same data gate as the organization page: the editor mounts only when the scope's

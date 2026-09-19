@@ -2,13 +2,14 @@ import { useSession } from '../api/useSession.js';
 import { AccessTokensSection } from '../panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../panels/IdentityPanel.js';
 import { TrackedOrgsPanel } from '../panels/TrackedOrgsPanel.js';
+import { PageHeader } from '../components/PageHeader.js';
 
 /**
  * The member's own account: identity, then the access tokens minted from here (#70). Sections
  * stack as plain `section.panel`s — the vocabulary every other page uses — so a new concern is one
  * more block, not a nav framework.
  *
- * Reached from the topbar's user menu at `/account`, not the sidenav: it is personal, not a
+ * Reached from the app bar's user menu at `/account`, not the sidenav: it is personal, not a
  * section of the dashboard. `/settings/*` belongs to the organization's settings tree (issue 150).
  *
  * Both token sections are hidden under `AUTH_MODE=none`: the hook ignores every credential there,
@@ -25,10 +26,15 @@ export function AccountPage() {
     const github = session.mode === 'github';
     return (
         <main className="page">
+            <PageHeader
+                title="Account"
+                description={
+                    github
+                        ? `Signed in with GitHub as ${session.user.login}.`
+                        : 'Signed in as the deployment\u2019s local user.'
+                }
+            />
             <section className="panel">
-                <div className="panel-head">
-                    <h2>Account</h2>
-                </div>
                 <IdentityPanel session={session} />
             </section>
             {github ? (

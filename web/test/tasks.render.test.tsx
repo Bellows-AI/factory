@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
+import { isTerminal, type Job, type RuntimeVitals, type UseJobs } from '../src/api/useJobs.js';
+import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
 import {
@@ -16,6 +18,8 @@ import {
 } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 import { TaskHeader } from '../src/panels/TaskHeader.js';
+import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
+import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
 
 /**
  * The same contract the other panel suites pin: props in, markup out, and no DOM — `useEffect`
@@ -135,6 +139,65 @@ const renderHeader = ({ jobs = [job()], stoppingId = null, removingId = null, do
             onDone={async () => {}}
         />
     );
+
+describe('the tasks pages', () => {
+    /**
+     * Page-level renders through a real route tree: the pages read the tasks poll and the
+     * workspace poll from the area's outlet context, both stubbed idle — effects never fire
+     * under renderToStaticMarkup, so the loading posture is what a static render can see. The
+     * point here is the page headings: one h1 per page, no competing inner title.
+     */
+    const fakeTasks = {
+        jobs: null,
+        error: null,
+        queue: async () => ({ id: null, error: null }),
+        followUp: async () => ({ error: null }),
+        stop: async () => null,
+        remove: async () => null,
+        markDone: async () => null,
+    } as unknown as UseJobs;
+    const idleWorkspace = {
+        data: null,
+        loading: true,
+        error: null,
+        saving: false,
+        save: async () => null,
+        saveExecutors: async () => null,
+        listExecutorConfigs: async () => null,
+    } as unknown as UseWorkspace;
+
+    function TasksArea() {
+        return <Outlet context={{ tasks: fakeTasks, workspace: idleWorkspace }} />;
+    }
+
+    const renderPage = (path: string) =>
+        renderToStaticMarkup(
+            <MemoryRouter initialEntries={[path]}>
+                <Routes>
+                    <Route element={<TasksArea />}>
+                        <Route path="tasks">
+                            <Route index element={<TaskComposerPage />} />
+                            <Route path=":id" element={<TaskDetailPage />} />
+                        </Route>
+                    </Route>
+                </Routes>
+            </MemoryRouter>
+        );
+
+    it('the composer page names itself "New task" under the Tasks eyebrow, once', () => {
+        const html = renderPage('/tasks');
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>New task</h1>');
+        expect(html).toContain('page-header-eyebrow');
+        expect(html).not.toContain('<h2>Tasks</h2>');
+    });
+
+    it('the detail page keeps the plain Tasks heading until the thread lands', () => {
+        const html = renderPage('/tasks/22222222-2222-4222-8222-222222222222');
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>Tasks</h1>');
+    });
+});
 
 describe('TaskComposer', () => {
     it('waits for the workspace before offering a repository choice', () => {
