@@ -1,15 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import { EXECUTOR_TYPES, type ExecutorType } from '@factory-ai/core';
 import { mergeExecutors, validateExecutorConfig, type ExecutorRow } from '../workspace/executors.js';
 
 /**
  * Add an executor, or edit an existing one.
  *
- * The same native-`<dialog>` bargain RepoPickerDialog makes: `showModal()` buys the top layer,
- * focus trapping, `::backdrop` and Escape without a hand-rolled trap; no `<form>` submits because
- * CSP sends `form-action 'none'`. The one difference in body is a textarea for the pasted JSON,
- * re-validated on every keystroke by the pure validator — cheap, and the message under the field is
- * what makes raw JSON pasteable at all.
+ * The same Headless-UI bargain RepoPickerDialog makes: the `Dialog` buys the top layer, focus
+ * trapping, focus restoration, the backdrop and Escape without a hand-rolled trap; no `<form>`
+ * submits because CSP sends `form-action 'none'`. The one difference in body is a textarea for
+ * the pasted JSON, re-validated on every keystroke by the pure validator — cheap, and the message
+ * under the field is what makes raw JSON pasteable at all.
  *
  * The dialog receives the whole list as it opened — configs included, fetched on demand — because
  * the PUT is a whole-list replace: add appends to it, edit folds the changed row back in
@@ -28,7 +29,6 @@ export interface ExecutorDialogProps {
 }
 
 export function ExecutorDialog({ open, existing, editing, onClose, onSave, saving }: ExecutorDialogProps) {
-    const ref = useRef<HTMLDialogElement | null>(null);
     const [type, setType] = useState<ExecutorType>(EXECUTOR_TYPES[0]);
     const [name, setName] = useState('');
     const [config, setConfig] = useState('');
@@ -48,23 +48,6 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
         // while the dialog is up, and re-seeding the fields mid-edit would discard typing.
     }, [open, editing]);
 
-    useEffect(() => {
-        const dialog = ref.current;
-        if (!dialog) return;
-        if (open && !dialog.open) dialog.showModal();
-        if (!open && dialog.open) dialog.close();
-    }, [open]);
-
-    // Escape closes the dialog without telling React, so without this the parent still believes it
-    // is open and will not reopen it.
-    useEffect(() => {
-        const dialog = ref.current;
-        if (!dialog) return;
-        const closed = () => onClose();
-        dialog.addEventListener('close', closed);
-        return () => dialog.removeEventListener('close', closed);
-    }, [onClose]);
-
     const validation = validateExecutorConfig(config, name, type);
 
     const save = async () => {
@@ -83,55 +66,69 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
     };
 
     return (
-        <dialog className="picker" ref={ref} aria-labelledby="executor-title">
-            <h2 id="executor-title">{editing ? 'Edit executor' : 'Add executor'}</h2>
-            <p className="muted">An executor is what runs your agents' work. Paste its configuration as raw JSON.</p>
+        <Dialog open={open} onClose={onClose} className="dialog-layer" aria-labelledby="executor-title">
+            <div className="dialog-backdrop" aria-hidden="true" />
+            <div className="dialog-position">
+                <DialogPanel className="picker">
+                    <DialogTitle as="h2" id="executor-title">
+                        {editing ? 'Edit executor' : 'Add executor'}
+                    </DialogTitle>
+                    <p className="muted">
+                        An executor is what runs your agents' work. Paste its configuration as raw JSON.
+                    </p>
 
-            <label className="picker-search">
-                <span className="muted">type</span>
-                <select value={type} onChange={(event) => setType(event.target.value as ExecutorType)}>
-                    {/* Rendered from the shared list, so a future type needs no JSX change. */}
-                    {EXECUTOR_TYPES.map((value) => (
-                        <option key={value} value={value}>
-                            {value}
-                        </option>
-                    ))}
-                </select>
-            </label>
+                    <label className="picker-search">
+                        <span className="muted">type</span>
+                        <select value={type} onChange={(event) => setType(event.target.value as ExecutorType)}>
+                            {/* Rendered from the shared list, so a future type needs no JSX change. */}
+                            {EXECUTOR_TYPES.map((value) => (
+                                <option key={value} value={value}>
+                                    {value}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
 
-            <label className="picker-search">
-                <span className="muted">name</span>
-                <input type="text" value={name} placeholder="main" onChange={(event) => setName(event.target.value)} />
-            </label>
+                    <label className="picker-search">
+                        <span className="muted">name</span>
+                        <input
+                            type="text"
+                            value={name}
+                            placeholder="main"
+                            onChange={(event) => setName(event.target.value)}
+                        />
+                    </label>
 
-            <label className="picker-search">
-                <span className="muted">config (JSON)</span>
-                <textarea
-                    rows={8}
-                    value={config}
-                    placeholder='{ "model": "sonnet" }'
-                    onChange={(event) => setConfig(event.target.value)}
-                />
-            </label>
-            {/* Re-validated per keystroke; rendered live, before Save is even pressed. */}
-            {config.trim() && !validation.ok ? <p className="status">{validation.error}</p> : null}
+                    <label className="picker-search">
+                        <span className="muted">config (JSON)</span>
+                        <textarea
+                            rows={8}
+                            value={config}
+                            placeholder='{ "model": "sonnet" }'
+                            onChange={(event) => setConfig(event.target.value)}
+                        />
+                    </label>
+                    {/* Re-validated per keystroke; rendered live, before Save is even pressed. */}
+                    {config.trim() && !validation.ok ? <p className="status">{validation.error}</p> : null}
 
-            {failure ? <p className="status">{failure}</p> : null}
+                    {failure ? <p className="status">{failure}</p> : null}
 
-            {/* type="button" throughout: a submitting form would be blocked by form-action 'none'. */}
-            <div className="picker-actions">
-                <button type="button" onClick={onClose}>
-                    Cancel
-                </button>
-                <button
-                    type="button"
-                    className="primary"
-                    onClick={() => void save()}
-                    disabled={saving || !validation.ok}
-                >
-                    {saving ? 'Saving…' : editing ? 'Save' : 'Add'}
-                </button>
+                    {/* type="button" throughout: a submitting form would be blocked by form-action 'none'. */}
+                    <div className="picker-actions">
+                        <button type="button" onClick={onClose}>
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            className="primary"
+                            onClick={() => void save()}
+                            disabled={saving || !validation.ok}
+                        >
+                            {saving ? 'Saving…' : editing ? 'Save' : 'Add'}
+                        </button>
+                    </div>
+                </DialogPanel>
             </div>
-        </dialog>
+        </Dialog>
     );
 }

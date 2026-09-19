@@ -1,22 +1,20 @@
-import { useRef } from 'react';
 import { NavLink } from 'react-router-dom';
+import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { signOut, type Session } from '../api/useSession.js';
 
 /**
  * The account affordance in the topbar: avatar (or an initial chip when GitHub reports none, as
  * under AUTH_MODE=none), the login, and the way into /settings.
  *
- * A native `<details>` rather than state, so there is nothing to synchronize: the browser opens and
- * closes it, and a server-side render still carries the panel markup collapsed. The one behavior
- * state WOULD own is closing the panel when a link inside it navigates — the topbar survives
- * navigation, so without this the menu would still be open on the page it just led to.
+ * A Headless UI `Menu`, so opening, closing, Escape and arrow-key navigation are the library's and
+ * there is nothing to synchronize. The panel anchors below the button and closes itself when an
+ * item is picked — the one behavior the old `<details>` owned by hand was closing on navigation,
+ * since the topbar survives it and the menu would otherwise still be open on the page it led to.
  */
 export function UserMenu({ session }: { session: Session }) {
-    const ref = useRef<HTMLDetailsElement>(null);
-    const close = () => ref.current?.removeAttribute('open');
     return (
-        <details className="user-menu" ref={ref}>
-            <summary className="user-menu-button" title={`${session.user.login} (${session.role})`}>
+        <Menu>
+            <MenuButton className="user-menu-button" title={`${session.user.login} (${session.role})`}>
                 {session.user.avatarUrl ? (
                     <img className="avatar" src={session.user.avatarUrl} alt="" width={24} height={24} />
                 ) : (
@@ -25,28 +23,26 @@ export function UserMenu({ session }: { session: Session }) {
                     </span>
                 )}
                 <span className="user-menu-login">{session.user.login}</span>
-            </summary>
-            <div className="user-menu-panel">
-                <NavLink to="/settings" onClick={close}>
-                    Settings
-                </NavLink>
+            </MenuButton>
+            <MenuItems anchor="bottom end" className="popover user-menu-panel">
+                <MenuItem>
+                    <NavLink to="/settings" className="popover-option">
+                        Settings
+                    </NavLink>
+                </MenuItem>
                 {/*
                     Under AUTH_MODE=none there is no session to end, so no item — a button that can
                     never work is a broken button. A fetch POST and not a <form>: the CSP bans
                     form navigation, and the server refuses GET for the same CSRF reason.
                 */}
                 {session.mode !== 'none' ? (
-                    <button
-                        type="button"
-                        onClick={() => {
-                            close();
-                            void signOut();
-                        }}
-                    >
-                        Sign out
-                    </button>
+                    <MenuItem>
+                        <button type="button" className="popover-option" onClick={() => void signOut()}>
+                            Sign out
+                        </button>
+                    </MenuItem>
                 ) : null}
-            </div>
-        </details>
+            </MenuItems>
+        </Menu>
     );
 }

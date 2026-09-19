@@ -300,57 +300,26 @@ describe('SideNav task summary', () => {
 
 describe('RepoPickerDialog', () => {
     /*
-     * `useEffect` does not run under renderToStaticMarkup, so `showModal()` is never called here.
-     * That means modality, the focus trap, focus restoration and Escape are NOT covered by this
-     * suite — they are the browser's behaviour, and they belong in e2e/workspace.spec.ts. What is
-     * covered is the markup, including the two things that fail silently if they regress.
+     * The Headless UI Dialog portals its content, and renderToStaticMarkup does not render
+     * portals — an open dialog server-renders as Headless' placeholder span, nothing more.
+     * The in-dialog contracts therefore moved rather than died: the selection logic is the pure
+     * `nextChosen` and the disabled-until-loaded guard the pure `saveDisabled`, both in
+     * repo-picker.test.ts, and the empty state, the way out and the form-action 'none' trap are
+     * e2e/workspace.spec.ts's, where a real browser mounts the portal. What is left to assert
+     * here is that boundary itself: the component still server-renders without crashing, whatever
+     * it mounts to.
      */
     const render = (open: boolean) =>
         renderToStaticMarkup(
             <RepoPickerDialog open={open} selected={[]} onClose={() => {}} onSave={async () => null} saving={false} />
         );
 
-    it('disables Save until the installation list has actually loaded', () => {
-        /*
-         * The body of the PUT is the WHOLE selection, so saving against a list that has not
-         * arrived is how somebody loses every checkout they had. This used to be worse than a
-         * missing guard: `save()` built its payload by FILTERING the installation list, so an
-         * empty list produced an empty payload — one click deselected everything.
-         *
-         * `useRepos` does not fetch under renderToStaticMarkup (no effects), so this render is
-         * exactly the not-yet-loaded state.
-         */
-        const html = render(true);
-        const save = html.slice(html.indexOf('Save') - 200, html.indexOf('Save'));
-        expect(save).toContain('disabled');
-    });
-
-    it('renders a dialog element without the `open` attribute', () => {
-        // `<dialog open>` is the NON-modal mode: no top layer, no backdrop, no focus trap. Modality
-        // has to come from showModal(), which is why the attribute must never be set here.
-        const html = render(true);
-        expect(html).toContain('<dialog');
-        expect(html).not.toMatch(/<dialog[^>]*\sopen/);
-    });
-
-    it("uses no form, because the CSP sends form-action 'none'", () => {
-        // The same trap that makes LoginGate an anchor rather than a form. A `method="dialog"` form
-        // would look correct and be blocked by the header set in server/src/app.ts.
-        const html = render(true);
-        expect(html).not.toContain('method="dialog"');
-        expect(html).not.toContain('<form');
-    });
-
-    it('says the App is installed nowhere rather than showing an empty list', () => {
-        // An empty picker and an unreachable GitHub look identical otherwise, and only one of them
-        // is something the reader can act on.
-        expect(render(true)).toContain('not installed on any repositories');
-    });
-
-    it('offers a way out, because this is not a hard gate', () => {
-        // If the App is installed nowhere, a non-dismissible dialog is a bricked application with
-        // no route to the docs — and the dashboard's figures are readable without a selection.
-        expect(render(true)).toContain('Not now');
+    it('renders a placeholder until the client mounts, open or closed', () => {
+        // Portal content is a client-only concern: SSR emits the presence span, and the browser
+        // fills the rest in after mount.
+        for (const open of [false, true]) {
+            expect(render(open)).toContain('<span hidden');
+        }
     });
 });
 

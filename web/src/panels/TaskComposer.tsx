@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 
 /** `owner/name` of the first selected repository, or `''` for none — the select's value shape. */
 const firstRepo = (repos: readonly { owner: string; name: string }[] | null): string => {
@@ -17,6 +18,27 @@ export interface WorkflowParamChoice {
  * resolves with, the same tie-break `findByName` walks on the board.
  */
 const DEFAULT_PRECEDENCE: Record<'org' | 'user' | 'repo', number> = { repo: 0, user: 1, org: 2 };
+
+/**
+ * The workflows the composer offers: one row per effective NAME, at the scope the launch would
+ * resolve. A name is unique per scope only, so the visible list can hold the same name at several
+ * scopes — and a Listbox row is clickable in a way a native `<option>` duplicate never was. The
+ * options therefore collapse to the same repo-over-user-over-org winner `chosenWorkflow` (and the
+ * board's `findByName`) resolves with, in the order the list offered the names; picking a row and
+ * picking its name can no longer mean two different definitions.
+ */
+export function effectiveWorkflows<T extends { name: string; scope: 'org' | 'user' | 'repo' }>(
+    workflows: readonly T[]
+): T[] {
+    const best = new Map<string, T>();
+    for (const choice of workflows) {
+        const held = best.get(choice.name);
+        if (held === undefined || DEFAULT_PRECEDENCE[choice.scope] < DEFAULT_PRECEDENCE[held.scope]) {
+            best.set(choice.name, choice);
+        }
+    }
+    return workflows.filter((choice) => best.get(choice.name) === choice);
+}
 
 /**
  * The value cap the board enforces (workflow-schema.ts `PARAM_VALUE_LIMIT`), mirrored so Send
@@ -324,68 +346,90 @@ export function TaskComposer({
                     }}
                 />
                 <div className="composer-row">
-                    <label className="composer-label">
+                    <div className="composer-label">
                         Repository{' '}
-                        <select
-                            className="composer-select"
+                        <Listbox
                             value={repo}
-                            onChange={(e) => {
+                            onChange={(next) => {
                                 setRepoTouched(true);
-                                setRepo(e.target.value);
+                                setRepo(next);
                                 // Reporting upward is the reporting effect's job — one path.
                             }}
                         >
-                            <option value="">none</option>
-                            {repos.map(({ owner, name }) => {
-                                const full = `${owner}/${name}`;
-                                return (
-                                    <option key={full} value={full}>
-                                        {full}
-                                    </option>
-                                );
-                            })}
-                        </select>
-                    </label>
-                    <label className="composer-label">
+                            <ListboxButton className="composer-select" aria-label="Repository">
+                                {repo === '' ? 'none' : repo}
+                            </ListboxButton>
+                            <ListboxOptions anchor="bottom start" className="popover">
+                                <ListboxOption value="" className="popover-option">
+                                    none
+                                </ListboxOption>
+                                {repos.map(({ owner, name }) => {
+                                    const full = `${owner}/${name}`;
+                                    return (
+                                        <ListboxOption key={full} value={full} className="popover-option">
+                                            {full}
+                                        </ListboxOption>
+                                    );
+                                })}
+                            </ListboxOptions>
+                        </Listbox>
+                    </div>
+                    <div className="composer-label">
                         Executor{' '}
-                        <select
-                            className="composer-select"
+                        <Listbox
                             value={executor}
-                            onChange={(e) => {
+                            onChange={(next) => {
                                 setExecutorTouched(true);
-                                setExecutor(e.target.value);
+                                setExecutor(next);
                             }}
                         >
-                            <option value="">none</option>
-                            {executors.map((candidate) => (
-                                <option key={candidate.name} value={candidate.name}>
-                                    {candidate.name}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
+                            <ListboxButton className="composer-select" aria-label="Executor">
+                                {executor === '' ? 'none' : executor}
+                            </ListboxButton>
+                            <ListboxOptions anchor="bottom start" className="popover">
+                                <ListboxOption value="" className="popover-option">
+                                    none
+                                </ListboxOption>
+                                {executors.map((candidate) => (
+                                    <ListboxOption
+                                        key={candidate.name}
+                                        value={candidate.name}
+                                        className="popover-option"
+                                    >
+                                        {candidate.name}
+                                    </ListboxOption>
+                                ))}
+                            </ListboxOptions>
+                        </Listbox>
+                    </div>
                     {workflows !== null ? (
-                        <label className="composer-label">
+                        <div className="composer-label">
                             Workflow{' '}
-                            <select
-                                className="composer-select"
+                            <Listbox
                                 value={workflow}
-                                onChange={(e) => {
-                                    setWorkflow(e.target.value);
+                                onChange={(next) => {
+                                    setWorkflow(next);
                                     // The values reset through the identity-keyed read: the changed
                                     // choice re-resolves the chosen workflow, and stale values
                                     // stop being handed back. A repo switch goes further and resets
                                     // the whole draft — the repo effect below.
                                 }}
                             >
-                                <option value="">— none —</option>
-                                {workflows.map((choice) => (
-                                    <option key={choice.id} value={choice.name}>
-                                        {choice.name}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
+                                <ListboxButton className="composer-select" aria-label="Workflow">
+                                    {workflow === '' ? '— none —' : workflow}
+                                </ListboxButton>
+                                <ListboxOptions anchor="bottom start" className="popover">
+                                    <ListboxOption value="" className="popover-option">
+                                        — none —
+                                    </ListboxOption>
+                                    {effectiveWorkflows(workflows).map((choice) => (
+                                        <ListboxOption key={choice.id} value={choice.name} className="popover-option">
+                                            {choice.name}
+                                        </ListboxOption>
+                                    ))}
+                                </ListboxOptions>
+                            </Listbox>
+                        </div>
                     ) : null}
                     <button
                         type="button"

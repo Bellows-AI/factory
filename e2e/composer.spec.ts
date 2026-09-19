@@ -46,14 +46,16 @@ test.describe('the task composer', () => {
         await expect(composer.getByLabel('Executor')).toBeVisible();
         await expect(composer.getByLabel('Workflow')).toBeVisible();
 
-        // The board's own process is offered by name.
-        await expect(page.getByLabel('Workflow').locator('option', { hasText: 'fix-issue' })).toBeAttached();
+        // The board's own process is offered by name: the Listbox opens on the trigger click and
+        // its options render in the anchored listbox.
+        const workflow = page.getByLabel('Workflow');
+        await workflow.click();
+        await expect(page.getByRole('option', { name: 'fix-issue' })).toBeAttached();
 
         // Selecting it must surface one labelled input per declared parameter: the launch
         // refuses without them, so a select without a form is a task that cannot start.
-        const workflow = page.getByLabel('Workflow');
-        await workflow.selectOption('fix-issue');
-        await expect(workflow).toHaveValue('fix-issue');
+        await page.getByRole('option', { name: 'fix-issue' }).click();
+        await expect(workflow).toHaveText('fix-issue');
         const issue = composer.getByRole('textbox', { name: 'issue' });
         await expect(issue).toBeVisible();
 
@@ -81,7 +83,7 @@ test.describe('the task composer', () => {
         const composer = page.locator('.composer');
         // Nothing chosen: NO process resolves — the member's words are the whole command, and
         // Send lights on the draft alone.
-        await expect(page.getByLabel('Workflow')).toHaveValue('');
+        await expect(page.getByLabel('Workflow')).toHaveText('— none —');
         await page.getByPlaceholder('Describe the task…').fill('fix the login crash');
         const send = page.getByRole('button', { name: 'Send' });
         await expect(send).toBeEnabled();
@@ -90,7 +92,8 @@ test.describe('the task composer', () => {
 
         // Choosing the parametrized process is the member's explicit act — and it is the only
         // thing that engages the parameter gate.
-        await page.getByLabel('Workflow').selectOption('fix-issue');
+        await page.getByLabel('Workflow').click();
+        await page.getByRole('option', { name: 'fix-issue' }).click();
         const issue = composer.getByRole('textbox', { name: 'issue' });
         await expect(issue).toBeVisible();
         await expect(send).toBeDisabled();

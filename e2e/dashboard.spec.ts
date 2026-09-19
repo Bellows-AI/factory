@@ -41,7 +41,7 @@ async function selectPreset(page: Page, label: string, preset: string) {
         page.waitForResponse(
             (r) => r.url().includes(`range=${preset}`) && r.status() === 200,
         ),
-        page.getByRole('button', { name: label, exact: true }).click(),
+        page.getByRole('radio', { name: label, exact: true }).click(),
     ]);
     const body = (await response.json()) as {
         meta: { range: { preset: string; from: string | null; to: string | null } };
@@ -67,8 +67,8 @@ test.describe('date range selector', () => {
 
         // 'All time' is the default, so it is selected last: clicking it first would change no
         // query and fire no request.
-        await expect(page.getByRole('button', { name: 'All time', exact: true })).toHaveAttribute(
-            'aria-pressed',
+        await expect(page.getByRole('radio', { name: 'All time', exact: true })).toHaveAttribute(
+            'aria-checked',
             'true',
         );
 
@@ -82,8 +82,8 @@ test.describe('date range selector', () => {
             const { url, range } = await selectPreset(page, label, preset);
             expect(url.searchParams.get('range'), label).toBe(preset);
             expect(range.preset, label).toBe(preset);
-            await expect(page.getByRole('button', { name: label, exact: true })).toHaveAttribute(
-                'aria-pressed',
+            await expect(page.getByRole('radio', { name: label, exact: true })).toHaveAttribute(
+                'aria-checked',
                 'true',
             );
             await assertRendersCleanly(page, preset);
@@ -114,7 +114,7 @@ test.describe('date range selector', () => {
             if (r.url().includes('/api/stats?')) requests.push(r.url());
         });
 
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        await page.getByRole('radio', { name: 'Custom', exact: true }).click();
         await expect(page.getByText('showing all time until then')).toBeVisible();
         // An empty custom range resolves to all time, which is the query already on screen, so
         // it refetches nothing. Sending it as `range=custom` would be a 400 per keystroke.
@@ -201,14 +201,31 @@ test.describe('the organization selector', () => {
         const select = page.locator('.org-select');
         await expect(select).toBeDisabled();
         // AUTH_MODE=none has exactly one organization, the local one — its id and name are the
-        // same string, and the ORG_ID env that used to rename it here is gone (#121).
-        await expect(select).toHaveValue('default');
+        // same string, and the ORG_ID env that used to rename it here is gone (#121). The
+        // Listbox trigger carries the name in text and in its aria-label; the one option it
+        // would offer is a client-side concern.
         await expect(select).toHaveText('default');
-        // One option, because a config-mode deployment has exactly one organization.
-        await expect(select.locator('option')).toHaveCount(1);
+        await expect(select).toHaveAttribute('aria-label', 'Organization: default');
 
         // Fitting beside Refresh without wrapping is a layout fact no assertion covers.
         await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
         await page.locator('.topbar').screenshot({ path: `${SHOTS}/topbar-org.png` });
+    });
+});
+
+test.describe('the user menu', () => {
+    // The Headless UI Menu renders the panel client-side only, so the render suite cannot see it;
+    // this open board is AUTH_MODE=none, which makes it the one place the sign-out negative lives.
+    test('offers the way to settings but no sign out where there is no session to end', async ({ page }) => {
+        await open(page);
+
+        await page.locator('.user-menu-button').click();
+        // The mode ignores every credential, so a sign-out item could never work — absent, not
+        // disabled, like the settings page's token sections under the same mode.
+        await expect(page.getByRole('menuitem', { name: 'Sign out' })).toHaveCount(0);
+        await expect(page.getByRole('menuitem', { name: 'Settings' })).toBeVisible();
+
+        await page.keyboard.press('Escape');
+        await page.locator('.topbar').screenshot({ path: `${SHOTS}/topbar-user-menu.png` });
     });
 });

@@ -20,7 +20,7 @@ whole theme surface (issue 117 is a second `:root` block, not a restyle).
 | `--panel` | Card and panel surface |
 | `--panel-raised` | One step above `--panel`: controls, inline `code`, the avatar placeholder, hover fills |
 | `--border` | Every hairline: panel edges, table row rules, control outlines |
-| `--overlay` | Modal backdrop behind a `dialog` — `var()` resolves in `::backdrop` on every engine since the 2024 originating-element inheritance change (Chrome 122, Firefox 120, Safari 17.4) |
+| `--overlay` | Modal backdrop behind a Headless UI dialog (the `.dialog-backdrop` div) |
 | `--text` | Primary foreground |
 | `--muted` | Secondary foreground: labels, captions, ticks, disabled text |
 | `--primary` | The accent: links, active controls, the default chart bar |
@@ -50,7 +50,8 @@ Rules the token set carries:
   text and control states; the series fill (`--chart-primary`) colors chart marks and swatches.
   `.bar`'s default and `button.primary` stay on `--primary` — unifying the two is a pixel change.
 - **`color-scheme: dark` lives in exactly one place** (the `.range-custom input, .org-select`
-  rule), so native controls pop in the page's scheme. A themed build moves it with the block.
+  rule), so the native date inputs pop in the page's scheme — the org control carries it as part
+  of its skin. A themed build moves it with the block.
 
 ## Primitives
 
@@ -76,20 +77,20 @@ What exists, and when to reach for which. Families first; one-offs at the end.
 | Status line | `status`, `alert`, `error`, `muted` | One-line state text; `muted` for secondary prose anywhere |
 | Badge | `badge`, `badge-warn` | Loud inline marker — reserved for synthetic data |
 | Limits | `limits` | The bulleted limitations list |
-| Screen-reader only | `sr-only` | Visually hidden, assistive-tech visible |
 
 ### Controls
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
+| Popover | `popover`, `popover-option` | The shared floating surface for the anchored Headless UI panels — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
 | Range | `range-selector`, `range-presets`, `range-option.active`, `range-custom` | The date-range picker |
-| Org | `org-selector`, `org-select` | The organization dropdown in the topbar |
+| Org | `org-selector`, `org-select` | The organization switcher in the topbar (Headless UI Listbox) |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
 | Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
-| User menu | `user-menu`, `user-menu-login`, `user-menu-panel` | The topbar identity disclosure |
+| User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The topbar identity disclosure (Headless UI Menu) |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
-| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-actions` | The native `<dialog>` repo/executor pickers; backdrop uses `--overlay` |
+| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox repo/executor pickers; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay` |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
 
 ### Data display
@@ -154,11 +155,11 @@ Components:
 | `RangeSelector.tsx` | range |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
-| `ScopeToggle.tsx` | range-presets, sr-only |
+| `ScopeToggle.tsx` | range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
 | `TopBar.tsx` | topbar |
-| `UserMenu.tsx` | user-menu, avatar |
+| `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
 
 Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a helper, not a panel):
 
@@ -204,5 +205,5 @@ Charts (`scale.ts` is the band/linear scale helper — no markup):
 | `Scatter.tsx` | dot, axis-label |
 | `scale.ts` | helper — no markup |
 
-A class used but not defined here (`scope-toggle`, `visually-hidden`, `token-once`, …) is a hook
+A class used but not defined here (`visually-hidden`, `token-once`, …) is a hook
 with no styles or a leftover — do not style it by inventing a rule without a row above.

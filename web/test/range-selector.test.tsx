@@ -34,7 +34,7 @@ describe('RangeSelector', () => {
             expect(html).toContain(label);
         }
         expect(html).toContain('range-option active');
-        expect(html).toContain('aria-pressed="true"');
+        expect(html).toContain('aria-checked="true"');
     });
 
     it('shows the date inputs only for a custom range', () => {
@@ -80,14 +80,16 @@ describe('ScopeToggle', () => {
         renderToStaticMarkup(<ScopeToggle scope={scope} onChange={() => {}} />);
 
     it('offers Org and Me and marks the active one', () => {
+        // The RadioGroup renders real buttons in the radiogroup role; `aria-checked` is how the
+        // state is read, not aria-pressed.
         expect(renderToggle('org')).toContain('Org');
         expect(renderToggle('org')).toContain('Me');
-        expect(renderToggle('org')).toContain('aria-pressed="true"');
+        expect(renderToggle('org')).toContain('aria-checked="true"');
         expect(renderToggle('mine')).toMatch(/Me<\/button>/);
     });
 
     it('marks org active only when org is selected', () => {
-        // aria-pressed is how the state is read; both buttons render either way.
+        // The `active` class is how the state is seen; both buttons render either way.
         const org = renderToggle('org');
         expect(org).toContain('Org</button>');
     });
