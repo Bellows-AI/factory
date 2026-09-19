@@ -30,6 +30,17 @@ export const SETTINGS_SECTIONS: readonly NavItem[] = [
     { to: '/settings/executors', label: 'Executors' },
 ];
 
+/**
+ * The tree's `aria-current` rule, shared by every renderer of `NAV_ITEMS` (issue 160 keeps the
+ * drawer from forking it): a tree marks ONE address as the page — on a section page the parent
+ * `/settings` link is open and lit but explicitly NOT the current page, so it says `false`
+ * instead of claiming the marker; every other item lets the router decide.
+ */
+export function ariaCurrentFor(item: NavItem, pathname: string): 'page' | 'false' | undefined {
+    if (item.to !== '/settings') return undefined;
+    return pathname === '/settings' ? 'page' : 'false';
+}
+
 /** A navigation preview never renders more than this many rows, whatever the poll returned. */
 export const MAX_PREVIEW = 5;
 

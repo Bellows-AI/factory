@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
 import type { StatsPayload } from '../api/useStats.js';
 import { switchOrg } from '../api/org.js';
-import { NAV_ITEMS, SETTINGS_SECTIONS, countLabel } from '../nav-model.js';
+import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor, countLabel } from '../nav-model.js';
 import { taskSections } from '../task-tree.js';
 import { OrgSelector } from './OrgSelector.js';
 
@@ -57,42 +57,42 @@ export function MobileNavDialog({
                             {CLOSE_LABEL}
                         </button>
                     </div>
-                    <ul className="sidenav-items">
-                        {NAV_ITEMS.map((item) => (
-                            <li key={item.to}>
-                                <NavLink
-                                    to={item.to}
-                                    end={item.end ?? false}
-                                    className={({ isActive }) => (isActive ? 'sidenav-link is-active' : 'sidenav-link')}
-                                    onClick={onNavigate}
-                                    aria-current={
-                                        item.to === '/settings'
-                                            ? pathname === '/settings'
-                                                ? 'page'
-                                                : 'false'
-                                            : undefined
-                                    }
-                                >
-                                    {item.label}
-                                </NavLink>
-                            </li>
-                        ))}
-                        {onSettings
-                            ? SETTINGS_SECTIONS.map((section) => (
-                                  <li key={section.to}>
-                                      <NavLink
-                                          to={section.to}
-                                          className={({ isActive }) =>
-                                              isActive ? 'sidenav-sublink is-active' : 'sidenav-sublink'
-                                          }
-                                          onClick={onNavigate}
-                                      >
-                                          {section.label}
-                                      </NavLink>
-                                  </li>
-                              ))
-                            : null}
-                    </ul>
+                    {/* The drawer is the compact shell's ONLY navigation landmark: the persistent
+                        column is display:none here, so the list carries the Primary label. */}
+                    <nav aria-label="Primary">
+                        <ul className="sidenav-items">
+                            {NAV_ITEMS.map((item) => (
+                                <li key={item.to}>
+                                    <NavLink
+                                        to={item.to}
+                                        end={item.end ?? false}
+                                        className={({ isActive }) =>
+                                            isActive ? 'sidenav-link is-active' : 'sidenav-link'
+                                        }
+                                        onClick={onNavigate}
+                                        aria-current={ariaCurrentFor(item, pathname)}
+                                    >
+                                        {item.label}
+                                    </NavLink>
+                                </li>
+                            ))}
+                            {onSettings
+                                ? SETTINGS_SECTIONS.map((section) => (
+                                      <li key={section.to}>
+                                          <NavLink
+                                              to={section.to}
+                                              className={({ isActive }) =>
+                                                  isActive ? 'sidenav-sublink is-active' : 'sidenav-sublink'
+                                              }
+                                              onClick={onNavigate}
+                                          >
+                                              {section.label}
+                                          </NavLink>
+                                      </li>
+                                  ))
+                                : null}
+                        </ul>
+                    </nav>
                     {tasks !== null ? (
                         <>
                             {/* Counts as sentences, not bare numbers beside dots — and not a live

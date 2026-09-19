@@ -31,9 +31,9 @@ describe('MobileNavDialog', () => {
         }
     });
 
-    it('labels the dialog and its close control for the browser to mount', () => {
-        // The dialog role takes its accessible name from the title; the close control speaks for
-        // itself. e2e asserts the mounted result against these same constants.
+    it('pins the labels the mounted dialog is asserted against in e2e', () => {
+        // The dialog content is portal markup no offline render can see; these constants are the
+        // contract the component renders and e2e/navigation.spec.ts asserts by role and name.
         expect(DIALOG_LABEL).toBe('Navigation');
         expect(CLOSE_LABEL).toBe('Close navigation');
     });

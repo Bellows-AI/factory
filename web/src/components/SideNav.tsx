@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
-import { NAV_ITEMS, SETTINGS_SECTIONS, preview } from '../nav-model.js';
+import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor, preview } from '../nav-model.js';
 import { taskDotClass, taskSections } from '../task-tree.js';
 import type { TaskTreeEntry } from '../task-tree.js';
 
@@ -118,12 +118,7 @@ export function SideNav({
                             end={item.end ?? false}
                             className={({ isActive }) => (isActive ? 'sidenav-link is-active' : 'sidenav-link')}
                             onClick={onNavigate}
-                            /* A tree marks ONE address as the page: on a section page the parent
-                               /settings link is open and lit but explicitly NOT the current page —
-                               the leaf's own link carries aria-current="page". */
-                            aria-current={
-                                item.to === '/settings' ? (pathname === '/settings' ? 'page' : 'false') : undefined
-                            }
+                            aria-current={ariaCurrentFor(item, pathname)}
                         >
                             {item.label}
                         </NavLink>

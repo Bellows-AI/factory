@@ -23,6 +23,9 @@ const PAGES: ReadonlyArray<[string, string]> = [
     ['/account', 'page-account'],
 ];
 
+/** The routes the overflow matrix walks. */
+const OVERFLOW_ROUTES = ['/', '/tasks', '/settings/workspace', '/account'] as const;
+
 async function someTaskId(page: Page): Promise<string> {
     // Any thread root: the detail route is the same view whatever the id.
     const body = (await page.request.get('/api/jobs?limit=200').then((r) => r.json())) as {
@@ -49,7 +52,7 @@ test.describe('the desktop shell', () => {
         };
         const roots = body.jobs.filter((job) => job.followUpTo === null);
         // The five-row preview cap below means nothing unless the board has far more tasks than
-        // the cap — the seed's fixed generator produces ~150 roots per run.
+        // the cap — the seed's fixed generator produces about 105-110 roots per run.
         expect(roots.length).toBeGreaterThanOrEqual(100);
     });
 
@@ -75,8 +78,9 @@ test.describe('the desktop shell', () => {
 
         // Scroll the tallest page to the bottom: the bar must still sit at the top edge.
         await page.mouse.wheel(0, 20_000);
-        await page.waitForTimeout(300);
-        expect((await bar.boundingBox())?.y).toBeLessThanOrEqual(2);
+        await expect
+            .poll(async () => (await bar.boundingBox())?.y ?? Number.POSITIVE_INFINITY, 'app bar stuck to the top')
+            .toBeLessThanOrEqual(2);
         await page.screenshot({ path: `${SHOTS}/shell-desktop-1440.png`, fullPage: true });
     });
 
@@ -112,10 +116,15 @@ test.describe('the responsive shell', () => {
     for (const width of [320, 360, 768, 1024, 1440]) {
         test(`no page-level horizontal overflow at ${width}px`, async ({ page }) => {
             await page.setViewportSize({ width, height: 1000 });
-            for (const path of ['/', '/tasks']) {
+            for (const path of OVERFLOW_ROUTES) {
                 await page.goto(path);
-                await page.waitForTimeout(200);
-                await noHorizontalOverflow(page);
+                // Polled, not slept: the claim is about the settled layout.
+                await expect
+                    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth))
+                    .toBeLessThanOrEqual(0);
+                await expect
+                    .poll(() => page.evaluate(() => document.body.scrollWidth - document.body.clientWidth))
+                    .toBeLessThanOrEqual(0);
             }
             if (width === 360 || width === 768) {
                 await page.screenshot({ path: `${SHOTS}/responsive-${width}.png`, fullPage: true });
@@ -142,13 +151,29 @@ test.describe('the responsive shell', () => {
         await page.keyboard.press('Enter');
         const landed = await page.evaluate(() => document.activeElement?.id);
         expect(landed).toBe('main-content');
-        await page.screenshot({ path: `${SHOTS}/skip-link-focus.png` });
 
         // Ordinary navigation: focus follows the click and nothing pulls it to the main region
         // behind the user's back.
         await page.locator('.sidenav-link').first().click();
         const after = await page.evaluate(() => document.activeElement?.id ?? 'none');
         expect(after, 'client-side navigation did not move focus to the main region').not.toBe('main-content');
+    });
+
+    test('keyboard focus paints the accent ring on navigation and controls', async ({ page }) => {
+        // The :focus-visible rule is CSS, invisible to the render suites; this pins the contract
+        // where it lands: a keyboard-focused link and button carry a solid outline in both themes.
+        await page.goto('/');
+        await page.locator('.skip-link').waitFor({ state: 'attached' });
+
+        for (const target of [page.locator('.sidenav-link').first(), page.getByRole('button', { name: 'Refresh' })]) {
+            await target.focus();
+            const outline = await target.evaluate((el) => {
+                const style = getComputedStyle(el);
+                return { style: style.outlineStyle, width: style.outlineWidth };
+            });
+            expect(outline.style, 'focused control shows its focus ring').toBe('solid');
+            expect(parseInt(outline.width, 10), 'focus ring is two pixels').toBe(2);
+        }
     });
 
     for (const width of [768, 360]) {
