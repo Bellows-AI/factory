@@ -7,6 +7,7 @@ import {
     type WorkflowParamChoice,
     clampedWorkflow,
     ComposerParamRow,
+    effectiveWorkflows,
     freshWorkflowDraft,
     paramsComplete,
     paramValueMatches,
@@ -1349,5 +1350,42 @@ describe('composer workflow draft resets on a repository change', () => {
         // workflow that declares params leaves Send dark — the member picks again and retypes.
         expect(valuesForWorkflow(reset.storedParams, 'wf-stale-default')).toEqual({});
         expect(paramsComplete([issue], valuesForWorkflow(reset.storedParams, 'wf-stale-default'))).toBe(false);
+    });
+});
+
+describe('effectiveWorkflows', () => {
+    // A name is unique per SCOPE only, so the visible list can hold the same name at several
+    // scopes. The Listbox row a member clicks must be the definition the launch resolves, and
+    // `chosenWorkflow` resolves a name with the board's repo-over-user-over-org precedence — so
+    // the options carry one row per effective name, at the winning scope.
+    const choice = (id: string, scope: 'org' | 'user' | 'repo') => ({ id, name: 'fix-issue', scope });
+
+    it('collapses a name offered at several scopes to its repo-scoped definition', () => {
+        const list = [choice('w-org', 'org'), choice('w-user', 'user'), choice('w-repo', 'repo')];
+        expect(effectiveWorkflows(list)).toEqual([choice('w-repo', 'repo')]);
+    });
+
+    it('keeps each name at its own scope when the scopes differ', () => {
+        const list = [
+            { id: 'w1', name: 'fix-issue', scope: 'repo' as const },
+            { id: 'w2', name: 'triage', scope: 'org' as const },
+        ];
+        expect(effectiveWorkflows(list)).toEqual(list);
+    });
+
+    it('falls through to user, then org, when no higher scope offers the name', () => {
+        expect(effectiveWorkflows([choice('w-org', 'org'), choice('w-user', 'user')])).toEqual([
+            choice('w-user', 'user'),
+        ]);
+        expect(effectiveWorkflows([choice('w-org', 'org'), choice('w-org2', 'org')])).toEqual([choice('w-org', 'org')]);
+    });
+
+    it('emits the winners in the order the list offered their names', () => {
+        const list = [
+            { id: 'w1', name: 'triage', scope: 'org' as const },
+            { id: 'w2', name: 'fix-issue', scope: 'org' as const },
+            { id: 'w3', name: 'fix-issue', scope: 'repo' as const },
+        ];
+        expect(effectiveWorkflows(list).map((c) => c.id)).toEqual(['w1', 'w3']);
     });
 });

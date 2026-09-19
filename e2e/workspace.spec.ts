@@ -103,11 +103,13 @@ test('the picker opens by itself when nothing is selected, and is genuinely moda
 
     // `aria-modal` and the rest of the page going inert are what renderToStaticMarkup cannot
     // reach, and what everything else about the dialog depends on — focus trapping, Escape, the
-    // backdrop. A click on the nav must land nowhere while the dialog is up.
+    // backdrop. A click on the nav must land nowhere while the dialog is up. Headless marks the
+    // application root (the main tree beside its portal), not each descendant, so the assertion
+    // is on the one inert root that contains the nav, not on the nav itself.
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
     const nav = page.locator('.sidenav');
-    await expect(nav).toHaveAttribute('inert', '');
-    await expect(nav).toHaveAttribute('aria-hidden', 'true');
+    const inertRoot = page.locator('[inert][aria-hidden="true"]', { has: nav });
+    await expect(inertRoot).toHaveCount(1);
 
     // The CSP sends form-action 'none', so no submitting form may ever appear in here — the same
     // trap that makes LoginGate an anchor rather than a form.

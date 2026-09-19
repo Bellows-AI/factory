@@ -20,6 +20,27 @@ export interface WorkflowParamChoice {
 const DEFAULT_PRECEDENCE: Record<'org' | 'user' | 'repo', number> = { repo: 0, user: 1, org: 2 };
 
 /**
+ * The workflows the composer offers: one row per effective NAME, at the scope the launch would
+ * resolve. A name is unique per scope only, so the visible list can hold the same name at several
+ * scopes — and a Listbox row is clickable in a way a native `<option>` duplicate never was. The
+ * options therefore collapse to the same repo-over-user-over-org winner `chosenWorkflow` (and the
+ * board's `findByName`) resolves with, in the order the list offered the names; picking a row and
+ * picking its name can no longer mean two different definitions.
+ */
+export function effectiveWorkflows<T extends { name: string; scope: 'org' | 'user' | 'repo' }>(
+    workflows: readonly T[]
+): T[] {
+    const best = new Map<string, T>();
+    for (const choice of workflows) {
+        const held = best.get(choice.name);
+        if (held === undefined || DEFAULT_PRECEDENCE[choice.scope] < DEFAULT_PRECEDENCE[held.scope]) {
+            best.set(choice.name, choice);
+        }
+    }
+    return workflows.filter((choice) => best.get(choice.name) === choice);
+}
+
+/**
  * The value cap the board enforces (workflow-schema.ts `PARAM_VALUE_LIMIT`), mirrored so Send
  * never lights up for a value the board would refuse.
  */
@@ -401,7 +422,7 @@ export function TaskComposer({
                                     <ListboxOption value="" className="popover-option">
                                         — none —
                                     </ListboxOption>
-                                    {workflows.map((choice) => (
+                                    {effectiveWorkflows(workflows).map((choice) => (
                                         <ListboxOption key={choice.id} value={choice.name} className="popover-option">
                                             {choice.name}
                                         </ListboxOption>
