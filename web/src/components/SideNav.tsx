@@ -140,7 +140,9 @@ export function SideNav({ navigation }: { navigation: TaskNavigation | null }) {
                             </ul>
                         ) : null}
                         {item.to === '/tasks' && navigation !== null ? (
-                            navigation.counts.running === 0 && navigation.counts.review === 0 ? (
+                            navigation.counts.running === 0 &&
+                            navigation.counts.review === 0 &&
+                            navigation.counts.past === 0 ? (
                                 <p className="sidenav-empty">No tasks yet</p>
                             ) : (
                                 <>

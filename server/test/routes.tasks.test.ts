@@ -167,6 +167,8 @@ describe('GET /api/tasks', () => {
 
     it.each([
         ['an unknown state', '/api/tasks?state=nope', 'BAD_TASK_STATE'],
+        ['a repeated state key', '/api/tasks?state=running&state=past', 'BAD_TASK_STATE'],
+        ['a repeated limit key', '/api/tasks?limit=10&limit=20', 'BAD_LIMIT'],
         ['an oversized search', `/api/tasks?q=${'x'.repeat(201)}`, 'BAD_QUERY'],
         ['a malformed repo', '/api/tasks?repo=not-owner-slash-name', 'BAD_REPO'],
         ['a malformed author', '/api/tasks?author=-bad-', 'BAD_AUTHOR'],

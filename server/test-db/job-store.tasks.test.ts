@@ -52,6 +52,8 @@ const craft = async (
         command?: string;
         author?: string;
         createdMinutesAgo?: number;
+        /** An exact stamp, for the cases where two rows must share one (the id tie-break). */
+        createdAt?: string;
         finishedMinutesAgo?: number;
         doneMinutesAgo?: number;
         summary?: string;
@@ -71,7 +73,7 @@ const craft = async (
             ${shape.author ?? AUTHOR},
             ${shape.repo ?? 'acme/widgets'},
             now() - interval '1 second',
-            now() - (${shape.createdMinutesAgo ?? 0} * interval '1 minute'),
+            ${shape.createdAt ?? sql`now() - (${shape.createdMinutesAgo ?? 0} * interval '1 minute')`},
             ${
                 shape.finishedMinutesAgo === undefined
                     ? null
@@ -266,9 +268,16 @@ describe.skipIf(!enabled)('listTasks, the task-summary read model', () => {
         for (let i = 0; i < 7; i++) {
             made.push(await reviewTask({ createdMinutesAgo: i + 10 }));
         }
-        // Two tasks at the SAME activity stamp: the id tie-break decides, deterministically.
-        const tieA = await reviewTask({ createdMinutesAgo: 5, id: 'aaaaaaaa-0000-4000-8000-00000000000a' });
-        const tieB = await reviewTask({ createdMinutesAgo: 5, id: 'bbbbbbbb-0000-4000-8000-00000000000b' });
+        // Two tasks at the SAME activity stamp — one literal, so two transactions cannot drift
+        // by microseconds and hide the tie-break: the id decides, deterministically.
+        const tieA = await reviewTask({
+            createdAt: '2026-09-01T11:55:00.000Z',
+            id: 'aaaaaaaa-0000-4000-8000-00000000000a',
+        });
+        const tieB = await reviewTask({
+            createdAt: '2026-09-01T11:55:00.000Z',
+            id: 'bbbbbbbb-0000-4000-8000-00000000000b',
+        });
 
         const ask = (cursor: { activityAt: string; rootId: string } | null, sort: 'newest' | 'oldest') =>
             store.listTasks({ state: 'attention', q: null, repo: null, author: null, sort, limit: 3, cursor });
@@ -300,11 +309,14 @@ describe.skipIf(!enabled)('listTasks, the task-summary read model', () => {
         const tieOrder = stamps.page.items.filter((t) => t.id === tieA || t.id === tieB).map((t) => t.id);
         expect(tieOrder).toEqual([tieB, tieA]);
 
-        // The oldest sort walks the same set the other way, with its own cursor direction.
+        // The oldest sort walks the same set the other way, with its own cursor direction. The
+        // tie rows carry the one fixed stamp, older than every relative one, so the first page
+        // opens with them in ID-ascending order, then the least-recent loop task.
         const oldest = await ask(null, 'oldest');
         expect(oldest.page.items).toHaveLength(3);
-        expect(oldest.page.items[0]!.id).toBe(made[made.length - 1]);
+        expect(oldest.page.items.map((t) => t.id)).toEqual([tieA, tieB, made[made.length - 1]]);
         const secondOldest = await ask(oldest.page.nextCursor, 'oldest');
+        expect(secondOldest.page.items.map((t) => t.id)).not.toContain(tieA);
         expect(secondOldest.page.items.map((t) => t.id)).not.toContain(made[made.length - 1]);
     });
 

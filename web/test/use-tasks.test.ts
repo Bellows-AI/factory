@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_FILTERS, inboxFiltersFromSearch, inboxQueryString } from '../src/api/useTasks.js';
+import { DEFAULT_FILTERS, firstPageError, inboxFiltersFromSearch, inboxQueryString } from '../src/api/useTasks.js';
 
 /**
  * The inbox's URL is the filter state — linkable, Back/Forward-navigable — so what the URL can
@@ -55,5 +55,16 @@ describe('inboxQueryString', () => {
 
     it('never sends an empty or clamped value', () => {
         expect(inboxQueryString({ ...DEFAULT_FILTERS, q: null, author: null, repo: null })).toBe('');
+    });
+});
+
+describe('firstPageError', () => {
+    // The hook's depth rule, pinned pure because the suite has no DOM: the retained refresh error
+    // is the page's inline error ONLY while no first page has landed — with rows on screen it is
+    // the beside-the-rows banner, and with no error at all the hook is in the skeletons state.
+    it('is the refresh error while nothing has loaded, and never once rows exist', () => {
+        expect(firstPageError(null, 'Request failed (503)')).toBe('Request failed (503)');
+        expect(firstPageError([], 'Request failed (503)')).toBeNull();
+        expect(firstPageError(null, null)).toBeNull();
     });
 });

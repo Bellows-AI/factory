@@ -130,5 +130,8 @@ export function sidenavPreview(navigation: TaskNavigation | null, activeId: stri
             rows.push(active);
         }
     }
-    return { rows, moreReview: Math.max(0, navigation.counts.review - review.length) };
+    // Counted from the rows that actually survived the injection: an eviction frees a slot, and
+    // the overflow line must not count an evicted row as still visible.
+    const shownReview = rows.filter((row) => navigation.review.includes(row)).length;
+    return { rows, moreReview: Math.max(0, navigation.counts.review - shownReview) };
 }

@@ -149,6 +149,13 @@ export interface UseTasks {
     };
 }
 
+/** The first-page failure: the retained refresh error with nothing beside it. Exported pure so
+ * the offline suite pins the depth test — a failed refresh WITH rows keeps the rows beside the
+ * banner; without them it IS the page's inline error, and the skeleton state never swallows it. */
+export function firstPageError(items: TaskSummary[] | null, refreshError: string | null): string | null {
+    return items === null ? refreshError : null;
+}
+
 const firstPageUrl = (query: string): string => (query === '' ? '/api/tasks' : `/api/tasks?${query}`);
 const morePageUrl = (query: string, cursor: string): string =>
     `/api/tasks?${query === '' ? '' : `${query}&`}cursor=${encodeURIComponent(cursor)}`;
@@ -180,7 +187,6 @@ export function useTasks(enabled: boolean): UseTasks {
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [loadingMore, setLoadingMore] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
-    const [error, setError] = useState<string | null>(null);
     const [refreshError, setRefreshError] = useState<string | null>(null);
     const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
@@ -204,6 +210,7 @@ export function useTasks(enabled: boolean): UseTasks {
         try {
             const response = await fetch(firstPageUrl(queryRef.current), { signal });
             if (response.status === 401) {
+                setRefreshing(false);
                 reportUnauthenticated();
                 return;
             }
@@ -225,8 +232,8 @@ export function useTasks(enabled: boolean): UseTasks {
             setNavigation(body.navigation);
             setItems(body.page.items);
             setNextCursor(body.page.nextCursor);
-            setError(null);
             setRefreshError(null);
+            setLoadMoreError(null);
             setRefreshing(false);
             const moving = body.navigation.counts.running > 0;
             const delay = document.hidden ? (moving ? 15_000 : 60_000) : moving ? 3_000 : 30_000;
@@ -246,6 +253,7 @@ export function useTasks(enabled: boolean): UseTasks {
     const start = useCallback(() => {
         if (!enabledRef.current) return;
         controller.current?.abort();
+        moreController.current?.abort();
         stopChain();
         const own = new AbortController();
         controller.current = own;
@@ -262,7 +270,6 @@ export function useTasks(enabled: boolean): UseTasks {
             setNavigation(null);
             setItems(null);
             setNextCursor(null);
-            setError(null);
             setRefreshError(null);
             setLoadMoreError(null);
             setRefreshing(false);
@@ -277,7 +284,6 @@ export function useTasks(enabled: boolean): UseTasks {
         stopChain();
         setItems(null);
         setNextCursor(null);
-        setError(null);
         setRefreshError(null);
         setLoadMoreError(null);
         setLoadingMore(false);
@@ -289,10 +295,7 @@ export function useTasks(enabled: boolean): UseTasks {
         };
     }, [start, enabled, query]);
 
-    const retry = useCallback(() => {
-        setError(null);
-        start();
-    }, [start]);
+    const retry = useCallback(() => start(), [start]);
 
     /** The poll's own re-arm, exposed for the mutations: an action changes the org's state. */
     const refresh = useCallback(() => start(), [start]);
@@ -447,6 +450,10 @@ export function useTasks(enabled: boolean): UseTasks {
         [start]
     );
 
+    // The first-page failure is the retained refresh error with nothing to show beside it — one
+    // state, not two: a failed first page and a failed refresh are the same fact at different
+    // depths, and the page renders it inline with a Retry while the rows exist.
+    const error = firstPageError(items, refreshError);
     return {
         navigation,
         items,

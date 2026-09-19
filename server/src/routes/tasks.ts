@@ -69,8 +69,12 @@ export const decodeTaskCursor = (
     }
 };
 
-/** One query parameter, shape-checked: Fastify hands repeated keys over as arrays. */
-const single = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+/** One query parameter's text, or undefined when absent. Fastify hands REPEATED keys over as
+ * arrays — a caller error, refused with the parameter's own code rather than read as a default. */
+const textParam = (value: unknown): { ok: string | undefined; repeated: boolean } => ({
+    ok: typeof value === 'string' ? value : undefined,
+    repeated: value !== undefined && typeof value !== 'string',
+});
 
 /**
  * The task-summary read for people: one row per thread root with head semantics, org-wide
@@ -92,37 +96,47 @@ export const taskRoutes =
             if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
             const query = request.query as Record<string, unknown>;
 
-            const rawState = single(query.state) ?? 'attention';
+            const stateParam = textParam(query.state);
+            if (stateParam.repeated) return bad(reply, 'BAD_TASK_STATE', 'state must be a single value');
+            const rawState = stateParam.ok ?? 'attention';
             if (!TASK_STATES.includes(rawState as TaskState)) {
                 return bad(reply, 'BAD_TASK_STATE', `state must be one of ${TASK_STATES.join(', ')}`);
             }
-            const rawQ = single(query.q);
-            const q = rawQ === null ? null : rawQ.trim() || null;
+            const qParam = textParam(query.q);
+            if (qParam.repeated) return bad(reply, 'BAD_QUERY', 'q must be a single value');
+            const q = qParam.ok === undefined ? null : qParam.ok.trim() || null;
             if (q !== null && q.length > TASK_QUERY_MAX) {
                 return bad(reply, 'BAD_QUERY', `q exceeds ${TASK_QUERY_MAX} characters`);
             }
-            const rawRepo = single(query.repo);
-            const repo = rawRepo === null || rawRepo === '' ? null : rawRepo;
+            const repoParam = textParam(query.repo);
+            if (repoParam.repeated) return bad(reply, 'BAD_REPO', 'repo must be a single value');
+            const repo = repoParam.ok === undefined || repoParam.ok === '' ? null : repoParam.ok;
             if (repo !== null && repoReason(repo) !== null) {
                 return bad(reply, 'BAD_REPO', repoReason(repo) ?? 'repo must be owner/name');
             }
-            const rawAuthor = single(query.author);
-            const author = rawAuthor === null || rawAuthor.trim() === '' ? null : rawAuthor.trim();
+            const authorParam = textParam(query.author);
+            if (authorParam.repeated) return bad(reply, 'BAD_AUTHOR', 'author must be a single value');
+            const author = authorParam.ok === undefined || authorParam.ok.trim() === '' ? null : authorParam.ok.trim();
             if (author !== null && (author.length > TASK_AUTHOR_MAX || !TASK_AUTHOR_SHAPE.test(author))) {
                 return bad(reply, 'BAD_AUTHOR', 'author must be a login of at most 100 characters');
             }
-            const rawSort = single(query.sort) ?? 'newest';
+            const sortParam = textParam(query.sort);
+            if (sortParam.repeated) return bad(reply, 'BAD_SORT', 'sort must be a single value');
+            const rawSort = sortParam.ok ?? 'newest';
             if (!TASK_SORTS.includes(rawSort as TaskSort)) {
                 return bad(reply, 'BAD_SORT', `sort must be one of ${TASK_SORTS.join(', ')}`);
             }
-            const rawLimit = single(query.limit);
-            const limit = rawLimit === null ? TASK_LIMIT_DEFAULT : Number(rawLimit);
+            const limitParam = textParam(query.limit);
+            if (limitParam.repeated) return bad(reply, 'BAD_LIMIT', 'limit must be a single value');
+            const limit = limitParam.ok === undefined ? TASK_LIMIT_DEFAULT : Number(limitParam.ok);
             if (!Number.isInteger(limit) || limit < 1 || limit > TASK_LIMIT_MAX) {
                 return bad(reply, 'BAD_LIMIT', `limit must be an integer 1..${TASK_LIMIT_MAX}`);
             }
 
             const expected = { sort: rawSort as TaskSort, state: rawState as TaskState, q, repo, author };
-            const rawCursor = single(query.cursor);
+            const cursorParam = textParam(query.cursor);
+            if (cursorParam.repeated) return bad(reply, 'BAD_CURSOR', 'cursor must be a single value');
+            const rawCursor = cursorParam.ok ?? null;
             const cursor = rawCursor === null ? null : decodeTaskCursor(rawCursor, expected);
             if (rawCursor !== null && cursor === null) {
                 return bad(reply, 'BAD_CURSOR', 'cursor does not belong to this query');

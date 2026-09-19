@@ -1134,7 +1134,7 @@ export function createJobStore({
                    head.status as status, head.cancel_requested_at as cancel_requested_at,
                    head.done_at as done_at, head.summary as summary,
                    head.runtime ->> 'activity' as activity,
-                   greatest(head.created_at, head.started_at, head.finished_at, head.done_at) as activity_at,
+                   date_trunc('milliseconds', greatest(head.created_at, head.started_at, head.finished_at, head.done_at)) as activity_at,
                    case
                        when head.status in ('queued', 'running', 'standby') then 'running'
                        when head.done_at is null then 'review'
@@ -1152,6 +1152,12 @@ export function createJobStore({
             where root.org_id = ${orgId} and root.id = root.root_job_id
         )
     `;
+
+    // The ordering key above is truncated to the precision the wire carries. timestamptz keeps
+    // microseconds and ISO strings carry milliseconds, so a raw stamp would round-trip through
+    // the cursor TRUNCATED — under `oldest` (the `>` predicate) the cursor row itself would
+    // reappear on the next page. Truncating the key makes the stored order and the served ISO
+    // identical, so a cursor round-trips exactly in both directions.
 
     interface TaskRow {
         id: string;
