@@ -115,6 +115,12 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
                             to={item.to}
                             end={item.end ?? false}
                             className={({ isActive }) => (isActive ? 'sidenav-link is-active' : 'sidenav-link')}
+                            /* A tree marks ONE address as the page: on a section page the parent
+                               /settings link is open and lit but explicitly NOT the current page —
+                               the leaf's own link carries aria-current="page". */
+                            aria-current={
+                                item.to === '/settings' ? (pathname === '/settings' ? 'page' : 'false') : undefined
+                            }
                         >
                             {item.label}
                         </NavLink>

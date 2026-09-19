@@ -99,7 +99,7 @@ export function SettingsRepositoriesPage() {
                 {selectedRepo ? (
                     env.loading && !env.data ? (
                         <p className="status">Loading environment…</p>
-                    ) : (
+                    ) : env.data ? (
                         <EnvVarsPanel
                             key={`${selectedRepo.owner}/${selectedRepo.name}`}
                             title={`${selectedRepo.owner}/${selectedRepo.name}`}
@@ -108,7 +108,7 @@ export function SettingsRepositoriesPage() {
                             onSave={(vars) => env.saveRepo(selectedRepo, vars)}
                             disabled={!isAdmin}
                         />
-                    )
+                    ) : null
                 ) : null}
             </section>
         </main>

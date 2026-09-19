@@ -70,9 +70,15 @@ export function SettingsWorkspacePage() {
                     <section className="panel">
                         <div className="panel-head">
                             <h2>Workspace</h2>
-                            <button type="button" className="primary" onClick={() => setPicking(true)}>
-                                Select repositories
-                            </button>
+                            {/* The picker seeds itself from the workspace selection, so it exists
+                                only when that selection is in hand — opened over a failed poll it
+                                would read "nothing selected" and its whole-list save would
+                                deselect every checkout. */}
+                            {data ? (
+                                <button type="button" className="primary" onClick={() => setPicking(true)}>
+                                    Select repositories
+                                </button>
+                            ) : null}
                         </div>
                         {data ? (
                             <p className="muted">
@@ -122,18 +128,18 @@ export function SettingsWorkspacePage() {
             )}
 
             {env.error ? <p className="status">{env.error}</p> : null}
-            {/* Same data gate as the organization page: the draft is seeded from initialVars, so
-                the editor must not mount before the scope's rows exist. */}
+            {/* Same data gate as the organization page: the editor mounts only when the scope's
+                rows exist, never as an enabled empty draft over a failed read. */}
             {env.loading && !env.data ? (
                 <p className="status">Loading environment…</p>
-            ) : (
+            ) : env.data ? (
                 <EnvVarsPanel
                     title="My workspace"
                     hint="Your own defaults, on every task you queue."
-                    initialVars={env.data?.workspace ?? []}
+                    initialVars={env.data.workspace}
                     onSave={env.saveWorkspace}
                 />
-            )}
+            ) : null}
         </main>
     );
 }

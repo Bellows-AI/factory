@@ -22,13 +22,15 @@ export function SettingsOrganizationPage() {
 
             {env.error ? <p className="status">{env.error}</p> : null}
             {/*
-                The editor mounts only on data: its draft is seeded from initialVars in a state
-                initializer, so mounting it while the request is in flight would freeze empty rows
-                over whatever is stored (docs/env.md, the draft-survival contract).
+                The editor mounts only on DATA, not merely when the request settles: its draft is
+                seeded from initialVars in a state initializer, so mounting it early would freeze
+                empty rows over whatever is stored — after a failed read an enabled editor would
+                be one save away from wiping the scope. The error line above is the read-only
+                posture; a retry is the page's next full render.
             */}
             {env.loading && !env.data ? (
                 <p className="status">Loading environment…</p>
-            ) : (
+            ) : env.data ? (
                 <EnvVarsPanel
                     title="Core (organization)"
                     hint={
@@ -36,11 +38,11 @@ export function SettingsOrganizationPage() {
                             ? 'Injected into every runner in this deployment. The place for shared credentials — GITHUB_TOKEN, for one.'
                             : 'An admin configures the core environment; it is shown here read-only.'
                     }
-                    initialVars={env.data?.org ?? []}
+                    initialVars={env.data.org}
                     onSave={env.saveOrg}
                     disabled={!isAdmin}
                 />
-            )}
+            ) : null}
         </main>
     );
 }

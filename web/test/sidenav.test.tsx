@@ -99,15 +99,18 @@ describe('SideNav', () => {
         expect(render('/settings/workspace')).toContain('aria-current="page"');
     });
 
-    it('marks the settings section and its current sub-section, in that order', () => {
-        // Tree semantics: the Settings link and the current section's link carry the marker, in
-        // that order — the same two-marker shape the task tree pins for /tasks/:id.
+    it('marks the current section visually on both levels, but only the leaf as the page', () => {
+        // Tree semantics: the Settings link and the current section's link both LIGHT UP (two
+        // is-active markers, parent first), while aria-current="page" belongs to the leaf alone —
+        // a page has one current address, and the parent is only the open section of the tree.
         const html = render('/settings/executors');
         const active = html.match(/is-active/g) ?? [];
         expect(active).toHaveLength(2);
         expect(html.indexOf('sidenav-link is-active')).toBeLessThan(html.indexOf('sidenav-sublink is-active'));
         const current = html.match(/aria-current="page"/g) ?? [];
-        expect(current).toHaveLength(2);
+        expect(current).toHaveLength(1);
+        // The parent says "not current" explicitly instead of claiming the page marker.
+        expect(html).toContain('aria-current="false"');
     });
 
     it('does not treat "/" as the parent of every other route', () => {
@@ -243,7 +246,7 @@ describe('SideNav task tree', () => {
 });
 
 describe('SideNav status dots', () => {
-    it('blinks a green dot beside a run that is going', () => {
+    it('breathes a green dot beside a run that is going', () => {
         const html = render('/tasks', [job(running())]);
         expect(section(html, 'Running (', 'Need review (')).toContain('sidenav-dot sidenav-dot-running');
     });
