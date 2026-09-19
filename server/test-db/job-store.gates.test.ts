@@ -1,24 +1,9 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type GateReport, type JobStore } from '../src/db/job-store.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES the job table before every test. Requiring a `_test` database name is the
- * guard, because the failure is silent: the tests pass and the queue is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
@@ -26,20 +11,19 @@ const ORG = 'test-org';
 const ABSENT = '00000000-0000-4000-8000-000000000000';
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 
+const db = useTestDb({ max: 4 });
+
+/** The chained follow-ups must land; a refusal here is a setup failure, not a branch under test. */
+const followUp = (target: JobStore, root: string, command: string, userId: string): Promise<{ id: string }> =>
+    target.createFollowUp(root, command, userId).then((ref) => {
+        if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
+        return ref;
+    });
+
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 4 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
+    sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end();
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    await sql`truncate job`;
 });
 
 /** A real account for created_by to point at — a gates claim needs an author for a workspace. */
@@ -203,11 +187,11 @@ describe.runIf(enabled)('gates on the job store', () => {
         const root = rootClaim!.id;
         await reader.session(root, rootClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
         await reader.complete(root, rootClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        const child = await reader.createFollowUp(root, 'adjust', userId);
+        const child = await followUp(reader, root, 'adjust', userId);
         const childClaim = await reader.claim('driver-1', 300);
         await reader.session(child.id, childClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
         await reader.complete(child.id, childClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        const grand = await reader.createFollowUp(child.id, 'again', userId);
+        const grand = await followUp(reader, child.id, 'again', userId);
 
         // The grandchild is the only claimable row now; its claim reads the ROOT's worktree.
         seen.length = 0;

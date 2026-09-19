@@ -49,4 +49,8 @@ restart with a warm database serves real data on the first request rather than a
 **Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
 `npm test`**. That is the price of keeping the default suite offline and database-free; they are
 covered by `npm run test:db`, which needs a running container — and refuses any database not named
-`*_test`, because the suite TRUNCATES its tables.
+`*_test`, because the suite resets and reseeds every table before each test. The suites share
+`server/test-db/harness.ts`: one `_test`-name guard, one migration run, one truncate-everything
+reset per test with the suite's declared fakes re-planted, and a final truncate teardown — so a
+fresh empty database works and no suite can quietly depend on rows a previous run left behind
+(which is how they once came to pass on a used database and fail on a fresh one).

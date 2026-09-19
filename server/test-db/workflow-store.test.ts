@@ -1,27 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import { checkWorkflowParams } from '../src/db/workflow-schema.js';
 import { BASE_WORKFLOW } from '../src/db/workflow-templates.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES workflow before every test. Requiring a `_test` database name is the guard,
- * because the failure is silent: the tests pass and every stored definition — the process the
- * board walks — is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: ReturnType<typeof createWorkflowStore>;
@@ -29,6 +14,8 @@ let store: ReturnType<typeof createWorkflowStore>;
 const ORG = 'test-org';
 const ALICE = '00000000-0000-4000-8000-00000000e118';
 const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
+
+const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90042, login: 'alice' }] });
 
 /** The smallest definition that passes the validator: one publish-reachable loop of two nodes. */
 const definition = {
@@ -46,24 +33,8 @@ const definition = {
 
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 4 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
-    // The user scope is foreign-keyed to a real account, so the suite needs one. Other suites
-    // seed the same fixed row under their own github ids, so the insert is idempotent both ways.
-    await sql`
-        insert into app_user (id, github_user_id, github_login)
-        values (${ALICE}, 90042, 'alice')
-        on conflict do nothing
-    `;
+    sql = db.sql;
     store = createWorkflowStore({ sql, orgId: ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end({ timeout: 5 });
-});
-
-beforeEach(async () => {
-    if (enabled) await sql`truncate workflow`;
 });
 
 describe.skipIf(!enabled)('the workflow store', () => {
@@ -186,13 +157,12 @@ describe.skipIf(!enabled)('the workflow store', () => {
 
     it('normalizes a pre-030 definition — no params key — so the launch check does not throw', async () => {
         // The pre-030 jsonb shape, inserted raw: the grammar's params key does not exist yet.
+        // sql.json, not a stringified parameter — postgres.js json-encodes a plain string toward
+        // a ::jsonb target, storing quoted text where an object belongs.
+        const legacy = sql.json({ entry: 'first', nodes: definition.nodes, edges: definition.edges });
         await sql`
             insert into workflow (org_id, name, definition, is_default)
-            values (${ORG}, 'legacy', ${{
-                entry: 'first',
-                nodes: definition.nodes,
-                edges: definition.edges,
-            }}::jsonb, true)
+            values (${ORG}, 'legacy', ${legacy}::jsonb, true)
         `;
 
         const resolved = await store.findByName('legacy', { userId: null, repo: null });

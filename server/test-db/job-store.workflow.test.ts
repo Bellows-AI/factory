@@ -1,27 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type Claim, type JobStore } from '../src/db/job-store.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { ParamValues, WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES job and workflow before every test. Requiring a `_test` database name is
- * the guard, because the failure is silent: the tests pass and the board's audit trail — the rows
- * every workflow decision derives from — is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
@@ -29,6 +13,8 @@ let workflows: ReturnType<typeof createWorkflowStore>;
 
 const ORG = 'test-org';
 const WORKER = 'worker-1';
+
+const db = useTestDb({ orgs: [ORG], max: 8 });
 
 const BLOCKERS = 'VERDICT: BLOCKERS';
 const CLEAN = 'VERDICT: CLEAN';
@@ -79,19 +65,9 @@ const INTERP_CAP: WorkflowDefinition = {
 
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 8 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
+    sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
     workflows = createWorkflowStore({ sql, orgId: ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end({ timeout: 5 });
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    await sql`truncate job, task_reclaim, workflow`;
 });
 
 /** Seeds the named definition, queues a task on it, and returns the root id. */

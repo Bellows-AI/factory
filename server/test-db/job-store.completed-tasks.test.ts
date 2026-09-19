@@ -1,22 +1,10 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import postgres from 'postgres';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/** Same guard as the sibling suites: these tests truncate, so they refuse a non-test database. */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
@@ -26,34 +14,24 @@ let otherOrgStore: JobStore;
 const ORG = randomUUID();
 const OTHER_ORG = randomUUID();
 
-let AUTHOR: string;
+/**
+ * The jobs' author. A generated identity, never a literal: integration tests do not hardcode ids,
+ * and a random one cannot collide with a real backfilled user the way a memorable constant
+ * eventually would. Re-planted before every test, because `created_by` is a uuid foreign key.
+ */
+const AUTHOR = randomUUID();
+const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, 8), 16);
 
-/** Written directly rather than through the auth store, like the sibling suites. */
-const account = async (githubUserId: number, login: string): Promise<string> => {
-    const [row] = await sql<{ id: string }[]>`
-        insert into app_user (github_user_id, github_login) values (${githubUserId}, ${login})
-        on conflict (github_user_id) do update set github_login = excluded.github_login
-        returning id
-    `;
-    return row!.id;
-};
+const db = useTestDb({
+    max: 8,
+    users: [{ id: AUTHOR, githubUserId: AUTHOR_GITHUB_ID, login: 'completed-tasks-cat' }],
+});
 
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 8 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
-    AUTHOR = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'completed-tasks-cat');
+    sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
     otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end();
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    await sql`truncate job, task_reclaim`;
 });
 
 /** How long ago an ISO stamp reads, in minutes — for asserting backdated times without sleeping. */

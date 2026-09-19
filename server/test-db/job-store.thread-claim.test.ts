@@ -1,45 +1,23 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES the job table before every test. Requiring a `_test` database name is the
- * guard, because the failure is silent: the tests pass and the queue is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
 
 const ORG = 'test-org';
 
+const db = useTestDb({ max: 8 });
+
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 8 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
+    sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end();
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    await sql`truncate job`;
 });
 
 /**
@@ -177,7 +155,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const root = await craft({});
         await craft({ parent: root });
 
-        const blocker = postgres(url as string, { max: 1 });
+        const blocker = postgres(db.url!, { max: 1 });
         try {
             await blocker`select pg_advisory_lock(hashtextextended(${root}::text, 0))`;
 
