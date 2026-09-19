@@ -72,7 +72,8 @@ npm start              # node --env-file-if-exists=.env server/dist/index.js (re
 npm run driver
 
 npm test               # vitest run — offline, no token, no quota, no database, no docker
-npm run typecheck      # tsc -b across all four project references
+npm run typecheck      # tsc -b across all four project references (plus server/tsconfig.test.json,
+                       # which typechecks server/test-db and its harness — the suites drift quietly otherwise)
 npm run lint           # biome check — lint + format verification over the four packages, offline
 npm run format         # biome format --write — fixes format drift
 npm run lint:fix       # biome check --write — fixes what lint flags
@@ -113,9 +114,11 @@ docker build -f docker/Dockerfile --target runtime -t factory-ai .
 docker compose up -d driver
 
 # factory_dev holds real data; *_test, *_seed, *_synthetic, *_demo and *_e2e are disposable. The db
-# suite TRUNCATES its tables, so it refuses any database not named *_test — pointing it at
-# factory_dev would silently destroy backfilled history, and the tests would still pass. loadConfig
-# mirrors that: a fetching process refuses to run against any disposable name at all.
+# suite resets and reseeds EVERY table before each test and truncates again at the end, so it
+# refuses any database not named *_test — pointing it at factory_dev would silently destroy
+# backfilled history, and the tests would still pass. Suites seed their own fakes (shared harness,
+# server/test-db/harness.ts), so a fresh empty database works; nothing survives a run.
+# loadConfig mirrors that: a fetching process refuses to run against any disposable name at all.
 docker compose up -d timescale
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db
 

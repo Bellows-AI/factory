@@ -1,31 +1,26 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import postgres from 'postgres';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/** Same guard as the sibling suites: these tests truncate, so they refuse a non-test database. */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
 
 const ORG = 'test-org';
 
-/** A real account for created_by to point at — the workspace-path derivation reads it. Resolved in
- * beforeAll: `created_by` is a uuid foreign key, so a literal login will not do. */
-let AUTHOR: string;
+/**
+ * The jobs' author — the workspace-path derivation reads it. A generated identity, never a
+ * literal: integration tests do not hardcode ids, and a random one cannot collide with a real
+ * backfilled user the way a memorable constant eventually would. Re-planted before every test,
+ * because `created_by` is a uuid foreign key.
+ */
+const AUTHOR = randomUUID();
+const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, 8), 16);
+
+const db = useTestDb({ max: 8, users: [{ id: AUTHOR, githubUserId: AUTHOR_GITHUB_ID, login: 'stop-remove-cat' }] });
 
 /** Written directly rather than through the auth store, like the sibling suites: this file is about
  * stop and remove, and a sign-in round trip would fail these cases for reasons foreign to them. */
@@ -40,22 +35,8 @@ const account = async (githubUserId: number, login: string): Promise<string> => 
 
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 8 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
-    // A generated identity, never a literal: integration tests do not hardcode ids, and a random
-    // one cannot collide with a real backfilled user the way a memorable constant eventually would.
-    AUTHOR = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'stop-remove-cat');
+    sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end();
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    await sql`truncate job`;
-    await sql`truncate task_reclaim`;
 });
 
 /** Writes a job row in whatever state the case needs. `created_by` defaults to an author, so the
@@ -109,8 +90,7 @@ describe.skipIf(!enabled)('stopping a task', () => {
         const id = await craft({ status: 'running', lease: 'live' });
 
         const result = await store.stop(id, null);
-        expect(result).toMatchObject({ result: 'requested' });
-        expect(result?.cancelRequestedAt).toBeTruthy();
+        expect(result).toMatchObject({ result: 'requested', cancelRequestedAt: expect.any(String) });
 
         const job = await store.get(id);
         expect(job?.status).toBe('running');

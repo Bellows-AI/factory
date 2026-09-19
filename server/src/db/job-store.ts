@@ -502,7 +502,7 @@ export interface JobStore {
      * A null `runtime` leaves the stored vitals alone — a missed sample costs freshness, not the
      * last good answer.
      */
-    progress(id: string, leaseToken: string, output: string, runtime: RuntimeVitals | null): Promise<LeaseResult>;
+    progress(id: string, leaseToken: string, output: string, runtime?: RuntimeVitals | null): Promise<LeaseResult>;
     /**
      * Replaces the run's gate state — the checks `.bellows.yaml` declared, executed in the
      * declared environment image. Lease-guarded like every other worker write, and REPLACE, never

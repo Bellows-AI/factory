@@ -1,53 +1,23 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { telemetryStats } from '@factory-ai/core';
 import { migrate } from '../src/db/migrate.js';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES metric_point and session_branch before every test, so pointing it at
- * the database the dashboard actually uses destroys real history — including anything
- * imported by `npm run backfill`. Requiring a `_test` database name is the guard, because the
- * failure is silent: the tests pass and the data is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.\n` +
-                `Create one and point DATABASE_URL at it:\n` +
-                `  docker compose exec timescale psql -U factory -d postgres -c 'create database factory_test'\n` +
-                `  DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db`
-        );
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 
 const ORG = 'test-org';
 const OTHER_ORG = 'other-org';
 
+const db = useTestDb({ max: 2 });
+
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 2 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end();
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    await sql`truncate metric_point`;
-    await sql`truncate session_branch`;
+    sql = db.sql;
 });
 
 const T = (iso: string) => new Date(iso);
@@ -105,8 +75,8 @@ describe.skipIf(!enabled)('migrations', () => {
     });
 
     it('is idempotent, recording each versioned file once', async () => {
-        await migrate(sql, { orgId: ORG, attempts: 1 });
-        await migrate(sql, { orgId: ORG, attempts: 1 });
+        await migrate(sql, { attempts: 1 });
+        await migrate(sql, { attempts: 1 });
         const rows = await sql<{ version: string; n: number }[]>`
             select version, count(*)::int as n from schema_migrations group by version
         `;
@@ -119,7 +89,7 @@ describe.skipIf(!enabled)('migrations', () => {
 
     it('re-applies a repeatable file on every run', async () => {
         await sql`drop view if exists session_summary`;
-        await migrate(sql, { orgId: ORG, attempts: 1 });
+        await migrate(sql, { attempts: 1 });
         const [row] = await sql<{ n: number }[]>`
             select count(*)::int as n from pg_views where viewname = 'session_summary'
         `;
@@ -362,13 +332,6 @@ describe.skipIf(!enabled)('session attribution', () => {
         return id;
     };
 
-    beforeEach(async () => {
-        if (!enabled) return;
-        // The attribution join reads job, which the outer beforeEach does not clear — and a
-        // stale row from another suite could claim this suite's sessions.
-        await sql`truncate job`;
-    });
-
     it('resolves the user of the board task a session belongs to', async () => {
         const userId = await account('attributor');
         const jobId = await job({ session: 'attr-1', createdBy: userId });
@@ -392,13 +355,13 @@ describe.skipIf(!enabled)('session attribution', () => {
     });
 
     it('carries the display labels the account has, and null when it has none', async () => {
-        const [userId] = (
+        const userId = (
             await sql<{ id: string }[]>`
                 insert into app_user (github_user_id, github_login, display_name, avatar_url)
                 values (${githubUserId()}, 'labeled', 'Ada Lovelace', 'https://example.com/ada.png')
                 returning id
             `
-        ).map((r) => r.id);
+        )[0]!.id;
         const jobId = await job({ session: 'attr-2', createdBy: userId });
         await point({ session: 'attr-2', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
         await branch({
@@ -518,11 +481,6 @@ describe.skipIf(!enabled)('task attribution', () => {
         });
         await point({ session, field: 'tokens_input', value: 10, time: '2026-08-01T10:30:00Z' });
     };
-
-    beforeEach(async () => {
-        if (!enabled) return;
-        await sql`truncate job`;
-    });
 
     it('attributes an executor session to its task beside the member attribution', async () => {
         const userId = await account('task-author');

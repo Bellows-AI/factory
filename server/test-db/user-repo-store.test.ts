@@ -1,24 +1,9 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createUserRepoStore, type UserRepoStore } from '../src/db/user-repo-store.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES user_repo before every test. Requiring a `_test` database name is the guard,
- * because the failure is silent: the tests pass and somebody's selection is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: UserRepoStore;
@@ -30,30 +15,18 @@ const BOB = '00000000-0000-4000-8000-00000000b0b0';
 const web = { owner: 'acme', name: 'web' };
 const api = { owner: 'acme', name: 'api' };
 
+const db = useTestDb({
+    orgs: [ORG],
+    users: [
+        { id: ALICE, githubUserId: 90001, login: 'alice' },
+        { id: BOB, githubUserId: 90002, login: 'bob' },
+    ],
+});
+
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 4 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
-    // The rows are foreign-keyed to real accounts, so the suite needs two.
-    for (const [id, login, githubId] of [
-        [ALICE, 'alice', 90001],
-        [BOB, 'bob', 90002],
-    ] as const) {
-        await sql`
-            insert into app_user (id, github_user_id, github_login)
-            values (${id}, ${githubId}, ${login})
-            on conflict (github_user_id) do update set id = excluded.id
-        `;
-    }
+    sql = db.sql;
     store = createUserRepoStore({ sql, orgId: ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end({ timeout: 5 });
-});
-
-beforeEach(async () => {
-    if (enabled) await sql`truncate user_repo`;
 });
 
 describe.skipIf(!enabled)('the user repo store', () => {

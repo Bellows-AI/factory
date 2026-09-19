@@ -1,26 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createJobStore, createOrgOfLease, type JobStore } from '../src/db/job-store.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES the job table before every test. Requiring a `_test` database name is the
- * guard, because the failure is silent: the tests pass and the queue is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
@@ -39,24 +24,19 @@ const CHAIN = '55555555-5555-4555-8555-555555555555';
 /** Shaped like a real one: opaque, prefixed, and not a uuid. */
 const REMOTE = 'cse_015tb2nHhHNrBuL7ZDhn9Wx5';
 
+/**
+ * The env-forwarding cases write env_var rows, whose org is foreign-keyed — hence the seeded org.
+ * `max: 8` is higher than the app pool's 4: the claim exclusivity test needs real parallelism,
+ * and a pool of two would serialise it into a test that passes for the wrong reason.
+ */
+const db = useTestDb({ max: 8, orgs: [ORG] });
+
 beforeAll(async () => {
     if (!enabled) return;
-    // Higher than the app pool's `max: 4`: the claim exclusivity test needs real parallelism, and a
-    // pool of two would serialise it into a test that passes for the wrong reason.
-    sql = postgres(url as string, { max: 8 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
+    sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
     otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
     orgOfLease = createOrgOfLease({ sql });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end();
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    await sql`truncate job, task_reclaim`;
 });
 
 /**
@@ -67,6 +47,23 @@ beforeEach(async () => {
  * attribution, so they pass null explicitly. The attribution cases below pass a real account.
  */
 const queue = (command: string) => store.create(command, null, { repo: null, executor: null });
+
+/**
+ * Chains a follow-up that MUST be created. The refusal branches get their own dedicated cases
+ * below; everywhere else a refusal is a failure of the setup, so it throws instead of hiding in
+ * the union the store honestly returns.
+ */
+const mustFollowUp = (root: string, command: string, userId: string | null): Promise<{ id: string }> =>
+    store.createFollowUp(root, command, userId).then((ref) => {
+        if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
+        return ref;
+    });
+
+/** Reads the stamped moment off a markDone answer, refusing the refusal strings. */
+const doneAt = (result: Awaited<ReturnType<JobStore['markDone']>>): string => {
+    if (typeof result === 'string') throw new Error(`markDone refused: ${result}`);
+    return result.doneAt;
+};
 
 /** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
 const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
@@ -457,7 +454,7 @@ describe.skipIf(!enabled)('job store', () => {
         const second = await store.claim('w2', 300);
         expect(await store.get(id)).toMatchObject({ runtime: null });
         await store.progress(id, second!.leaseToken, 'again', vitals);
-        expect((await store.get(id)).runtime).toEqual(vitals);
+        expect((await store.get(id))!.runtime).toEqual(vitals);
     });
 
     // The list feeds the task tree, whose task rows render the newest run's `activity` — so the
@@ -531,7 +528,7 @@ describe.skipIf(!enabled)('job store', () => {
         await store.session(id, claim!.leaseToken, ses, null);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
-        const followUp = await store.createFollowUp(id, 'again', null);
+        const followUp = await mustFollowUp(id, 'again', null);
         expect(await store.get(followUp.id)).toMatchObject({ followUpTo: id, sessionId: ses });
 
         const second = await store.claim('w2', 300);
@@ -759,7 +756,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('creates a follow-up that continues the parent session and links to it', async () => {
         const parent = await finishWithSession('drive me', { repo: null, executor: null }, true);
 
-        const followUp = await store.createFollowUp(parent, 'now adjust the tone', null);
+        const followUp = await mustFollowUp(parent, 'now adjust the tone', null);
 
         expect(await store.get(followUp.id)).toMatchObject({
             command: 'now adjust the tone',
@@ -781,7 +778,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(await store.suspend(id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
         expect((await store.get(id))?.status).toBe('stopped');
 
-        const followUp = await store.createFollowUp(id, 'pick up where I left you', null);
+        const followUp = await mustFollowUp(id, 'pick up where I left you', null);
 
         expect(await store.get(followUp.id)).toMatchObject({ followUpTo: id, sessionId: SESSION });
     });
@@ -793,7 +790,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('inherits the parent repo and the parent executor', async () => {
         const parent = await finishWithSession('drive me', { repo: 'acme/web', executor: 'main' });
 
-        const followUp = await store.createFollowUp(parent, 'again, tighter', null);
+        const followUp = await mustFollowUp(parent, 'again, tighter', null);
 
         expect(await store.get(followUp.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
     });
@@ -813,13 +810,13 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
     it('claims a follow-up — and a follow-up of a follow-up — with the thread root as the root', async () => {
         const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null }, true);
-        const child = await store.createFollowUp(root, 'adjust the tone', null);
+        const child = await mustFollowUp(root, 'adjust the tone', null);
 
         // Finish the child so the grandchild can attach to it.
         const childClaim = await store.claim('w1', 300);
         expect(childClaim?.id).toBe(child.id);
         await store.complete(child.id, childClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        const grand = await store.createFollowUp(child.id, 'again, tighter', null);
+        const grand = await mustFollowUp(child.id, 'again, tighter', null);
 
         // The child is finished too, so the grandchild is the only claimable row.
         const grandClaim = await store.claim('w2', 300);
@@ -936,11 +933,11 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
      */
     it('reads the whole follow-up chain from any member of it', async () => {
         const parent = await finishWithSession('drive me');
-        const first = await store.createFollowUp(parent, 'first adjustment', null);
+        const first = await mustFollowUp(parent, 'first adjustment', null);
         const claim = await store.claim('w1', 300);
         await store.session(first.id, claim!.leaseToken, SESSION, null);
         await store.complete(first.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
-        const second = await store.createFollowUp(first.id, 'second adjustment', null);
+        const second = await mustFollowUp(first.id, 'second adjustment', null);
 
         for (const member of [parent, first.id, second.id]) {
             const chain = await store.thread(member);
@@ -956,7 +953,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // into it — restore and continue, not just restore.
     it('hands a follow-up claim the parent session and the command to deliver', async () => {
         const parent = await finishWithSession('drive me');
-        const { id } = await store.createFollowUp(parent, 'again', null);
+        const { id } = await mustFollowUp(parent, 'again', null);
 
         const claim = await store.claim('w1', 300);
 
@@ -967,7 +964,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // the conversation survives the crash, and the adjustment still reaches the agent.
     it('re-delivers the command when a follow-up attempt is reclaimed', async () => {
         const parent = await finishWithSession('drive me');
-        const { id } = await store.createFollowUp(parent, 'again', null);
+        const { id } = await mustFollowUp(parent, 'again', null);
         await store.claim('w1', 300);
         await expireLease(id);
 
@@ -983,12 +980,12 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // session (whatever its run reported), never by reaching back to the root's.
     it('follows up on a follow-up, chaining the newest session', async () => {
         const parent = await finishWithSession('drive me');
-        const first = await store.createFollowUp(parent, 'first adjustment', null);
+        const first = await mustFollowUp(parent, 'first adjustment', null);
         const claim = await store.claim('w1', 300);
         await store.session(first.id, claim!.leaseToken, CHAIN, null);
         await store.complete(first.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
 
-        const second = await store.createFollowUp(first.id, 'second adjustment', null);
+        const second = await mustFollowUp(first.id, 'second adjustment', null);
 
         expect(await store.get(second.id)).toMatchObject({
             followUpTo: first.id,
@@ -1005,11 +1002,13 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('marks a finished task done and answers the same moment twice', async () => {
         const parent = await finishWithSession('echo hi');
 
-        const first = await store.markDone(parent, null);
-        const second = await store.markDone(parent, null);
+        // Same moment twice: the second call finds the task already done and answers the stored
+        // timestamp again, so the timestamps here are read off the same shape both times.
+        const first = doneAt(await store.markDone(parent, null));
+        const second = doneAt(await store.markDone(parent, null));
 
-        expect(second.doneAt).toBe(first.doneAt);
-        expect((await store.get(parent))?.doneAt).toBe(first.doneAt);
+        expect(second).toBe(first);
+        expect((await store.get(parent))?.doneAt).toBe(first);
     });
 
     it('refuses to mark a moving task done, and to mark an absent one', async () => {
@@ -1034,7 +1033,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         it('queues a reclaim for an already-terminal thread, addressed by the root', async () => {
             const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null });
-            const followUp = await store.createFollowUp(root, 'first adjustment', null);
+            const followUp = await mustFollowUp(root, 'first adjustment', null);
             const claim = await store.claim('w1', 300);
             expect(claim?.id).toBe(followUp.id);
             await store.complete(followUp.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
@@ -1060,7 +1059,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         // frees the tree, with no special case for the user's own verdict.
         it('queues a reclaim for a thread whose member the user stopped', async () => {
             const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null });
-            const followUp = await store.createFollowUp(root, 'first adjustment', null);
+            const followUp = await mustFollowUp(root, 'first adjustment', null);
             const claim = await store.claim('w1', 300);
             expect(claim?.id).toBe(followUp.id);
             await store.session(followUp.id, claim!.leaseToken, SESSION, null);
@@ -1076,7 +1075,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         it('keeps the tree when a follow-up is still queued, and the verdict reclaims it later', async () => {
             const root = await finishWithSession('drive me');
-            await store.createFollowUp(root, 'first adjustment', null);
+            await mustFollowUp(root, 'first adjustment', null);
 
             await store.markDone(root, null);
 
@@ -1122,8 +1121,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             // Two adjustments on one parent: the shape the thread walk already contemplates.
             // A linear chain cannot hold a queued member at a verdict moment — the follow-up
             // only exists once the parent is finished.
-            const first = await store.createFollowUp(root, 'first adjustment', null);
-            const second = await store.createFollowUp(root, 'second adjustment', null);
+            const first = await mustFollowUp(root, 'first adjustment', null);
+            const second = await mustFollowUp(root, 'second adjustment', null);
 
             const firstClaim = await store.claim('w1', 300);
             expect(firstClaim?.id).toBe(first.id);
@@ -1150,7 +1149,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             // terminal yet, so the queue insert at done skipped it and the completing attempt
             // is the one that finds done AND terminal together.
             const root = await finishWithSession('drive me');
-            const followUp = await store.createFollowUp(root, 'first adjustment', null);
+            const followUp = await mustFollowUp(root, 'first adjustment', null);
             expect(await store.markDone(root, null)).toMatchObject({ status: 'succeeded' });
 
             const followUpClaim = await store.claim('w1', 300);
@@ -1166,8 +1165,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         it('answers false while a parked member holds the thread open', async () => {
             const root = await finishWithSession('drive me');
-            const first = await store.createFollowUp(root, 'first adjustment', null);
-            const second = await store.createFollowUp(root, 'second adjustment', null);
+            const first = await mustFollowUp(root, 'first adjustment', null);
+            const second = await mustFollowUp(root, 'second adjustment', null);
 
             const firstClaim = await store.claim('w1', 300);
             expect(firstClaim?.id).toBe(first.id);
@@ -1195,7 +1194,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(await store.claim('w2', 300)).toBeNull();
             expect((await row(id))[0]?.status).toBe('dead');
 
-            const followUp = await store.createFollowUp(id, 'again', null);
+            const followUp = await mustFollowUp(id, 'again', null);
             const followUpClaim = await store.claim('w3', 300);
             expect(followUpClaim?.id).toBe(followUp.id);
             const result = await store.complete(followUp.id, followUpClaim!.leaseToken, {
@@ -1286,7 +1285,6 @@ describe.runIf(enabled)('attribution', () => {
     it('carries the stacked environment on the claim, resolved for the author and repo label', async () => {
         const userId = await account(5005, 'env-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG });
-        await sql`truncate env_var`;
         await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
         await envStore.replaceWorkspace(userId, [{ name: 'CORE', value: 'workspace-value', isSecret: false }]);
         await envStore.replaceRepo('Bellows-AI', 'bellows.ai', [
@@ -1356,7 +1354,6 @@ describe.runIf(enabled)('attribution', () => {
         // seam docs/env.md reserved for exactly this.
         const userId = await account(mintedAccountId(), 'minted-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG });
-        await sql`truncate env_var`;
         await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
         const minted = createJobStore({
             sql,
@@ -1378,7 +1375,6 @@ describe.runIf(enabled)('attribution', () => {
          */
         const userId = await account(mintedAccountId(), 'tokened-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG });
-        await sql`truncate env_var`;
         await envStore.replaceOrg([{ name: 'GITHUB_TOKEN', value: 'operator-pat', isSecret: true }]);
         const minted = createJobStore({
             sql,
@@ -1488,7 +1484,6 @@ describe.runIf(enabled)('attribution', () => {
         it('lets a configured GITHUB_TOKEN win, and does not mint for it', async () => {
             const userId = await account(publishAccountId(), 'publish-operator');
             const envStore = createEnvVarStore({ sql, orgId: ORG });
-            await sql`truncate env_var`;
             await envStore.replaceOrg([{ name: 'GITHUB_TOKEN', value: 'operator-pat', isSecret: true }]);
             let mints = 0;
             const store = createJobStore({
@@ -1602,7 +1597,6 @@ describe.runIf(enabled)('attribution', () => {
             // the run — it must not lose to a scope that exists for other things.
             const userId = await account(executorAccountId(), 'executor-owl');
             const envStore = createEnvVarStore({ sql, orgId: ORG });
-            await sql`truncate env_var`;
             await envStore.replaceWorkspace(userId, [
                 { name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"stale"}', isSecret: false },
             ]);

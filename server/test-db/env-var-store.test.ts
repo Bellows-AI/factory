@@ -1,25 +1,9 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { migrate } from '../src/db/migrate.js';
 import { createEnvVarStore, stackEnv, type EnvVarStore } from '../src/db/env-var-store.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite TRUNCATES env_var before every test. Requiring a `_test` database name is the guard,
- * because the failure is silent: the tests pass and somebody's configured environment — secrets
- * included — is simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(`Refusing to run: this suite truncates its tables, and "${name}" is not a test database.`);
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: EnvVarStore;
@@ -28,25 +12,12 @@ const ORG = 'test-org';
 const ALICE = '00000000-0000-4000-8000-00000000e117';
 const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
 
+const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90017, login: 'alice' }] });
+
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 4 });
-    await migrate(sql, { orgId: ORG, attempts: 3 });
-    // The workspace scope is foreign-keyed to a real account, so the suite needs one.
-    await sql`
-        insert into app_user (id, github_user_id, github_login)
-        values (${ALICE}, 90017, 'alice')
-        on conflict (github_user_id) do update set id = excluded.id
-    `;
+    sql = db.sql;
     store = createEnvVarStore({ sql, orgId: ORG });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end({ timeout: 5 });
-});
-
-beforeEach(async () => {
-    if (enabled) await sql`truncate env_var`;
 });
 
 describe.skipIf(!enabled)('the env var store', () => {

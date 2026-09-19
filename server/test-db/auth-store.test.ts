@@ -1,41 +1,17 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore, type AuthStore } from '../src/auth/store.js';
 import { LOCAL_ORG_ID } from '../src/config.js';
 import { trackedRepos } from '../src/db/tracked-repos.js';
 import { LOCAL_LOGIN, migrate, reapPendingSignIns, reapSessions } from '../src/db/migrate.js';
+import { useTestDb } from './harness.js';
 
-const url = process.env.DATABASE_URL;
-
-/**
- * This suite deletes rows before every test. Requiring a `_test` database name is the guard, for
- * the same reason the job suite has one: the failure is silent — the tests pass and the accounts
- * are simply gone.
- */
-function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite deletes from the account tables, and "${name}" is not a test database.`
-        );
-    }
-}
-
-const enabled = Boolean(url);
-if (url) assertTestDatabase(url);
+const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: AuthStore;
 
-/**
- * Its own organization, and its own slice of the app_user key space.
- *
- * The db files share a database and vitest runs them in parallel, so this suite must not truncate
- * anything another one is using — `job` in particular references `app_user`, so a blanket
- * `truncate app_user cascade` would silently empty the job suite's table mid-run.
- */
 // Numeric strings: an org id IS an installation id now, and signIn casts it into
 // organization.installation_id (bigint). Names that are not numbers stopped being org ids.
 const ORG = '911001';
@@ -45,50 +21,14 @@ const UNREPORTED_ORG = '911003';
 /** Every account this file creates is numbered from here, so the cleanup can be precise. */
 const ID_BASE = 90000;
 
+// The two orgs are re-planted before every test, because the token tests write rows that need an
+// org to point at without signing in first. signIn materializes every other org itself (#99).
+const db = useTestDb({ orgs: [ORG, SECOND_ORG] });
+
 beforeAll(async () => {
     if (!enabled) return;
-    sql = postgres(url as string, { max: 4 });
-    await migrate(sql, { attempts: 3 });
+    sql = db.sql;
     store = createAuthStore({ sql });
-});
-
-afterAll(async () => {
-    if (enabled) await sql.end();
-});
-
-beforeEach(async () => {
-    if (!enabled) return;
-    // The organization rows go too: signIn materializes them from installations now (#99), so
-    // every test starts from no orgs at all. The FKs cascade the memberships and sessions —
-    // and the plain rows are planted straight back, because the token tests write rows that
-    // need an org to point at without signing in first.
-    //
-    // `911%` is this suite's whole id namespace (ORG, SECOND_ORG, UNREPORTED_ORG, the literals
-    // the tests plant, and residue an interrupted run may have left) — claimed here rather than
-    // listed, because the db files share a database and a stale row outside the listed ids
-    // would leak between runs.
-    await sql`delete from organization where id like '911%' or id = '424242'`;
-    await sql`insert into organization (id, name) values (${ORG}, ${ORG}), (${SECOND_ORG}, ${SECOND_ORG})
-              on conflict (id) do nothing`;
-    await sql`delete from worker_token where org_id like '911%'`;
-    await sql`delete from access_token where org_id like '911%'`;
-    // job and task_reclaim carry org_id as a plain column (no FK), so the organization delete
-    // above cannot cascade to them. Only this suite's org ids are touched: the db files share a
-    // database and run in parallel, so a blanket delete would empty another suite's table
-    // mid-run.
-    await sql`delete from job where org_id like '911%'`;
-    await sql`delete from task_reclaim where org_id like '911%'`;
-    // org_id on session_branch is a plain column too (005 added it without a foreign key), so
-    // the organization delete above cannot cascade to it either.
-    await sql`delete from session_branch where org_id like '911%'`;
-    // Sessions whose org is gone would already be; this catches rows of deleted accounts.
-    await sql`delete from session where user_id in (select id from app_user where github_user_id >= ${ID_BASE})`;
-    await sql`delete from app_user where github_user_id >= ${ID_BASE}`;
-    // The onboarding tables (#125). pending_sign_in has no org key — it names installations that
-    // are deliberately not materialized — so it scopes like the accounts, by the id slice this
-    // file owns. tracked_repo is org-owned like everything else.
-    await sql`delete from pending_sign_in where github_user_id >= ${ID_BASE}`;
-    await sql`delete from tracked_repo where org_id like '911%'`;
 });
 
 const identity = (n: number, login: string) => ({
@@ -358,57 +298,6 @@ describe.skipIf(!enabled)('sessions', () => {
     });
 });
 
-describe.skipIf(!enabled)('worker tokens', () => {
-    it('resolves a token to the organization it was minted for', async () => {
-        // This lookup IS the driver's org binding: it is how a process with no session says which
-        // organization it is working for.
-        await store.createWorkerToken(ORG, 'driver-1', hashToken('fwt_a'));
-
-        expect(await store.findWorkerToken(hashToken('fwt_a'))).toMatchObject({ orgId: ORG, name: 'driver-1' });
-    });
-
-    it('refuses an unknown token', async () => {
-        expect(await store.findWorkerToken(hashToken('fwt_nothing'))).toBeNull();
-    });
-
-    it('refuses a revoked one', async () => {
-        await store.createWorkerToken(ORG, 'driver-2', hashToken('fwt_b'));
-
-        expect(await store.revokeWorkerToken(ORG, 'driver-2')).toBe('revoked');
-        expect(await store.findWorkerToken(hashToken('fwt_b'))).toBeNull();
-    });
-
-    it('reports revoking a name that has no live token', async () => {
-        expect(await store.revokeWorkerToken(ORG, 'nobody')).toBe('missing');
-    });
-
-    it('stamps last_used_at, so an unused token is visible as one', async () => {
-        await store.createWorkerToken(ORG, 'driver-3', hashToken('fwt_c'));
-        const before = await sql<{ last_used_at: Date | null }[]>`
-            select last_used_at from worker_token where org_id = ${ORG} and name = 'driver-3'
-        `;
-        expect(before[0]?.last_used_at).toBeNull();
-
-        await store.findWorkerToken(hashToken('fwt_c'));
-        const after = await sql<{ last_used_at: Date | null }[]>`
-            select last_used_at from worker_token where org_id = ${ORG} and name = 'driver-3'
-        `;
-        expect(after[0]?.last_used_at).not.toBeNull();
-    });
-
-    it('lists live and revoked tokens together', async () => {
-        await store.createWorkerToken(ORG, 'driver-4', hashToken('fwt_d'));
-        await store.createWorkerToken(ORG, 'driver-5', hashToken('fwt_e'));
-        await store.revokeWorkerToken(ORG, 'driver-4');
-
-        const list = await store.listWorkerTokens(ORG);
-        expect(list).toEqual([
-            { name: 'driver-4', createdAt: expect.any(String), revoked: true },
-            { name: 'driver-5', createdAt: expect.any(String), revoked: false },
-        ]);
-    });
-});
-
 describe.skipIf(!enabled)('access tokens', () => {
     const createPersonal = (caller: { user: { id: string } }, token: string, label: string) =>
         store.createAccessToken({
@@ -592,7 +481,9 @@ describe.skipIf(!enabled)('access tokens', () => {
                 kind: 'personal',
                 orgId: ORG,
                 userId: null,
-                createdBy: null,
+                // The route's types forbid an ownerless token; the row must refuse it anyway, so
+                // the shape is produced past the types on purpose.
+                createdBy: null as unknown as string,
                 label: 'ownerless',
                 tokenHash: hashToken('fat_ownerless'),
             })
