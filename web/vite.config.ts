@@ -1,8 +1,9 @@
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-    plugins: [react()],
+    plugins: [tailwindcss(), react()],
     server: {
         // Unset on the host, where the default loopback bind is the access control. Set only by
         // docker-compose.yml, where a loopback bind is unreachable from the published port.
