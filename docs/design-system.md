@@ -176,7 +176,7 @@ siblings of the heading, never children of it. An empty slot renders no wrapper,
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose` | The message input and its row; `task-compose` is the full-page variant |
-| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The control row, the two-column frame, attribution |
+| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution |
 
 ### Environment panel
 
@@ -229,7 +229,8 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TrackedOrgsPanel.tsx` | panel, login-button |
 | `RecentTasksPanel.tsx` | panel, alert, muted, chart-wrap, by-user, task-avatar |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
-| `TaskDetail.tsx` | task-layout, chat, gate, composer, pill, task head |
+| `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
+| `TaskHeader.tsx` | page-header, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
 | `TaskUsagePanel.tsx` | cards, card |
 | `TelemetryFrame.tsx` | alert, badge |
@@ -251,7 +252,7 @@ Pages:
 | `SettingsRepositoriesPage.tsx` | panel |
 | `SettingsWorkspacePage.tsx` | panel |
 | `TaskComposerPage.tsx` | status |
-| `TaskDetailPage.tsx` | status |
+| `TaskDetailPage.tsx` | page, page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
 
 Charts (`scale.ts` is the band/linear scale helper — no markup):
