@@ -1,1370 +1,1563 @@
 /*
- * The app's styling: the token set in :root, then the primitives that consume it.
- * Every color in web/src is a token defined here and nowhere else — web/test/styles.test.ts
- * holds that line. The :root block is the whole theme surface: a light theme (issue 117)
- * is a second :root block, nothing more. What each primitive is for: docs/design-system.md.
+ * The app's styling: the Tailwind v4 entry. `@import "tailwindcss"` brings preflight and the
+ * utility engine; the theme below is the andon-board design from issue 148 — blue-graphite
+ * steel, status rendered as signal lamps in the green / amber / red trio, the one blue reserved
+ * for "a human is needed here". Dark is the default; the light palette rides `data-theme="light"` on <html>
+ * (the toggle itself stays in issue 117). Every color in web/src is a token defined in one of
+ * the two :root blocks and nowhere else — web/test/styles.test.ts holds that line, and the two
+ * blocks are the only legal homes for color literals; the @theme blocks reference tokens, they
+ * hold none. The primitives in @layer components keep their names — components participate by
+ * carrying them, and docs/design-system.md is the inventory. Fonts are self-hosted under
+ * /fonts: the CSP is font-src 'self', so the Google Fonts link the theme was drafted with must
+ * never appear here (web/test/styles.test.ts pins that too).
  */
-:root {
-    --bg: #0e1116;
-    --panel: #161b22;
-    /* One step above --panel: controls, inline code, the avatar placeholder, hover fills. */
-    --panel-raised: #21262d;
-    --border: #2a313c;
-    --overlay: rgb(0 0 0 / 60%);
-    --text: #e6edf3;
-    --muted: #8b949e;
-    /* --primary accents text and controls; --chart-primary is the series fill. Two blues on
-       purpose — .bar's default and button.primary stay on --primary, and unifying them is a
-       pixel change. */
-    --primary: #58a6ff;
-    --on-primary: #06121f;
-    --ok: #3fb950;
-    --ok-border: #1c4523;
-    --warn: #d29922;
-    --warn-border: #4a3a12;
-    --on-warn: #1a1204;
-    --bad: #f85149;
-    --bad-border: #5a1e1c;
-    --on-bad: #fff;
-    --chart-grid: #262c36;
-    --chart-neutral: #6e7681;
-    --chart-primary: #2f6feb;
-    --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+@import "tailwindcss";
+
+/* ---------- Self-hosted faces (OFL; see web/public/fonts/LICENSES.md) ---------- */
+
+@font-face {
+    font-family: 'Barlow';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/fonts/barlow-latin-400.woff2') format('woff2');
 }
 
-* {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-}
-
-h1 {
-    font-size: 20px;
-    margin: 0;
-}
-
-h2 {
-    font-size: 15px;
-    margin: 0 0 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-}
-
-code {
-    font-family: var(--mono);
-    font-size: 0.92em;
-    background: var(--panel-raised);
-    padding: 1px 4px;
-    border-radius: 3px;
-}
-
-.muted {
-    color: var(--muted);
-}
-
-.error {
-    color: var(--bad);
-}
-
-.topbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 16px;
-    padding: 16px 24px;
-    border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
-}
-
-.topbar p {
-    margin: 4px 0 0;
-}
-
-.topbar-actions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-button {
-    background: var(--panel-raised);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 6px 12px;
-    font: inherit;
-    cursor: pointer;
-}
-
-button:hover {
-    border-color: var(--primary);
-}
-
-button:disabled {
-    color: var(--muted);
-    cursor: default;
-    border-color: var(--border);
-}
-
-.range-selector {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
-}
-
-/* The range and the org/my toggle on one line; main's flex gap handles the spacing. */
-.dashboard-controls {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
-}
-
-.range-presets {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-
-.range-option.active {
-    border-color: var(--primary);
-    color: var(--primary);
-}
-
-.range-custom {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.range-custom label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--muted);
-}
-
-/* Grouped so `color-scheme: dark` lives in exactly one place. It is the easy line to forget, and
-   without it a native control's popup and its disabled text render dark grey on white in a dark
-   page. */
-.range-custom input,
-.org-select {
-    background: var(--panel-raised);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 5px 8px;
-    font: inherit;
-    color-scheme: dark;
-}
-
-.org-selector {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-/* The topbar wraps at narrow widths, and a long organization name must not push Refresh onto a
-   second line before the charts have become illegible anyway (~700px). */
-.org-select {
-    max-width: 220px;
-}
-
-/* Inert, not broken: the field keeps its shape and drops to muted text, exactly as
-   `button:disabled` does, so the page has one vocabulary for "not available here". */
-.org-select:disabled {
-    color: var(--muted);
-    cursor: default;
-}
-
-main {
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    max-width: 1400px;
-}
-
-.panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-}
-
-.panel p {
-    margin: 0 0 12px;
-    max-width: 68ch;
-}
-
-.panel.warn {
-    border-color: var(--warn-border);
-}
-
-.panel.bad {
-    border-color: var(--bad-border);
-}
-
-.alert {
-    color: var(--bad);
-}
-
-/* Loud on purpose: synthetic figures beside real PR numbers must not read as measurements. */
-.badge {
-    background: var(--bad);
-    border-radius: 4px;
-    color: var(--on-bad);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    margin-left: 10px;
-    padding: 3px 7px;
-    text-transform: uppercase;
-    vertical-align: middle;
-}
-
-.badge-warn {
-    background: var(--warn);
-    color: var(--on-warn);
-}
-
-.two-up {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
-    gap: 20px;
-}
-
-.cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-    gap: 12px;
-}
-
-.card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.card strong {
-    font-size: 26px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.card span {
-    font-size: 12px;
-}
-
-.status {
-    color: var(--muted);
-    font-family: var(--mono);
-    margin: 0;
-}
-
-.chart-wrap {
-    overflow-x: auto;
-    margin-bottom: 12px;
-}
-
-.chart {
-    width: 100%;
-    height: auto;
-    display: block;
-}
-
-.grid {
-    stroke: var(--chart-grid);
-    stroke-width: 1;
-}
-
-.grid-alt {
-    stroke-dasharray: 2 4;
-}
-
-.tick {
-    fill: var(--muted);
-    font-size: 10px;
-    font-family: var(--mono);
-}
-
-.axis-label {
-    fill: var(--muted);
-    font-size: 10px;
-}
-
-.bar {
-    fill: var(--primary);
-}
-
-.legend {
-    color: var(--muted);
-    display: flex;
-    font-size: 12px;
-    gap: 6px;
-    align-items: center;
-    margin: 0 0 8px;
-}
-
-.swatch {
-    border-radius: 2px;
-    display: inline-block;
-    height: 10px;
-    width: 10px;
-}
-
-.swatch:not(:first-child) {
-    margin-left: 10px;
-}
-
-/* Kept in step with .bar-primary / .bar-ok below, which the chart uses. */
-.swatch-primary {
-    background: var(--chart-primary);
-}
-
-.swatch-ok {
-    background: var(--ok);
-}
-
-.bar-primary {
-    fill: var(--chart-primary);
-}
-
-.bar-ok {
-    fill: var(--ok);
-}
-
-.bar-warn {
-    fill: var(--warn);
-}
-
-.bar-bad {
-    fill: var(--bad);
-}
-
-.line {
-    fill: none;
-    stroke: var(--warn);
-    stroke-width: 1.5;
-}
-
-.dot {
-    fill: var(--chart-neutral);
-    fill-opacity: 0.8;
-}
-
-.dot-warn {
-    fill: var(--warn);
-}
-
-.dot-bad {
-    fill: var(--bad);
-}
-
-/* Cells are nowrap, so a wide table overflows its panel rather than shrinking. Scrolling keeps
-   the rightmost columns reachable; without this they are clipped with no indication. */
-.table-wrap {
-    overflow-x: auto;
-}
-
-table.data {
-    width: 100%;
-    border-collapse: collapse;
-    font-variant-numeric: tabular-nums;
-}
-
-table.data th,
-table.data td {
-    text-align: left;
-    padding: 5px 8px;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-}
-
-table.data th {
-    color: var(--muted);
+@font-face {
+    font-family: 'Barlow';
+    font-style: normal;
     font-weight: 500;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-display: swap;
+    src: url('/fonts/barlow-latin-500.woff2') format('woff2');
 }
 
-table.data th.sortable {
-    cursor: pointer;
-    user-select: none;
-}
-
-table.data th.asc::after {
-    content: ' ↑';
-}
-
-table.data th.desc::after {
-    content: ' ↓';
-}
-
-table.data td:not(:first-child) {
-    font-family: var(--mono);
-}
-
-.kv {
-    display: grid;
-    grid-template-columns: auto auto;
-    gap: 2px 16px;
-    margin: 0;
-    font-size: 13px;
-}
-
-.kv dt {
-    color: var(--muted);
-}
-
-.kv dd {
-    margin: 0;
-    font-family: var(--mono);
-}
-
-.limits {
-    margin: 0;
-    padding-left: 20px;
-    max-width: 88ch;
-}
-
-.limits li,
-.panel.warn li {
-    margin-bottom: 6px;
-}
-
-.panel.warn ul {
-    margin: 0;
-    padding-left: 20px;
-    max-width: 88ch;
-}
-
-footer {
-    display: flex;
-    gap: 20px;
-    padding: 12px 24px 32px;
-    font-size: 12px;
-}
-
-.login-gate {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    min-height: 70vh;
-    text-align: center;
-}
-
-.login-gate p {
-    margin: 0;
-    color: var(--muted);
-}
-
-.login-error {
-    color: var(--bad);
-}
-
-/* An anchor, not a button, because the CSP blocks form submission and a fetch cannot follow the
-   redirect to github.com. Styled to match `button` so the difference is invisible. */
-.login-button {
-    background: var(--panel-raised);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px 16px;
-    text-decoration: none;
-    margin-top: 8px;
-}
-
-.login-button:hover {
-    border-color: var(--primary);
-}
-
-/* --- Sign-in onboarding ------------------------------------------------------------------- */
-
-/* The selection screen (issue 125): a centered column, narrower than the shell, because it renders
-   before any session exists and carries one decision, not a dashboard. */
-.onboarding {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    max-width: 560px;
-    margin: 8vh auto 0;
-}
-
-.onboarding-orgs {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.onboarding-org {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px 12px;
-    background: var(--bg);
-}
-
-.onboarding-repos {
-    margin-top: 8px;
-    padding-left: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-/* --- Shell -------------------------------------------------------------------------------- */
-
-/* `minmax(0, 1fr)` and the `min-width: 0` below are both load-bearing, and for the same reason:
-   a grid item defaults to `min-width: auto`, so `.two-up` — which is
-   `repeat(auto-fit, minmax(440px, 1fr))` — would push this column wider than the viewport instead
-   of collapsing to one column. At 1440px, 220 + 48 of padding + 2x440 = 1148, so the dashboard
-   still fits two panels across. */
-.shell {
-    display: grid;
-    grid-template-columns: 220px minmax(0, 1fr);
-    min-height: 100vh;
-}
-
-.shell-main {
-    min-width: 0;
-}
-
-.sidenav {
-    border-right: 1px solid var(--border);
-    padding: 16px 12px;
-    position: sticky;
-    top: 0;
-    align-self: start;
-}
-
-.sidenav-brand {
-    color: var(--muted);
-    font-size: 13px;
+@font-face {
+    font-family: 'Barlow';
+    font-style: normal;
     font-weight: 600;
-    letter-spacing: 0.08em;
-    padding: 0 10px 12px;
-    text-transform: uppercase;
+    font-display: swap;
+    src: url('/fonts/barlow-latin-600.woff2') format('woff2');
 }
 
-.sidenav-items {
-    list-style: none;
-    margin: 0;
-    padding: 0;
+@font-face {
+    font-family: 'Barlow Semi Condensed';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/fonts/barlow-semi-condensed-latin-500.woff2') format('woff2');
 }
 
-.sidenav-link {
-    align-items: center;
-    border-radius: 6px;
-    color: var(--text);
-    display: flex;
-    gap: 8px;
-    justify-content: space-between;
-    padding: 8px 10px;
-    text-decoration: none;
+@font-face {
+    font-family: 'Barlow Semi Condensed';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('/fonts/barlow-semi-condensed-latin-600.woff2') format('woff2');
 }
 
-.sidenav-link:hover {
-    background: var(--panel);
+@font-face {
+    font-family: 'Barlow Semi Condensed';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('/fonts/barlow-semi-condensed-latin-700.woff2') format('woff2');
 }
 
-.sidenav-link.is-active {
-    background: var(--panel);
-    color: var(--primary);
+@font-face {
+    font-family: 'IBM Plex Mono';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/fonts/ibm-plex-mono-latin-400.woff2') format('woff2');
 }
 
-/* The Settings tree's section links, under the Settings item: the task tree's scale without the
-   task rows — a quiet link that lights up only for the section you are in. */
-.sidenav-sublink {
-    border-radius: 6px;
-    color: var(--muted);
-    display: block;
-    font-size: 12px;
-    padding: 4px 10px 4px 24px;
-    text-decoration: none;
+@font-face {
+    font-family: 'IBM Plex Mono';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/fonts/ibm-plex-mono-latin-500.woff2') format('woff2');
 }
 
-.sidenav-sublink:hover {
-    background: var(--panel);
+/* ---------- Semantic tokens: dark (default) ---------- */
+:root {
+    color-scheme: dark; /* native controls + scrollbars follow the theme */
+
+    --surface: oklch(0.19 0.012 250); /* page */
+    --surface-raised: oklch(0.235 0.014 250); /* panels, menus */
+    --surface-sunken: oklch(0.16 0.012 250); /* inputs, log wells, hover */
+    --line: oklch(0.32 0.014 250);
+    --line-strong: oklch(0.43 0.016 250);
+
+    --ink: oklch(0.93 0.008 250);
+    --ink-muted: oklch(0.73 0.014 250);
+    --ink-inverse: oklch(0.19 0.012 250); /* text on accent fills */
+
+    --accent: oklch(0.74 0.12 240); /* "needs a human", focus rings */
+
+    --lamp-run: oklch(0.80 0.17 150);
+    --lamp-wait: oklch(0.84 0.15 85);
+    --lamp-stop: oklch(0.69 0.20 25);
+    --lamp-done: oklch(0.66 0.03 250);
+
+    /* Derived — tokens the palette above does not carry, mixed per theme with color-mix, the
+       idiom the theme's own lamp-glow uses. --accent and --chart-primary are deliberately two
+       blues: the accent says "a human is needed", so the chart fill leans on its hue but sits
+       deeper. */
+    --overlay: color-mix(in oklab, var(--ink) 60%, transparent);
+    --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
+    --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
+    --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
+    --on-warn: color-mix(in oklab, black 88%, var(--lamp-wait));
+    --on-bad: color-mix(in oklab, white 92%, var(--lamp-stop));
+    --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
+    --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
+    --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
 }
 
-.sidenav-sublink.is-active {
-    background: var(--panel);
-    color: var(--primary);
+/* ---------- Semantic tokens: light ---------- */
+:root[data-theme="light"] {
+    color-scheme: light;
+
+    --surface: oklch(0.975 0.004 250);
+    --surface-raised: oklch(1 0 0);
+    --surface-sunken: oklch(0.945 0.006 250);
+    --line: oklch(0.89 0.008 250);
+    --line-strong: oklch(0.78 0.012 250);
+
+    --ink: oklch(0.24 0.02 250);
+    --ink-muted: oklch(0.45 0.02 250);
+    --ink-inverse: oklch(0.975 0.004 250);
+
+    --accent: oklch(0.52 0.16 250);
+
+    --lamp-run: oklch(0.58 0.15 150);
+    --lamp-wait: oklch(0.70 0.15 75);
+    --lamp-stop: oklch(0.56 0.21 27);
+    --lamp-done: oklch(0.58 0.03 250);
+
+    /* Derived — the same recipes as the dark block, over this theme's tokens. */
+    --overlay: color-mix(in oklab, var(--ink) 60%, transparent);
+    --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
+    --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
+    --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
+    --on-warn: color-mix(in oklab, black 88%, var(--lamp-wait));
+    --on-bad: color-mix(in oklab, white 92%, var(--lamp-stop));
+    --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
+    --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
+    --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
 }
 
-/* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
-   text rides the title attribute. */
-.sidenav-subitems {
-    list-style: none;
-    margin: 2px 0 6px;
-    padding: 0;
+/* ---------- Expose semantic tokens as utilities ----------
+ * `inline` makes utilities reference var(--surface) directly, so the
+ * data-theme switch works at runtime without regenerating CSS. */
+@theme inline {
+    --color-surface: var(--surface);
+    --color-surface-raised: var(--surface-raised);
+    --color-surface-sunken: var(--surface-sunken);
+    --color-line: var(--line);
+    --color-line-strong: var(--line-strong);
+    --color-ink: var(--ink);
+    --color-ink-muted: var(--ink-muted);
+    --color-ink-inverse: var(--ink-inverse);
+    --color-accent: var(--accent);
+    --color-lamp-run: var(--lamp-run);
+    --color-lamp-wait: var(--lamp-wait);
+    --color-lamp-stop: var(--lamp-stop);
+    --color-lamp-done: var(--lamp-done);
 }
 
-.sidenav-task {
-    border-radius: 6px;
-    color: var(--muted);
-    display: block;
-    font-size: 12px;
-    overflow: hidden;
-    padding: 4px 10px 4px 24px;
-    text-decoration: none;
-}
+/* ---------- Static tokens ----------
+ * `static` keeps every token emitted even where only var() points at it (the components below
+ * consume --font-mono and the radii that way; plain @theme prunes what no utility spells). */
+@theme static {
+    /* Barlow was drawn after highway signage: sturdy, legible, industrial.
+     * Plex Mono is only for things that are literally identifiers or logs. */
+    --font-sans: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+    --font-display: 'Barlow Semi Condensed', 'Barlow', ui-sans-serif, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-/* The task's own line — the command or title — next to the status dot; it alone clips, so a long
-   command never pushes the live summary below it off the tree. The 10px is the dot and its margin,
-   which share the title's line. */
-.sidenav-task-title {
-    display: inline-block;
-    max-width: calc(100% - 10px);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    vertical-align: middle;
-    white-space: nowrap;
-}
+    /* Hardware, not bubbles: tight radii. */
+    --radius-md: 0.25rem;
+    --radius-lg: 0.375rem;
 
-/* The task's live summary — the newest run's activity line, while it is going — a second, quieter
-   line under the title. `white-space` is per-line, because `.sidenav-task` no longer forces one. */
-.sidenav-task-summary {
-    color: var(--muted);
-    display: block;
-    font-family: var(--mono);
-    font-size: 11px;
-    margin-top: 2px;
-    opacity: 0.85;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* Who queued the task, inline after the title. 'unknown' is a fact here — a row queued before
-   accounts existed has no author — not a display hint to invent one. */
-.sidenav-task-author {
-    color: var(--muted);
-    display: inline-block;
-    font-size: 10px;
-    margin-left: 6px;
-    max-width: calc(100% - 10px);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    vertical-align: middle;
-    white-space: nowrap;
-}
-
-/* The queued-by value: avatar and display name, kept on one line in the status sidebar. */
-.task-queued-by {
-    align-items: center;
-    display: inline-flex;
-    gap: 6px;
-}
-
-.task-avatar {
-    border-radius: 50%;
-    height: 18px;
-    width: 18px;
-}
-
-/* The per-user attribution table: left-aligned labels, right-adjacent counts. */
-table.by-user td,
-table.by-user th {
-    padding: 4px 16px 4px 0;
-    text-align: left;
-}
-
-.by-user-user {
-    align-items: center;
-    display: inline-flex;
-    gap: 6px;
-}
-
-.sidenav-task:hover {
-    background: var(--panel);
-    color: var(--text);
-}
-
-.sidenav-task.is-active {
-    color: var(--primary);
-}
-
-/* The status dot before a task's name: the task's state in one painted pixel, the legend being the
-   colours the rest of the app already speaks — a live run blinks, a parked one holds grey, a
-   failed one is red, and a finished or done one is solid green. */
-.sidenav-dot {
-    background: currentColor;
-    border-radius: 50%;
-    display: inline-block;
-    height: 6px;
-    margin-right: 4px;
-    vertical-align: middle;
-    width: 6px;
-}
-
-.sidenav-dot-running {
-    color: var(--ok);
-    animation: blink 1.2s ease-in-out infinite;
-}
-
-.sidenav-dot-stopping {
-    color: var(--muted);
-    animation: blink 1.2s ease-in-out infinite;
-}
-
-.sidenav-dot-paused {
-    color: var(--muted);
-}
-
-.sidenav-dot-failed {
-    color: var(--bad);
-}
-
-.sidenav-dot-done {
-    color: var(--ok);
-}
-
-@keyframes blink {
-    0%,
-    100% {
-        opacity: 1;
-    }
-    50% {
-        opacity: 0.25;
+    /* The single ambient motion: a running lamp breathes. */
+    --animate-lamp: lamp 2.4s ease-in-out infinite;
+    @keyframes lamp {
+        0%,
+        100% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0.45;
+        }
     }
 }
 
-.sidenav-empty {
-    color: var(--muted);
-    font-size: 12px;
-    margin: 2px 0 6px;
-    padding: 0 10px 0 24px;
+/* Soft halo in the lamp's own color — it follows currentColor, so one utility serves every
+   lamp. The breathing status dots wear it. The mix lives in the --lamp-glow token, keeping the
+   color work inside the token blocks. */
+@utility lamp-glow {
+    box-shadow: 0 0 0 3px var(--lamp-glow);
 }
 
-/* The task tree's section headers — Running, Need review, Past tasks. Static for the live
-   sections; a button for Past tasks, which folds the history away behind the same look. The
-   padding is what keeps the button a clickable target, not just an 11px line of text. */
-.sidenav-section {
-    background: none;
-    border: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 11px;
-    letter-spacing: 0.05em;
-    margin: 4px 0 0;
-    padding: 4px 10px;
-    text-align: left;
-    text-transform: uppercase;
-    width: 100%;
-}
-
-.sidenav-section:hover {
-    color: var(--text);
-}
-
-/* The New task action pinned above the Running rows — a link to the composer (/tasks), not a
-   task row: rows order by activity, so a task that just starts slides in BELOW it and can never
-   reorder above the affordance. Sized to the task rows so the list keeps one rhythm; `end` keeps
-   the active mark on the composer page itself. */
-.sidenav-newtask {
-    border-radius: 6px;
-    color: var(--muted);
-    display: block;
-    font-size: 12px;
-    margin: 2px 0;
-    padding: 4px 10px 4px 24px;
-    text-decoration: none;
-}
-
-.sidenav-newtask:hover {
-    background: var(--panel);
-    color: var(--text);
-}
-
-.sidenav-newtask.is-active {
-    color: var(--primary);
-}
-
-/* Below this the two columns stop fitting side by side: 220 of nav leaves under 700 for a grid
-   whose track floor is 440, so the panels would already be one-up and the nav is just tax. */
-@media (max-width: 900px) {
-    .shell {
-        grid-template-columns: 1fr;
+@layer base {
+    body {
+        @apply bg-surface font-sans text-ink antialiased;
+        font-size: 14px;
+        line-height: 1.5;
     }
 
-    .sidenav {
-        border-bottom: 1px solid var(--border);
-        border-right: none;
-        position: static;
+    h1,
+    h2,
+    h3 {
+        @apply font-display font-semibold tracking-tight;
     }
 
-    .sidenav-items {
+    h1 {
+        font-size: 20px;
+    }
+
+    h2 {
+        font-size: 15px;
+        margin: 0 0 4px;
+    }
+
+    h3 {
+        font-size: 13px;
+    }
+
+    /* Preflight makes anchors inherit, and the primitives that skin links (sidenav-link,
+       popover-option, login-button) set their own; this keeps a bare content link — a branch
+       name, a GitHub login — recognizable as one. */
+    a {
+        color: var(--accent);
+        text-decoration: underline;
+    }
+}
+
+@layer components {
+    code {
+        font-family: var(--font-mono);
+        font-size: 0.92em;
+        background: var(--surface-sunken);
+        padding: 1px 4px;
+        border-radius: var(--radius-md);
+    }
+
+    .muted {
+        color: var(--ink-muted);
+    }
+
+    .error {
+        color: var(--lamp-stop);
+    }
+
+    .topbar {
         display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        padding: 16px 24px;
+        border-bottom: 1px solid var(--line);
+        flex-wrap: wrap;
+    }
+
+    .topbar p {
+        margin: 4px 0 0;
+    }
+
+    .topbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    button {
+        background: var(--surface-sunken);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 6px 12px;
+        font: inherit;
+        cursor: pointer;
+    }
+
+    button:hover {
+        border-color: var(--accent);
+    }
+
+    button:disabled {
+        color: var(--ink-muted);
+        cursor: default;
+        border-color: var(--line);
+    }
+
+    .range-selector {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+
+    /* The range and the org/my toggle on one line; main's flex gap handles the spacing. */
+    .dashboard-controls {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+
+    .range-presets {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+
+    .range-option.active {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+
+    .range-custom {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .range-custom label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--ink-muted);
+    }
+
+    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
+       renders in the page's theme without this rule carrying one. */
+    .range-custom input,
+    .org-select {
+        background: var(--surface-sunken);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 5px 8px;
+        font: inherit;
+    }
+
+    .org-selector {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    /* The topbar wraps at narrow widths, and a long organization name must not push Refresh onto a
+       second line before the charts have become illegible anyway (~700px). */
+    .org-select {
+        max-width: 220px;
+    }
+
+    /* Inert, not broken: the field keeps its shape and drops to muted text, exactly as
+       `button:disabled` does, so the page has one vocabulary for "not available here". */
+    .org-select:disabled {
+        color: var(--ink-muted);
+        cursor: default;
+    }
+
+    main {
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        max-width: 1400px;
+    }
+
+    .panel {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 16px;
+    }
+
+    .panel p {
+        margin: 0 0 12px;
+        max-width: 68ch;
+    }
+
+    /* Preflight strips list markers the old UA sheet provided; a bare list in a panel gets them
+       back here. `:where` keeps the specificity at the panel's own, so a styled list whose class
+       comes later (onboarding-orgs, chat-gate-list) wins without a fight. */
+    .panel > :where(ul) {
+        list-style: disc;
+        margin: 0 0 12px;
+        padding-left: 20px;
+    }
+
+    .panel.warn {
+        border-color: var(--warn-border);
+    }
+
+    .panel.bad {
+        border-color: var(--bad-border);
+    }
+
+    .alert {
+        color: var(--lamp-stop);
+    }
+
+    /* Loud on purpose: synthetic figures beside real PR numbers must not read as measurements. */
+    .badge {
+        background: var(--lamp-stop);
+        border-radius: var(--radius-md);
+        color: var(--on-bad);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        margin-left: 10px;
+        padding: 3px 7px;
+        text-transform: uppercase;
+        vertical-align: middle;
+    }
+
+    .badge-warn {
+        background: var(--lamp-wait);
+        color: var(--on-warn);
+    }
+
+    .two-up {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+        gap: 20px;
+    }
+
+    .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 12px;
+    }
+
+    .card {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    /* The card's gap is a 2px rhythm for figure + label; its paragraphs carry their own spacing,
+       which preflight took away with the UA sheet. */
+    .card p {
+        margin: 0 0 8px;
+    }
+
+    .card p:last-child {
+        margin-bottom: 0;
+    }
+
+    .card strong {
+        font-size: 26px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .card span {
+        font-size: 12px;
+    }
+
+    .status {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        margin: 0;
+    }
+
+    .chart-wrap {
+        overflow-x: auto;
+        margin-bottom: 12px;
+    }
+
+    .chart {
+        width: 100%;
+        height: auto;
+        display: block;
+    }
+
+    .grid {
+        stroke: var(--chart-grid);
+        stroke-width: 1;
+    }
+
+    .grid-alt {
+        stroke-dasharray: 2 4;
+    }
+
+    .tick {
+        fill: var(--ink-muted);
+        font-size: 10px;
+        font-family: var(--font-mono);
+    }
+
+    .axis-label {
+        fill: var(--ink-muted);
+        font-size: 10px;
+    }
+
+    .bar {
+        fill: var(--accent);
+    }
+
+    .legend {
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 12px;
+        gap: 6px;
+        align-items: center;
+        margin: 0 0 8px;
+    }
+
+    .swatch {
+        border-radius: 2px;
+        display: inline-block;
+        height: 10px;
+        width: 10px;
+    }
+
+    .swatch:not(:first-child) {
+        margin-left: 10px;
+    }
+
+    /* Kept in step with .bar-primary / .bar-ok below, which the chart uses. */
+    .swatch-primary {
+        background: var(--chart-primary);
+    }
+
+    .swatch-ok {
+        background: var(--lamp-run);
+    }
+
+    .bar-primary {
+        fill: var(--chart-primary);
+    }
+
+    .bar-ok {
+        fill: var(--lamp-run);
+    }
+
+    .bar-warn {
+        fill: var(--lamp-wait);
+    }
+
+    .bar-bad {
+        fill: var(--lamp-stop);
+    }
+
+    .line {
+        fill: none;
+        stroke: var(--lamp-wait);
+        stroke-width: 1.5;
+    }
+
+    .dot {
+        fill: var(--lamp-done);
+        fill-opacity: 0.8;
+    }
+
+    .dot-warn {
+        fill: var(--lamp-wait);
+    }
+
+    .dot-bad {
+        fill: var(--lamp-stop);
+    }
+
+    /* Cells are nowrap, so a wide table overflows its panel rather than shrinking. Scrolling keeps
+       the rightmost columns reachable; without this they are clipped with no indication. */
+    .table-wrap {
+        overflow-x: auto;
+    }
+
+    table.data {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+    }
+
+    table.data th,
+    table.data td {
+        text-align: left;
+        padding: 5px 8px;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+    }
+
+    table.data th {
+        color: var(--ink-muted);
+        font-weight: 500;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    table.data th.sortable {
+        cursor: pointer;
+        user-select: none;
+    }
+
+    table.data th.asc::after {
+        content: ' ↑';
+    }
+
+    table.data th.desc::after {
+        content: ' ↓';
+    }
+
+    table.data td:not(:first-child) {
+        font-family: var(--font-mono);
+    }
+
+    .kv {
+        display: grid;
+        grid-template-columns: auto auto;
+        gap: 2px 16px;
+        margin: 0;
+        font-size: 13px;
+    }
+
+    .kv dt {
+        color: var(--ink-muted);
+    }
+
+    .kv dd {
+        margin: 0;
+        font-family: var(--font-mono);
+    }
+
+    .limits {
+        list-style: disc;
+        margin: 0;
+        padding-left: 20px;
+        max-width: 88ch;
+    }
+
+    .limits li,
+    .panel.warn li {
+        margin-bottom: 6px;
+    }
+
+    .panel.warn ul {
+        list-style: disc;
+        margin: 0;
+        padding-left: 20px;
+        max-width: 88ch;
+    }
+
+    footer {
+        display: flex;
+        gap: 20px;
+        padding: 12px 24px 32px;
+        font-size: 12px;
+    }
+
+    .login-gate {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        min-height: 70vh;
+        text-align: center;
+    }
+
+    .login-gate p {
+        margin: 0;
+        color: var(--ink-muted);
+    }
+
+    .login-error {
+        color: var(--lamp-stop);
+    }
+
+    /* An anchor, not a button, because the CSP blocks form submission and a fetch cannot follow the
+       redirect to github.com. Styled to match `button` so the difference is invisible. */
+    .login-button {
+        background: var(--surface-sunken);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 8px 16px;
+        text-decoration: none;
+        margin-top: 8px;
+    }
+
+    .login-button:hover {
+        border-color: var(--accent);
+    }
+
+    /* --- Sign-in onboarding ------------------------------------------------------------------- */
+
+    /* The selection screen (issue 125): a centered column, narrower than the shell, because it renders
+       before any session exists and carries one decision, not a dashboard. */
+    .onboarding {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        max-width: 560px;
+        margin: 8vh auto 0;
+    }
+
+    .onboarding-orgs {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .onboarding-org {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 10px 12px;
+        background: var(--surface);
+    }
+
+    .onboarding-repos {
+        margin-top: 8px;
+        padding-left: 16px;
+        display: flex;
+        flex-direction: column;
         gap: 4px;
     }
 
+    /* --- Shell -------------------------------------------------------------------------------- */
+
+    /* `minmax(0, 1fr)` and the `min-width: 0` below are both load-bearing, and for the same reason:
+       a grid item defaults to `min-width: auto`, so `.two-up` — which is
+       `repeat(auto-fit, minmax(440px, 1fr))` — would push this column wider than the viewport instead
+       of collapsing to one column. At 1440px, 220 + 48 of padding + 2x440 = 1148, so the dashboard
+       still fits two panels across. */
+    .shell {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        min-height: 100vh;
+    }
+
+    .shell-main {
+        min-width: 0;
+    }
+
+    .sidenav {
+        border-right: 1px solid var(--line);
+        padding: 16px 12px;
+        position: sticky;
+        top: 0;
+        align-self: start;
+    }
+
     .sidenav-brand {
-        display: none;
+        color: var(--ink-muted);
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        padding: 0 10px 12px;
+        text-transform: uppercase;
     }
-}
 
-/* --- Workspace ---------------------------------------------------------------------------- */
+    .sidenav-items {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
 
-.panel-head {
-    align-items: center;
-    display: flex;
-    gap: 16px;
-    justify-content: space-between;
-    margin-bottom: 8px;
-}
+    .sidenav-link {
+        align-items: center;
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+        padding: 8px 10px;
+        text-decoration: none;
+    }
 
-.pill {
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    display: inline-block;
-    font-size: 12px;
-    padding: 1px 9px;
-    white-space: nowrap;
-}
+    .sidenav-link:hover {
+        background: var(--surface-raised);
+    }
 
-.pill-ready {
-    border-color: var(--ok-border);
-    color: var(--ok);
-}
+    .sidenav-link.is-active {
+        background: var(--surface-raised);
+        color: var(--accent);
+    }
 
-.pill-cloning,
-.pill-queued {
-    border-color: var(--warn-border);
-    color: var(--warn);
-}
+    /* The Settings tree's section links, under the Settings item: the task tree's scale without the
+       task rows — a quiet link that lights up only for the section you are in. */
+    .sidenav-sublink {
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: block;
+        font-size: 12px;
+        padding: 4px 10px 4px 24px;
+        text-decoration: none;
+    }
 
-.pill-failed {
-    border-color: var(--bad-border);
-    color: var(--bad);
-}
+    .sidenav-sublink:hover {
+        background: var(--surface-raised);
+    }
 
-/* The reason travels with the pill rather than in a tooltip: "failed" on its own sends somebody to
-   the server logs for a sentence this row already has. */
-.pill-reason {
-    color: var(--muted);
-    display: block;
-    font-size: 11px;
-    max-width: 40ch;
-    white-space: normal;
-}
+    .sidenav-sublink.is-active {
+        background: var(--surface-raised);
+        color: var(--accent);
+    }
 
-/* --- The repository picker ---------------------------------------------------------------- */
+    /* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
+       text rides the title attribute. */
+    .sidenav-subitems {
+        list-style: none;
+        margin: 2px 0 6px;
+        padding: 0;
+    }
 
-/* The Headless UI dialog shell. The layer carries the z-index policy (the native <dialog> top
-   layer is gone), the backdrop div replaces `::backdrop` with the same `--overlay` token, and the
-   positioner centers the panel. The Dialog portals to <body>, so none of this can be trapped by
-   an ancestor's overflow or stacking context. */
-.dialog-layer {
-    position: relative;
-    z-index: 40;
-}
+    .sidenav-task {
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: block;
+        font-size: 12px;
+        overflow: hidden;
+        padding: 4px 10px 4px 24px;
+        text-decoration: none;
+    }
 
-.dialog-backdrop {
-    background: var(--overlay);
-    inset: 0;
-    position: fixed;
-}
+    /* The task's own line — the command or title — next to the status dot; it alone clips, so a long
+       command never pushes the live summary below it off the tree. The 10px is the dot and its margin,
+       which share the title's line. */
+    .sidenav-task-title {
+        display: inline-block;
+        max-width: calc(100% - 10px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
 
-.dialog-position {
-    align-items: center;
-    display: flex;
-    inset: 0;
-    justify-content: center;
-    padding: 16px;
-    position: fixed;
-}
+    /* The task's live summary — the newest run's activity line, while it is going — a second, quieter
+       line under the title. `white-space` is per-line, because `.sidenav-task` no longer forces one. */
+    .sidenav-task-summary {
+        color: var(--ink-muted);
+        display: block;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        margin-top: 2px;
+        opacity: 0.85;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 
-.picker {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    color: var(--text);
-    max-height: 80vh;
-    max-width: 560px;
-    padding: 20px;
-    width: 90vw;
-}
+    /* Who queued the task, inline after the title. 'unknown' is a fact here — a row queued before
+       accounts existed has no author — not a display hint to invent one. */
+    .sidenav-task-author {
+        color: var(--ink-muted);
+        display: inline-block;
+        font-size: 10px;
+        margin-left: 6px;
+        max-width: calc(100% - 10px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
 
-.picker h2 {
-    margin-bottom: 8px;
-}
+    /* The queued-by value: avatar and display name, kept on one line in the status sidebar. */
+    .task-queued-by {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
 
-.picker-search {
-    align-items: center;
-    display: flex;
-    gap: 8px;
-    margin: 12px 0;
-}
+    .task-avatar {
+        border-radius: 50%;
+        height: 18px;
+        width: 18px;
+    }
 
-.picker-search input {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    flex: 1;
-    font: inherit;
-    padding: 6px 10px;
-}
+    /* The per-user attribution table: left-aligned labels, right-adjacent counts. */
+    table.by-user td,
+    table.by-user th {
+        padding: 4px 16px 4px 0;
+        text-align: left;
+    }
 
-.picker-list {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    list-style: none;
-    margin: 0;
-    max-height: 40vh;
-    overflow-y: auto;
-    padding: 4px;
-}
+    .by-user-user {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
 
-.picker-option {
-    align-items: center;
-    cursor: pointer;
-    display: flex;
-    gap: 8px;
-    padding: 5px 8px;
-}
+    .sidenav-task:hover {
+        background: var(--surface-raised);
+        color: var(--ink);
+    }
 
-.picker-option[data-focus] {
-    background: var(--bg);
-}
+    .sidenav-task.is-active {
+        color: var(--accent);
+    }
 
-.picker-option[data-selected] {
-    color: var(--primary);
-}
+    /* The status dot before a task's name: the task's state in one painted pixel, the legend being the
+       colours the rest of the app already speaks — a live run breathes (with its halo), a parked one
+       holds grey, a failed one is red, and a finished or done one is solid green. */
+    .sidenav-dot {
+        background: currentColor;
+        border-radius: 50%;
+        display: inline-block;
+        height: 6px;
+        margin-right: 4px;
+        vertical-align: middle;
+        width: 6px;
+    }
 
-.picker-name {
-    font-family: var(--mono);
-    font-size: 12px;
-}
+    .sidenav-dot-running {
+        color: var(--lamp-run);
+        @apply animate-lamp lamp-glow;
+    }
 
-.picker-actions {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-top: 16px;
-}
+    .sidenav-dot-stopping {
+        color: var(--ink-muted);
+        @apply animate-lamp lamp-glow;
+    }
 
-/* The shared floating surface for the anchored Headless UI panels — the user menu, the org and
-   composer listboxes — and their option rows. The library's anchor engine positions the panel
-   with inline styles, so this class carries only the skin and the z-index policy: dialogs sit at
-   40, popovers at 30, nothing else on the page stacks. */
-.popover {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 4px;
-    z-index: 30;
-}
+    .sidenav-dot-paused {
+        color: var(--ink-muted);
+    }
 
-.popover-option {
-    /* One skin for both an <a> and a <button> item: the button resets, so the sign-out item reads
-       exactly like the Settings link beside it. */
-    background: none;
-    border: none;
-    border-radius: 4px;
-    color: inherit;
-    cursor: pointer;
-    display: block;
-    font: inherit;
-    padding: 6px 10px;
-    text-align: left;
-    text-decoration: none;
-    width: 100%;
-}
+    .sidenav-dot-failed {
+        color: var(--lamp-stop);
+    }
 
-.popover-option:hover,
-.popover-option[data-focus] {
-    background: var(--panel-raised);
-}
+    .sidenav-dot-done {
+        color: var(--lamp-run);
+    }
 
-.popover-option[data-selected] {
-    color: var(--primary);
-}
+    .sidenav-empty {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 2px 0 6px;
+        padding: 0 10px 0 24px;
+    }
 
-button.primary {
-    background: var(--primary);
-    border-color: var(--primary);
-    color: var(--on-primary);
-}
+    /* The task tree's section headers — Running, Need review, Past tasks. Static for the live
+       sections; a button for Past tasks, which folds the history away behind the same look. The
+       padding is what keeps the button a clickable target, not just an 11px line of text. */
+    .sidenav-section {
+        background: none;
+        border: none;
+        color: var(--ink-muted);
+        cursor: pointer;
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        margin: 4px 0 0;
+        padding: 4px 10px;
+        text-align: left;
+        text-transform: uppercase;
+        width: 100%;
+    }
 
-/* The tasks pages. */
+    .sidenav-section:hover {
+        color: var(--ink);
+    }
 
-/* The task detail page: the conversation plus its status sidebar, fed by the newest run. The
-   sidebar holds a fixed 280px and the conversation takes the rest; below ~1100px it stacks under
-   the conversation — a two-column read needs the room, and the shell itself collapses at 900px. */
-.task-layout {
-    align-items: start;
-    display: grid;
-    gap: 20px;
-    grid-template-columns: minmax(0, 1fr) 280px;
-}
+    /* The New task action pinned above the Running rows — a link to the composer (/tasks), not a
+       task row: rows order by activity, so a task that just starts slides in BELOW it and can never
+       reorder above the affordance. Sized to the task rows so the list keeps one rhythm; `end` keeps
+       the active mark on the composer page itself. */
+    .sidenav-newtask {
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: block;
+        font-size: 12px;
+        margin: 2px 0;
+        padding: 4px 10px 4px 24px;
+        text-decoration: none;
+    }
 
-@media (max-width: 1100px) {
+    .sidenav-newtask:hover {
+        background: var(--surface-raised);
+        color: var(--ink);
+    }
+
+    .sidenav-newtask.is-active {
+        color: var(--accent);
+    }
+
+    /* Below this the two columns stop fitting side by side: 220 of nav leaves under 700 for a grid
+       whose track floor is 440, so the panels would already be one-up and the nav is just tax. */
+    @media (max-width: 900px) {
+        .shell {
+            grid-template-columns: 1fr;
+        }
+
+        .sidenav {
+            border-bottom: 1px solid var(--line);
+            border-right: none;
+            position: static;
+        }
+
+        .sidenav-items {
+            display: flex;
+            gap: 4px;
+        }
+
+        .sidenav-brand {
+            display: none;
+        }
+    }
+
+    /* --- Workspace ---------------------------------------------------------------------------- */
+
+    .panel-head {
+        align-items: center;
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        margin-bottom: 8px;
+    }
+
+    .pill {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        display: inline-block;
+        font-size: 12px;
+        padding: 1px 9px;
+        white-space: nowrap;
+    }
+
+    .pill-ready {
+        border-color: var(--ok-border);
+        color: var(--lamp-run);
+    }
+
+    .pill-cloning,
+    .pill-queued {
+        border-color: var(--warn-border);
+        color: var(--lamp-wait);
+    }
+
+    .pill-failed {
+        border-color: var(--bad-border);
+        color: var(--lamp-stop);
+    }
+
+    /* The reason travels with the pill rather than in a tooltip: "failed" on its own sends somebody to
+       the server logs for a sentence this row already has. */
+    .pill-reason {
+        color: var(--ink-muted);
+        display: block;
+        font-size: 11px;
+        max-width: 40ch;
+        white-space: normal;
+    }
+
+    /* --- The repository picker ---------------------------------------------------------------- */
+
+    /* The Headless UI dialog shell. The layer carries the z-index policy (the native <dialog> top
+       layer is gone), the backdrop div replaces `::backdrop` with the same `--overlay` token, and the
+       positioner centers the panel. The Dialog portals to <body>, so none of this can be trapped by
+       an ancestor's overflow or stacking context. */
+    .dialog-layer {
+        position: relative;
+        z-index: 40;
+    }
+
+    .dialog-backdrop {
+        background: var(--overlay);
+        inset: 0;
+        position: fixed;
+    }
+
+    .dialog-position {
+        align-items: center;
+        display: flex;
+        inset: 0;
+        justify-content: center;
+        padding: 16px;
+        position: fixed;
+    }
+
+    /* The one --line-strong edge: a dialog floats over the dimmed page, so its outline reads
+       harder than any in-page hairline. */
+    .picker {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        max-height: 80vh;
+        max-width: 560px;
+        padding: 20px;
+        width: 90vw;
+    }
+
+    .picker h2 {
+        margin-bottom: 8px;
+    }
+
+    .picker-search {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        margin: 12px 0;
+    }
+
+    .picker-search input {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        flex: 1;
+        font: inherit;
+        padding: 6px 10px;
+    }
+
+    .picker-list {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        list-style: none;
+        margin: 0;
+        max-height: 40vh;
+        overflow-y: auto;
+        padding: 4px;
+    }
+
+    .picker-option {
+        align-items: center;
+        cursor: pointer;
+        display: flex;
+        gap: 8px;
+        padding: 5px 8px;
+    }
+
+    .picker-option[data-focus] {
+        background: var(--surface);
+    }
+
+    .picker-option[data-selected] {
+        color: var(--accent);
+    }
+
+    .picker-name {
+        font-family: var(--font-mono);
+        font-size: 12px;
+    }
+
+    .picker-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+    }
+
+    /* The shared floating surface for the anchored Headless UI panels — the user menu, the org and
+       composer listboxes — and their option rows. The library's anchor engine positions the panel
+       with inline styles, so this class carries only the skin and the z-index policy: dialogs sit at
+       40, popovers at 30, nothing else on the page stacks. */
+    .popover {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 4px;
+        z-index: 30;
+    }
+
+    .popover-option {
+        /* One skin for both an <a> and a <button> item: the button resets, so the sign-out item reads
+           exactly like the Settings link beside it. */
+        background: none;
+        border: none;
+        border-radius: var(--radius-md);
+        color: inherit;
+        cursor: pointer;
+        display: block;
+        font: inherit;
+        padding: 6px 10px;
+        text-align: left;
+        text-decoration: none;
+        width: 100%;
+    }
+
+    .popover-option:hover,
+    .popover-option[data-focus] {
+        background: var(--surface-sunken);
+    }
+
+    .popover-option[data-selected] {
+        color: var(--accent);
+    }
+
+    button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--ink-inverse);
+    }
+
+    /* The tasks pages. */
+
+    /* The task detail page: the conversation plus its status sidebar, fed by the newest run. The
+       sidebar holds a fixed 280px and the conversation takes the rest; below ~1100px it stacks under
+       the conversation — a two-column read needs the room, and the shell itself collapses at 900px. */
     .task-layout {
-        grid-template-columns: 1fr;
+        align-items: start;
+        display: grid;
+        gap: 20px;
+        grid-template-columns: minmax(0, 1fr) 280px;
     }
-}
 
-.chat-exchange {
-    border-top: 1px solid var(--border);
-    padding-top: 10px;
-}
+    @media (max-width: 1100px) {
+        .task-layout {
+            grid-template-columns: 1fr;
+        }
+    }
 
-.msg-user {
-    font-family: var(--mono);
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
+    .chat-exchange {
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+    }
 
-.msg-meta {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin: 6px 0 0;
-}
+    .msg-user {
+        font-family: var(--font-mono);
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
 
-.chat-exit {
-    color: var(--bad);
-    font-family: var(--mono);
-    font-size: 12px;
-}
+    .msg-meta {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 6px 0 0;
+    }
 
-.chat-detail {
-    margin-top: 8px;
-}
+    .chat-exit {
+        color: var(--lamp-stop);
+        font-family: var(--font-mono);
+        font-size: 12px;
+    }
 
-/* The running attempt's sampled vitals — the "is it stuck or working" strip above the output. */
+    .chat-detail {
+        margin-top: 8px;
+    }
 
-.chat-runtime {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin: 0 0 8px;
-}
+    /* The running attempt's sampled vitals — the "is it stuck or working" strip above the output. */
 
-.chat-activity {
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
+    .chat-runtime {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0 0 8px;
+    }
 
-/* The task's live summary — "what the agent is doing" — one line at the top of the task view while
-   the newest run is going. The same mono, muted, clipped treatment as the sidebar's activity row;
-   spacing and width come from the panel's paragraph rule. */
-.task-summary {
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
+    .chat-activity {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 
-/* The verification gates a run has run or is running — current/last only, never history. */
+    /* The task's live summary — "what the agent is doing" — one line at the top of the task view while
+       the newest run is going. The same mono, muted, clipped treatment as the sidebar's activity row;
+       spacing and width come from the panel's paragraph rule. */
+    .task-summary {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 
-.chat-gates {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    margin-bottom: 8px;
-}
+    /* The verification gates a run has run or is running — current/last only, never history. */
 
-.chat-gates > summary {
-    cursor: pointer;
-    display: flex;
-    gap: 6px;
-    padding: 6px 10px;
-}
+    .chat-gates {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        margin-bottom: 8px;
+    }
 
-.chat-gate-list {
-    border-top: 1px solid var(--border);
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
+    .chat-gates > summary {
+        cursor: pointer;
+        display: flex;
+        gap: 6px;
+        padding: 6px 10px;
+    }
 
-.chat-gate-list li + li {
-    border-top: 1px solid var(--border);
-}
+    .chat-gate-list {
+        border-top: 1px solid var(--line);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
 
-.chat-gate-list summary {
-    cursor: pointer;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    padding: 6px 10px;
-}
+    .chat-gate-list li + li {
+        border-top: 1px solid var(--line);
+    }
 
-.chat-gate-list .chat-output {
-    border: none;
-    border-radius: 0;
-    border-top: 1px solid var(--border);
-    max-height: 200px;
-}
+    .chat-gate-list summary {
+        cursor: pointer;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 10px;
+    }
 
-.gate-passed {
-    background: none;
-    color: var(--ok);
-}
+    .chat-gate-list .chat-output {
+        border: none;
+        border-radius: 0;
+        border-top: 1px solid var(--line);
+        max-height: 200px;
+    }
 
-.gate-failed {
-    background: none;
-    color: var(--bad);
-}
+    .gate-passed {
+        background: none;
+        color: var(--lamp-run);
+    }
 
-.gate-running {
-    background: none;
-    color: var(--muted);
-}
+    .gate-failed {
+        background: none;
+        color: var(--lamp-stop);
+    }
 
-.chat-output {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 12px;
-    margin: 0;
-    max-height: 320px;
-    overflow-y: auto;
-    padding: 8px 10px;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
+    .gate-running {
+        background: none;
+        color: var(--ink-muted);
+    }
 
-.chat-resume,
-.chat-toggle {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    padding: 1px 8px;
-}
+    .chat-output {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        font-size: 12px;
+        margin: 0;
+        max-height: 320px;
+        overflow-y: auto;
+        padding: 8px 10px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
 
-/* The user's verdict on a finished task. Same greens as a ready checkout: it is a good state, and
-   it is one no run can reach by itself. */
-.chat-done {
-    border-color: var(--ok-border);
-    color: var(--ok);
-}
+    .chat-resume,
+    .chat-toggle {
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        color: var(--ink);
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+        padding: 1px 8px;
+    }
 
-/* Stop wears the same amber as a queued run: a request in flight, not yet a verdict. The darkened
-   pill is its request-landed state — the run is coming down but has not parked yet. */
-.chat-stop {
-    border-color: var(--warn-border);
-    color: var(--warn);
-}
+    /* The user's verdict on a finished task. Same greens as a ready checkout: it is a good state, and
+       it is one no run can reach by itself. */
+    .chat-done {
+        border-color: var(--ok-border);
+        color: var(--lamp-run);
+    }
 
-/* Remove is the thread's end: the red a failed run wears, because it is the same finality. */
-.chat-remove {
-    border-color: var(--bad-border);
-    color: var(--bad);
-}
+    /* Stop wears the same amber as a queued run: a request in flight, not yet a verdict. The darkened
+       pill is its request-landed state — the run is coming down but has not parked yet. */
+    .chat-stop {
+        border-color: var(--warn-border);
+        color: var(--lamp-wait);
+    }
 
-/* The task head's row of controls and its overall wall clock — every button the task can take,
-   at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
-   title from squeezing the buttons; the title wraps instead. */
-.task-actions {
-    align-items: center;
-    display: flex;
-    flex: none;
-    gap: 8px;
-}
+    /* Remove is the thread's end: the red a failed run wears, because it is the same finality. */
+    .chat-remove {
+        border-color: var(--bad-border);
+        color: var(--lamp-stop);
+    }
 
-/* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
-   activity line, never the exit code's red. */
-.task-clock {
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 12px;
-    white-space: nowrap;
-}
+    /* The task head's row of controls and its overall wall clock — every button the task can take,
+       at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
+       title from squeezing the buttons; the title wraps instead. */
+    .task-actions {
+        align-items: center;
+        display: flex;
+        flex: none;
+        gap: 8px;
+    }
 
-.composer {
-    border-top: 1px solid var(--border);
-    margin-top: 16px;
-    padding-top: 12px;
-}
+    /* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
+       activity line, never the exit code's red. */
+    .task-clock {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        white-space: nowrap;
+    }
 
-.composer-input {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font: inherit;
-    min-height: 64px;
-    padding: 8px 10px;
-    resize: vertical;
-    width: 100%;
-}
+    .composer {
+        border-top: 1px solid var(--line);
+        margin-top: 16px;
+        padding-top: 12px;
+    }
 
-.composer-row {
-    align-items: center;
-    display: flex;
-    gap: 12px;
-    margin-top: 8px;
-}
+    .composer-input {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        min-height: 64px;
+        padding: 8px 10px;
+        resize: vertical;
+        width: 100%;
+    }
 
-.composer-label {
-    color: var(--muted);
-    font-size: 12px;
-}
+    .composer-row {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        margin-top: 8px;
+    }
 
-.composer-select {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font: inherit;
-    padding: 2px 6px;
-}
+    .composer-label {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
 
-.composer-row button.primary {
-    margin-left: auto;
-}
+    .composer-select {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        color: var(--ink);
+        font: inherit;
+        padding: 2px 6px;
+    }
 
-/* On the composer page the textarea IS the pane — the issue asks for a big input, open by default —
-   so it gets the room a chat footer's one-liner does not need, and a bound so a wide window does
-   not stretch it into a banner. The detail view keeps the footer shape. */
-.task-compose .composer {
-    border-top: none;
-    margin-top: 12px;
-    max-width: 760px;
-    padding-top: 0;
-}
+    .composer-row button.primary {
+        margin-left: auto;
+    }
 
-.task-compose .composer-input {
-    min-height: 160px;
-}
+    /* On the composer page the textarea IS the pane — the issue asks for a big input, open by default —
+       so it gets the room a chat footer's one-liner does not need, and a bound so a wide window does
+       not stretch it into a banner. The detail view keeps the footer shape. */
+    .task-compose .composer {
+        border-top: none;
+        margin-top: 12px;
+        max-width: 760px;
+        padding-top: 0;
+    }
 
-/* The topbar's user menu and the account page's identity section. */
+    .task-compose .composer-input {
+        min-height: 160px;
+    }
 
-/* The trigger is a real button, so the global button skin applies; this only lays the avatar and
-   the login out and keeps the old summary's tighter padding. */
-.user-menu-button {
-    align-items: center;
-    display: flex;
-    gap: 8px;
-    padding: 4px 10px;
-}
+    /* The topbar's user menu and the settings page's identity section. */
 
-.user-menu-login {
-    max-width: 160px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
+    /* The trigger is a real button, so the global button skin applies; this only lays the avatar and
+       the login out and keeps the old summary's tighter padding. */
+    .user-menu-button {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        padding: 4px 10px;
+    }
 
-.avatar {
-    border-radius: 50%;
-    display: block;
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-}
+    .user-menu-login {
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 
-.avatar-fallback {
-    /* No picture from GitHub — the login's initial, sized to the avatar it stands in for. */
-    color: var(--muted);
-    text-align: center;
-    line-height: 22px;
-    font-size: 12px;
-    width: 24px;
-    height: 24px;
-}
+    .avatar {
+        border-radius: 50%;
+        display: block;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+    }
 
-.avatar-lg.avatar-fallback {
-    line-height: 38px;
-    font-size: 18px;
-    width: 40px;
-    height: 40px;
-}
+    .avatar-fallback {
+        /* No picture from GitHub — the login's initial, sized to the avatar it stands in for. */
+        color: var(--ink-muted);
+        text-align: center;
+        line-height: 22px;
+        font-size: 12px;
+        width: 24px;
+        height: 24px;
+    }
 
-/* The library's anchor engine positions the panel with inline styles, so this only keeps the
-   menu's own minimum width. */
-.user-menu-panel {
-    min-width: 160px;
-}
+    .avatar-lg.avatar-fallback {
+        line-height: 38px;
+        font-size: 18px;
+        width: 40px;
+        height: 40px;
+    }
 
-.user-menu-panel a.active {
-    color: var(--primary);
-}
+    /* The library's anchor engine positions the panel with inline styles, so this only keeps the
+       menu's own minimum width. */
+    .user-menu-panel {
+        min-width: 160px;
+    }
 
-.identity-head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
+    .user-menu-panel a.active {
+        color: var(--accent);
+    }
 
-.identity-head p {
-    margin: 0;
-}
+    .identity-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
 
-.identity-name {
-    font-weight: 600;
-}
+    .identity-head p {
+        margin: 0;
+    }
 
-/* The environment panel's Variables | Secrets tab strip and the raw editor. */
+    .identity-name {
+        font-weight: 600;
+    }
 
-.panel-actions {
-    display: flex;
-    gap: 8px;
-}
+    /* The environment panel's Variables | Secrets tab strip and the raw editor. */
 
-.env-tabs {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 8px;
-}
+    .panel-actions {
+        display: flex;
+        gap: 8px;
+    }
 
-.env-tab.active {
-    border-color: var(--primary);
-    color: var(--primary);
-}
+    .env-tabs {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 8px;
+    }
 
-.env-raw {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-bottom: 12px;
-}
+    .env-tab.active {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
 
-.env-raw textarea {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font: inherit;
-    min-height: 120px;
-    padding: 8px 10px;
-    resize: vertical;
-    width: 100%;
-}
+    .env-raw {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
 
-.env-errors {
-    white-space: pre-wrap;
+    .env-raw textarea {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        min-height: 120px;
+        padding: 8px 10px;
+        resize: vertical;
+        width: 100%;
+    }
+
+    .env-errors {
+        white-space: pre-wrap;
+    }
 }
