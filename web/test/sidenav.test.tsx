@@ -210,7 +210,7 @@ describe('SideNav task tree', () => {
 });
 
 describe('SideNav status dots', () => {
-    it('blinks a green dot beside a run that is going', () => {
+    it('breathes a green dot beside a run that is going', () => {
         const html = render('/tasks', [job(running())]);
         expect(section(html, 'Running (', 'Need review (')).toContain('sidenav-dot sidenav-dot-running');
     });

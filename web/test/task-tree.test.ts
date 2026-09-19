@@ -198,7 +198,7 @@ describe('chainHead', () => {
 describe('taskDotClass', () => {
     const status = (overrides: Partial<Job>): ReturnType<typeof taskStatus> => taskStatus('a', [job('a', overrides)]);
 
-    it('paints a going run green and blinking, and a stop in flight the same family', () => {
+    it('paints a going run green and breathing, and a stop in flight the same family', () => {
         expect(taskDotClass(status({ status: 'running' }))).toBe('sidenav-dot-running');
         expect(taskDotClass(status({ status: 'running', cancelRequestedAt: at(30) }))).toBe('sidenav-dot-stopping');
     });
