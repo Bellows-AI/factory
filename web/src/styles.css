@@ -303,6 +303,14 @@
         border-color: var(--line);
     }
 
+    /* Keyboard focus is visible everywhere (issue 160): a two-pixel accent ring with a two-pixel
+       gap, in both themes. `:where` holds the specificity at zero, so nothing that skins its own
+       focus has to fight this rule, and mouse clicks do not ring (only `:focus-visible`). */
+    :where(a, button, input, select, textarea, summary):focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
     .range-selector {
         display: flex;
         align-items: center;
@@ -745,6 +753,27 @@
 
     /* --- Shell -------------------------------------------------------------------------------- */
 
+    /* The skip link: off the page until a keyboard Tab lands on it, then floating over the
+       content. The shift is a transform, so revealing it moves nothing else; z-index sits above
+       dialogs (40) because focus is inside it when it shows. */
+    .skip-link {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        left: 16px;
+        padding: 8px 12px;
+        position: fixed;
+        text-decoration: none;
+        top: 16px;
+        transform: translateY(calc(-100% - 24px));
+        z-index: 50;
+    }
+
+    .skip-link:focus-visible {
+        transform: none;
+    }
+
     /* The shell frame (issue 160): a fixed navigation column and the content track. The nav is a
        grid item with its own height — a long task tree scrolls INSIDE it, and a long page never
        stretches the column. 240 of nav + 48 of padding + 2x440 track floor = 1168, so the
@@ -1004,26 +1033,42 @@
         color: var(--accent);
     }
 
-    /* Below this the two columns stop fitting side by side: 220 of nav leaves under 700 for a grid
-       whose track floor is 440, so the panels would already be one-up and the nav is just tax. */
+    /* Below this the two columns stop fitting side by side: 240 of nav leaves under 660 for a grid
+        whose track floor is 440, so the panels would already be one-up and the nav is just tax.
+        The persistent column leaves the LAYOUT entirely (issue 160) — the page's content starts in
+        the first viewport, and navigation moves into the app bar's drawer. The app bar's org
+        selector goes with it, into the drawer, where horizontal room is not scarce. */
     @media (max-width: 900px) {
         .shell {
             grid-template-columns: 1fr;
         }
 
         .sidenav {
-            border-bottom: 1px solid var(--line);
-            border-right: none;
-            position: static;
-        }
-
-        .sidenav-items {
-            display: flex;
-            gap: 4px;
-        }
-
-        .sidenav-brand {
             display: none;
+        }
+
+        .appbar-trigger,
+        .appbar-brand {
+            display: inline-flex;
+        }
+
+        .appbar-org {
+            display: none;
+        }
+
+        /* Touch targets: 44px is the smallest reliable finger target, and every control of the
+            compact shell clears it. */
+        .appbar-trigger,
+        .mobile-nav-close,
+        .mobile-nav .sidenav-link,
+        .mobile-nav .sidenav-sublink,
+        .mobile-nav .sidenav-newtask,
+        .mobile-nav .org-select,
+        .appbar .user-menu-button {
+            align-items: center;
+            display: inline-flex;
+            min-height: 44px;
+            min-width: 44px;
         }
     }
 
@@ -1096,6 +1141,47 @@
         justify-content: center;
         padding: 16px;
         position: fixed;
+    }
+
+    /* The navigation drawer (issue 160): the compact shell's nav, rendered into the same dialog
+        shell as the pickers. Raised over the dimmed page, edge like the picker's — it floats, so
+        it takes the harder hairline. */
+    .mobile-nav {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 80dvh;
+        max-width: 400px;
+        overflow-y: auto;
+        padding: 16px;
+        width: 90vw;
+    }
+
+    .mobile-nav-head {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+    }
+
+    .mobile-nav-title {
+        font-size: 15px;
+        margin: 0;
+    }
+
+    /* The drawer reuses the sidenav's link primitives; the sublinks drop their desktop indent and
+        size up from 12px to the body size — no new small navigation text (issue 160). */
+    .mobile-nav .sidenav-sublink {
+        font-size: 14px;
+        padding-left: 10px;
+    }
+
+    .mobile-nav-count {
+        color: var(--ink-muted);
+        margin: 0;
     }
 
     /* The one --line-strong edge: a dialog floats over the dimmed page, so its outline reads

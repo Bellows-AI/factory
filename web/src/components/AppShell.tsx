@@ -10,6 +10,7 @@ import { DEFAULT_RANGE, DEFAULT_SCOPE, statsQuery } from './RangeSelector.js';
 import type { RangeSelection, ScopeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
 import { AppBar } from './AppBar.js';
+import { MobileNavDialog } from './MobileNavDialog.js';
 
 /**
  * Everything both pages share: the range, the scope, the one `/api/stats` poll, and the chrome
@@ -109,7 +110,7 @@ export function AppShell() {
             <a className="skip-link" href="#main-content">
                 Skip to main content
             </a>
-            <SideNav tasks={onTasks ? tasks.jobs : null} />
+            <SideNav tasks={onTasks ? tasks.jobs : null} onNavigate={() => setNavOpen(false)} />
             <div className="shell-main">
                 <AppBar
                     meta={data?.meta ?? null}
@@ -124,6 +125,15 @@ export function AppShell() {
                     <Outlet context={context} />
                 </main>
             </div>
+            {/* The drawer renders from the shell's own state; the same close closes it whether the
+                trigger, a link, Escape or the backdrop asked (issue 160). */}
+            <MobileNavDialog
+                open={navOpen}
+                onClose={() => setNavOpen(false)}
+                onNavigate={() => setNavOpen(false)}
+                tasks={onTasks ? tasks.jobs : null}
+                meta={data?.meta ?? null}
+            />
         </div>
     );
 }

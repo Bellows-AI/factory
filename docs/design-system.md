@@ -175,6 +175,12 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | --- | --- | --- |
 | Env | `env-tab`, `env-tabs`, `env-raw`, `env-errors` | The Variables/Secrets tab strip and the `.env` raw editor |
 
+### Mobile navigation
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `mobile-nav-org` | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the picker's `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link`/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
+
 ### One-offs
 
 `identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
@@ -193,12 +199,13 @@ Components:
 | File | Primitives |
 | --- | --- |
 | `AppBar.tsx` | appbar, org, user-menu-button |
-| `AppShell.tsx` | shell, page, skip-link, appbar |
+| `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table |
 | `ExecutorDialog.tsx` | picker, status |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
+| `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
 | `RangeSelector.tsx` | range |
 | `RepoPickerDialog.tsx` | picker, pill, status |
