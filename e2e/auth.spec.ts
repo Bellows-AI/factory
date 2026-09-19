@@ -181,7 +181,8 @@ test('signing out returns to the gate', async ({ page }) => {
 
     // Through the user menu — the affordance, not a hand-crafted request.
     await page.locator('.user-menu-button').click();
-    await page.getByRole('button', { name: 'Sign out' }).click();
+    // The Headless UI Menu renders each item in the menuitem role, overriding the button's.
+    await page.getByRole('menuitem', { name: 'Sign out' }).click();
     await expect(gate(page)).toBeVisible();
     await expect(cards(page)).toHaveCount(0);
 
@@ -207,14 +208,14 @@ test('the org/my toggle scopes the figures to the signed-in member', async ({ pa
     await throughSignIn(page);
 
     // The toggle exists only behind a session — this board signs in, so it is here. The
-    // fieldset's legend is its accessible name.
-    const toggle = page.getByRole('group', { name: 'Whose usage' });
+    // RadioGroup's aria-label is its accessible name, and each choice is a radio.
+    const toggle = page.getByRole('radiogroup', { name: 'Whose usage' });
     await expect(toggle).toBeVisible();
-    await expect(toggle.getByRole('button', { name: 'Org' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle.getByRole('radio', { name: 'Org' })).toHaveAttribute('aria-checked', 'true');
 
     const [response] = await Promise.all([
         page.waitForResponse((r) => r.url().includes('scope=mine') && r.status() === 200),
-        toggle.getByRole('button', { name: 'Me' }).click(),
+        toggle.getByRole('radio', { name: 'Me' }).click(),
     ]);
     const body = (await response.json()) as { meta: { scope: string; scopeLogin: string | null } };
     expect(body.meta.scope).toBe('mine');
@@ -232,8 +233,8 @@ test('the org/my toggle scopes the figures to the signed-in member', async ({ pa
         page.waitForResponse(
             (r) => r.url().includes('/api/stats?') && !r.url().includes('scope=mine') && r.status() === 200
         ),
-        toggle.getByRole('button', { name: 'Org' }).click(),
+        toggle.getByRole('radio', { name: 'Org' }).click(),
     ]);
     expect(((await orgResponse.json()) as { meta: { scope: string } }).meta.scope).toBe('org');
-    await expect(toggle.getByRole('button', { name: 'Org' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle.getByRole('radio', { name: 'Org' })).toHaveAttribute('aria-checked', 'true');
 });

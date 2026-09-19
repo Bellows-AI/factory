@@ -848,9 +848,30 @@ table.by-user th {
 
 /* --- The repository picker ---------------------------------------------------------------- */
 
-/* A native <dialog>, so the top layer, focus trapping and Escape come from the browser. Note that
-   it is never rendered with the `open` attribute — that is the NON-modal mode, which has none of
-   those things; modality comes from showModal(). */
+/* The Headless UI dialog shell. The layer carries the z-index policy (the native <dialog> top
+   layer is gone), the backdrop div replaces `::backdrop` with the same `--overlay` token, and the
+   positioner centers the panel. The Dialog portals to <body>, so none of this can be trapped by
+   an ancestor's overflow or stacking context. */
+.dialog-layer {
+    position: relative;
+    z-index: 40;
+}
+
+.dialog-backdrop {
+    background: var(--overlay);
+    inset: 0;
+    position: fixed;
+}
+
+.dialog-position {
+    align-items: center;
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    padding: 16px;
+    position: fixed;
+}
+
 .picker {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -860,10 +881,6 @@ table.by-user th {
     max-width: 560px;
     padding: 20px;
     width: 90vw;
-}
-
-.picker::backdrop {
-    background: var(--overlay);
 }
 
 .picker h2 {
@@ -897,7 +914,7 @@ table.by-user th {
     padding: 4px;
 }
 
-.picker-list label {
+.picker-option {
     align-items: center;
     cursor: pointer;
     display: flex;
@@ -905,8 +922,12 @@ table.by-user th {
     padding: 5px 8px;
 }
 
-.picker-list label:hover {
+.picker-option[data-focus] {
     background: var(--bg);
+}
+
+.picker-option[data-selected] {
+    color: var(--primary);
 }
 
 .picker-name {
@@ -919,6 +940,43 @@ table.by-user th {
     gap: 8px;
     justify-content: flex-end;
     margin-top: 16px;
+}
+
+/* The shared floating surface for the anchored Headless UI panels — the user menu, the org and
+   composer listboxes — and their option rows. The library's anchor engine positions the panel
+   with inline styles, so this class carries only the skin and the z-index policy: dialogs sit at
+   40, popovers at 30, nothing else on the page stacks. */
+.popover {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    z-index: 30;
+}
+
+.popover-option {
+    /* One skin for both an <a> and a <button> item: the button resets, so the sign-out item reads
+       exactly like the Settings link beside it. */
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+    display: block;
+    font: inherit;
+    padding: 6px 10px;
+    text-align: left;
+    text-decoration: none;
+    width: 100%;
+}
+
+.popover-option:hover,
+.popover-option[data-focus] {
+    background: var(--panel-raised);
+}
+
+.popover-option[data-selected] {
+    color: var(--primary);
 }
 
 button.primary {
@@ -1185,31 +1243,13 @@ button.primary {
 
 /* The topbar's user menu and the settings page's identity section. */
 
-.user-menu {
-    position: relative;
-}
-
-.user-menu summary {
-    /* A summary is a disclosure control by default; this one is styled as the topbar's other
-       controls and must not show the triangle. */
-    list-style: none;
-    display: flex;
+/* The trigger is a real button, so the global button skin applies; this only lays the avatar and
+   the login out and keeps the old summary's tighter padding. */
+.user-menu-button {
     align-items: center;
+    display: flex;
     gap: 8px;
-    background: var(--panel-raised);
-    border: 1px solid var(--border);
-    border-radius: 6px;
     padding: 4px 10px;
-    cursor: pointer;
-    font: inherit;
-}
-
-.user-menu summary::-webkit-details-marker {
-    display: none;
-}
-
-.user-menu summary:hover {
-    border-color: var(--primary);
 }
 
 .user-menu-login {
@@ -1243,37 +1283,10 @@ button.primary {
     height: 40px;
 }
 
+/* The library's anchor engine positions the panel with inline styles, so this only keeps the
+   menu's own minimum width. */
 .user-menu-panel {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 6px);
     min-width: 160px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 6px;
-    z-index: 10;
-}
-
-.user-menu-panel a,
-.user-menu-panel button {
-    display: block;
-    width: 100%;
-    padding: 6px 10px;
-    border-radius: 4px;
-    text-decoration: none;
-    /* Button resets, so the sign-out item reads exactly like the Settings link beside it. */
-    border: none;
-    background: none;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-
-.user-menu-panel a:hover,
-.user-menu-panel button:hover {
-    background: var(--panel-raised);
 }
 
 .user-menu-panel a.active {
@@ -1293,20 +1306,6 @@ button.primary {
 
 .identity-name {
     font-weight: 600;
-}
-
-/* A visually hidden legend: the scope toggle's fieldset needs one for assistive tech,
-   but the visible label is the buttons themselves. */
-.sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
 }
 
 /* The environment panel's Variables | Secrets tab strip and the raw editor. */

@@ -35,7 +35,7 @@ async function signedIn(page: Page) {
  */
 async function workspacePage(page: Page) {
     await page.goto('/workspace');
-    const dialog = page.locator('dialog[aria-labelledby="picker-title"]');
+    const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
     await expect(dialog).toBeVisible();
     await page.getByRole('button', { name: 'Not now' }).click();
     await expect(dialog).toBeHidden();
@@ -52,7 +52,7 @@ test('the left nav is there and moves between sections', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
 
     // The picker opens over it, and it is modal — the nav underneath is genuinely unclickable
-    // until it is dismissed, which is the whole reason for using a native <dialog>.
+    // until it is dismissed, which is what the Dialog's focus trap and inert backdrop buy.
     await page.getByRole('button', { name: 'Not now' }).click();
 
     await nav.getByRole('link', { name: 'Dashboard' }).click();
@@ -89,7 +89,7 @@ test('the picker opens by itself when nothing is selected, and is genuinely moda
     await signedIn(page);
     await page.goto('/workspace');
 
-    const dialog = page.locator('dialog[aria-labelledby="picker-title"]');
+    const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
     await expect(dialog).toBeVisible();
 
     /*
@@ -101,27 +101,32 @@ test('the picker opens by itself when nothing is selected, and is genuinely moda
      */
     await expect(dialog).toContainText('This GitHub App is not installed on any repositories yet');
 
-    // `:modal` is the property renderToStaticMarkup cannot reach, and the one that everything else
-    // about the dialog depends on — focus trapping, Escape, the backdrop, and the inertness the nav
-    // test relies on. It is true only because showModal() was called, never from `<dialog open>`.
-    expect(await dialog.evaluate((node: HTMLDialogElement) => node.matches(':modal'))).toBe(true);
+    // `aria-modal` and the rest of the page going inert are what renderToStaticMarkup cannot
+    // reach, and what everything else about the dialog depends on — focus trapping, Escape, the
+    // backdrop. A click on the nav must land nowhere while the dialog is up.
+    await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    const nav = page.locator('.sidenav');
+    await expect(nav).toHaveAttribute('inert', '');
+    await expect(nav).toHaveAttribute('aria-hidden', 'true');
+
+    // The CSP sends form-action 'none', so no submitting form may ever appear in here — the same
+    // trap that makes LoginGate an anchor rather than a form.
+    expect(await dialog.locator('form').count()).toBe(0);
 
     // A passing assertion says the DOM was right; only the image says the layout was.
     await page.screenshot({ path: `${SHOTS}/workspace-picker.png` });
 });
 
 test('Escape closes the picker and the page stays usable', async ({ page }) => {
-    // The browser closes a native dialog on Escape without telling React. Without the `close`
-    // listener the parent still believes it is open and will not reopen it — so this also proves
-    // the button below works afterwards.
+    // Escape closes the Dialog — Headless hands it to `onClose`, so the parent's state moves with
+    // it and the button below can reopen it. Under the native dialog this was the desync trap the
+    // `close` listener existed to catch; here a missed sync would fail this test.
     await signedIn(page);
     await page.goto('/workspace');
 
-    const dialog = page.locator('dialog[aria-labelledby="picker-title"]');
+    const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
     await expect(dialog).toBeVisible();
 
-    // Escape is the browser's, not this component's — but it closes the element without telling
-    // React, which is what the `close` listener exists to catch.
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
 
@@ -134,9 +139,9 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     await workspacePage(page);
 
     await page.getByRole('button', { name: 'Add executor' }).click();
-    const dialog = page.locator('dialog[aria-labelledby="executor-title"]');
+    const dialog = page.locator('[role="dialog"][aria-labelledby="executor-title"]');
     await expect(dialog).toBeVisible();
-    expect(await dialog.evaluate((node: HTMLDialogElement) => node.matches(':modal'))).toBe(true);
+    await expect(dialog).toHaveAttribute('aria-modal', 'true');
 
     // Not valid JSON: the message appears under the field, and Save stays disabled.
     await dialog.getByPlaceholder('main').fill('main');
@@ -146,6 +151,10 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     await dialog.locator('textarea').fill('{ "model": "sonnet" }');
     await dialog.getByRole('button', { name: 'Add' }).click();
     await expect(dialog).toBeHidden();
+
+    // Focus went back to the trigger the dialog opened from — the Dialog restores it on close,
+    // and the next keystroke must land where the member left it.
+    await expect(page.getByRole('button', { name: 'Add executor' })).toBeFocused();
 
     // The row comes back through the poll, with its type — and the panel no longer says none.
     const panel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'Executors' }) });

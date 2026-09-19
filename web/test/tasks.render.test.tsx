@@ -141,21 +141,23 @@ describe('TaskComposer', () => {
                 { owner: 'acme', name: 'api' },
             ],
         });
-        expect(html).toContain('<option value="acme/web"');
-        expect(html).toContain('<option value="acme/api">');
-        expect(html).toContain('value="acme/web" selected');
-        // The `none` option is still offered first — just not the selected one.
-        const repoSelect = html.slice(html.indexOf('Repository'), html.indexOf('Executor'));
-        expect(repoSelect).not.toContain('value="" selected');
+        // The Listbox server-renders the trigger only — the options are client-side — so the
+        // trigger's text is the selected repository, and `aria-label` names the control.
+        const repoTrigger = html.slice(html.indexOf('Repository'), html.indexOf('Executor'));
+        expect(repoTrigger).toContain('>acme/web</button>');
+        expect(repoTrigger).not.toContain('acme/api');
         const none = renderComposer({ repos: [] });
-        expect(none).toContain('<option value="" selected');
+        const noneTrigger = none.slice(none.indexOf('Repository'), none.indexOf('Executor'));
+        expect(noneTrigger).toContain('>none</button>');
     });
 
     // A member who configured executors means their tasks to run on one: the FIRST is the
     // default, and `none` stays available for a deliberate unlabelled run.
     it('preselects the first configured executor, and none only when there is none', () => {
+        const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Send<'));
+
         const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
-        expect(one).toContain('<option value="main" selected');
+        expect(trigger(one)).toContain('>main</button>');
 
         const two = renderComposer({
             repos: [],
@@ -164,13 +166,11 @@ describe('TaskComposer', () => {
                 { name: 'heavy', type: 'claude' },
             ],
         });
-        expect(two).toContain('<option value="main" selected');
-        expect(two).not.toContain('<option value="heavy" selected');
+        expect(trigger(two)).toContain('>main</button>');
 
         const empty = renderComposer({ repos: [], executors: [] });
-        // Only the `none` options exist, and the executor one is the one selected.
-        expect(empty).toContain('<option value="" selected');
-        expect(empty).not.toContain('<option value="main"');
+        // Only the `none` option exists, and the executor one is the one selected.
+        expect(trigger(empty)).toContain('>none</button>');
     });
 
     it('keeps the composer reachable when no repository is selected', () => {
@@ -234,11 +234,10 @@ describe('TaskComposer', () => {
             ],
         });
         expect(html).toContain('Workflow');
-        expect(html).toContain('>— none —<');
-        expect(html).toContain('fix-issue');
-        expect(html).toContain('mine');
-        // Unchosen means NO process: the select's value is the empty option.
-        expect(html).toContain('<option value="" selected="">— none —</option>');
+        // Unchosen means NO process: the trigger reads the empty option's label. The offered
+        // names are client-side; e2e/composer.spec.ts drives the real dropdown.
+        const workflowTrigger = html.slice(html.indexOf('Workflow'), html.indexOf('>Send<'));
+        expect(workflowTrigger).toContain('>— none —</button>');
     });
 });
 
@@ -1205,7 +1204,9 @@ describe('composer parameters', () => {
         // param-shaped may sit in the markup before the member picks a process by name.
         const html = renderComposer({ workflows: parammed });
         expect(html).not.toContain('composer-param');
-        expect(html).toContain('fix-issue');
+        // The dropdown renders unchosen; the offered names are client-side, and e2e covers the
+        // real dropdown.
+        expect(html.slice(html.indexOf('Workflow'), html.indexOf('>Send<'))).toContain('>— none —</button>');
     });
 });
 

@@ -25,12 +25,15 @@ const DIRECTORY: OrganizationMeta = {
 const render = (organization: OrganizationMeta) => renderToStaticMarkup(<OrgSelector organization={organization} />);
 
 describe('OrgSelector', () => {
-    it('renders the single organization as a disabled native select', () => {
+    it('renders the single organization as a disabled Listbox trigger', () => {
+        // The Listbox server-renders the trigger only; the options are client-side, so the
+        // trigger's text is the current organization and its aria-label names the control.
         const html = render(CONFIG);
-        expect(html).toContain('<select');
+        expect(html).toContain('<button');
         expect(html).toContain('disabled=""');
+        expect(html).toContain('aria-label="Organization: Bellows AI"');
         expect(html).toContain('Bellows AI');
-        expect(html.match(/<option/g)).toHaveLength(1);
+        expect(html).not.toContain('<option');
     });
 
     it('says why it is inactive, not only that it is', () => {
@@ -41,16 +44,20 @@ describe('OrgSelector', () => {
         expect(html).not.toContain('ORG_ID');
     });
 
-    it('marks the current organization as selected', () => {
-        expect(render(CONFIG)).toContain('selected=""');
+    it('shows the current organization on the trigger', () => {
+        // Selection display is the trigger's text now; the options themselves are client-side.
+        expect(render(CONFIG)).toContain('>Bellows AI</button>');
     });
 
-    it('leaves the control live and lists every organization in directory mode', () => {
+    it('leaves the control live in directory mode', () => {
         // The leave-room case. Costs nothing today, and fails the day someone hard-codes disabled.
+        // Coverage note: the old suite also counted the rendered `<option>`s, but `available`
+        // reaching the option list is now client-side markup no offline render can see, and no
+        // board here runs directory mode — that half is hand-verified; this keeps the disabled
+        // half.
         const html = render(DIRECTORY);
         expect(html).not.toContain('disabled');
-        expect(html.match(/<option/g)).toHaveLength(2);
-        expect(html).toContain('Acme Inc');
+        expect(html).toContain('aria-label="Organization: Bellows AI"');
     });
 
     it('does not disable a directory user who currently belongs to one organization', () => {
@@ -102,7 +109,7 @@ describe('TopBar', () => {
     });
 
     it('renders the user menu once the session is known, and nothing before it', () => {
-        expect(html()).not.toContain('user-menu');
+        expect(html()).not.toContain('user-menu-button');
         const withSession: Session = {
             user: {
                 id: '00000000-0000-4000-8000-000000000001',
@@ -123,7 +130,7 @@ describe('TopBar', () => {
             mode: 'github',
         };
         const markup = html(withSession);
-        expect(markup).toContain('user-menu');
-        expect(markup).toContain('/settings');
+        expect(markup).toContain('user-menu-button');
+        expect(markup).toContain('octocat');
     });
 });

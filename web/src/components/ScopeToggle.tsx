@@ -1,4 +1,5 @@
 import type { ScopeSelection } from './RangeSelector.js';
+import { Radio, RadioGroup } from '@headlessui/react';
 
 /**
  * The org/my toggle, beside the range selector.
@@ -9,24 +10,22 @@ import type { ScopeSelection } from './RangeSelector.js';
  */
 export function ScopeToggle({ scope, onChange }: { scope: ScopeSelection; onChange: (next: ScopeSelection) => void }) {
     return (
-        <fieldset className="scope-toggle range-presets">
-            <legend className="sr-only">Whose usage</legend>
+        <RadioGroup value={scope} onChange={onChange} aria-label="Whose usage" className="range-presets">
             {(
                 [
                     { value: 'org', label: 'Org' },
                     { value: 'mine', label: 'Me' },
                 ] as const
             ).map(({ value, label }) => (
-                <button
+                <Radio
                     key={value}
-                    type="button"
+                    as="button"
+                    value={value}
                     className={value === scope ? 'range-option active' : 'range-option'}
-                    aria-pressed={value === scope}
-                    onClick={() => onChange(value)}
                 >
                     {label}
-                </button>
+                </Radio>
             ))}
-        </fieldset>
+        </RadioGroup>
     );
 }

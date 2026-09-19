@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 
 /** `owner/name` of the first selected repository, or `''` for none — the select's value shape. */
 const firstRepo = (repos: readonly { owner: string; name: string }[] | null): string => {
@@ -324,68 +325,90 @@ export function TaskComposer({
                     }}
                 />
                 <div className="composer-row">
-                    <label className="composer-label">
+                    <div className="composer-label">
                         Repository{' '}
-                        <select
-                            className="composer-select"
+                        <Listbox
                             value={repo}
-                            onChange={(e) => {
+                            onChange={(next) => {
                                 setRepoTouched(true);
-                                setRepo(e.target.value);
+                                setRepo(next);
                                 // Reporting upward is the reporting effect's job — one path.
                             }}
                         >
-                            <option value="">none</option>
-                            {repos.map(({ owner, name }) => {
-                                const full = `${owner}/${name}`;
-                                return (
-                                    <option key={full} value={full}>
-                                        {full}
-                                    </option>
-                                );
-                            })}
-                        </select>
-                    </label>
-                    <label className="composer-label">
+                            <ListboxButton className="composer-select" aria-label="Repository">
+                                {repo === '' ? 'none' : repo}
+                            </ListboxButton>
+                            <ListboxOptions anchor="bottom start" className="popover">
+                                <ListboxOption value="" className="popover-option">
+                                    none
+                                </ListboxOption>
+                                {repos.map(({ owner, name }) => {
+                                    const full = `${owner}/${name}`;
+                                    return (
+                                        <ListboxOption key={full} value={full} className="popover-option">
+                                            {full}
+                                        </ListboxOption>
+                                    );
+                                })}
+                            </ListboxOptions>
+                        </Listbox>
+                    </div>
+                    <div className="composer-label">
                         Executor{' '}
-                        <select
-                            className="composer-select"
+                        <Listbox
                             value={executor}
-                            onChange={(e) => {
+                            onChange={(next) => {
                                 setExecutorTouched(true);
-                                setExecutor(e.target.value);
+                                setExecutor(next);
                             }}
                         >
-                            <option value="">none</option>
-                            {executors.map((candidate) => (
-                                <option key={candidate.name} value={candidate.name}>
-                                    {candidate.name}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
+                            <ListboxButton className="composer-select" aria-label="Executor">
+                                {executor === '' ? 'none' : executor}
+                            </ListboxButton>
+                            <ListboxOptions anchor="bottom start" className="popover">
+                                <ListboxOption value="" className="popover-option">
+                                    none
+                                </ListboxOption>
+                                {executors.map((candidate) => (
+                                    <ListboxOption
+                                        key={candidate.name}
+                                        value={candidate.name}
+                                        className="popover-option"
+                                    >
+                                        {candidate.name}
+                                    </ListboxOption>
+                                ))}
+                            </ListboxOptions>
+                        </Listbox>
+                    </div>
                     {workflows !== null ? (
-                        <label className="composer-label">
+                        <div className="composer-label">
                             Workflow{' '}
-                            <select
-                                className="composer-select"
+                            <Listbox
                                 value={workflow}
-                                onChange={(e) => {
-                                    setWorkflow(e.target.value);
+                                onChange={(next) => {
+                                    setWorkflow(next);
                                     // The values reset through the identity-keyed read: the changed
                                     // choice re-resolves the chosen workflow, and stale values
                                     // stop being handed back. A repo switch goes further and resets
                                     // the whole draft — the repo effect below.
                                 }}
                             >
-                                <option value="">— none —</option>
-                                {workflows.map((choice) => (
-                                    <option key={choice.id} value={choice.name}>
-                                        {choice.name}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
+                                <ListboxButton className="composer-select" aria-label="Workflow">
+                                    {workflow === '' ? '— none —' : workflow}
+                                </ListboxButton>
+                                <ListboxOptions anchor="bottom start" className="popover">
+                                    <ListboxOption value="" className="popover-option">
+                                        — none —
+                                    </ListboxOption>
+                                    {workflows.map((choice) => (
+                                        <ListboxOption key={choice.id} value={choice.name} className="popover-option">
+                                            {choice.name}
+                                        </ListboxOption>
+                                    ))}
+                                </ListboxOptions>
+                            </Listbox>
+                        </div>
                     ) : null}
                     <button
                         type="button"

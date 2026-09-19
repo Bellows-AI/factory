@@ -1,4 +1,5 @@
 import type { OrganizationMeta } from '@factory-ai/core';
+import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 
 /**
  * The organization these figures belong to — and, since #99, the one the caller can switch to.
@@ -31,23 +32,22 @@ export function OrgSelector({
         : 'Switch organization';
 
     return (
-        // The title sits on the wrapper, not on the <select>: a disabled form control receives no
+        // The title sits on the wrapper, not on the button: a disabled control receives no
         // mouse events in Chrome or Firefox, so a title on the element itself never shows.
-        <label className="org-selector" title={reason}>
+        <div className="org-selector" title={reason}>
             <span className="muted">org</span>
-            <select
-                className="org-select"
-                value={organization.current.id}
-                onChange={(event) => onSwitch?.(event.target.value)}
-                disabled={locked}
-                aria-label={`Organization: ${organization.current.name}`}
-            >
-                {organization.available.map((org) => (
-                    <option key={org.id} value={org.id}>
-                        {org.name}
-                    </option>
-                ))}
-            </select>
-        </label>
+            <Listbox value={organization.current.id} onChange={(id) => onSwitch?.(id)} disabled={locked}>
+                <ListboxButton className="org-select" aria-label={`Organization: ${organization.current.name}`}>
+                    {organization.current.name}
+                </ListboxButton>
+                <ListboxOptions anchor="bottom start" className="popover">
+                    {organization.available.map((org) => (
+                        <ListboxOption key={org.id} value={org.id} className="popover-option">
+                            {org.name}
+                        </ListboxOption>
+                    ))}
+                </ListboxOptions>
+            </Listbox>
+        </div>
     );
 }

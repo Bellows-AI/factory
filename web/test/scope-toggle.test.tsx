@@ -66,7 +66,7 @@ describe('dashboard scope toggle', () => {
     it('renders beside the range selector when the session reports a signed-in member', () => {
         const html = renderPage(session('github'));
         expect(html).toContain('range-selector');
-        expect(html).toContain('Whose usage'); // the fieldset legend
+        expect(html).toContain('Whose usage'); // the RadioGroup's aria-label
         expect(html).toContain('Me');
     });
 

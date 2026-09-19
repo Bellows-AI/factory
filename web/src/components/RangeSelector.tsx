@@ -1,4 +1,5 @@
 import type { RangePreset } from '@factory-ai/core';
+import { Radio, RadioGroup } from '@headlessui/react';
 
 export interface RangeSelection {
     preset: RangePreset;
@@ -57,19 +58,23 @@ export function RangeSelector({
 
     return (
         <section className="range-selector">
-            <div className="range-presets">
+            <RadioGroup
+                value={range.preset}
+                onChange={(preset) => onChange({ ...range, preset })}
+                aria-label="Date range"
+                className="range-presets"
+            >
                 {PRESET_LABELS.map(({ preset, label }) => (
-                    <button
+                    <Radio
                         key={preset}
-                        type="button"
+                        as="button"
+                        value={preset}
                         className={preset === range.preset ? 'range-option active' : 'range-option'}
-                        aria-pressed={preset === range.preset}
-                        onClick={() => onChange({ ...range, preset })}
                     >
                         {label}
-                    </button>
+                    </Radio>
                 ))}
-            </div>
+            </RadioGroup>
             {range.preset === 'custom' ? (
                 <div className="range-custom">
                     <label>
