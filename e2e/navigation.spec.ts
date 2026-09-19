@@ -125,11 +125,19 @@ test.describe('the responsive shell', () => {
 
     test('the skip link is the first stop and never steals focus', async ({ page }) => {
         await page.goto('/');
-
         const skip = page.locator('.skip-link');
+        // The gate mounts the app only once the session check answers; Tab before that lands on
+        // the sign-in screen and the assertion races the swap.
+        await skip.waitFor({ state: 'attached' });
+
         await page.keyboard.press('Tab');
         await expect(skip).toBeFocused();
         await expect(skip).toBeVisible();
+        // The reveal is a transform; capture once it has actually slid in.
+        await expect
+            .poll(() => page.evaluate(() => getComputedStyle(document.activeElement!).transform))
+            .toBe('none');
+        await page.screenshot({ path: `${SHOTS}/skip-link-focus.png` });
 
         await page.keyboard.press('Enter');
         const landed = await page.evaluate(() => document.activeElement?.id);
