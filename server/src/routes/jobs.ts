@@ -9,7 +9,7 @@ import {
     nodeOf,
 } from '../db/workflow-schema.js';
 import type { OrgRegistry } from '../orgs.js';
-import { UUID, bad, badSegment, body, guard } from './helpers.js';
+import { UUID, bad, badSegment, body, guard, repoReason } from './helpers.js';
 
 export interface JobRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
@@ -36,22 +36,6 @@ const BODY_LIMIT = 128 * 1024;
  * the selection route accepted, so neither field has one here either — the body limit bounds them
  * the way it bounds the command. See docs/jobs.md.
  */
-const REPO_SEGMENT_LIMIT = 100;
-
-function repoReason(value: string): string | null {
-    const parts = value.split('/');
-    if (parts.length !== 2) return 'repo must be owner/name';
-    for (const [label, part] of [
-        ['owner', parts[0]!],
-        ['name', parts[1]!],
-    ] as const) {
-        if (part.length > REPO_SEGMENT_LIMIT) return `${label} exceeds ${REPO_SEGMENT_LIMIT} characters`;
-        const reason = badSegment(label, part);
-        if (reason) return reason;
-    }
-    return null;
-}
-
 function executorReason(value: string): string | null {
     return badSegment('executor', value);
 }
