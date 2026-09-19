@@ -760,12 +760,13 @@ export const jobRoutes =
             return reply.code(200).send({ id, status: result.value.status, doneAt: result.value.doneAt });
         });
 
-        // The user's stop. Two fates in one answer: a queued (never started) or already parked row
-        // is settled `stopped` directly — the turn is over — while a running row is left running
-        // and stamped, and the WORKER settles it when its next heartbeat reports the stamp
-        // (suspend lands `stopped` under the flag). Either way the turn ends and the session
-        // stays, so the follow-up composer is what the member sees next. 202 for the moving case,
-        // because the request RIDES to the worker and the settle lands moments later.
+        // The user's stop. Two fates in one answer: a queued (never started), an already parked, or
+        // a running row whose lease has already expired (#152) is settled `stopped` directly — the
+        // turn is over — while a running row under a live lease is left running and stamped, and
+        // the WORKER settles it when its next heartbeat reports the stamp (suspend lands `stopped`
+        // under the flag). Either way the turn ends and the session stays, so the follow-up
+        // composer is what the member sees next. 202 for the moving case, because the request RIDES
+        // to the worker and the settle lands moments later.
         app.post('/api/jobs/:id/stop', { bodyLimit: 4096 }, async (request, reply) => {
             const store = await storeOf(request);
             if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);

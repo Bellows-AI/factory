@@ -172,9 +172,10 @@ export interface Job {
      * When a stop was requested on this ROW while it was running — the user's `/stop` landed on a
      * moving run and the worker has not parked it yet. The request is delivered through the
      * heartbeat the worker already sends (`cancelRequested`), and the flag is cleared when the
-     * stop happens — parking (suspend) or finishing (complete) — never by the request itself, so a
-     * run whose driver died mid-stop is parked as soon as its lease is reclaimed. Null on every
-     * job nobody asked to stop.
+     * stop happens — parking (suspend) or finishing (complete) — never by the request itself. A
+     * run whose worker died mid-stop never waits out a reclaim: the claim settles the stamped row
+     * `stopped` (issue #152), the stop's own landing, and `/stop` on a row whose lease already
+     * expired settles it in place. Null on every job nobody asked to stop.
      */
     cancelRequestedAt: string | null;
     /**
@@ -338,10 +339,13 @@ export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_ses
 /**
  * What a stop request did.
  *
- * - `stopped`   the row was settled `stopped` in place — it was queued (never started) or its run
- *               was already parked; the turn is over.
- * - `requested` the row is running; the worker has been told and will settle it. The timestamp is
- *               the FIRST request, kept on later stops so the answer is idempotent.
+ * - `stopped`   the row was settled `stopped` in place — it was queued (never started), its run
+ *               was already parked, or it was running under a lease that has already expired
+ *               (nobody holds it, so there is nobody left to deliver to — issue #152); the turn
+ *               is over.
+ * - `requested` the row is running under a live lease; the worker has been told and will settle
+ *               it. The timestamp is the FIRST request, kept on later stops so the answer is
+ *               idempotent.
  * - `missing`   no such job in this organization.
  * - `conflict`  the row already ended — there is no turn left to stop.
  */
@@ -448,11 +452,13 @@ export interface JobStore {
     ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
     /**
      * The user's stop. A QUEUED row never started and a STANDBY row's run is long gone — both are
-     * settled `stopped` right here: the turn is over. A RUNNING row is stamped
-     * `cancel_requested_at` (idempotently) and left running: the driver reads the request on the
-     * heartbeat it already sends, kills its runner and settles it with the existing suspend route
-     * — the flag IS the stop travelling, and the settle clears it. A row that already ended
-     * refutes with its status.
+     * settled `stopped` right here: the turn is over. A RUNNING row whose lease is still live is
+     * stamped `cancel_requested_at` (idempotently) and left running: the driver reads the request
+     * on the heartbeat it already sends, kills its runner and settles it with the existing
+     * suspend route — the flag IS the stop travelling, and the settle clears it. A RUNNING row
+     * whose lease has already expired settles `stopped` here instead (issue #152): nobody holds
+     * the lease, and a stamp would wait for a heartbeat nobody will send. A row that already
+     * ended refutes with its status.
      *
      * `stoppedBy` is the authenticated caller's id, passed by the route. Stamped at request time
      * with the same first-writer coalesce as the flag it rides beside.
@@ -1140,26 +1146,51 @@ export function createJobStore({
             await gate();
             // One statement decides the outcome by the status it sees. A QUEUED row never started
             // and a STANDBY row's run is long gone — both are settled `stopped` here: the turn is
-            // over, and the session these rows keep is what the follow-up continues. A RUNNING row
-            // is stamped `cancel_requested_at` and left running: the request travels on the
-            // heartbeat the worker already sends, and the settle that honours it (suspend under
-            // the stamp) clears it. coalesce keeps the FIRST request, which is what makes /stop
-            // idempotent rather than a rewrite of when it was asked. stopped_by coalesces beside
-            // it unconditionally — every status this UPDATE touches is a stoppable one, so this
-            // caller acted, and the first asker is the actor that survives.
+            // over, and the session these rows keep is what the follow-up continues. A RUNNING
+            // row whose lease is still live is stamped `cancel_requested_at` and left running:
+            // the request travels on the heartbeat the worker already sends, and the settle that
+            // honours it (suspend under the stamp) clears it. A RUNNING row whose lease has
+            // ALREADY expired is settled `stopped` here instead (issue #152): nobody holds the
+            // lease, so a stamp would wait for a heartbeat nobody will send — and a previous
+            // holder that is still beating loses the row on its next beat (`lost`, the kill
+            // order) exactly as a reclaim delivers it. The settle lands like the suspend park
+            // does: finished_at stamped, the last segment banked, the attempt handed back — a
+            // stop is a park, not a failed try — and the session kept for the follow-up.
+            // coalesce keeps the FIRST request, which is what makes /stop idempotent rather than
+            // a rewrite of when it was asked. stopped_by coalesces beside it unconditionally —
+            // every status this UPDATE touches is a stoppable one, so this caller acted, and the
+            // first asker is the actor that survives.
             const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null }[]>`
                 update job set
                     status = case
                         when status in ('queued','standby') then 'stopped'
+                        when status = 'running' and lease_expires_at <= now() then 'stopped'
                         else status
                     end,
                     finished_at = case
                         when status in ('queued','standby') then now()
+                        when status = 'running' and lease_expires_at <= now() then now()
                         else finished_at
                     end,
+                    wall_clock_ms = case
+                        when status = 'running' and lease_expires_at <= now() then ${wallTick}
+                        else wall_clock_ms
+                    end,
+                    attempts = case
+                        when status = 'running' and lease_expires_at <= now() then greatest(attempts - 1, 0)
+                        else attempts
+                    end,
+                    lease_token = case
+                        when status = 'running' and lease_expires_at <= now() then null
+                        else lease_token
+                    end,
+                    lease_expires_at = case
+                        when status = 'running' and lease_expires_at <= now() then now()
+                        else lease_expires_at
+                    end,
                     cancel_requested_at = case
-                        when status = 'running' then coalesce(cancel_requested_at, now())
-                        else cancel_requested_at
+                        when status = 'running' and lease_expires_at > now() then coalesce(cancel_requested_at, now())
+                        else null
                     end,
                     stopped_by = coalesce(stopped_by, ${stoppedBy})
                 where org_id = ${orgId} and id = ${id}
@@ -1227,10 +1258,39 @@ export function createJobStore({
              * round, exactly as a single statement skipped a row that was not claimable.
              */
             return sql.begin(async (tx) => {
+                /*
+                 * Settle the stops nobody could deliver, before looking for work (issue #152).
+                 * A `running` row stamped `cancel_requested_at` whose lease has expired is a stop
+                 * whose worker died before its heartbeat could carry the kill order: re-claiming
+                 * it would burn an attempt and spawn a container for a command the member just
+                 * cancelled — and wipe the session the follow-up continues. The claim is the poll
+                 * that runs forever, so it is the settle point: the row lands `stopped` here,
+                 * finished_at stamped, the stamp and the lease cleared, the session kept for the
+                 * follow-up composer the member sees next. The attempt is handed back exactly as
+                 * the delivered stop's suspend hands one back — a stop is a park, not a failed
+                 * try — and the last segment banks with the same overcount the dead retirement
+                 * accepts, because the board cannot know when the run actually stopped.
+                 */
+                await tx`
+                    update job set
+                        status             = 'stopped',
+                        finished_at        = now(),
+                        wall_clock_ms      = ${wallTick},
+                        attempts           = greatest(attempts - 1, 0),
+                        lease_token        = null,
+                        lease_expires_at   = now(),
+                        cancel_requested_at = null
+                    where org_id = ${orgId} and status = 'running'
+                      and cancel_requested_at is not null
+                      and lease_expires_at <= now()
+                `;
+
                 // Retire what has burned its attempts, before looking for work. Without this a
                 // command that kills its worker is reclaimed every time its lease expires, forever.
                 // The dead attempt's segment banks here: the row ran for real before its worker
-                // went quiet, and the retirement must not erase it.
+                // went quiet, and the retirement must not erase it. A stamped row never reaches
+                // this sweep — the settle above has already landed it `stopped`, which is the
+                // verdict a stop is (issue #152): dead is for attempts that failed on their own.
                 await tx`
                     update job set status = 'dead', finished_at = now(), lease_token = null,
                                    wall_clock_ms = ${wallTick}
