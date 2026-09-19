@@ -109,7 +109,17 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | Topbar | `topbar`, `topbar-actions` | The page head row and its control cluster |
+| Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
+
+`PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer: every routed page
+renders exactly one of them, and the `h1` it wraps is the page's only `h1` — panel headings
+below it are `h2`s and must not restate the page title. It is presentational by contract (no
+fetching, no route inspection, no Factory knowledge), slot-driven: `eyebrow` is the section
+above the title, `title` the `h1` itself, `description` the leading column's second line, `meta`
+the state beside the title (pills, clocks, timestamps) and `actions` the page's buttons —
+siblings of the heading, never children of it. An empty slot renders no wrapper, and
+`flex-wrap` drops meta and actions below the title at narrow widths without changing DOM order.
 
 ### Surfaces and feedback
 
@@ -196,6 +206,7 @@ Components:
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
 | `OrgSelector.tsx` | org |
+| `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | range |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
