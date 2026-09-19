@@ -76,7 +76,7 @@ export function AppShell() {
     const tasks = useJobs(onTasks);
 
     // The session for the topbar's user menu. A second `useSession` instance next to the gate's —
-    // the environment and settings pages already do the same; the module-level listener they
+    // the account page already does the same; the module-level listener they
     // register is a Set for exactly this reason.
     const { session } = useSession();
 

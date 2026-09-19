@@ -4,7 +4,7 @@ import { signOut, type Session } from '../api/useSession.js';
 
 /**
  * The account affordance in the topbar: avatar (or an initial chip when GitHub reports none, as
- * under AUTH_MODE=none), the login, and the way into /settings.
+ * under AUTH_MODE=none), the login, and the way into /account.
  *
  * A Headless UI `Menu`, so opening, closing, Escape and arrow-key navigation are the library's and
  * there is nothing to synchronize. The panel anchors below the button and closes itself when an
@@ -26,8 +26,8 @@ export function UserMenu({ session }: { session: Session }) {
             </MenuButton>
             <MenuItems anchor="bottom end" className="popover user-menu-panel">
                 <MenuItem>
-                    <NavLink to="/settings" className="popover-option">
-                        Settings
+                    <NavLink to="/account" className="popover-option">
+                        Account
                     </NavLink>
                 </MenuItem>
                 {/*

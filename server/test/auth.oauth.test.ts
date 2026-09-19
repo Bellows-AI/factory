@@ -854,7 +854,7 @@ describe('the selection screen (#125)', () => {
         const first = await beginOnboarding(app);
         await finishOnboarding(app, first, { orgs: [ORG] });
 
-        const state = await begin(app, '/settings', undefined, true);
+        const state = await begin(app, '/account', undefined, true);
         const response = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
         expect(response.headers.location).toBe('/onboarding');
 
@@ -866,7 +866,7 @@ describe('the selection screen (#125)', () => {
     });
 
     it('reselect=1 opens the screen for a single installation too — the link is their only lever', async () => {
-        // Onboarding completion is the only production writer of tracked_repo, and the settings
+        // Onboarding completion is the only production writer of tracked_repo, and the account
         // page's reselect link is the only surface that re-opens it. Gating the park on
         // `reported.length >= 2` made following that link a no-op for a single-installation
         // account: it signed straight back in, and the repos it tracks could never change.
@@ -877,7 +877,7 @@ describe('the selection screen (#125)', () => {
         });
         await signIn(app);
 
-        const state = await begin(app, '/settings', undefined, true);
+        const state = await begin(app, '/account', undefined, true);
         const response = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
         expect(response.headers.location).toBe('/onboarding');
         const cookie = response.cookies.find((c) => c.name === PENDING_COOKIE)?.value;

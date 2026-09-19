@@ -3,9 +3,11 @@ import type { ConsoleMessage, Page } from '@playwright/test';
 
 const SHOTS = 'artifacts/ui';
 
-/** The states the Environment page can be in, one interaction per state, a screenshot per state.
+/** The states the environment editors can be in, one interaction per state, a screenshot per state.
  * `npm test` renders the panel with react-dom/server and proves it does not throw; only a browser
- * proves the inputs accept typing and Save writes. */
+ * proves the inputs accept typing and Save writes. The three scope editors live in the settings
+ * tree (#150): Core at /settings/organization, My workspace at /settings/workspace, Per repository
+ * at /settings/repos. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 function watchConsole(page: Page): string[] {
@@ -18,7 +20,7 @@ function watchConsole(page: Page): string[] {
     return problems;
 }
 
-/** The Core (organization) scope's panel — the first editor on the page. */
+/** The Core (organization) scope's panel — the editor on the Organization section. */
 function corePanel(page: Page) {
     return page.locator('section.panel', { has: page.getByRole('heading', { name: 'Core (organization)' }) });
 }
@@ -29,21 +31,33 @@ function rawToggle(page: Page) {
 }
 
 async function open(page: Page) {
-    await page.goto('/env');
+    await page.goto('/settings/organization');
     await expect(page.getByRole('heading', { name: 'Core (organization)' })).toBeVisible({ timeout: 60_000 });
 }
 
-test.describe('environment page', () => {
-    test('renders the three scope editors cleanly', async ({ page }) => {
+test.describe('environment editors', () => {
+    test('renders each scope editor on its own settings section, cleanly', async ({ page }) => {
         const problems = watchConsole(page);
+
         await open(page);
-
-        await expect(page.getByRole('heading', { name: 'My workspace' })).toBeVisible();
-        await expect(page.getByRole('heading', { name: 'Per repository' })).toBeVisible();
+        // The Organization section is a stub with the one org-level editor under it (#150).
+        await expect(page.getByText('Organization settings are not built yet.')).toBeVisible();
         const text = await page.locator('main').innerText();
-        for (const token of FORBIDDEN) expect(text, `env page contains ${token}`).not.toContain(token);
+        for (const token of FORBIDDEN) expect(text, `organization section contains ${token}`).not.toContain(token);
+        await page.screenshot({ path: `${SHOTS}/settings-organization.png`, fullPage: true });
 
-        await page.screenshot({ path: `${SHOTS}/env-page.png`, fullPage: true });
+        await page.goto('/settings/workspace');
+        await expect(page.getByRole('heading', { name: 'My workspace' })).toBeVisible({ timeout: 60_000 });
+        const workspaceText = await page.locator('main').innerText();
+        for (const token of FORBIDDEN) expect(workspaceText, `workspace section contains ${token}`).not.toContain(token);
+        await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
+
+        await page.goto('/settings/repos');
+        await expect(page.getByRole('heading', { name: 'Per repository' })).toBeVisible({ timeout: 60_000 });
+        const reposText = await page.locator('main').innerText();
+        for (const token of FORBIDDEN) expect(reposText, `repos section contains ${token}`).not.toContain(token);
+        await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
+
         expect(problems.join('\n')).toBe('');
     });
 

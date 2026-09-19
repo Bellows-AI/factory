@@ -1,0 +1,46 @@
+import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
+import { useSettingsPage } from './SettingsLayout.js';
+
+/**
+ * The Organization section of the settings tree: a stub, with the one org-level editor that
+ * already exists mounted under it (issue 150).
+ *
+ * The core (organization) environment is admin-written — it reaches every member's runners — and
+ * a member sees it read-only with the sentence saying why. The rest of the section is a stub on
+ * purpose: organization settings beyond the environment are not built, and a panel saying so is
+ * the honest placeholder, not a silent empty page.
+ */
+export function SettingsOrganizationPage() {
+    const { env, session } = useSettingsPage();
+    const isAdmin = session?.role === 'admin';
+    return (
+        <main>
+            <section className="panel">
+                <h2>Organization</h2>
+                <p className="muted">Organization settings are not built yet.</p>
+            </section>
+
+            {env.error ? <p className="status">{env.error}</p> : null}
+            {/*
+                The editor mounts only on data: its draft is seeded from initialVars in a state
+                initializer, so mounting it while the request is in flight would freeze empty rows
+                over whatever is stored (docs/env.md, the draft-survival contract).
+            */}
+            {env.loading && !env.data ? (
+                <p className="status">Loading environment…</p>
+            ) : (
+                <EnvVarsPanel
+                    title="Core (organization)"
+                    hint={
+                        isAdmin
+                            ? 'Injected into every runner in this deployment. The place for shared credentials — GITHUB_TOKEN, for one.'
+                            : 'An admin configures the core environment; it is shown here read-only.'
+                    }
+                    initialVars={env.data?.org ?? []}
+                    onSave={env.saveOrg}
+                    disabled={!isAdmin}
+                />
+            )}
+        </main>
+    );
+}

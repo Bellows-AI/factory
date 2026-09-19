@@ -1,7 +1,7 @@
 import type { Session } from '../api/useSession.js';
 
 /**
- * The settings page's view of the sign-in choice (issue 125): the organizations this deployment
+ * The account page's view of the sign-in choice (issue 125): the organizations this deployment
  * tracks, and the round trip that changes the choice.
  *
  * There is no in-place editor, and that is not an omission: the GitHub user token that enumerated
@@ -30,7 +30,7 @@ export function TrackedOrgsPanel({ session }: { session: Session }) {
             {/* An anchor, not a button, for the same reason LoginGate is: the flow starts with a
                 redirect to github.com, which a fetch cannot follow and the CSP's form-action
                 forbids posting to. */}
-            <a className="login-button" href="/api/auth/github?returnTo=%2Fsettings&reselect=1">
+            <a className="login-button" href="/api/auth/github?returnTo=%2Faccount&reselect=1">
                 Change what you track
             </a>
         </section>

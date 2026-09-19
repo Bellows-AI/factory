@@ -589,6 +589,26 @@ footer {
     color: var(--primary);
 }
 
+/* The Settings tree's section links, under the Settings item: the task tree's scale without the
+   task rows — a quiet link that lights up only for the section you are in. */
+.sidenav-sublink {
+    border-radius: 6px;
+    color: var(--muted);
+    display: block;
+    font-size: 12px;
+    padding: 4px 10px 4px 24px;
+    text-decoration: none;
+}
+
+.sidenav-sublink:hover {
+    background: var(--panel);
+}
+
+.sidenav-sublink.is-active {
+    background: var(--panel);
+    color: var(--primary);
+}
+
 /* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
    text rides the title attribute. */
 .sidenav-subitems {
@@ -1241,7 +1261,7 @@ button.primary {
     min-height: 160px;
 }
 
-/* The topbar's user menu and the settings page's identity section. */
+/* The topbar's user menu and the account page's identity section. */
 
 /* The trigger is a real button, so the global button skin applies; this only lays the avatar and
    the login out and keeps the old summary's tighter padding. */
