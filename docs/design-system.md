@@ -187,7 +187,7 @@ siblings of the heading, never children of it. An empty slot renders no wrapper,
 ### One-offs
 
 `identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
-the topbar's control row on the dashboard. Everything else above is a family; these exist because
+the dashboard's range/scope row under the page header. Everything else above is a family; these exist because
 no family fits, and a new one-off needs a sentence here saying the same.
 
 ## Inventory
@@ -243,7 +243,7 @@ Pages:
 | File | Primitives |
 | --- | --- |
 | `AccountPage.tsx` | panel |
-| `DashboardPage.tsx` | dashboard-controls |
+| `DashboardPage.tsx` | page, page-header, dashboard-controls |
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
 | `SettingsExecutorsPage.tsx` | panel |
 | `SettingsLayout.tsx` | none — renders the outlet |

@@ -1,8 +1,10 @@
 import { useShell } from '../components/AppShell.js';
 import { useCompletedJobs } from '../api/useCompletedJobs.js';
+import { PageHeader } from '../components/PageHeader.js';
 import { RangeSelector } from '../components/RangeSelector.js';
 import { ScopeToggle } from '../components/ScopeToggle.js';
 import { StatusBanner } from '../components/StatusBanner.js';
+import { describeRepos } from '../format.js';
 import { AiUsagePanel } from '../panels/AiUsagePanel.js';
 import { ByUserPanel } from '../panels/ByUserPanel.js';
 import { RecentTasksPanel } from '../panels/RecentTasksPanel.js';
@@ -10,20 +12,33 @@ import { TaskUsagePanel } from '../panels/TaskUsagePanel.js';
 import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
 
 /**
- * The dashboard. The scope toggle sits beside the range selector but renders ONLY when the
- * session reports a signed-in MEMBER: under AUTH_MODE=none there is no "me" — the session hook
- * still resolves the deployment's `__local__` stand-in, and a toggle for it would advertise a
- * filter the server answers with SCOPE_REQUIRES_USER. `session.mode` is the tell.
+ * The dashboard. The page header owns the telemetry chrome — exact repo coverage, the freshness
+ * timestamp and the one Refresh action — because those describe THIS page's figures, not the app.
+ * The scope toggle sits beside the range selector but renders ONLY when the session reports a
+ * signed-in MEMBER: under AUTH_MODE=none there is no "me" — the session hook still resolves the
+ * deployment's `__local__` stand-in, and a toggle for it would advertise a filter the server
+ * answers with SCOPE_REQUIRES_USER. `session.mode` is the tell.
  */
 export function DashboardPage() {
-    const { data, range, setRange, scope, setScope, session, progress, error } = useShell();
+    const { data, range, setRange, scope, setScope, session, progress, error, refresh, refreshing } = useShell();
     // The board's own completed runs — a poll beside the stats one, not part of the stats
     // payload: this is jobs data, and the dashboard renders it even while telemetry is down.
     const completed = useCompletedJobs();
+    const meta = data?.meta;
 
     return (
         <>
             <main className="page">
+                <PageHeader
+                    title="Usage overview"
+                    description={meta ? `${describeRepos(meta.repos)} — AI usage telemetry` : 'loading…'}
+                    meta={meta ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}` : undefined}
+                    actions={
+                        <button type="button" onClick={refresh} disabled={refreshing}>
+                            {refreshing ? 'Refreshing…' : 'Refresh'}
+                        </button>
+                    }
+                />
                 <div className="dashboard-controls">
                     <RangeSelector range={range} onChange={setRange} />
                     {session?.mode === 'github' ? <ScopeToggle scope={scope} onChange={setScope} /> : null}

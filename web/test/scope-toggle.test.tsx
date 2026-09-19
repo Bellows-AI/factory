@@ -26,6 +26,9 @@ const payload = {
     telemetry: null,
     tasks: null,
     meta: {
+        fetchedAt: '2026-08-21T12:00:00.000Z',
+        organization: null,
+        repos: [{ owner: 'Bellows-AI', name: 'bellows.ai' }],
         range: { preset: 'all', from: null, to: null },
         telemetry: { status: 'empty', reason: null, unattributedSessions: 0 },
     },

@@ -1,10 +1,12 @@
 import type { OrganizationMeta } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { AppBar } from '../src/components/AppBar.js';
 import { OrgSelector } from '../src/components/OrgSelector.js';
 import type { Session } from '../src/api/useSession.js';
+import type { StatsPayload } from '../src/api/useStats.js';
+import { DashboardPage } from '../src/pages/DashboardPage.js';
 
 const CONFIG: OrganizationMeta = {
     mode: 'config',
@@ -124,5 +126,80 @@ describe('AppBar', () => {
         const markup = html(SESSION);
         expect(markup).toContain('user-menu-button');
         expect(markup).toContain('octocat');
+    });
+});
+
+describe('dashboard page header', () => {
+    /**
+     * The dashboard page, through a real route tree so the layout's outlet context exists. The
+     * context is a stub cast to the shell's shape — the pages read only what they destructure,
+     * and the poll hooks' effects never fire under `renderToStaticMarkup`. `telemetry` is left
+     * off the payload so no chart panel renders; the header is the subject here.
+     */
+    const payload = {
+        meta: {
+            fetchedAt: '2026-08-21T12:00:00.000Z',
+            stale: false,
+            source: 'live',
+            organization: CONFIG,
+            repos: [{ owner: 'Bellows-AI', name: 'bellows.ai' }],
+            baseBranch: 'dev',
+        },
+    } as unknown as StatsPayload;
+
+    const renderDashboard = (data: StatsPayload | null, refreshing = false) =>
+        renderToStaticMarkup(
+            <MemoryRouter initialEntries={['/']}>
+                <Routes>
+                    <Route
+                        element={
+                            <Outlet
+                                context={
+                                    {
+                                        data,
+                                        range: { preset: '30d' },
+                                        setRange: () => {},
+                                        scope: 'org',
+                                        setScope: () => {},
+                                        session: null,
+                                        refreshing,
+                                        progress: null,
+                                        error: null,
+                                        refresh: () => {},
+                                        tasks: {},
+                                    } as unknown as Record<string, unknown>
+                                }
+                            />
+                        }
+                    >
+                        <Route path="/" element={<DashboardPage />} />
+                    </Route>
+                </Routes>
+            </MemoryRouter>
+        );
+
+    it('carries the page title, the exact repo coverage, the timestamp and the Refresh action', () => {
+        const markup = renderDashboard(payload);
+        expect(markup.match(/<h1/g)?.length).toBe(1);
+        expect(markup).toContain('<h1>Usage overview</h1>');
+        // Repo coverage names every repo rather than a count, and the telemetry tag rides it.
+        expect(markup).toContain('Bellows-AI/bellows.ai');
+        expect(markup).toContain('AI usage telemetry');
+        expect(markup).toContain('data as of');
+        expect(markup).toContain('>Refresh</button>');
+        for (const token of ['NaN', 'undefined'] as const) expect(markup, token).not.toContain(token);
+    });
+
+    it('shows loading, and no timestamp, before the first payload', () => {
+        const markup = renderDashboard(null);
+        expect(markup).toContain('<h1>Usage overview</h1>');
+        expect(markup).toContain('loading…');
+        expect(markup).not.toContain('data as of');
+    });
+
+    it('disables Refresh while a refresh is in flight', () => {
+        const markup = renderDashboard(payload, true);
+        expect(markup).toContain('>Refreshing…</button>');
+        expect(markup).toContain('disabled=""');
     });
 });
