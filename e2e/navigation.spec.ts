@@ -161,7 +161,8 @@ test.describe('the responsive shell', () => {
 
     test('keyboard focus paints the accent ring on navigation and controls', async ({ page }) => {
         // The :focus-visible rule is CSS, invisible to the render suites; this pins the contract
-        // where it lands: a keyboard-focused link and button carry a solid outline in both themes.
+        // where it lands: a keyboard-focused link and button carry a solid two-pixel ring in the
+        // default theme — the rule colors it via var(--accent), so both themes follow.
         await page.goto('/');
         await page.locator('.skip-link').waitFor({ state: 'attached' });
 

@@ -92,26 +92,28 @@ export function MobileNavDialog({
                                   ))
                                 : null}
                         </ul>
+                        {tasks !== null ? (
+                            <>
+                                {/* Counts as sentences, not bare numbers beside dots — and not a
+                                    live region: the poll would announce itself on every refresh.
+                                    They and the New task link sit inside the landmark, as the
+                                    sidenav's task tree does. */}
+                                <p className="mobile-nav-count">{countLabel('running', sections.running.length)}</p>
+                                <p className="mobile-nav-count">{countLabel('review', sections.review.length)}</p>
+                                <p className="mobile-nav-count">{countLabel('past', sections.past.length)}</p>
+                                <NavLink
+                                    to="/tasks"
+                                    end
+                                    className={({ isActive }) =>
+                                        isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'
+                                    }
+                                    onClick={onNavigate}
+                                >
+                                    + New task
+                                </NavLink>
+                            </>
+                        ) : null}
                     </nav>
-                    {tasks !== null ? (
-                        <>
-                            {/* Counts as sentences, not bare numbers beside dots — and not a live
-                                region: the poll would announce itself on every refresh. */}
-                            <p className="mobile-nav-count">{countLabel('running', sections.running.length)}</p>
-                            <p className="mobile-nav-count">{countLabel('review', sections.review.length)}</p>
-                            <p className="mobile-nav-count">{countLabel('past', sections.past.length)}</p>
-                            <NavLink
-                                to="/tasks"
-                                end
-                                className={({ isActive }) =>
-                                    isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'
-                                }
-                                onClick={onNavigate}
-                            >
-                                + New task
-                            </NavLink>
-                        </>
-                    ) : null}
                     {meta ? (
                         <div className="mobile-nav-org">
                             <OrgSelector organization={meta.organization} onSwitch={switchOrg} />
