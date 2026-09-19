@@ -45,14 +45,14 @@ export function SettingsExecutorsPage() {
 
     if (loading && !data) {
         return (
-            <main>
+            <main className="page">
                 <p className="status">Loading your workspace…</p>
             </main>
         );
     }
 
     return (
-        <main>
+        <main className="page">
             {error ? <p className="status">{error}</p> : null}
 
             <WorkspaceExecutorsPanel

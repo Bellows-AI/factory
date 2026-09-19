@@ -109,6 +109,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | App bar | `app-bar`, `app-bar-actions`, `app-bar-mobile`, `app-bar-brand`, `app-bar-trigger` | The global bar above every page: org switcher and user menu on desktop; the trigger + brand group renders only once the responsive shell (slice A part 4) wires it |
+| Page | `page` | The routed page's canvas: padding, column gap, max-width — carried by each page's `main`, never a global element rule |
 | Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
 

@@ -26,7 +26,7 @@ export function SettingsRepositoriesPage() {
     );
 
     return (
-        <main>
+        <main className="page">
             <section className="panel">
                 <div className="panel-head">
                     <h2>Available repositories</h2>

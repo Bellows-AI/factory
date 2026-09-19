@@ -47,7 +47,7 @@ export function TaskComposerPage() {
     };
 
     return (
-        <main>
+        <main className="page">
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
             <TaskComposer
                 repos={workspace.data?.repos.map(({ owner, name }) => ({ owner, name })) ?? null}

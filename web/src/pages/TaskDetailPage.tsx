@@ -91,7 +91,7 @@ export function TaskDetailPage() {
     };
 
     return (
-        <main>
+        <main className="page">
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
             <TaskDetail
                 key={id ?? 'none'}

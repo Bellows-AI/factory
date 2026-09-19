@@ -41,7 +41,7 @@ export function SettingsWorkspacePage() {
 
     if (loading && !data) {
         return (
-            <main>
+            <main className="page">
                 <p className="status">Loading your workspace…</p>
             </main>
         );
@@ -54,7 +54,7 @@ export function SettingsWorkspacePage() {
     const noRoot = data !== null && data.root === null;
 
     return (
-        <main>
+        <main className="page">
             {error ? <p className="status">{error}</p> : null}
 
             {noRoot ? (

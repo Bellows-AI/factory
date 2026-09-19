@@ -375,7 +375,7 @@
         flex-wrap: wrap;
     }
 
-    /* The range and the org/my toggle on one line; main's flex gap handles the spacing. */
+    /* The range and the org/my toggle on one line; the page's flex gap handles the spacing. */
     .dashboard-controls {
         display: flex;
         align-items: center;
@@ -438,7 +438,10 @@
         cursor: default;
     }
 
-    main {
+    /* The page canvas: every routed page's main carries this class — the padding, the column gap
+       and the max-width live here and nowhere global, so a main outside the shell (the login
+       gate, onboarding) opts in or out explicitly instead of inheriting dashboard chrome. */
+    .page {
         padding: 24px;
         display: flex;
         flex-direction: column;
@@ -741,6 +744,8 @@
         gap: 12px;
         min-height: 70vh;
         text-align: center;
+        /* Own padding, not a global main rule — this main is outside the shell. */
+        padding: 24px;
     }
 
     .login-gate p {
@@ -778,6 +783,8 @@
         gap: 16px;
         max-width: 560px;
         margin: 8vh auto 0;
+        /* Own padding, not a global main rule — this main is outside the shell. */
+        padding: 24px;
     }
 
     .onboarding-orgs {

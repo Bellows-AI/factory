@@ -23,7 +23,7 @@ export function DashboardPage() {
 
     return (
         <>
-            <main>
+            <main className="page">
                 <div className="dashboard-controls">
                     <RangeSelector range={range} onChange={setRange} />
                     {session?.mode === 'github' ? <ScopeToggle scope={scope} onChange={setScope} /> : null}

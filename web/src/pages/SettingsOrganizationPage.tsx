@@ -14,7 +14,7 @@ export function SettingsOrganizationPage() {
     const { env, session } = useSettingsPage();
     const isAdmin = session?.role === 'admin';
     return (
-        <main>
+        <main className="page">
             <section className="panel">
                 <h2>Organization</h2>
                 <p className="muted">Organization settings are not built yet.</p>
