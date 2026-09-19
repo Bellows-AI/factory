@@ -1346,13 +1346,16 @@
         white-space: nowrap;
     }
 
-    /* The task's live summary — "what the agent is doing" — one line at the top of the task view while
-       the newest run is going. The same mono, muted, clipped treatment as the sidebar's activity row;
-       spacing and width come from the panel's paragraph rule. */
+    /* The task's live summary — "what the agent is doing" — one line in the page header's meta
+       while the newest run is going. The same mono, muted treatment as the sidebar's activity
+       row; `min-width: 0` lets this nowrap flex child actually clip instead of stretching the
+       row, since a flex item's default min-width would size it to the full line. */
     .task-summary {
         color: var(--ink-muted);
         font-family: var(--font-mono);
         font-size: 12px;
+        margin: 0;
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;

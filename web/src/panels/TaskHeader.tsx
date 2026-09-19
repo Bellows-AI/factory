@@ -30,8 +30,9 @@ export function TaskHeader({
     onDone: (id: string) => Promise<void>;
 }) {
     if (jobs === null || jobs.length === 0) {
-        // No task yet, so there is nothing to name — the detail poll has not landed.
-        return <PageHeader eyebrow="Tasks" title="Tasks" />;
+        // No task yet, so there is nothing to name — the detail poll has not landed. No eyebrow:
+        // "Tasks" over "Tasks" says the same thing twice.
+        return <PageHeader title="Tasks" />;
     }
 
     // The early return above guarantees a non-empty chain; its newest member is the run the

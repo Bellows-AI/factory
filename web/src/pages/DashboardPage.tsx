@@ -32,7 +32,11 @@ export function DashboardPage() {
                 <PageHeader
                     title="Usage overview"
                     description={meta ? `${describeRepos(meta.repos)} — AI usage telemetry` : 'loading…'}
-                    meta={meta ? `data as of ${new Date(meta.fetchedAt).toLocaleString()}` : undefined}
+                    meta={
+                        meta ? (
+                            <span className="muted">data as of {new Date(meta.fetchedAt).toLocaleString()}</span>
+                        ) : undefined
+                    }
                     actions={
                         <button type="button" onClick={refresh} disabled={refreshing}>
                             {refreshing ? 'Refreshing…' : 'Refresh'}
