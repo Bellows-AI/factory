@@ -1,11 +1,11 @@
 ---
 name: fix
-description: Fix a GitHub issue end-to-end in an isolated git worktree — fetch with gh, plan with the fix-planner subagent, TDD implementation, review loop with the reviewer subagent, commit, push, open PR. Trigger phrases: "/fix", "fix this issue", "fix the GitHub issue", "work on issue #N".
+description: Fix a GitHub issue end-to-end in an isolated git worktree — fetch with gh, plan with the fix-planner subagent, TDD implementation, review loop with the reviewer subagent, commit, push, open PR, then wait for GitHub review and address every comment in a bounded loop. Trigger phrases: "/fix", "fix this issue", "fix the GitHub issue", "work on issue #N".
 ---
 
 # Fix a GitHub issue end-to-end
 
-Fix the GitHub issue given as the argument. Run all six phases in order, autonomously — do not
+Fix the GitHub issue given as the argument. Run all seven phases in order, autonomously — do not
 pause for approval between phases; stop only when genuinely blocked (see the stop conditions in
 each phase). Track progress with the todo tool throughout.
 
@@ -125,8 +125,52 @@ Then:
    Body must include: a summary of the root cause and the fix, the list of changes, the tests
    added and how they were verified, and `Fixes #<N>` on its own line so the issue auto-closes on
    merge. End the body with: `🤖 Generated with [opencode](https://opencode.ai)`
-5. Leave the worktree in place — it holds the branch the PR is from. Report the PR URL, the
-   worktree path, and a two-line summary of what was done.
+5. Leave the worktree in place — it holds the branch the PR is from. Report the PR URL and the
+   worktree path — the run continues into Phase 6, which owns the final summary.
 
 Never force-push, never push directly to the default branch, never `git worktree remove` a
 worktree whose PR is open.
+
+## Phase 6 — Wait for GitHub review (max 5 rounds)
+
+Opening the PR is not the end. This repo has no CI — its PR checks are the automated reviewers
+themselves (CodeRabbit, Greptile), and their completion is what posts the comments. Loop until no
+unaddressed comments remain; one round = one wait, one fetch, one address cycle:
+
+1. Wait for the review to land: poll `gh pr checks <PR_NUMBER>` until nothing is pending (exit 8
+   means still pending; the bots can take a few minutes). Then fetch everything with full detail —
+   review summaries and PR-level comments:
+   `gh pr view <PR_NUMBER> --repo <owner/repo> --comments --json comments,reviews`, plus the
+   line-level comments: `gh api repos/<owner>/<repo>/pulls/<PR_NUMBER>/comments`. Read the review
+   summary bodies too, not just the line comments — a "Request changes" verdict is ground for
+   another round even with no line comments.
+2. Address the **line-level comments** by invoking the **`github-review-fix`** skill on this PR.
+   It owns every mechanical step — fetching with pagination, dropping threads whose last comment is
+   already yours, bucketing by file, one TDD agent per file, the repo's own checks, one commit +
+   push, a threaded reply per comment, and verification that every reply landed. The conversation
+   keeps only its ambiguity gate (next step).
+3. Handle what the skill hands back, and what it does not cover:
+   - A comment that is ambiguous or contradicts the code, the issue, or another comment → its
+     ambiguity gate: STOP and ask the user. Never invent a resolution.
+   - **PR-level comments and review-summary bodies** (the skill covers line comments only): judge
+     each point yourself. Fix what is real with the full Phase 3 discipline — RED test first,
+     minimal fix, `npm test` + `npm run typecheck` + `npm run lint` — and run one Phase 4 reviewer
+     round on the new diff before pushing.
+4. Every addressed comment gets a reply saying what was fixed and how — never a bare
+   "fixed in <sha>". github-review-fix posts its own; for the ones you handled:
+   `gh pr comment <PR_NUMBER> --body "✅ Fixed in <sha> — <what changed and why>"`. Each push
+   re-triggers the bots — return to step 1 for the next round.
+
+Stop conditions — hand back to the user instead of improvising:
+
+- **Contradiction**: two reviewers ask for mutually exclusive changes; a comment contradicts the
+  issue's acceptance criteria; a comment demands scope far beyond the bug (rearchitecture, new
+  feature, cross-module refactor); or following it would break a rule of this skill. Do not pick a
+  side silently: quote each side, name its source, present the options with trade-offs, ask, and
+  resume with the user's decision. Minor ambiguity you can resolve sensibly is not a contradiction
+  — resolve it and keep going.
+- **Five rounds with comments still open**: STOP. Report what remains and why.
+
+Done means: zero unaddressed comments, the worktree still in place, and the PR unmerged — merging
+is the maintainer's call. Final report: the PR URL, rounds spent, comments addressed, and anything
+left unresolved with the reason.
