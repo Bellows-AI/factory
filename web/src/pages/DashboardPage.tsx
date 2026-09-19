@@ -23,32 +23,30 @@ export function DashboardPage() {
 
     return (
         <>
-            <main>
-                <div className="dashboard-controls">
-                    <RangeSelector range={range} onChange={setRange} />
-                    {session?.mode === 'github' ? <ScopeToggle scope={scope} onChange={setScope} /> : null}
-                </div>
-                <StatusBanner progress={progress} error={error} hasData={data !== null} />
-                {data ? (
-                    <>
-                        {/* Nothing renders when the feature is switched off:
+            <div className="dashboard-controls">
+                <RangeSelector range={range} onChange={setRange} />
+                {session?.mode === 'github' ? <ScopeToggle scope={scope} onChange={setScope} /> : null}
+            </div>
+            <StatusBanner progress={progress} error={error} hasData={data !== null} />
+            {data ? (
+                <>
+                    {/* Nothing renders when the feature is switched off:
                             empty frames for a feature nobody enabled are just noise. */}
-                        {data.telemetry ? (
-                            <>
-                                <AiUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                                <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                                <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
-                                <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                            </>
-                        ) : null}
-                    </>
-                ) : null}
-                {/* Outside the stats branch on purpose: completed jobs poll their own endpoint,
+                    {data.telemetry ? (
+                        <>
+                            <AiUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                            <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                            <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
+                            <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                        </>
+                    ) : null}
+                </>
+            ) : null}
+            {/* Outside the stats branch on purpose: completed jobs poll their own endpoint,
                     so the recent-tasks view is exactly the degraded-mode surface when the
                     statistics read is cold or failing — hiding it behind `data` would hide it
                     in the one state it exists for. */}
-                <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
-            </main>
+            <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
         </>
     );
 }

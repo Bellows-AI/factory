@@ -86,7 +86,7 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
     const sections = taskSections(tasks);
 
     return (
-        <nav className="sidenav" aria-label="Sections">
+        <nav className="sidenav" aria-label="Primary">
             <div className="sidenav-brand">Factory</div>
             <ul className="sidenav-items">
                 {NAV_ITEMS.map((item) => (

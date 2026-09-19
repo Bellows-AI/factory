@@ -91,7 +91,7 @@ export function TaskDetailPage() {
     };
 
     return (
-        <main>
+        <>
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
             <TaskDetail
                 key={id ?? 'none'}
@@ -104,6 +104,6 @@ export function TaskDetailPage() {
                 onRemove={removeTask}
                 onDone={doneTask}
             />
-        </main>
+        </>
     );
 }

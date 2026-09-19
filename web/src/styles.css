@@ -363,12 +363,16 @@
         cursor: default;
     }
 
-    main {
+    /* The routed page's content container (issue 160) — a class, not a `main` element selector,
+       so the AppShell owns the region and a dialog or nested main never inherits page chrome.
+       `min-width: 0` lets wide content shrink inside the shell's `minmax(0, 1fr)` track. */
+    .page {
         padding: 24px;
         display: flex;
         flex-direction: column;
         gap: 20px;
         max-width: 1400px;
+        min-width: 0;
     }
 
     .panel {
@@ -731,15 +735,15 @@
 
     /* --- Shell -------------------------------------------------------------------------------- */
 
-    /* `minmax(0, 1fr)` and the `min-width: 0` below are both load-bearing, and for the same reason:
-       a grid item defaults to `min-width: auto`, so `.two-up` — which is
-       `repeat(auto-fit, minmax(440px, 1fr))` — would push this column wider than the viewport instead
-       of collapsing to one column. At 1440px, 220 + 48 of padding + 2x440 = 1148, so the dashboard
-       still fits two panels across. */
+    /* The shell frame (issue 160): a fixed navigation column and the content track. The nav is a
+       grid item with its own height — a long task tree scrolls INSIDE it, and a long page never
+       stretches the column. 240 of nav + 48 of padding + 2x440 track floor = 1168, so the
+       dashboard still fits two panels across at 1440px; `minmax(0, 1fr)` keeps a wide table from
+       pushing the track past the viewport, because a grid item defaults to `min-width: auto`. */
     .shell {
         display: grid;
-        grid-template-columns: 220px minmax(0, 1fr);
-        min-height: 100vh;
+        grid-template-columns: 240px minmax(0, 1fr);
+        min-height: 100dvh;
     }
 
     .shell-main {
@@ -752,6 +756,8 @@
         position: sticky;
         top: 0;
         align-self: start;
+        height: 100dvh;
+        overflow-y: auto;
     }
 
     .sidenav-brand {

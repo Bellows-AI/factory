@@ -96,10 +96,23 @@ export function AppShell() {
 
     return (
         <div className="shell">
+            {/* The first focusable element on every page (issue 160): a keyboard user's first Tab
+                makes it visible, activating it moves focus to the main region below — and nothing
+                else ever moves focus there, so ordinary client-side navigation never steals it.
+                A plain fragment anchor is the whole mechanism; the target's tabIndex={-1} is what
+                lets Chrome and Safari land focus on a non-interactive region. */}
+            <a className="skip-link" href="#main-content">
+                Skip to main content
+            </a>
             <SideNav tasks={onTasks ? tasks.jobs : null} />
             <div className="shell-main">
                 <TopBar data={data} refreshing={refreshing} onRefresh={refresh} session={session} />
-                <Outlet context={context} />
+                {/* The routed page's one main region. The `.page` container — not the bare element
+                    selector — carries the padding and width cap, so a dialog or a nested main can
+                    never inherit page chrome by accident. Pages render fragments into it. */}
+                <main id="main-content" className="page" tabIndex={-1}>
+                    <Outlet context={context} />
+                </main>
             </div>
         </div>
     );

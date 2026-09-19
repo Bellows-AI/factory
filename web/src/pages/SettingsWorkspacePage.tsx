@@ -41,9 +41,9 @@ export function SettingsWorkspacePage() {
 
     if (loading && !data) {
         return (
-            <main>
+            <>
                 <p className="status">Loading your workspace…</p>
-            </main>
+            </>
         );
     }
 
@@ -54,7 +54,7 @@ export function SettingsWorkspacePage() {
     const noRoot = data !== null && data.root === null;
 
     return (
-        <main>
+        <>
             {error ? <p className="status">{error}</p> : null}
 
             {noRoot ? (
@@ -140,6 +140,6 @@ export function SettingsWorkspacePage() {
                     onSave={env.saveWorkspace}
                 />
             ) : null}
-        </main>
+        </>
     );
 }
