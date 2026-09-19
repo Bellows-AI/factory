@@ -132,7 +132,7 @@ describe('the route table', () => {
         // has its own history fallback in dev, so a wall on this path would be invisible until the
         // baked image served it. The not-found handler in app.ts sends index.html for it, and the
         // wall is on /api/* rather than on the document — see docs/auth.md.
-        ['/workspace', 'open'],
+        ['/settings/workspace', 'open'],
         ['/api/stats', 'user'],
         ['/api/refresh', 'user'],
         ['/api/jobs', 'user'],

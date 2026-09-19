@@ -159,8 +159,8 @@ describe('TrackedOrgsPanel', () => {
         expect(html).toContain('Tracked organizations');
         expect(html).toContain('Tracking 2 organizations: Bellows AI, other-org.');
         // The change surface restarts the OAuth round trip with the reselect flag, returning to
-        // the settings page — there is no in-place editor to link to. SSR escapes the ampersand.
-        expect(html).toContain('href="/api/auth/github?returnTo=%2Fsettings&amp;reselect=1"');
+        // the account page — there is no in-place editor to link to. SSR escapes the ampersand.
+        expect(html).toContain('href="/api/auth/github?returnTo=%2Faccount&amp;reselect=1"');
         expect(html).toContain('Change what you track');
     });
 

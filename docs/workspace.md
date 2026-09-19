@@ -140,7 +140,8 @@ Claude Code session, and this process cannot tell.
 ## What the page reads
 
 `docs/workspace.md` used to say "nothing rendered on the page comes from here". That is no longer
-true: the Workspace page reports each checkout's branch, newest commit and size on disk.
+true: the workspace section of Settings (Settings → Workspace) reports each checkout's branch,
+newest commit and size on disk.
 
 - **Those three are cached, and a cold read is `null` rather than awaited.** The route is polled, and
   read naively that is a `git log` plus a recursive directory walk per repo per member per tick. The
@@ -152,7 +153,9 @@ true: the Workspace page reports each checkout's branch, newest commit and size 
 
 ## Executors
 
-The page also shows the member's configured executors, below the repositories. A row is the JSON a
+Settings → Executors shows the member's configured executors (moved off the workspace page by
+#150 — executors configure what a runner runs with and have nothing to do with checkouts). A row
+is the JSON a
 member pasted into the add dialog. The known types are `claude-code` and `opencode` (013 added the
 second; see [persistence.md](persistence.md) for the constraint-rewrite move adding the next one
 costs). The Tasks page lets a member stamp one of these names onto a job they queue, and the claim

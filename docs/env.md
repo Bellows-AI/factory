@@ -180,7 +180,9 @@ each is answered in place:
 
 ## The page
 
-`/env` on the SPA: three editors (Core, My workspace, Per repository). Each is fed by `GET /api/env`
+The three editors (Core, My workspace, Per repository) live in the settings tree (#150): Core at
+Settings → Organization, My workspace at Settings → Workspace, and Per repository at Settings →
+Repositories, each fed by `GET /api/env`
 on mount; the editor that saves adopts the stored rows its PUT echoes back (`{ vars }`), which is
 what blanks a typed secret and shows the stored truth — so the panels must NOT be remounted on
 save: a `key` bump there fires before the editor's own continuation and silently eats the "Saved."

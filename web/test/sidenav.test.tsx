@@ -69,22 +69,58 @@ describe('SideNav', () => {
     it('links to every section', () => {
         const html = render('/');
         expect(html).toContain('href="/"');
-        expect(html).toContain('href="/workspace"');
+        expect(html).toContain('href="/settings"');
         expect(html).toContain('href="/tasks"');
         expect(html).toContain('Dashboard');
-        expect(html).toContain('Workspace');
+        expect(html).toContain('Settings');
         expect(html).toContain('Tasks');
+        // The old sections are gone: their pages live under the Settings tree now (#150).
+        expect(html).not.toContain('href="/workspace"');
+        expect(html).not.toContain('href="/env"');
+    });
+
+    it('renders the Settings tree only inside the settings area', () => {
+        const inside = render('/settings/workspace');
+        expect(inside).toContain('href="/settings/organization"');
+        expect(inside).toContain('href="/settings/workspace"');
+        expect(inside).toContain('href="/settings/repos"');
+        expect(inside).toContain('href="/settings/executors"');
+        expect(inside).toContain('Organization');
+        expect(inside).toContain('Repositories');
+        expect(inside).toContain('Executors');
+        // Off the settings area the tree is not polled, has no data and is not navigation for
+        // anything in view — it renders nothing, the same reading that gates the task tree.
+        const outside = render('/');
+        expect(outside).not.toContain('href="/settings/organization"');
+        expect(outside).not.toContain('href="/settings/repos"');
     });
 
     it('marks the current section for assistive technology, not only visually', () => {
-        expect(render('/workspace')).toContain('aria-current="page"');
+        expect(render('/settings/workspace')).toContain('aria-current="page"');
+    });
+
+    it('marks the current section visually on both levels, but only the leaf as the page', () => {
+        // Tree semantics: the Settings link and the current section's link both LIGHT UP (two
+        // is-active markers, parent first), while aria-current="page" belongs to the leaf alone —
+        // a page has one current address, and the parent is only the open section of the tree.
+        const html = render('/settings/executors');
+        const active = html.match(/is-active/g) ?? [];
+        expect(active).toHaveLength(2);
+        expect(html.indexOf('sidenav-link is-active')).toBeLessThan(html.indexOf('sidenav-sublink is-active'));
+        const current = html.match(/aria-current="page"/g) ?? [];
+        expect(current).toHaveLength(1);
+        // The parent says "not current" explicitly instead of claiming the page marker.
+        expect(html).toContain('aria-current="false"');
     });
 
     it('does not treat "/" as the parent of every other route', () => {
-        // Without `end`, the index link matches every path below it and both entries look active.
-        const html = render('/workspace');
+        // Without `end`, the index link matches every path below it and the dashboard would look
+        // active three sections into the settings tree — where two markers are already correct.
+        const html = render('/settings/repos');
         const active = html.match(/is-active/g) ?? [];
-        expect(active).toHaveLength(1);
+        expect(active).toHaveLength(2);
+        const dashboard = html.slice(html.indexOf('href="/"'), html.indexOf('</a>'));
+        expect(dashboard).not.toContain('is-active');
     });
 });
 
@@ -183,7 +219,7 @@ describe('SideNav task tree', () => {
         expect(html.indexOf('sidenav-link is-active')).toBeLessThan(html.indexOf('sidenav-task is-active'));
         const current = html.match(/aria-current="page"/g) ?? [];
         expect(current).toHaveLength(2);
-        expect(html).toContain('href="/workspace"'); // sanity: the other sections are present
+        expect(html).toContain('href="/settings"'); // sanity: the other sections are present
     });
 
     it('says so when there are no tasks yet', () => {

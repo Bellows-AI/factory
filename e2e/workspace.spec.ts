@@ -3,7 +3,8 @@ import type { Page } from '@playwright/test';
 import { throughSignIn } from './signin.js';
 
 /**
- * The Workspace page, the left nav, and the one failure that shows up only in production.
+ * The workspace section of Settings, the left nav, and the one failure that shows up only in
+ * production.
  *
  * On the `auth` project, because every route here needs a signed-in member — and because the
  * `chromium` project is the visual regression check for the dashboard and should not churn over
@@ -27,14 +28,14 @@ async function signedIn(page: Page) {
 }
 
 /**
- * Opens the Workspace page and dismisses the picker it offers.
+ * Opens the workspace section of Settings and dismisses the picker it offers.
  *
  * The dialog opens by itself the first time, because nothing is selected — that is the onboarding,
  * and it is genuinely modal, so anything behind it is unclickable until it is closed. A test that
  * wants the page rather than the dialog has to say so.
  */
 async function workspacePage(page: Page) {
-    await page.goto('/workspace');
+    await page.goto('/settings/workspace');
     const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
     await expect(dialog).toBeVisible();
     await page.getByRole('button', { name: 'Not now' }).click();
@@ -47,20 +48,23 @@ test('the left nav is there and moves between sections', async ({ page }) => {
     const nav = page.locator('.sidenav');
     await expect(nav).toBeVisible();
 
-    await nav.getByRole('link', { name: 'Workspace' }).click();
-    await expect(page).toHaveURL(/\/workspace$/);
-    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    // The Settings item opens the org-level tree; its index route lands on the workspace section,
+    // the area's default pane, with the four section links visible under the item (#150).
+    await nav.getByRole('link', { name: 'Settings' }).click();
+    await expect(page).toHaveURL(/\/settings\/workspace$/);
 
-    // The picker opens over it, and it is modal — the nav underneath is genuinely unclickable
-    // until it is dismissed, which is what the Dialog's focus trap and inert backdrop buy.
+    // Nothing is selected yet, so the picker opens over the section on arrival — modal, so the
+    // heading and the tree under the nav item are asserted after it is dismissed.
     await page.getByRole('button', { name: 'Not now' }).click();
+    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    await expect(nav.getByRole('link', { name: 'Repositories' })).toBeVisible();
 
     await nav.getByRole('link', { name: 'Dashboard' }).click();
     await expect(page).toHaveURL(/\/$/);
     await expect(cards(page)).toHaveCount(5);
 });
 
-test('reloading /workspace directly serves the app rather than a 404', async ({ page }) => {
+test('reloading /settings/workspace directly serves the app rather than a 404', async ({ page }) => {
     /*
      * THE reason this file exists.
      *
@@ -71,23 +75,27 @@ test('reloading /workspace directly serves the app rather than a 404', async ({ 
      */
     await signedIn(page);
 
-    const response = await page.goto('/workspace');
+    const response = await page.goto('/settings/workspace');
     expect(response?.status()).toBe(200);
+    // The first visit with nothing selected opens the picker over the section; dismiss it and the
+    // section is assertable. The 200 + shell is the deep-link contract; the heading proves the
+    // route resolved to the workspace section and not the catch-all.
+    await page.getByRole('button', { name: 'Not now' }).click();
     await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
     await expect(page.locator('.sidenav')).toBeVisible();
 });
 
-test('a signed-out visitor deep-linking to /workspace gets the gate, not a 404', async ({ page }) => {
+test('a signed-out visitor deep-linking to the settings tree gets the gate, not a 404', async ({ page }) => {
     await page.request.post('/api/auth/logout');
 
-    const response = await page.goto('/workspace');
+    const response = await page.goto('/settings/workspace');
     expect(response?.status()).toBe(200);
     await expect(page.locator('.login-gate')).toBeVisible();
 });
 
 test('the picker opens by itself when nothing is selected, and is genuinely modal', async ({ page }) => {
     await signedIn(page);
-    await page.goto('/workspace');
+    await page.goto('/settings/workspace');
 
     const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
     await expect(dialog).toBeVisible();
@@ -124,7 +132,7 @@ test('Escape closes the picker and the page stays usable', async ({ page }) => {
     // it and the button below can reopen it. Under the native dialog this was the desync trap the
     // `close` listener existed to catch; here a missed sync would fail this test.
     await signedIn(page);
-    await page.goto('/workspace');
+    await page.goto('/settings/workspace');
 
     const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
     await expect(dialog).toBeVisible();
@@ -138,7 +146,7 @@ test('Escape closes the picker and the page stays usable', async ({ page }) => {
 
 test('an executor is added through the dialog, with bad JSON refused in place', async ({ page }) => {
     await signedIn(page);
-    await workspacePage(page);
+    await page.goto('/settings/executors');
 
     await page.getByRole('button', { name: 'Add executor' }).click();
     const dialog = page.locator('[role="dialog"][aria-labelledby="executor-title"]');
@@ -164,10 +172,10 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     await expect(panel.locator('.pill')).toHaveText('claude-code');
     await expect(panel).not.toContainText('No executors configured');
 
-    await page.screenshot({ path: `${SHOTS}/workspace-executors.png`, fullPage: true });
+    await page.screenshot({ path: `${SHOTS}/settings-executors.png`, fullPage: true });
 });
 
-test('the workspace page renders nothing malformed', async ({ page }) => {
+test('the workspace section renders nothing malformed', async ({ page }) => {
     // The null-not-zero contract, in the browser this time: a repo with no checkout must render an
     // em dash and never a placeholder that leaked out of a formatter.
     const errors: string[] = [];
@@ -186,5 +194,5 @@ test('the workspace page renders nothing malformed', async ({ page }) => {
     }
     expect(errors).toEqual([]);
 
-    await page.screenshot({ path: `${SHOTS}/workspace.png`, fullPage: true });
+    await page.screenshot({ path: `${SHOTS}/settings-workspace.png`, fullPage: true });
 });

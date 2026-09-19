@@ -216,14 +216,14 @@ test.describe('the organization selector', () => {
 test.describe('the user menu', () => {
     // The Headless UI Menu renders the panel client-side only, so the render suite cannot see it;
     // this open board is AUTH_MODE=none, which makes it the one place the sign-out negative lives.
-    test('offers the way to settings but no sign out where there is no session to end', async ({ page }) => {
+    test('offers the way to the account page but no sign out where there is no session to end', async ({ page }) => {
         await open(page);
 
         await page.locator('.user-menu-button').click();
         // The mode ignores every credential, so a sign-out item could never work — absent, not
-        // disabled, like the settings page's token sections under the same mode.
+        // disabled, like the account page's token sections under the same mode.
         await expect(page.getByRole('menuitem', { name: 'Sign out' })).toHaveCount(0);
-        await expect(page.getByRole('menuitem', { name: 'Settings' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Account' })).toBeVisible();
 
         await page.keyboard.press('Escape');
         await page.locator('.topbar').screenshot({ path: `${SHOTS}/topbar-user-menu.png` });

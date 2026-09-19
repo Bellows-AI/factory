@@ -105,7 +105,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Shell | `shell`, `shell-main` | The two-column frame: sticky sidenav + scrolling main |
-| Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page |
+| Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | Topbar | `topbar`, `topbar-actions` | The page head row and its control cluster |
@@ -175,7 +175,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 
 ### One-offs
 
-`identity-head`, `identity-name` — the settings page's identity section; `dashboard-controls` —
+`identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
 the topbar's control row on the dashboard. Everything else above is a family; these exist because
 no family fits, and a new one-off needs a sentence here saying the same.
 
@@ -230,14 +230,17 @@ Pages:
 
 | File | Primitives |
 | --- | --- |
+| `AccountPage.tsx` | panel |
 | `DashboardPage.tsx` | dashboard-controls |
-| `EnvPage.tsx` | panel |
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
-| `SettingsPage.tsx` | panel |
+| `SettingsExecutorsPage.tsx` | panel |
+| `SettingsLayout.tsx` | none — renders the outlet |
+| `SettingsOrganizationPage.tsx` | panel |
+| `SettingsRepositoriesPage.tsx` | panel |
+| `SettingsWorkspacePage.tsx` | panel |
 | `TaskComposerPage.tsx` | status |
 | `TaskDetailPage.tsx` | status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
-| `WorkspacePage.tsx` | panel |
 
 Charts (`scale.ts` is the band/linear scale helper — no markup):
 

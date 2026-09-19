@@ -789,6 +789,26 @@
         color: var(--accent);
     }
 
+    /* The Settings tree's section links, under the Settings item: the task tree's scale without the
+       task rows — a quiet link that lights up only for the section you are in. */
+    .sidenav-sublink {
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: block;
+        font-size: 12px;
+        padding: 4px 10px 4px 24px;
+        text-decoration: none;
+    }
+
+    .sidenav-sublink:hover {
+        background: var(--surface-raised);
+    }
+
+    .sidenav-sublink.is-active {
+        background: var(--surface-raised);
+        color: var(--accent);
+    }
+
     /* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
        text rides the title attribute. */
     .sidenav-subitems {
