@@ -49,10 +49,13 @@ POST /api/jobs/:id/suspend  {leaseToken}        -> the board lands the park by i
 ```
 
 **Person-gated routes meet the same loop through the same states.** `POST /api/jobs/:id/stop`
-ends a task's turn — queued or already-parked rows settle `stopped` directly, a moving run answers
+ends a task's turn — queued or already-parked rows settle `stopped` directly, a running row whose
+lease is still live answers
 `202 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the heartbeat above —
 fast while the attempt is still setting up, at the lease's third once the runner runs — kills its
-runner and suspends, which lands `stopped` under the stamp. A stop issued while the row is between
+runner and suspends, which lands `stopped` under the stamp. A running row whose lease has already
+expired settles `stopped` in place (#152) — nobody holds the lease, and a stamp would wait for a
+heartbeat nobody will send. A stop issued while the row is between
 claim and spawn — the window the task view renders as "Waiting for the executor…" — is answered by
 that setup-phase poll: the driver stands down without spawning anything, and the row settles
 `stopped` at once (issue #126). `POST /api/jobs/:id/remove`
@@ -262,7 +265,9 @@ per task (#124), and its wall clock is the thread sum — the figure the recentl
 renders, matching the task view's head clock; the exclusion of threads with a still-moving member
 is what keeps that sum exact, because nothing in it is still banking.
 Every statement that ends or supersedes a running attempt — the claim, the dead retirement, the
-verdict, the suspend park — adds `started_at → now()` to the row's total in the same breath, which
+verdict, the suspend park, and the stop settles (#152: the claim's landing for a stamped row whose
+worker died, and `/stop`'s in-place landing on a row whose lease already expired) — adds
+`started_at → now()` to the row's total in the same breath, which
 is the only moment it can: `started_at` resetting on every claim is exactly what would otherwise
 erase the superseded segment, and a run that crashed after forty minutes and was retried keeps its
 forty minutes. The park banks too, whichever landing it takes — the segment it ends was real work;
@@ -795,9 +800,13 @@ removing lands on the worktree-reclaim machinery.
 talking: the row settles `stopped` — terminal, its session kept — so the follow-up composer is
 what the member sees next, and the conversation continues from exactly where it was cut. There is
 no resume and no park. A queued row (never started) or an already-parked one settles `stopped`
-directly (the answer is `{ status: 'stopped' }`); a `running` row answers
+directly (the answer is `{ status: 'stopped' }`); a `running` row whose lease is still live answers
 `{ status: 'running', cancelRequestedAt }` and the request is delivered by the worker's heartbeat —
-the `cancelRequested` flag — exactly the way a lost lease is delivered, and by the same kill. While
+the `cancelRequested` flag — exactly the way a lost lease is delivered, and by the same kill. A
+`running` row whose lease has already expired settles `stopped` directly too (#152): nobody holds
+the lease, so a stamp would wait for a heartbeat nobody will send — a previous holder that is
+still beating loses the row on its next beat (the heartbeat's `lost`, the kill order) exactly as a
+reclaim delivers it. While
 the attempt is still setting up the heartbeat polls at ~2s, so a stop issued into the
 "Waiting for the executor…" window stands the attempt down before the runner spawns and lands
 `stopped` within seconds, not minutes (issue #126); the `suspend` that honours it lands `stopped`
@@ -811,10 +820,24 @@ settles later — with the same first-writer coalesce as the flag, and the UI na
 **The stop lands when the parking (or the finishing) lands, never when the request does.**
 `cancel_requested_at` is cleared by `suspend` and by `complete` — parking a run IS the stop
 landing, and a run that finishes under its own power before the driver reads the flag needed no
-parking. The claim does **not** clear it: a driver that dies mid-stop drops its lease, the next
-claimor picks the row up, and the flag tells it the previous worker never parked the task — so it
-kills the attempt it spawned and parks, preserving the user's stop through a crash. That is the
-same dead-driver story as a lost lease, with the verdict "park it instead of running it".
+parking. The claim does not clear it either — it settles it: a driver that died mid-stop drops its
+lease, and the next claim finds the stamped row expired and lands it `stopped` instead of handing
+it to a new attempt (#152), the attempt handed back and the session kept for the follow-up — the
+stop nobody could deliver is still a stop, not a re-run. A stop stamped into a live lease whose
+worker then finishes under its own power is the `complete` case: the work the member cancelled
+never parks, but it did finish, and the row's own verdict stands.
+
+**A stopped opencode run reports the session it ran as, before the park.** Under opencode the
+session id is only learned at close — the runner scrapes it out of the session database, the
+driver never mints one — so the loop's stopped path reports the scraped id to `/session` BEFORE
+calling `/suspend` (#152): the report is accepted only while the row still runs under the lease,
+and a park-first order would settle the stopped task sessionless — `NO_SESSION` on follow-up, the
+composer never appearing. Both runners await the close-time scrape before the run's outcome
+resolves, so the id is final when the park lands, on docker and kubernetes alike. One narrow race
+is accepted: a lease that expires between the kill and the report lets another claimer's settle
+sweep land the row first, so the report and the park both answer `lost` (both swallowed, as every
+superseded attempt's answer is) and the run settles stopped but sessionless — the same blast
+radius as a failed readout, and unreachable while the worker was still beating.
 
 **Remove deletes the whole thread and queues its worktree for removal.** `POST /api/jobs/:id/remove`
 deletes the task's root and every follow-up — the audit rows, not just the newest run — and, in the
@@ -1183,7 +1206,9 @@ the row carries `parent_job_id`, and clears it otherwise, so a lease that expire
 fresh for an ordinary job. That attempt's
 session is not this one, and replaying its transcript would resume work whose output was thrown away
 — which is why the follow-up is the carved-out exception rather than the rule: its session holds the
-parent conversation, and clearing it would throw the thread away with the attempt.
+parent conversation, and clearing it would throw the thread away with the attempt. The stamped rows
+the settle sweep lands `stopped` (#152) never reach this clearing: the stop kept the session, and
+the follow-up that continues it needs exactly that conversation.
 
 **`max_attempts` and `dead` exist from the first migration.** A command that kills its worker is
 otherwise reclaimed the moment its lease expires, forever, and one poison job permanently occupies

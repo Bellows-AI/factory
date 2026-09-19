@@ -165,6 +165,139 @@ describe.skipIf(!enabled)('stopping a task', () => {
         expect(job?.status).toBe('stopped');
         expect(job?.sessionId).not.toBeNull();
     });
+
+    // A stop nobody delivers — the driver died before its heartbeat could carry the kill order —
+    // must not re-issue the run (issue #152): the claim settles the stamped row `stopped` instead
+    // of handing it to a new attempt, and the session the stopped run kept is what the follow-up
+    // continues. Re-claiming would clear the session and spawn a container for a command the
+    // member just cancelled.
+    it('settles a stop-requested run stopped at the claim, instead of handing it out again', async () => {
+        const id = await craft();
+        const token = (await store.claim('w1', 300))!.leaseToken;
+        const sid = randomUUID();
+        await store.session(id, token, sid, null);
+        expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+
+        expect(await store.claim('w2', 300)).toBeNull();
+
+        const job = await store.get(id);
+        expect(job?.status).toBe('stopped');
+        expect(job?.finishedAt).toBeTruthy();
+        expect(job?.cancelRequestedAt).toBeNull();
+        expect(job?.sessionId).toBe(sid);
+        // The park hands the attempt back, exactly as the delivered stop's suspend does — a stop
+        // is a park, not a failed try.
+        expect(job?.attempts).toBe(0);
+    });
+
+    // Exhausted attempts do not change the verdict: a stamped row is a park, not a failure, so
+    // the dead-retirement sweep must never land it `dead` (issue #152) — the label is wrong and
+    // the UI would read the task as over rather than stopped-and-continuable.
+    it('lands a stamped exhausted run stopped, not dead, when the claim retires it', async () => {
+        const id = await craft();
+        const token = (await store.claim('w1', 300))!.leaseToken;
+        const sid = randomUUID();
+        await store.session(id, token, sid, null);
+        await store.stop(id, null);
+        await sql`update job set attempts = max_attempts, lease_expires_at = now() - interval '1 second'
+                  where id = ${id}`;
+
+        expect(await store.claim('w2', 300)).toBeNull();
+
+        const job = await store.get(id);
+        expect(job?.status).toBe('stopped');
+        expect(job?.finishedAt).toBeTruthy();
+        expect(job?.sessionId).toBe(sid);
+    });
+
+    // Nobody holds an expired lease, so the stop lands in place rather than waiting for a
+    // heartbeat nobody will send (issue #152). A previous holder that is still beating renews
+    // its lease and gets today's stamp-and-202 path instead — and one that lost the row gets
+    // the heartbeat's 'lost' kill order, exactly as a reclaim delivers it.
+    it("settles the stop in place when the run's lease is already gone", async () => {
+        const id = await craft();
+        const token = (await store.claim('w1', 300))!.leaseToken;
+        const sid = randomUUID();
+        await store.session(id, token, sid, null);
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+
+        expect(await store.stop(id, AUTHOR)).toEqual({ result: 'stopped' });
+
+        const job = await store.get(id);
+        expect(job?.status).toBe('stopped');
+        expect(job?.finishedAt).toBeTruthy();
+        expect(job?.cancelRequestedAt).toBeNull();
+        expect(job?.sessionId).toBe(sid);
+        expect(job?.attempts).toBe(0);
+        // The stale worker's next beat is its kill order — the row no longer runs under this
+        // lease.
+        expect(await store.heartbeat(id, token, 300)).toMatchObject({ result: 'lost' });
+    });
+
+    // End to end: the stuck run's stop is delivered by the claim's settle, and the follow-up the
+    // member then queues resumes the conversation — the whole continuable story of issue #152.
+    it('unblocks the follow-up: the claim settles a stamped zombie parent and the child claims it', async () => {
+        const id = await craft();
+        const token = (await store.claim('w1', 300))!.leaseToken;
+        const sid = randomUUID();
+        await store.session(id, token, sid, null);
+        await store.stop(id, null);
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+        expect(await store.claim('w2', 300)).toBeNull();
+
+        const followUp = await store.createFollowUp(id, 'pick up', AUTHOR);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+
+        expect(await store.claim('w3', 300)).toMatchObject({
+            id: followUp.id,
+            resumeSessionId: sid,
+            followUp: true,
+        });
+    });
+
+    // The settle is committed on its own, before the claim transaction (review of PR #153): the
+    // transaction also carries the claim's PREPARATION — the env resolution, the token mint —
+    // and a throw there rolls the whole thing back, settlement included. Inside it, a board whose
+    // preparation keeps failing would keep the stamped zombie `running` forever, and the
+    // follow-up the member queued would keep answering not_finished — the exact stuck state this
+    // issue exists to end.
+    it("commits the settle even when the claim's preparation throws", async () => {
+        const zombie = await craft();
+        const token = (await store.claim('w1', 300))!.leaseToken;
+        const sid = randomUUID();
+        await store.session(zombie, token, sid, null);
+        await store.stop(zombie, null);
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${zombie}`;
+
+        // A healthy candidate behind it: the claim takes it, reaches preparation, and the
+        // resolver throws — the failure the claim route answers 503 to and the driver retries.
+        const fresh = await craft();
+        const failing = createJobStore({
+            sql,
+            orgId: ORG,
+            env: {
+                resolveFor: async () => {
+                    throw new Error('resolver down');
+                },
+            },
+        });
+        await expect(failing.claim('w2', 300)).rejects.toThrow('resolver down');
+
+        // The settle survived the rollback: the zombie is stopped with its session, and the
+        // follow-up it was blocking can be created.
+        const job = await store.get(zombie);
+        expect(job?.status).toBe('stopped');
+        expect(job?.sessionId).toBe(sid);
+        expect(job?.cancelRequestedAt).toBeNull();
+        const followUp = await store.createFollowUp(zombie, 'pick up', AUTHOR);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+
+        // And the failed claim's own candidate is back to queued, attempt unburned — the
+        // rollback still guards exactly the half-claim it always did.
+        expect(await store.get(fresh)).toMatchObject({ status: 'queued', attempts: 0 });
+        expect((await store.claim('w3', 300))?.id).toBe(fresh);
+    });
 });
 
 describe.skipIf(!enabled)('removing a task', () => {

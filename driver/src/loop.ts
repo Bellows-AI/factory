@@ -3,7 +3,7 @@ import type { Board, BoardJob, HeartbeatVerdict, LeaseState, Reclaim, ReclaimAck
 import type { DriverConfig } from './config.js';
 import { currentActivity, envFileBody, tailBytes, workspacePathOf } from './docker.js';
 import type { GateManager, GateServer } from './gates.js';
-import type { RunSession, Runner, RuntimeSample } from './docker.js';
+import type { RunOutcome, RunSession, Runner, RuntimeSample } from './docker.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { worktreeRelDir } from './publish.js';
 
@@ -576,6 +576,36 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         };
 
         /*
+         * The session the run actually used, when the runner could only learn it after the fact
+         * (opencode scrapes it at close; claude-code's was minted and reported at spawn). Reported
+         * while the lease is still live, BEFORE the park or the verdict — a follow-up can only be
+         * asked for once the task is finished, and it resumes exactly this. A 'lost' verdict is
+         * not acted on: the heartbeat is what kills a superseded run, and losing the link is not
+         * losing the job. An opencode run ALWAYS leaves a session, so an empty scrape is the
+         * readout having failed every try — said out loud, because the cost is a task that can
+         * never take a follow-up, and a verdict without its finish reason or context. The reason
+         * says which failure it was: the runner carries the readout's own error line, the docker
+         * rejection, or its absence. The stopped path calls this too (issue #152): a stop's park
+         * lands the row terminal, and a session reported after it is refused — the stopped task
+         * would settle sessionless with nothing to follow up.
+         */
+        const reportScrapedSession = async (outcome: RunOutcome): Promise<void> => {
+            if (outcome.sessionId) {
+                try {
+                    await board.session(job, outcome.sessionId, null);
+                    log(`job ${job.id}: session ${outcome.sessionId}`);
+                } catch (e) {
+                    log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
+                }
+            } else if (config.cli === 'opencode') {
+                log(
+                    `job ${job.id}: the session readout came up empty (${outcome.readoutError ?? 'no session in the database'}) — ` +
+                        'no session to follow up, finish reason and context stats unread'
+                );
+            }
+        };
+
+        /*
          * One gate session's teardown: the environment goes back to its cooldown, and the token
          * dies with the attempt — a follow-up's claim registers its own. Shared by the run's
          * cleanup finally and the stand-down branch after beginGates, whose early return
@@ -824,7 +854,13 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     // the turn ends, the session is kept for the follow-up that continues the
                     // conversation. Reporting an exit code here would make a killed run
                     // indistinguishable from one that ended on its own (docs/jobs.md).
+                    // The scraped session goes first (issue #152): under opencode the id is only
+                    // learned at close, and the board accepts the report only while the row still
+                    // runs under this lease — park first and the stopped task settles sessionless,
+                    // with no follow-up to continue it. The scrape is awaited by both runners
+                    // before the outcome resolves, so the id here is final.
                     await settle();
+                    await reportScrapedSession(outcome);
                     const verdict = await board.suspend(job);
                     log(
                         verdict === 'lost'
@@ -870,24 +906,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 // the verdict — a follow-up can only be asked for once the task is finished, and it
                 // resumes exactly this. A 'lost' verdict is not acted on: the heartbeat is what kills
                 // a superseded run, and losing the link is not losing the job.
-                if (outcome.sessionId) {
-                    try {
-                        await board.session(job, outcome.sessionId, null);
-                        log(`job ${job.id}: session ${outcome.sessionId}`);
-                    } catch (e) {
-                        log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
-                    }
-                } else if (config.cli === 'opencode') {
-                    // An opencode run ALWAYS leaves a session, so an empty scrape is the readout
-                    // having failed every try — said out loud, because the cost is a task that can
-                    // never take a follow-up, and a verdict without its finish reason or context.
-                    // The reason says which failure it was: the runner carries the readout's own
-                    // error line, the docker rejection, or its absence.
-                    log(
-                        `job ${job.id}: the session readout came up empty (${outcome.readoutError ?? 'no session in the database'}) — ` +
-                            'no session to follow up, finish reason and context stats unread'
-                    );
-                }
+                await reportScrapedSession(outcome);
 
                 /*
                  * The gates run HERE: after the agent has finished talking and before the verdict,

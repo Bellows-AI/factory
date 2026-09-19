@@ -147,6 +147,36 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         expect(wall).toBeLessThan(300_000);
     });
 
+    // The stop nobody delivered: the claim settles the stamped run stopped (issue #152), and the
+    // settle banks the segment the attempt actually ran — the same banking the suspend park
+    // makes on the delivered path.
+    it('the claim settles a stamped expired run stopped, banking its last segment', async () => {
+        const { id } = await claimBackdated(4);
+        expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+
+        expect(await store.claim('w2', 300)).toBeNull();
+
+        expect((await store.get(id))?.status).toBe('stopped');
+        const wall = await wallOf(id);
+        expect(wall).toBeGreaterThanOrEqual(239_000);
+        expect(wall).toBeLessThan(300_000);
+    });
+
+    // The stop that lands without a worker banks the same way: the row was running for real up
+    // to the settle, whichever side of the lease expiry the landing takes.
+    it('stopping in place after the lease died banks the run too', async () => {
+        const { id } = await claimBackdated(4);
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+
+        expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
+
+        expect((await store.get(id))?.status).toBe('stopped');
+        const wall = await wallOf(id);
+        expect(wall).toBeGreaterThanOrEqual(239_000);
+        expect(wall).toBeLessThan(300_000);
+    });
+
     it('the idle park records the run time too — the segment it ends was real', async () => {
         const { id, token } = await claimBackdated(2);
 
