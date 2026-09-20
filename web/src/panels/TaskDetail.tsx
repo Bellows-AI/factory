@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { isTerminal, type Job } from '../api/useJobs.js';
 import { TaskOutcome } from './TaskOutcome.js';
 import { TaskRun } from './TaskRun.js';
@@ -99,7 +100,16 @@ export function TaskDetail({
                     ))}
                     {canFollowUp ? (
                         <div className="composer">
+                            {/* A visible label and a helper sentence: the composer continues the
+                            task, it does not start a new one. */}
+                            <label className="composer-label" htmlFor="follow-up-command">
+                                Ask for a follow-up
+                            </label>
+                            <p className="composer-label">
+                                The agent continues the same task, checkout, executor, and session.
+                            </p>
                             <textarea
+                                id="follow-up-command"
                                 className="composer-input"
                                 placeholder="Describe the adjustment…"
                                 value={draft}
@@ -109,21 +119,24 @@ export function TaskDetail({
                                 }}
                             />
                             <div className="composer-row">
+                                {/* The shortcut is written down, and it is the same guarded path
+                                the button takes — one send logic, two ways in. */}
+                                <span className="composer-label">Ctrl/⌘ + Enter</span>
                                 <button
                                     type="button"
                                     className="primary"
                                     disabled={!draft.trim() || sending}
                                     onClick={() => void send()}
                                 >
-                                    Send
+                                    {sending ? 'Sending…' : 'Send follow-up'}
                                 </button>
                             </div>
                         </div>
                     ) : null}
                     {sessionless ? (
                         <p className="muted">
-                            This run has no agent session to continue, so it cannot take a follow-up. Queue a new task
-                            instead.
+                            This run has no agent session to continue, so it cannot take a follow-up.{' '}
+                            <Link to="/tasks/new">Start a new task</Link>
                         </p>
                     ) : null}
                 </section>

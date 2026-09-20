@@ -119,15 +119,17 @@ interface DetailArgs {
 
 const renderDetail = ({ jobs = [job()], error = null, actionError = null, sending = false }: DetailArgs = {}) =>
     renderToStaticMarkup(
-        // The status, clock and task actions live in the page header (TaskHeader) since #159;
-        // this panel is the conversation itself — transcript, checks, composer, sidebar.
-        <TaskDetail
-            jobs={jobs}
-            error={error}
-            actionError={actionError}
-            sending={sending}
-            onFollowUp={async () => null}
-        />
+        // The sessionless branch carries a router Link (Start a new task), so the panel renders
+        // under a router the same way the page mounts it.
+        <MemoryRouter>
+            <TaskDetail
+                jobs={jobs}
+                error={error}
+                actionError={actionError}
+                sending={sending}
+                onFollowUp={async () => null}
+            />
+        </MemoryRouter>
     );
 
 interface HeaderArgs {
@@ -443,7 +445,7 @@ describe('TaskDetail', () => {
         // executor stopped" and "I am satisfied".
         const finished = renderDetail({ jobs: [job()] });
         expect(finished).toContain('<textarea');
-        expect(finished).toContain('>Send<');
+        expect(finished).toContain('Send follow-up');
         for (const status of ['queued', 'running', 'standby'] as const) {
             const moving = renderDetail({
                 jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
@@ -454,7 +456,7 @@ describe('TaskDetail', () => {
 
     it("keeps the transcript clean of task actions — those are the page header's", () => {
         // The conversation panel carries no Stop/Done/Remove since the head lifted to the page;
-        // its own composer's Send stays, of course.
+        // its own composer's Send follow-up stays, of course.
         const finished = renderDetail({ jobs: [job()] });
         expect(finished).not.toContain('chat-resume');
         expect(finished).not.toContain('chat-stop');
@@ -1666,6 +1668,37 @@ describe('TaskRun', () => {
         });
         expect(html).not.toContain('<script>');
         expect(html).toContain('&lt;script&gt;');
+    });
+});
+
+describe('follow-up composer', () => {
+    it('labels the composer Ask for a follow-up, with its helper and the shortcut visible', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html).toContain('Ask for a follow-up');
+        expect(html).toContain('The agent continues the same task, checkout, executor, and session.');
+        expect(html).toContain('Ctrl/⌘ + Enter');
+        expect(html).toMatch(/<label[^>]*for="follow-up-command"/);
+        expect(html).toContain('id="follow-up-command"');
+    });
+
+    it('carries the placeholder and the send copy, including the sending state', () => {
+        expect(renderDetail({ jobs: [job()] })).toContain('Describe the adjustment…');
+        expect(renderDetail({ jobs: [job()] })).toContain('Send follow-up');
+        expect(renderDetail({ jobs: [job()], sending: true })).toContain('Sending…');
+    });
+
+    it('a terminal open sessionless run explains itself and links Start a new task', () => {
+        const html = renderDetail({ jobs: [job({ sessionId: null })] });
+        expect(html).toContain('no agent session to continue');
+        expect(html).toContain('href="/tasks/new"');
+        expect(html).toContain('Start a new task');
+        expect(html).not.toContain('Ask for a follow-up');
+    });
+
+    it('a closed task renders no composer and no sessionless note', () => {
+        const html = renderDetail({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
+        expect(html).not.toContain('Ask for a follow-up');
+        expect(html).not.toContain('no agent session to continue');
     });
 });
 
