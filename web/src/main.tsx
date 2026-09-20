@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import { App } from './App.js';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { App, appRoutes } from './App.js';
 import { LoginGate } from './components/LoginGate.js';
 import './styles.css';
 
@@ -11,13 +11,25 @@ import './styles.css';
 //
 // The router sits OUTSIDE the gate, though, and the reason the gate is inside App does not extend to
 // it: a router fetches nothing. Outside means the gate can read the location for its `returnTo`
-// instead of reaching for window.location, and leaves room for a real /login route later.
-createRoot(document.getElementById('root') as HTMLElement).render(
-    <StrictMode>
-        <BrowserRouter>
+// instead of reaching for window.location, and leaves room for a real /login route later. The gate
+// is still the root ROUTE element, because useLocation needs router context.
+//
+// A data router (`createBrowserRouter`) rather than `<BrowserRouter>`: the settings area's
+// unsaved-change guard (issue 182) blocks in-app navigation with `useBlocker`, which runs only
+// inside one — a plain `<BrowserRouter>` throws the moment a layout calls it.
+const router = createBrowserRouter([
+    {
+        element: (
             <LoginGate>
                 <App />
             </LoginGate>
-        </BrowserRouter>
+        ),
+        children: appRoutes,
+    },
+]);
+
+createRoot(document.getElementById('root') as HTMLElement).render(
+    <StrictMode>
+        <RouterProvider router={router} />
     </StrictMode>
 );
