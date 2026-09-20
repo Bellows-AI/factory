@@ -271,13 +271,13 @@ test.describe('the task detail page', () => {
             el.scrollTop = el.scrollHeight;
         });
         const before = await output.evaluate((el) => el.scrollTop);
+        expect(before).toBeGreaterThan(0);
         await output.focus();
-        const focused = await output.evaluate((el) => document.activeElement === el);
         await page.keyboard.press('ArrowUp');
-        const afterFocusKey = await output.evaluate((el) => el.scrollTop);
-        await page.waitForTimeout(100);
-        const after = await output.evaluate((el) => el.scrollTop);
-        console.log('DBG focused:', focused, 'before:', before, 'afterKey:', afterFocusKey, 'after100ms:', after);
+        // The scroll animates, so poll rather than read on the keypress's heels.
+        await expect
+            .poll(() => output.evaluate((el) => el.scrollTop), { timeout: 2_000 })
+            .toBeLessThan(before);
         expect(problems).toEqual([]);
     });
 

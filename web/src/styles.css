@@ -1992,7 +1992,7 @@
 
     /* The output well's focus ring lives on the pre, because the pre is what scrolls — focus
        and scroll target must be the same element for keyboard arrows to move the log. */
-    .chat-output:focus {
+    .chat-output:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 4px;
     }
