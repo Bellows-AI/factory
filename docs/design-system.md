@@ -153,7 +153,7 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Table | `table-wrap`, `data`, `th.asc`, `th.desc`, `num` | Every tabular readout; the wrap scrolls, never shrinks. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. The wrap is a named `<section>` (the region role, implicitly) that is keyboard-focusable, so a scrolled-off column stays reachable. `num` right-aligns a numeric column's header and cells. |
+| Table | `table-wrap`, `data`, `sortable`, `align-end`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks — a named, keyboard-focusable `<section>` (the region role, implicitly), so a scrolled-off column stays reachable. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. `align-end` right-aligns a numeric column's header and cells. |
 | Key-values | `kv` | The dt/dd definition grid |
 | Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
 | Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
@@ -214,7 +214,7 @@ Components:
 | `AppBar.tsx` | appbar, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
-| `DataTable.tsx` | table-wrap, data, th.asc, th.desc, num |
+| `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
 | `ExecutorDialog.tsx` | picker, status |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
@@ -236,7 +236,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | --- | --- |
 | `AccessTokensPanel.tsx` | panel, status |
 | `AiUsagePanel.tsx` | cards |
-| `ByUserPanel.tsx` | data, num, usage-track, usage-bar, task-avatar, by-user-user |
+| `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
 | `TrackedOrgsPanel.tsx` | panel, login-button |
@@ -245,7 +245,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
 | `TaskHeader.tsx` | page-header, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
-| `TaskUsagePanel.tsx` | data, muted |
+| `TaskUsagePanel.tsx` | data, align-end, muted |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
