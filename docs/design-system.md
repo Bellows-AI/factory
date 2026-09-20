@@ -153,9 +153,11 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Table | `table-wrap`, `data`, `sortable`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks |
+| Table | `table-wrap`, `data`, `th.asc`, `th.desc`, `num` | Every tabular readout; the wrap scrolls, never shrinks. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. The wrap is a named `<section>` (the region role, implicitly) that is keyboard-focusable, so a scrolled-off column stays reachable. `num` right-aligns a numeric column's header and cells. |
 | Key-values | `kv` | The dt/dd definition grid |
-| Per-user | `by-user`, `by-user-user` | The attribution table and its avatar+name cell |
+| Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
+| Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
+| Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
 | Pills | `pill`, `pill-ready`, `pill-cloning`, `pill-queued`, `pill-failed`, `pill-reason` | Repo/workspace state chips; the reason travels in the pill |
 
 ### Charts
@@ -212,7 +214,7 @@ Components:
 | `AppBar.tsx` | appbar, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
-| `DataTable.tsx` | table |
+| `DataTable.tsx` | table-wrap, data, th.asc, th.desc, num |
 | `ExecutorDialog.tsx` | picker, status |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
@@ -220,6 +222,7 @@ Components:
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | range |
+| `RelativeTime.tsx` | none — renders a `<time>` element only |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
 | `ScopeToggle.tsx` | range-presets |
@@ -233,16 +236,16 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | --- | --- |
 | `AccessTokensPanel.tsx` | panel, status |
 | `AiUsagePanel.tsx` | cards |
-| `ByUserPanel.tsx` | by-user, chart-wrap, task-avatar |
+| `ByUserPanel.tsx` | data, num, usage-track, usage-bar, task-avatar, by-user-user |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
 | `TrackedOrgsPanel.tsx` | panel, login-button |
-| `RecentTasksPanel.tsx` | panel, alert, muted, chart-wrap, by-user, task-avatar |
+| `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
 | `TaskHeader.tsx` | page-header, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
-| `TaskUsagePanel.tsx` | cards, card |
+| `TaskUsagePanel.tsx` | data, muted |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
@@ -275,5 +278,5 @@ Charts (`scale.ts` is the band/linear scale helper — no markup):
 | `Scatter.tsx` | dot, axis-label |
 | `scale.ts` | helper — no markup |
 
-A class used but not defined here (`visually-hidden`, `token-once`, `card-figure`, …) is a hook
-with no styles or a leftover — do not style it by inventing a rule without a row above.
+A class used but not defined here (`visually-hidden`, `token-once`) is a hook with no styles or a
+leftover — do not style it by inventing a rule without a row above.
