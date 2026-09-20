@@ -593,9 +593,16 @@
     }
 
     /* Cells are nowrap, so a wide table overflows its panel rather than shrinking. Scrolling keeps
-       the rightmost columns reachable; without this they are clipped with no indication. */
+       the rightmost columns reachable; without this they are clipped with no indication. The
+       region is keyboard-focusable (DataTable sets tabIndex), so a pointerless reader can still
+       reach a scrolled-off column — the generic focus rule skips plain divs, hence this one. */
     .table-wrap {
         overflow-x: auto;
+    }
+
+    .table-wrap:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
     }
 
     table.data {
@@ -620,9 +627,24 @@
         letter-spacing: 0.04em;
     }
 
-    table.data th.sortable {
+    /* Sort controls are real buttons inside the th. The reset keeps the header's typography —
+       a bare <button> would arrive wearing the global control skin. */
+    table.data th button {
+        background: none;
+        border: none;
+        color: inherit;
         cursor: pointer;
-        user-select: none;
+        font: inherit;
+        letter-spacing: inherit;
+        padding: 0;
+        text-align: inherit;
+        text-transform: inherit;
+    }
+
+    /* Numeric columns: figures share a right edge so digits compare by position. */
+    table.data th.num,
+    table.data td.num {
+        text-align: right;
     }
 
     table.data th.asc::after {
@@ -929,17 +951,41 @@
         width: 18px;
     }
 
-    /* The per-user attribution table: left-aligned labels, right-adjacent counts. */
-    table.by-user td,
-    table.by-user th {
-        padding: 4px 16px 4px 0;
-        text-align: left;
-    }
-
     .by-user-user {
         align-items: center;
         display: inline-flex;
         gap: 6px;
+    }
+
+    /* The proportional New-tokens bar in the by-user table. The track is a sunken well, the fill
+       the chart series blue; the width is decoration (aria-hidden in markup) — the cell's
+       accessible name carries the exact figure. */
+    .usage-track {
+        background: var(--surface-sunken);
+        border-radius: var(--radius-md);
+        display: block;
+        height: 4px;
+        margin-top: 3px;
+        min-width: 120px;
+    }
+
+    .usage-bar {
+        background: var(--chart-primary);
+        border-radius: inherit;
+        display: block;
+        height: 100%;
+    }
+
+    /* The board section's task identity cell: the title wraps to at most two lines, then clamps.
+       td nowrap is overridden, because clamping needs wrapping to be possible at all. */
+    .task-title {
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        color: var(--accent);
+        display: -webkit-box;
+        line-clamp: 2;
+        overflow: hidden;
+        white-space: normal;
     }
 
     .sidenav-task:hover {
