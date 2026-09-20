@@ -386,14 +386,14 @@ describe('TaskDetail', () => {
         expect(plain).not.toContain('done by');
     });
 
-    it('shows who queued the task in the status sidebar, honestly unknown for a pre-accounts row', () => {
+    it('shows who started the task in the outcome, honestly unknown for a pre-accounts row', () => {
         const author = { id: 'a', login: 'octocat', name: 'The Octocat', avatarUrl: 'https://x/a.png' };
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('Queued by');
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');
         expect(renderDetail({ jobs: [job({ author })] })).toContain('The Octocat');
         expect(renderDetail({ jobs: [job({ author })] })).toContain('https://x/a.png');
 
         const unknown = renderDetail({ jobs: [job()] });
-        expect(unknown).toContain('Queued by');
+        expect(unknown).toContain('Started by');
         expect(unknown).toContain('unknown');
     });
 
@@ -562,7 +562,10 @@ describe('TaskDetail', () => {
                     }),
                 ],
             });
-            const summary = html.slice(html.indexOf('Checks'), html.indexOf('</summary>'));
+            // The gates summary is the first summary AFTER the outcome's own — anchor the slice
+            // on the gates disclosure itself, not on the first summary in the page.
+            const start = html.indexOf('chat-gates');
+            const summary = html.slice(start, html.indexOf('</summary>', start));
             expect(summary).toContain('pill gate-passed');
             expect(summary).toContain('pill gate-failed');
             expect(summary).toContain('pill gate-running');
@@ -738,231 +741,27 @@ describe('TaskDetail', () => {
             expect(html).not.toContain('$0.0000');
         });
     });
-
-    /**
-     * The status sidebar: one column beside the conversation, fed by the NEWEST run — the same
-     * run the composer and Done verdict belong to. Everything it shows is either what the board
-     * reports or a blank where nothing was; nothing is inferred.
-     */
-    describe('sidebar', () => {
-        const runtime = {
-            cpuPercent: 12,
-            memUsedMb: 300,
-            memPercent: 2,
-            activity: '→ Bash npm test',
-            sampledAt: '2026-09-01T12:02:00.000Z',
-        };
-
-        it('renders a status sidebar fed by the newest run', () => {
-            const html = renderDetail({ jobs: [job({ executor: 'main' })] });
-            expect(html).toContain('task-side');
-            expect(html).toContain('<h2>Status</h2>');
-            expect(html).toContain('<h2>Connections</h2>');
-            expect(html).toContain('<span class="pill">succeeded</span>');
-            expect(html).toContain('<span class="pill">main</span>');
-        });
-
-        it('shows the workspace directory the board reports, and blank when there is none', () => {
-            const named = renderDetail({ jobs: [job({ workspacePath: 'org-1/user-2' })] });
-            expect(named).toContain('<dt>Workspace</dt><dd>org-1/user-2</dd>');
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Workspace</dt><dd></dd>');
-        });
-
-        /**
-         * The thread's context and cost (issue #60): Context is the newest CLOSED turn's scrape —
-         * a follow-up resumes the same session, so the last turn's count IS the conversation's
-         * final context, and summing would double-count the shared prefix. Cost is the sum of
-         * every turn's scraped cost, where zero-dollar turns contribute nothing.
-         */
-        it('shows the thread context — the newest closed turn, never a sum', () => {
-            const closed = { ...runtime, contextTokens: 30433, costUsd: 0.1 };
-            const running = {
-                cpuPercent: 12,
-                memUsedMb: 300,
-                memPercent: null,
-                activity: null,
-                sampledAt: '2026-09-01T12:02:00.000Z',
-            };
-            const root = job({ command: 'first command', runtime: closed });
-            const html = renderDetail({
-                jobs: [
-                    root,
-                    {
-                        ...job({ command: 'second command', status: 'running', runtime: running }),
-                        id: '44444444-4444-4444-8444-444444444444',
-                        followUpTo: root.id,
-                        rootJobId: root.id,
+    it('never emits a placeholder value', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    executor: null,
+                    workspacePath: null,
+                    output: null,
+                    exitCode: null,
+                    runtime: {
+                        cpuPercent: 12,
+                        memUsedMb: 300,
+                        memPercent: 2,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        contextTokens: null,
+                        costUsd: null,
                     },
-                ],
-            });
-            // The newest turn is running and carries no scrape; the last CLOSED turn's count is
-            // the conversation's final context.
-            expect(html).toContain('<dt>Context</dt><dd>30,433 tok</dd>');
+                }),
+            ],
         });
-
-        it('shows the whole chain as the Cost row, once it costs something', () => {
-            const root = job({ command: 'first command', runtime: { ...runtime, contextTokens: 1000, costUsd: 0.1 } });
-            const html = renderDetail({
-                jobs: [
-                    root,
-                    {
-                        ...job({
-                            command: 'second command',
-                            runtime: { ...runtime, contextTokens: 90433, costUsd: 0.21 },
-                        }),
-                        id: '44444444-4444-4444-8444-444444444444',
-                        followUpTo: root.id,
-                        rootJobId: root.id,
-                    },
-                ],
-            });
-            expect(html).toContain('<dt>Cost</dt><dd>$0.3100</dd>');
-            // Context is NOT summed: the last turn's count IS the conversation's final context.
-            expect(html).toContain('<dt>Context</dt><dd>90,433 tok</dd>');
-        });
-
-        it('stays silent about a thread that cost nothing, and about one nothing scraped', () => {
-            const free = renderDetail({
-                jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
-            });
-            expect(free).toContain('<dt>Context</dt><dd>1,200 tok</dd>');
-            expect(free).toContain('<dt>Cost</dt><dd></dd>');
-            expect(free).not.toContain('$0.0000');
-
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd></dd>');
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Cost</dt><dd></dd>');
-        });
-
-        /**
-         * The attempt's declared services and their states (issue #60) — the "did db come up"
-         * answer, from the newest attempt only: a fleet is attempt-scoped on the driver side, and
-         * an older attempt's is long gone.
-         */
-        it('lists the newest attempt\u2019s services with their states', () => {
-            const html = renderDetail({
-                jobs: [
-                    job({
-                        status: 'running',
-                        runtime: { ...runtime, services: [{ name: 'db', image: 'postgres:16', state: 'running' }] },
-                    }),
-                ],
-            });
-            expect(html).toContain('<h2>Services</h2>');
-            expect(html).toContain('<dt>db</dt><dd>running</dd>');
-        });
-
-        it('renders nothing about services when the attempt declared none, and nothing from older attempts', () => {
-            expect(renderDetail({ jobs: [job()] })).not.toContain('Services</h2>');
-            expect(renderDetail({ jobs: [job({ runtime: { ...runtime, services: [] } })] })).not.toContain(
-                'Services</h2>'
-            );
-
-            const root = job({
-                command: 'first command',
-                runtime: { ...runtime, services: [{ name: 'db', image: 'postgres:16', state: 'running' }] },
-            });
-            const html = renderDetail({
-                jobs: [
-                    root,
-                    {
-                        ...job({ command: 'second command' }),
-                        id: '44444444-4444-4444-8444-444444444444',
-                        followUpTo: root.id,
-                        rootJobId: root.id,
-                    },
-                ],
-            });
-            expect(html).not.toContain('Services</h2>');
-            expect(html).not.toContain('<dt>db</dt>');
-        });
-
-        it('shows the running time of a finished run, and nothing before it starts or while parked', () => {
-            // 12:00:01 -> 12:04:00, the factory job's span.
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Running time</dt><dd>4m</dd>');
-            // A queued job has no attempt yet, and a parked one is not running: either way a
-            // ticking clock would lie.
-            const queued = renderDetail({ jobs: [job({ status: 'queued', startedAt: null, finishedAt: null })] });
-            expect(queued).toContain('<dt>Running time</dt><dd></dd>');
-            const parked = renderDetail({ jobs: [job({ status: 'standby' })] });
-            expect(parked).toContain('<dt>Running time</dt><dd></dd>');
-        });
-
-        it('shows the current task while the run is going, and nothing once it is not', () => {
-            const live = renderDetail({ jobs: [job({ status: 'running', runtime })] });
-            expect(live).toContain('<dt>Task</dt><dd>→ Bash npm test</dd>');
-            expect(renderDetail({ jobs: [job({ runtime })] })).toContain('<dt>Task</dt><dd></dd>');
-            expect(renderDetail({ jobs: [job()] })).not.toContain('chat-activity');
-        });
-
-        it('shows the issue reference and the published PR of the thread', () => {
-            const root = job({
-                command: 'fix https://github.com/o/r/issues/44 please',
-                output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
-            });
-            const html = renderDetail({ jobs: [root] });
-            expect(html).toContain('<dt>Issue</dt><dd>#44</dd>');
-            // The PR opens in a new window, not over the dashboard: target=_blank, with
-            // rel=noopener/noreferrer so the opened page cannot reach back into this one.
-            // The url is the text too — the reader sees where the link goes, not a branch slug.
-            expect(html).toContain(
-                '<a href="https://github.com/o/r/pull/9" target="_blank" rel="noopener noreferrer">https://github.com/o/r/pull/9</a>'
-            );
-            // A url that is not http(s) stays text — nothing a run echoed becomes a handler href.
-            const unsafe = renderDetail({
-                jobs: [job({ output: 'done\n[driver] published fix/44 — javascript:alert(1)' })],
-            });
-            expect(unsafe).not.toContain('<a href="javascript:');
-            expect(unsafe).toContain('fix/44');
-        });
-
-        it('renders blanks for a thread with no issue and no PR', () => {
-            const html = renderDetail({ jobs: [job()] });
-            expect(html).toContain('<dt>Issue</dt><dd></dd>');
-            expect(html).toContain('<dt>PR</dt><dd></dd>');
-        });
-
-        it('renders no PR state row: nothing records one, and a permanent dash says nothing', () => {
-            // The output line carries a url, not a state; the row was removed rather than
-            // holding a dash forever. A structured PR source is a deliberate follow-up.
-            const root = job({
-                command: 'fix #44',
-                output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
-            });
-            expect(renderDetail({ jobs: [root] })).not.toContain('<dt>PR state</dt>');
-        });
-
-        it("keeps older runs' pills inline and moves only the newest run's to the sidebar", () => {
-            const root = job({ command: 'first command' });
-            const child = {
-                ...job({ command: 'second command' }),
-                id: '44444444-4444-4444-8444-444444444444',
-                followUpTo: root.id,
-                rootJobId: root.id,
-            };
-            const html = renderDetail({ jobs: [root, child] });
-            const rootMeta = html.slice(html.indexOf('first command'), html.indexOf('chat-detail'));
-            expect(rootMeta).toContain('<span class="pill');
-            const childMeta = html.slice(
-                html.indexOf('second command'),
-                html.indexOf('chat-detail', html.indexOf('second command'))
-            );
-            expect(childMeta).not.toContain('<span class="pill');
-        });
-
-        it('never emits a placeholder value', () => {
-            const html = renderDetail({
-                jobs: [
-                    job({
-                        executor: null,
-                        workspacePath: null,
-                        output: null,
-                        exitCode: null,
-                        runtime: { ...runtime, activity: null, contextTokens: null, costUsd: null },
-                    }),
-                ],
-            });
-            for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
-        });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
 
@@ -1424,6 +1223,248 @@ describe('task outcome derivations', () => {
         it('answers null while no run has settled', () => {
             expect(newestTerminalExit([followUp({ status: 'running' })])).toBeNull();
         });
+    });
+});
+
+describe('TaskOutcome', () => {
+    it('renders above the conversation in DOM order, as an expanded native disclosure', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html.indexOf('task-outcome')).toBeGreaterThan(-1);
+        expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-conversation'));
+        expect(html).toMatch(/<details[^>]*class="task-outcome[^"]*"[^>]*open/);
+        expect(html).toContain('<h2>Outcome</h2>');
+    });
+
+    it('shows the current status, the closure attribution and the newest terminal exit', () => {
+        const html = renderDetail({
+            jobs: [
+                job({ status: 'failed', exitCode: 1 }),
+                job({
+                    status: 'stopped',
+                    exitCode: 0,
+                    doneBy: { id: 'u', login: 'kim', name: null, avatarUrl: null },
+                    stoppedBy: { id: 'u', login: 'lee', name: null, avatarUrl: null },
+                }),
+            ],
+        });
+        expect(html).toContain('stopped');
+        expect(html).toContain('done by kim');
+        expect(html).toContain('stopped by lee');
+        expect(html).toContain('exit 0');
+    });
+
+    it('names the root author as Started by, unknown when nobody is recorded', () => {
+        const author = { id: 'u', login: 'kim', name: 'Kim Doe', avatarUrl: null };
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('Kim Doe');
+        expect(renderDetail({ jobs: [job()] })).toContain('unknown');
+    });
+
+    it('carries the task wall clock under the em-dash convention', () => {
+        const banked = renderDetail({ jobs: [job({ taskWallClockMs: 3_600_000 })] });
+        expect(banked).toContain('1h');
+        const unbanked = renderDetail({ jobs: [job()] });
+        expect(unbanked).toContain('Wall clock');
+    });
+
+    it('renders repository, worktree, executor — omitting the absent rows', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    repo: 'acme/web',
+                    workspacePath: 'repos/web',
+                    executor: 'main',
+                    workflowName: 'fix-issue',
+                    workflowNode: 'implement',
+                }),
+            ],
+        });
+        expect(html).toContain('Repository');
+        expect(html).toContain('acme/web');
+        expect(html).toContain('<dt>Worktree</dt><dd>repos/web</dd>');
+        expect(html).toContain('Executor');
+        expect(html).toContain('main');
+        expect(html).toContain('Workflow');
+        expect(html).toContain('fix-issue');
+        expect(html).toContain('Workflow node');
+        expect(html).toContain('implement');
+
+        const bare = renderDetail({ jobs: [job()] });
+        expect(bare).not.toContain('Repository');
+        expect(bare).not.toContain('Worktree');
+        expect(bare).not.toContain('Workflow node');
+        expect(bare).not.toContain('fix-issue');
+    });
+
+    it('names the default executor when the run carries none', () => {
+        expect(renderDetail({ jobs: [job()] })).toContain('Default executor');
+    });
+
+    it('renders the frozen workflow name and the node as different concepts', () => {
+        const html = renderDetail({ jobs: [job({ workflowName: 'fix-issue', workflowNode: 'implement' })] });
+        const name = html.indexOf('fix-issue');
+        const node = html.indexOf('implement');
+        expect(name).toBeGreaterThan(-1);
+        expect(node).toBeGreaterThan(-1);
+        expect(name).not.toBe(node);
+    });
+
+    it('shows thread context and cost, and fabricates neither', () => {
+        const measured = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        contextTokens: 3000,
+                        costUsd: 0.01,
+                    },
+                }),
+            ],
+        });
+        expect(measured).toContain('3,000 tok');
+        expect(measured).toContain('$0.0100');
+
+        const bare = renderDetail({ jobs: [job()] });
+        expect(bare).not.toContain('Context');
+        expect(bare).not.toContain('Cost');
+        expect(bare).not.toContain('0 tok');
+        expect(bare).not.toContain('$0.00');
+    });
+
+    it('summarizes the NEWEST run gates only, with words carrying the meaning', () => {
+        const gates = [
+            { name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' },
+            { name: 'lint', status: 'failed' as const, exitCode: 1, output: 'bad' },
+            { name: 'build', status: 'running' as const, exitCode: null, output: null },
+        ];
+        const html = renderDetail({ jobs: [job({ gates }), job({ gates: null })] });
+        expect(html).not.toContain('View checks');
+        const counted = renderDetail({ jobs: [job({ gates })] });
+        expect(counted).toContain('1 passed');
+        expect(counted).toContain('1 failed');
+        expect(counted).toContain('1 running');
+        // Gate output stays on the run — the outcome's own slice never duplicates it.
+        const outcome = counted.slice(counted.indexOf('task-outcome'), counted.indexOf('task-conversation'));
+        expect(outcome).not.toContain('ok');
+    });
+
+    it('renders the published branch code-styled, linking only a safe url', () => {
+        const linked = renderDetail({
+            jobs: [job({ output: '[driver] published fix/44 — https://github.com/o/r/pull/9' })],
+        });
+        expect(linked).toContain('<code>fix/44</code>');
+        expect(linked).toContain('Open pull request');
+        expect(linked).toContain('rel="noopener noreferrer"');
+        expect(linked).not.toContain('PR state');
+
+        const unsafe = renderDetail({
+            jobs: [job({ output: '[driver] published fix/5 — javascript:alert(1)' })],
+        });
+        expect(unsafe).toContain('<code>fix/5</code>');
+        expect(unsafe).not.toContain('<a href="javascript:');
+    });
+
+    it('shows a branch without a url as the branch alone', () => {
+        const html = renderDetail({ jobs: [job({ output: '[driver] published task/20260910' })] });
+        expect(html).toContain('<code>task/20260910</code>');
+        expect(html).not.toContain('Open pull request');
+    });
+
+    it('links Open issue only when the repository makes the url constructible', () => {
+        const linked = renderDetail({ jobs: [job({ repo: 'acme/web', command: 'fix #44 please' })] });
+        expect(linked).toContain('Open issue #44');
+        expect(linked).toContain('href="https://github.com/acme/web/issues/44"');
+        const unlinked = renderDetail({ jobs: [job({ command: 'fix #44 please' })] });
+        expect(unlinked).not.toContain('Open issue');
+        expect(unlinked).toContain('#44');
+    });
+
+    it('renders the newest attempt services as last-reported states, collapsing past three', () => {
+        const services = [
+            { name: 'timescale', image: 'timescale', state: 'running' },
+            { name: 'api', image: 'api', state: 'exited' },
+            { name: 'web', image: 'web', state: 'running' },
+        ];
+        const html = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        services,
+                    },
+                }),
+            ],
+        });
+        expect(html).toContain('timescale');
+        expect(html).toContain('exited');
+        const more = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        services: [...services, { name: 'db2', image: 'db2', state: 'running' }],
+                    },
+                }),
+            ],
+        });
+        expect(more).toContain('and 1 more');
+        // An older attempt's fleet is long gone — the outcome reads the newest attempt only.
+        const stale = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+                    },
+                }),
+                job(),
+            ],
+        });
+        expect(stale).not.toContain('Services');
+        expect(stale).not.toContain('<dt>db</dt>');
+        expect(renderDetail({ jobs: [job()] })).not.toContain('Services');
+    });
+
+    it('never emits placeholder values anywhere in the outcome', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    author: { id: 'u', login: 'kim', name: null, avatarUrl: null },
+                    gates: [{ name: 'test', status: 'passed', exitCode: 0, output: null }],
+                    output: '[driver] published fix/44 — https://github.com/o/r/pull/9',
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        contextTokens: 100,
+                        costUsd: 0.5,
+                    },
+                    workflowName: 'fix-issue',
+                    workflowNode: 'implement',
+                    repo: 'acme/web',
+                    workspacePath: 'repos/web',
+                }),
+            ],
+        });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
 

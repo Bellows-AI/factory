@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { taskTime } from '../format.js';
-import { TaskSide } from './TaskSide.js';
+import { TaskOutcome } from './TaskOutcome.js';
 
 /**
  * One run's verification gates, as the reader meets them: a collapsible "Checks" list, one row per
@@ -152,108 +152,118 @@ export function TaskDetail({
     };
 
     return (
-        <div className="task-layout">
-            <section className="panel">
-                {actionError !== null ? <p className="status">{actionError}</p> : null}
-                {jobs.map((task) => {
-                    // The newest run's statuses live in the sidebar — one status surface for the
-                    // whole task, fed by the run the composer and Done act on. History runs keep
-                    // theirs inline: the sidebar does not carry their per-run verdicts, and
-                    // deleting these would erase what each attempt was.
-                    const history = task.id !== latestTask.id;
-                    return (
-                        <article className="chat-exchange" key={task.id}>
-                            <p className="msg-user">{task.command}</p>
-                            <p className="msg-meta">
-                                {history ? <span className="pill">{task.status}</span> : null}
-                                {history && task.workflowNode !== null ? (
-                                    <span className="pill">{task.workflowNode}</span>
-                                ) : null}
-                                {history && task.executor !== null ? (
-                                    <span className="pill">{task.executor}</span>
-                                ) : null}
-                                {history && task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
-                                {history && task.exitCode !== null ? (
-                                    <span className="chat-exit">exit {task.exitCode}</span>
-                                ) : null}
-                                {/* The verdict's actor, whenever the row carries one — a fact of the
+        <>
+            {/* The action/thread error leads the page, above both columns — it is about the
+            reader's last ask, not about either panel's content. */}
+            {actionError !== null ? <p className="status">{actionError}</p> : null}
+            <div className="task-layout">
+                {/* The outcome summary: what happened and where, above the conversation in the
+                DOM so a narrow screen reads it first (the grid moves it right from 1024px). */}
+                <TaskOutcome jobs={jobs} />
+                <section className="task-conversation panel">
+                    {jobs.map((task) => {
+                        // The newest run's statuses live in the sidebar — one status surface for the
+                        // whole task, fed by the run the composer and Done act on. History runs keep
+                        // theirs inline: the sidebar does not carry their per-run verdicts, and
+                        // deleting these would erase what each attempt was.
+                        const history = task.id !== latestTask.id;
+                        return (
+                            <article className="chat-exchange" key={task.id}>
+                                <p className="msg-user">{task.command}</p>
+                                <p className="msg-meta">
+                                    {history ? <span className="pill">{task.status}</span> : null}
+                                    {history && task.workflowNode !== null ? (
+                                        <span className="pill">{task.workflowNode}</span>
+                                    ) : null}
+                                    {history && task.executor !== null ? (
+                                        <span className="pill">{task.executor}</span>
+                                    ) : null}
+                                    {history && task.doneAt !== null ? (
+                                        <span className="pill chat-done">done</span>
+                                    ) : null}
+                                    {history && task.exitCode !== null ? (
+                                        <span className="chat-exit">exit {task.exitCode}</span>
+                                    ) : null}
+                                    {/* The verdict's actor, whenever the row carries one — a fact of the
                                 run, not of its liveness, so the newest turn shows it too. The stop
                                 is stamped at REQUEST time and outlives the settle (complete clears
                                 the flag, never the actor), so the status decides whether the ask
                                 landed: "stopped" only on a row that settled stopped, "stop
                                 requested" on one still moving or finished on its own. */}
-                                {task.stoppedBy !== null ? (
-                                    <span className="pill chat-stop">
-                                        {task.status === 'stopped' ? 'stopped by' : 'stop requested by'}{' '}
-                                        {task.stoppedBy.login}
-                                    </span>
-                                ) : null}
-                                {task.doneBy !== null ? (
-                                    <span className="pill chat-done">done by {task.doneBy.login}</span>
-                                ) : null}
-                                <span className="muted">{taskTime(task.createdAt)}</span>
-                                {task.runtime?.contextTokens != null ? (
-                                    <span className="chat-activity">
-                                        ctx {tokenCount.format(task.runtime.contextTokens)} tok
-                                        {task.runtime.costUsd != null && task.runtime.costUsd > 0
-                                            ? ` · $${task.runtime.costUsd.toFixed(4)}`
-                                            : ''}
-                                    </span>
-                                ) : null}
-                                {task.status === 'standby' ? <span className="pill">parked</span> : null}
-                            </p>
-                            <div className="chat-detail">
-                                {task.status === 'running' && task.runtime ? <Runtime runtime={task.runtime} /> : null}
-                                {task.gates !== undefined && task.gates !== null && task.gates.length > 0 ? (
-                                    <Checks gates={task.gates} />
-                                ) : null}
-                                {task.output !== null ? (
-                                    <pre
-                                        ref={task.id === latestTask.id ? outputRef : undefined}
-                                        className="chat-output"
-                                    >
-                                        {task.output}
-                                    </pre>
-                                ) : isTerminal(task.status) ? (
-                                    <p className="muted">No output recorded.</p>
-                                ) : (
-                                    <p className="muted">Waiting for the executor…</p>
-                                )}
+                                    {task.stoppedBy !== null ? (
+                                        <span className="pill chat-stop">
+                                            {task.status === 'stopped' ? 'stopped by' : 'stop requested by'}{' '}
+                                            {task.stoppedBy.login}
+                                        </span>
+                                    ) : null}
+                                    {task.doneBy !== null ? (
+                                        <span className="pill chat-done">done by {task.doneBy.login}</span>
+                                    ) : null}
+                                    <span className="muted">{taskTime(task.createdAt)}</span>
+                                    {task.runtime?.contextTokens != null ? (
+                                        <span className="chat-activity">
+                                            ctx {tokenCount.format(task.runtime.contextTokens)} tok
+                                            {task.runtime.costUsd != null && task.runtime.costUsd > 0
+                                                ? ` · $${task.runtime.costUsd.toFixed(4)}`
+                                                : ''}
+                                        </span>
+                                    ) : null}
+                                    {task.status === 'standby' ? <span className="pill">parked</span> : null}
+                                </p>
+                                <div className="chat-detail">
+                                    {task.status === 'running' && task.runtime ? (
+                                        <Runtime runtime={task.runtime} />
+                                    ) : null}
+                                    {task.gates !== undefined && task.gates !== null && task.gates.length > 0 ? (
+                                        <Checks gates={task.gates} />
+                                    ) : null}
+                                    {task.output !== null ? (
+                                        <pre
+                                            ref={task.id === latestTask.id ? outputRef : undefined}
+                                            className="chat-output"
+                                        >
+                                            {task.output}
+                                        </pre>
+                                    ) : isTerminal(task.status) ? (
+                                        <p className="muted">No output recorded.</p>
+                                    ) : (
+                                        <p className="muted">Waiting for the executor…</p>
+                                    )}
+                                </div>
+                            </article>
+                        );
+                    })}
+                    {canFollowUp ? (
+                        <div className="composer">
+                            <textarea
+                                className="composer-input"
+                                placeholder="Describe the adjustment…"
+                                value={draft}
+                                onChange={(e) => setDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
+                                }}
+                            />
+                            <div className="composer-row">
+                                <button
+                                    type="button"
+                                    className="primary"
+                                    disabled={!draft.trim() || sending}
+                                    onClick={() => void send()}
+                                >
+                                    Send
+                                </button>
                             </div>
-                        </article>
-                    );
-                })}
-                {canFollowUp ? (
-                    <div className="composer">
-                        <textarea
-                            className="composer-input"
-                            placeholder="Describe the adjustment…"
-                            value={draft}
-                            onChange={(e) => setDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
-                            }}
-                        />
-                        <div className="composer-row">
-                            <button
-                                type="button"
-                                className="primary"
-                                disabled={!draft.trim() || sending}
-                                onClick={() => void send()}
-                            >
-                                Send
-                            </button>
                         </div>
-                    </div>
-                ) : null}
-                {sessionless ? (
-                    <p className="muted">
-                        This run has no agent session to continue, so it cannot take a follow-up. Queue a new task
-                        instead.
-                    </p>
-                ) : null}
-            </section>
-            <TaskSide jobs={jobs} />
-        </div>
+                    ) : null}
+                    {sessionless ? (
+                        <p className="muted">
+                            This run has no agent session to continue, so it cannot take a follow-up. Queue a new task
+                            instead.
+                        </p>
+                    ) : null}
+                </section>
+            </div>
+        </>
     );
 }

@@ -1475,13 +1475,6 @@
         white-space: nowrap;
     }
 
-    /* The queued-by value: avatar and display name, kept on one line in the status sidebar. */
-    .task-queued-by {
-        align-items: center;
-        display: inline-flex;
-        gap: 6px;
-    }
-
     .task-avatar {
         border-radius: 50%;
         height: 18px;
@@ -1907,20 +1900,62 @@
 
     /* The tasks pages. */
 
-    /* The task detail page: the conversation plus its status sidebar, fed by the newest run. The
-       sidebar holds a fixed 280px and the conversation takes the rest; below ~1100px it stacks under
-       the conversation — a two-column read needs the room, and the shell itself collapses at 900px. */
+    /* The task detail page: one conversation and its outcome summary, fed by the newest run.
+       The DOM reads outcome first, conversation second; from 1024px the grid puts the
+       conversation in the dominant left column and the outcome in a bounded right one, and
+       below that the outcome stacks above the conversation — the same single disclosure
+       everywhere, only the grid changes. */
     .task-layout {
         align-items: start;
         display: grid;
         gap: 20px;
-        grid-template-columns: minmax(0, 1fr) 280px;
+        grid-template-areas: 'outcome' 'conversation';
+        grid-template-columns: 1fr;
     }
 
-    @media (max-width: 1100px) {
+    .task-outcome {
+        grid-area: outcome;
+    }
+
+    .task-conversation {
+        grid-area: conversation;
+        min-width: 0;
+    }
+
+    @media (min-width: 1024px) {
         .task-layout {
-            grid-template-columns: 1fr;
+            grid-template-areas: 'conversation outcome';
+            grid-template-columns: minmax(0, 1fr) 320px;
         }
+    }
+
+    /* The outcome's disclosure head: the native marker keeps signalling expandability (the
+       summary stays live at every width), and the heading reads like a panel head. */
+    .task-outcome > summary {
+        cursor: pointer;
+    }
+
+    .task-outcome > summary > h2 {
+        display: inline;
+        font-size: 15px;
+        margin: 0;
+    }
+
+    .task-outcome-body {
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 14px;
+        margin-top: 10px;
+        padding-top: 10px;
+    }
+
+    /* The outcome's group label — Result, Execution, Verification, Published work, Services. */
+    .task-outcome-label {
+        color: var(--ink-muted);
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        margin: 0 0 6px;
+        text-transform: uppercase;
     }
 
     .chat-exchange {
