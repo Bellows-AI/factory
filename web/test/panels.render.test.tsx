@@ -4,7 +4,8 @@ import { telemetryStats } from '@factory-ai/core';
 import { readFileSync } from 'node:fs';
 import type { TelemetryInput, TelemetryStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../src/api/useStats.js';
-import { AiUsagePanel } from '../src/panels/AiUsagePanel.js';
+import type { StatsPayload } from '../src/api/useStats.js';
+import { UsageSummaryPanel } from '../src/panels/UsageSummaryPanel.js';
 import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
@@ -29,7 +30,7 @@ const NOW = new Date('2026-08-21T12:00:00.000Z');
 const telemetry = telemetryStats(input, { repos: [REPO], now: NOW });
 const empty = telemetryStats({ sessions: [], coverage: { from: null, to: null } }, { repos: [REPO], now: NOW });
 
-const meta = (over: Partial<TelemetryMeta> = {}): TelemetryMeta => ({
+const telemetryMeta = (over: Partial<TelemetryMeta> = {}): TelemetryMeta => ({
     status: 'ok',
     reason: null,
     source: 'fixture',
@@ -43,10 +44,25 @@ const meta = (over: Partial<TelemetryMeta> = {}): TelemetryMeta => ({
     ...over,
 });
 
-const render = (t: TelemetryStats, m: TelemetryMeta) =>
+/** Full payload meta: the summary speaks for the rendered selection, so it needs range and scope. */
+const meta = (over: Partial<TelemetryMeta> = {}, metaOver: Partial<StatsPayload['meta']> = {}): StatsPayload['meta'] =>
+    ({
+        fetchedAt: NOW.toISOString(),
+        ageSeconds: 0,
+        stale: false,
+        organization: { mode: 'config', current: { id: 'bellows', name: 'Bellows AI' }, available: [] },
+        repos: [{ owner: 'Bellows-AI', name: 'bellows.ai' }],
+        range: { preset: 'custom', from: '2026-08-14T12:00:00Z', to: NOW.toISOString() },
+        scope: 'org',
+        scopeLogin: null,
+        telemetry: telemetryMeta(over),
+        ...metaOver,
+    }) as StatsPayload['meta'];
+
+const render = (t: TelemetryStats, m: StatsPayload['meta']) =>
     [
-        renderToStaticMarkup(<AiUsagePanel telemetry={t} meta={m} />),
-        renderToStaticMarkup(<TokenUsagePanel telemetry={t} meta={m} />),
+        renderToStaticMarkup(<UsageSummaryPanel telemetry={t} meta={m} />),
+        renderToStaticMarkup(<TokenUsagePanel telemetry={t} meta={m.telemetry} />),
     ].join('\n');
 
 describe('telemetry panels render', () => {
@@ -59,7 +75,7 @@ describe('telemetry panels render', () => {
     });
 
     it('renders the by-user table with the attributed users', () => {
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={meta()} />);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={telemetryMeta()} />);
         expect(html).toContain('Usage by user');
         expect(html).toContain('alice');
         expect(html).toContain('Alice Doe');
@@ -90,7 +106,7 @@ describe('telemetry panels render', () => {
             },
             { repos: [REPO], now: NOW }
         );
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={unmeasured} meta={meta()} />);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={unmeasured} meta={telemetryMeta()} />);
         expect(html).toContain('<td>—</td>');
         expect(html).not.toContain('<td>0</td>');
     });
@@ -99,15 +115,41 @@ describe('telemetry panels render', () => {
         // 'attributed', not just 'sessions': the by-user rollup carries only attributed
         // sessions, while unattributed ones are counted separately — the window can hold
         // sessions and still render this empty state.
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={empty} meta={meta()} />);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={empty} meta={telemetryMeta()} />);
         expect(html).toContain('No attributed sessions in the coverage window yet.');
     });
 
-    it('renders five usage cards', () => {
-        const html = renderToStaticMarkup(<AiUsagePanel telemetry={telemetry} meta={meta()} />);
-        // Counted in the rendered markup rather than hard-coded: the card row is the page's
-        // whole above-the-fold, and a dropped card would otherwise pass silently.
-        expect(html.match(/class="card"/g)).toHaveLength(5);
+    it('renders four groups and five measures, hierarchy first', () => {
+        const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
+        // Four visual groups, five measures: Sessions and Token usage lead, then the two
+        // supporting effectiveness measures. DOM order IS the reading order at every width.
+        for (const label of ['Sessions', 'Token usage', 'Active time', 'Edit acceptance']) {
+            expect(html).toContain(label);
+        }
+        expect(html.indexOf('Sessions')).toBeLessThan(html.indexOf('Token usage'));
+        expect(html.indexOf('Token usage')).toBeLessThan(html.indexOf('Active time'));
+        expect(html.indexOf('Active time')).toBeLessThan(html.indexOf('Edit acceptance'));
+    });
+
+    it('renders Input and Output as separate measures with their own values', () => {
+        const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
+        expect(html).toContain('>Input</');
+        expect(html).toContain('>Output</');
+        // Each carries its OWN figure from the payload, never input + output.
+        expect(html).toContain(`>${tokens(telemetry.totals.tokens.input)}<`);
+        expect(html).toContain(`>${tokens(telemetry.totals.tokens.output)}<`);
+        // Cache rides the supporting line, separate from the measure it belongs to.
+        expect(html).toContain('read from cache');
+        expect(html).toContain('written to cache');
+    });
+
+    it('carries the required supporting copy for every group', () => {
+        const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
+        // Sessions: the rendered selection, no repository names repeated here.
+        expect(html).toContain('Aug 14–21 · Organization');
+        expect(html).not.toContain(REPO);
+        // Active time: across how many sessions, idle excluded.
+        expect(html).toContain('Across 13 sessions · idle time excluded');
     });
 
     it('renders em dashes, never zeros, on an empty store', () => {
@@ -139,6 +181,52 @@ describe('telemetry panels render', () => {
     });
 });
 
+describe('edit acceptance rendering', () => {
+    const withEdits = (accepted: number | null, rejected: number | null) =>
+        telemetryStats(
+            {
+                sessions: [
+                    {
+                        ...input.sessions.find((s) => s.sessionId === 's01-token-heavy')!,
+                        repo: REPO,
+                        editsAccepted: accepted,
+                        editsRejected: rejected,
+                    },
+                ],
+                coverage: { from: null, to: null },
+            },
+            { repos: [REPO], now: NOW }
+        );
+    const summary = (accepted: number | null, rejected: number | null) =>
+        renderToStaticMarkup(<UsageSummaryPanel telemetry={withEdits(accepted, rejected)} meta={meta()} />);
+
+    it('shows the measured denominator: A of D measured edit decisions accepted', () => {
+        const html = summary(2, 1);
+        expect(html).toContain('67%');
+        expect(html).toContain('2 of 3 measured edit decisions accepted');
+    });
+
+    it('says Not measured instead of a ratio when no decision was recorded', () => {
+        const html = summary(null, null);
+        expect(html).toContain('Not measured');
+        expect(html).not.toContain('NaN');
+    });
+
+    it('names the partial measurement instead of fabricating an acceptance count', () => {
+        // Rejections measured, acceptances not: a denominator exists but the ratio must not
+        // pretend to one.
+        const html = summary(null, 3);
+        expect(html).toContain('3 edit decisions measured');
+        expect(html).toContain('not recorded');
+        expect(html).not.toContain('of 3 measured');
+    });
+
+    it('renders a measured zero-out-of-zero as the real zero it is', () => {
+        const html = summary(0, 0);
+        expect(html).toContain('0 measured edit decisions');
+    });
+});
+
 describe('per-task usage panel', () => {
     const dist = (avg: number, p50: number, p95: number, tasks: number) => ({ avg, p50, p95, tasks });
     const populated: TaskUsageStats = {
@@ -155,7 +243,7 @@ describe('per-task usage panel', () => {
     };
 
     it('renders the four distributions as distinct, labeled figures with their counts', () => {
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
         // Four kinds, each named — the terminology rule: never a bare "turns".
         expect(html).toContain('Tokens per task');
         expect(html).toContain('Runs per task');
@@ -172,23 +260,23 @@ describe('per-task usage panel', () => {
     });
 
     it('renders an explicit empty state, never zero figures, when no task is in range', () => {
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={emptyStats} meta={meta({ status: 'empty' })} />);
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={emptyStats} meta={telemetryMeta({ status: 'empty' })} />);
         expect(html).toContain('No attributed tasks in this range yet.');
         expect(html).not.toContain('NaN');
         // And it renders nothing at all when there is no snapshot yet.
-        expect(renderToStaticMarkup(<TaskUsagePanel tasks={null} meta={meta()} />)).toBe('');
+        expect(renderToStaticMarkup(<TaskUsagePanel tasks={null} meta={telemetryMeta()} />)).toBe('');
     });
 
     it('names the unmeasured-run rule where the agent-turn figure renders', () => {
         // Remote Control runs and failed close-time reads store null; a task holding one is
         // excluded. The panel says so instead of rendering a quietly small number.
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
         expect(html).toContain('a task with any unmeasured run is left out, never counted as zero');
     });
 
     it('formats the wall clock distribution as a duration, not a raw millisecond count', () => {
         // avg 4_212_000ms renders as "1.2h" — a millisecond figure beside tokens would be noise.
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
         expect(html).toContain('1.2h');
         expect(html).not.toContain('4212000');
     });
@@ -197,7 +285,7 @@ describe('per-task usage panel', () => {
 describe('token usage series granularity', () => {
     it('renders daily buckets with a daily blurb', () => {
         expect(telemetry.series.granularity).toBe('week');
-        const weeklyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={meta()} />);
+        const weeklyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
         expect(weeklyHtml).toContain('per ISO week');
         expect(weeklyHtml).toContain('the range is too long for daily bars');
 
@@ -208,7 +296,7 @@ describe('token usage series granularity', () => {
             range: { preset: 'custom', from: '2026-07-22T12:00:00Z', to: '2026-08-21T12:00:00Z' },
         });
         expect(daily.series.granularity).toBe('day');
-        const dailyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={daily} meta={meta()} />);
+        const dailyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={daily} meta={telemetryMeta()} />);
         expect(dailyHtml).toContain('per day');
         expect(dailyHtml).toContain('today is partial');
         expect(dailyHtml).not.toContain('NaN');
@@ -226,7 +314,7 @@ describe('token usage series granularity', () => {
         });
         const points = wide.series.points.length;
         expect(points).toBeGreaterThan(80);
-        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={wide} meta={meta()} />);
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={wide} meta={telemetryMeta()} />);
         const every = Math.ceil(points / 12);
         // X ticks: every `every`-th point plus the last. The bars' left axis and the line's
         // right axis render 5 ticks each, so ten of the rendered ticks are never x labels.

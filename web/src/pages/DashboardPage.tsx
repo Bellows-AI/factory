@@ -3,7 +3,7 @@ import { useCompletedJobs } from '../api/useCompletedJobs.js';
 import { RangeSelector } from '../components/RangeSelector.js';
 import { ScopeToggle } from '../components/ScopeToggle.js';
 import { StatusBanner } from '../components/StatusBanner.js';
-import { AiUsagePanel } from '../panels/AiUsagePanel.js';
+import { UsageSummaryPanel } from '../panels/UsageSummaryPanel.js';
 import { ByUserPanel } from '../panels/ByUserPanel.js';
 import { RecentTasksPanel } from '../panels/RecentTasksPanel.js';
 import { TaskUsagePanel } from '../panels/TaskUsagePanel.js';
@@ -61,7 +61,7 @@ export function DashboardPage() {
                             empty frames for a feature nobody enabled are just noise. */}
                     {data.telemetry ? (
                         <>
-                            <AiUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                            <UsageSummaryPanel telemetry={data.telemetry} meta={data.meta} />
                             <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                             <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
                             <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
