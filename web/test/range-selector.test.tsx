@@ -92,14 +92,19 @@ describe('custom-range draft helpers', () => {
         expect(crossed).toBe(DEFAULT_RANGE);
         const empty = applyDraft(DEFAULT_RANGE, { from: '', to: '' }, today);
         expect(empty).toBe(DEFAULT_RANGE);
-        const future = applyDraft(DEFAULT_RANGE, { from: '2026-09-01', to: '2026-09-25' }, today);
-        expect(future).toBe(DEFAULT_RANGE);
+        const futureTo = applyDraft(DEFAULT_RANGE, { from: '2026-09-01', to: '2026-09-25' }, today);
+        expect(futureTo).toBe(DEFAULT_RANGE);
+        // A future `from` on its own is just as meaningless: a "Since 2030" window that can
+        // only render an empty state.
+        const futureFrom = applyDraft(DEFAULT_RANGE, { from: '2030-01-01', to: '' }, today);
+        expect(futureFrom).toBe(DEFAULT_RANGE);
     });
 
     it('validates the same rule for the disabled state of Apply', () => {
         expect(draftValid({ from: '', to: '' }, today)).toBe(false);
         expect(draftValid({ from: '2026-09-02', to: '2026-09-01' }, today)).toBe(false);
         expect(draftValid({ from: '2026-09-01', to: '2026-09-25' }, today)).toBe(false);
+        expect(draftValid({ from: '2030-01-01', to: '' }, today)).toBe(false);
         expect(draftValid({ from: '2026-09-01', to: '' }, today)).toBe(true);
     });
 

@@ -27,7 +27,9 @@ export function AnalyticsToolbar({
     onScopeChange: (next: ScopeSelection) => void;
     /** Whether a signed-in member's own scope exists (GitHub mode). Open mode has no "me". */
     hasPersonalScope: boolean;
-    repoFilter: readonly string[];
+    /** Coverage from payload meta — null before the first successful read, when coverage is
+     * unknown rather than empty (claiming "no repositories configured" would invent a fact). */
+    repoFilter: readonly string[] | null;
     /** The rendered-data sentence from payload meta, or null before the first successful read. */
     summary: string | null;
 }) {
@@ -44,10 +46,12 @@ export function AnalyticsToolbar({
                     <span className="toolbar-value">Organization</span>
                 </div>
             )}
-            <div className="toolbar-group">
-                <span className="toolbar-label">Repositories</span>
-                <span className="toolbar-value">{countRepos(repoFilter)}</span>
-            </div>
+            {/* A real labeled group, not a div with an ARIA role: the legend names the read-only
+                coverage value natively, and the fieldset resets to look like its siblings. */}
+            <fieldset className="toolbar-group">
+                <legend className="toolbar-label">Repositories</legend>
+                <span className="toolbar-value">{repoFilter === null ? '—' : countRepos(repoFilter)}</span>
+            </fieldset>
             {summary ? (
                 <p className="analytics-summary" aria-live="polite">
                     {summary}

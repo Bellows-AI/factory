@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { resolveRange } from '@factory-ai/core';
 import { useShell } from '../components/AppShell.js';
 import { useCompletedJobs } from '../api/useCompletedJobs.js';
 import { AnalyticsToolbar } from '../components/AnalyticsToolbar.js';
@@ -14,6 +13,7 @@ import {
     analyticsState,
     emptyStateCopy,
     renderedSelection,
+    requestedRange,
     selectionMismatch,
     selectionText,
 } from '../dashboardSummary.js';
@@ -64,10 +64,7 @@ export function DashboardPage() {
     // appends where the next read is heading — the request state is never the headline.
     const summary = data
         ? selectionMismatch(range, scope, data.meta)
-            ? `${renderedSelection(data.meta)} · Updating to ${selectionText(
-                  resolveRange(range.preset, now, { from: range.from || null, to: range.to || null }),
-                  scope
-              )}`
+            ? `${renderedSelection(data.meta)} · Updating to ${selectionText(requestedRange(range, now), scope)}`
             : renderedSelection(data.meta)
         : null;
 
@@ -85,7 +82,7 @@ export function DashboardPage() {
                     scope={scope}
                     onScopeChange={setScope}
                     hasPersonalScope={session?.mode === 'github'}
-                    repoFilter={data?.meta.telemetry.repoFilter ?? []}
+                    repoFilter={data ? data.meta.telemetry.repoFilter : null}
                     summary={summary}
                 />
                 {data ? (

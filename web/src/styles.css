@@ -339,6 +339,15 @@
         gap: 4px;
     }
 
+    /* The Repositories group is a real fieldset; the browser's fieldset chrome gives way to the
+       same shape every toolbar group wears. */
+    fieldset.toolbar-group {
+        border: 0;
+        margin: 0;
+        min-inline-size: 0;
+        padding: 0;
+    }
+
     .toolbar-label {
         color: var(--ink-muted);
         font-size: 11px;

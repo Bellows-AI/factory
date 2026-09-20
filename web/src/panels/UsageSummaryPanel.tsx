@@ -46,7 +46,7 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                             <span>Input</span>
                             <span className="muted">
                                 {t.tokens.cacheRead === null
-                                    ? 'Not measured'
+                                    ? 'Cache read not measured'
                                     : `${tokens(t.tokens.cacheRead)} read from cache`}
                             </span>
                         </div>
@@ -55,7 +55,7 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                             <span>Output</span>
                             <span className="muted">
                                 {t.tokens.cacheCreation === null
-                                    ? 'Not measured'
+                                    ? 'Cache write not measured'
                                     : `${tokens(t.tokens.cacheCreation)} written to cache`}
                             </span>
                         </div>

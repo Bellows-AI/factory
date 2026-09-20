@@ -82,7 +82,7 @@ describe('dashboard scope toggle', () => {
     it('renders beside the range selector when the session reports a signed-in member', () => {
         const html = renderPage(session('github'));
         expect(html).toContain('range-presets');
-        expect(html).toContain('Whose usage'); // the RadioGroup's aria-label
+        expect(html).toContain('scope-label'); // the RadioGroup is labelled by the visible Scope text
         expect(html).toContain('Me');
     });
 
@@ -92,11 +92,11 @@ describe('dashboard scope toggle', () => {
         // server refuses with SCOPE_REQUIRES_USER.
         const local = renderPage(session('none'));
         expect(local).toContain('range-presets');
-        expect(local).not.toContain('Whose usage');
+        expect(local).not.toContain('scope-label');
         expect(local).not.toContain('Me');
 
         // And with no session at all (signed out on a github-mode board): absent the same way.
         const anonymous = renderPage(null);
-        expect(anonymous).not.toContain('Whose usage');
+        expect(anonymous).not.toContain('scope-label');
     });
 });

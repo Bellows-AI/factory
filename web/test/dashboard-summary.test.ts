@@ -8,6 +8,7 @@ import {
     emptyStateCopy,
     rangeText,
     renderedSelection,
+    requestedRange,
     scopeWord,
     selectionMismatch,
     selectionText,
@@ -161,6 +162,27 @@ describe('analyticsState', () => {
     });
 });
 
+describe('requestedRange', () => {
+    const NOW = new Date('2026-09-20T12:00:00.000Z');
+
+    it('widens a typed calendar `to` the way the server does, so the pending copy is inclusive', () => {
+        // The user applied Sep 13 to Sep 19. rangeText reads EXCLUSIVE instants, so the raw
+        // typed day would present as "Sep 13–18" — the server widens to Sep 20T00:00Z, and
+        // the pending sentence must mirror that, or the destination disagrees with where the
+        // read actually lands.
+        const range = requestedRange({ preset: 'custom', from: '2026-09-13', to: '2026-09-19' }, NOW);
+        expect(rangeText(range)).toBe('Sep 13–19');
+    });
+
+    it('presents a one-sided typed `to` through its inclusive calendar end', () => {
+        expect(rangeText(requestedRange({ preset: 'custom', from: '', to: '2026-09-19' }, NOW))).toBe('Through Sep 19');
+    });
+
+    it('resolves a preset against now, like the wire request will be', () => {
+        expect(requestedRange({ preset: 'week', from: '', to: '' }, NOW).from).toBe('2026-09-13T12:00:00.000Z');
+    });
+});
+
 describe('emptyStateCopy', () => {
     it('sends the reader to broaden the range when the store holds data outside the window', () => {
         const meta = META({ range: { preset: 'custom', from: '2026-09-13T00:00:00.000Z', to: null } } as DateRange);
@@ -176,6 +198,20 @@ describe('emptyStateCopy', () => {
         const meta = META({ range: { preset: 'all', from: null, to: null } } as DateRange);
         const copy = emptyStateCopy({ coverage: { from: null, to: null } } as never, meta);
         expect(copy).toContain('All time');
+        expect(copy).toContain('Run an agent session');
+    });
+
+    it('compares coverage boundaries as instants, not strings of mixed precision', () => {
+        // '…T00:00:00.000Z' and '…T00:00:00Z' are the same instant; a string compare reads the
+        // first as earlier and serves "broaden the range" for coverage that is exactly at the
+        // window's edge.
+        const meta = META({
+            range: { preset: 'custom', from: '2026-09-13T00:00:00.000Z', to: '2026-09-20T00:00:00.000Z' },
+        } as DateRange);
+        const copy = emptyStateCopy(
+            { coverage: { from: '2026-09-13T00:00:00Z', to: '2026-09-19T00:00:00Z' } } as never,
+            meta
+        );
         expect(copy).toContain('Run an agent session');
     });
 });

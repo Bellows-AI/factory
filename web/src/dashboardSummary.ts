@@ -1,4 +1,5 @@
 import type { DateRange, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
+import { resolveRange } from '@factory-ai/core';
 import type { StatsPayload } from './api/useStats.js';
 import type { RangeSelection, ScopeSelection } from './components/RangeSelector.js';
 
@@ -71,6 +72,23 @@ export function countRepos(repoFilter: readonly string[]): string {
     return `${repoFilter.length} tracked repositories`;
 }
 
+/**
+ * The requested selection as the WIRE will carry it: presets resolve against now, and a typed
+ * calendar `to` is widened to next midnight exactly as the server widens it — `rangeText`
+ * reads exclusive instants, so the pending "Updating to …" copy must mirror that widening or
+ * it would present the destination one day early.
+ */
+export function requestedRange(range: RangeSelection, now: Date): DateRange {
+    const widen = (day: string): string | null => {
+        if (!day) return null;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return day;
+        const at = new Date(`${day}T00:00:00.000Z`);
+        at.setUTCDate(at.getUTCDate() + 1);
+        return at.toISOString();
+    };
+    return resolveRange(range.preset, now, { from: range.from || null, to: widen(range.to) });
+}
+
 /** The one-line rendered-data sentence: window · scope · coverage, all from payload meta. */
 export function renderedSelection(meta: StatsPayload['meta']): string {
     return `${rangeText(meta.range)} · ${scopeWord(meta.scope)} · ${countRepos(meta.telemetry.repoFilter)}`;
@@ -126,9 +144,11 @@ export function analyticsState(telemetry: TelemetryStats, tasks: TaskUsageStats 
 export function emptyStateCopy(telemetry: TelemetryStats, meta: StatsPayload['meta']): string {
     const selection = `${rangeText(meta.range)} · ${scopeWord(meta.scope)}`;
     const { from, to } = telemetry.coverage;
+    // Instant comparisons, not string ones: ISO stamps of mixed precision ('…00.000Z' vs
+    // '…00Z') sort wrongly as strings and would misread an exactly-equal boundary.
     const outside =
-        (meta.range.from !== null && from !== null && from < meta.range.from) ||
-        (meta.range.to !== null && to !== null && to > meta.range.to);
+        (meta.range.from !== null && from !== null && Date.parse(from) < Date.parse(meta.range.from)) ||
+        (meta.range.to !== null && to !== null && Date.parse(to) > Date.parse(meta.range.to));
     if (outside) return `No agent sessions in ${selection}. Broaden the range to reach the coverage the store holds.`;
     return `No agent sessions in ${selection}. Run an agent session to populate the store.`;
 }

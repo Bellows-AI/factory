@@ -11,8 +11,12 @@ import { Radio, RadioGroup } from '@headlessui/react';
 export function ScopeToggle({ scope, onChange }: { scope: ScopeSelection; onChange: (next: ScopeSelection) => void }) {
     return (
         <div className="toolbar-group">
-            <span className="toolbar-label">Scope</span>
-            <RadioGroup value={scope} onChange={onChange} aria-label="Whose usage" className="range-presets">
+            {/* The visible label names the group programmatically too — an accessible name of
+                "Scope" that contains what the group says, not a parallel "Whose usage". */}
+            <span className="toolbar-label" id="scope-label">
+                Scope
+            </span>
+            <RadioGroup value={scope} onChange={onChange} aria-labelledby="scope-label" className="range-presets">
                 {(
                     [
                         { value: 'org', label: 'Org' },

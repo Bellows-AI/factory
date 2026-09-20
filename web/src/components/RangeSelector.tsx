@@ -54,6 +54,7 @@ export function statsQuery(range: RangeSelection, scope: ScopeSelection): string
  */
 export function draftValid(draft: { from: string; to: string }, today: string): boolean {
     if (!draft.from && !draft.to) return false;
+    if (draft.from && draft.from > today) return false;
     if (draft.to && draft.to > today) return false;
     if (draft.from && draft.to && draft.from > draft.to) return false;
     return true;
