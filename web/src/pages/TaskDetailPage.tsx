@@ -43,6 +43,7 @@ export function TaskDetailPage() {
     useEffect(() => {
         generation.current += 1;
         setActionError(null);
+        setSending(false);
         setStoppingId(null);
         setRemovingId(null);
         setDoneId(null);
@@ -71,7 +72,9 @@ export function TaskDetailPage() {
             detail.refresh();
             return null;
         } finally {
-            setSending(false);
+            // Only the current question releases the composer: a retired follow-up's settle
+            // must not release task B's own in-flight send mid-request.
+            if (generation.current === atStart) setSending(false);
         }
     };
     const doneTask = async (taskId: string) => {
