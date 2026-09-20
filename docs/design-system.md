@@ -130,7 +130,10 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
 | Popover | `popover`, `popover-option` | The shared floating surface for the anchored Headless UI panels — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
-| Range | `range-selector`, `range-presets`, `range-option.active`, `range-custom` | The date-range picker |
+| Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166): label above control, read-only values sunken like the inputs they echo |
+| Range | `range-presets`, `range-option.active`, `range-picker`, `range-popover-root`, `range-popover`, `range-draft`, `range-draft-actions` | The date-range presets and the Custom trigger; the dates live in the anchored popover (`--line-strong` edge, z-index 30), whose draft form commits only through Apply or Clear |
+| Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar groups — mono, muted, a polite live region |
+| Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
 | Org | `org-selector`, `org-select` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
 | Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
@@ -145,6 +148,8 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | --- | --- | --- |
 | Table | `table-wrap`, `data`, `sortable`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks |
 | Key-values | `kv` | The dt/dd definition grid |
+| Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's five measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order |
+| Analytics empty state | `usage-empty` | The one "nothing measured in this selection" state that replaces the dash-card chorus, naming the selection and one next action |
 | Per-user | `by-user`, `by-user-user` | The attribution table and its avatar+name cell |
 | Pills | `pill`, `pill-ready`, `pill-cloning`, `pill-queued`, `pill-failed`, `pill-reason` | Repo/workspace state chips; the reason travels in the pill |
 
@@ -184,8 +189,8 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 ### One-offs
 
 `identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
-the dashboard's control row: range, scope, and the telemetry caption and Refresh that moved here
-from the old global topbar (issue 160). Everything else above is a family; these exist because
+the dashboard's control row: the analytics toolbar, then the freshness stamp and Refresh that
+moved here from the old global topbar (issue 160). Everything else above is a family; these exist because
 no family fits, and a new one-off needs a sentence here saying the same.
 
 ## Inventory
@@ -198,6 +203,7 @@ Components:
 
 | File | Primitives |
 | --- | --- |
+| `AnalyticsToolbar.tsx` | analytics toolbar, rendered-data summary, range |
 | `AppBar.tsx` | appbar, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
@@ -207,10 +213,10 @@ Components:
 | `LoginGate.tsx` | login |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
-| `RangeSelector.tsx` | range |
+| `RangeSelector.tsx` | analytics toolbar, range, range-draft |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
-| `ScopeToggle.tsx` | range-presets |
+| `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
@@ -220,7 +226,6 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | File | Primitives |
 | --- | --- |
 | `AccessTokensPanel.tsx` | panel, status |
-| `AiUsagePanel.tsx` | cards |
 | `ByUserPanel.tsx` | by-user, chart-wrap, task-avatar |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
@@ -232,6 +237,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TaskUsagePanel.tsx` | cards, card |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
+| `UsageSummaryPanel.tsx` | metric summary, badge |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
 | `WorkspaceReposPanel.tsx` | panel, table |
 | `env-raw.ts` | helper — no markup |

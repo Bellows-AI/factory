@@ -152,7 +152,7 @@ export function RangeSelector({
     const today = new Date().toISOString().slice(0, 10);
 
     return (
-        <div className="toolbar-group range-selector">
+        <div className="toolbar-group">
             <span className="toolbar-label" id="range-label">
                 Range
             </span>

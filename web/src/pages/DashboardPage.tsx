@@ -77,7 +77,7 @@ export function DashboardPage() {
         <>
             {/* One h1, carrying the page's name and — once something has rendered — the exact
                 repos the figures combine. Coverage stays visible, not tooltip-buried. */}
-            <h1 className="page-title">
+            <h1>
                 {data ? `${describeRepos(data.meta.repos)} — AI usage telemetry` : 'AI usage telemetry'}
             </h1>
             <div className="dashboard-controls">
