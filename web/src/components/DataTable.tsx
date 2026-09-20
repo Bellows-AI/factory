@@ -22,6 +22,11 @@ export interface DataTableColumn<T> {
     sortValue?: (row: T) => SortValue;
     /** `end` right-aligns the column, for figures. */
     align?: 'start' | 'end';
+    /**
+     * The cell's accessible name when the rendered text is compact — "4k" announces as
+     * "4,000 new tokens". Absent: the cell's text is the name, like any other cell.
+     */
+    name?: (row: T) => string | undefined;
 }
 
 export interface DataTableProps<T> {
@@ -169,7 +174,11 @@ export function DataTable<T>({ labelledBy, rows, columns, rowKey, initialSort, e
                     {sorted.map((row) => (
                         <tr key={rowKey(row)}>
                             {columns.map((column) => (
-                                <td key={column.key} className={column.align === 'end' ? 'align-end' : undefined}>
+                                <td
+                                    key={column.key}
+                                    className={column.align === 'end' ? 'align-end' : undefined}
+                                    aria-label={column.name?.(row)}
+                                >
                                     {column.cell(row)}
                                 </td>
                             ))}

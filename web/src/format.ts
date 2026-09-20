@@ -99,6 +99,20 @@ export function wallClock(
 }
 
 /**
+ * Names every repo rather than reporting a count. "3 repositories combined" hides which three,
+ * and the figures are only interpretable if you know what went into them.
+ */
+export function describeRepos(repos: { owner: string; name: string }[]): string {
+    if (!repos.length) return 'no repositories configured';
+    const owners = new Set(repos.map((r) => r.owner));
+    // One owner is the common case, so repeating it on every entry is noise.
+    if (owners.size === 1 && repos.length > 1) {
+        return `${[...owners][0]}/{${repos.map((r) => r.name).join(', ')}}`;
+    }
+    return repos.map((r) => `${r.owner}/${r.name}`).join(', ');
+}
+
+/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */

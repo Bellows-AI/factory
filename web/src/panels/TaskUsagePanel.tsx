@@ -1,54 +1,83 @@
 import type { TaskUsageDistribution, TaskUsageStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../api/useStats.js';
+import type { DataTableColumn } from '../components/DataTable.js';
+import { DataTable } from '../components/DataTable.js';
 import { duration, num, tokens } from '../format.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
 
 /**
- * One distribution's three figures, labeled with the kind it means.
- *
- * The terminology rule is enforced here in markup: a job turn is a RUN (one board task run), an
- * agent turn is one assistant response cycle — and no label ever says a bare "turns". The task
- * count N renders beside every distribution, because a p95 over five tasks must never masquerade
- * as a settled statistic.
+ * One row of the per-task table: a distribution and the unit its figures are read in. `median`
+ * is READ FROM the payload's `p50` field — the UI word is Median, the field name is the API's.
  */
-function Distribution({
-    label,
-    note,
-    d,
-    format,
-}: {
-    label: string;
-    note?: string;
-    d: TaskUsageDistribution;
-    format: (value: number) => string;
-}) {
-    return (
-        <div className="card">
-            <h3>{label}</h3>
-            {d.tasks === 0 ? (
-                <p className="card-figure muted">—</p>
-            ) : (
-                <p className="card-figure">
-                    {format(d.avg ?? 0)} <span className="muted">avg</span> · {format(d.p50 ?? 0)} p50 ·{' '}
-                    {format(d.p95 ?? 0)} p95
-                </p>
-            )}
-            <p className="muted">
-                {d.tasks} task{d.tasks === 1 ? '' : 's'} measured{note ? ` — ${note}` : ''}
-            </p>
-        </div>
-    );
+interface TaskUsageRow {
+    kind: string;
+    unit: 'tokens' | 'runs' | 'turns' | 'duration';
+    avg: number | null;
+    median: number | null;
+    p95: number | null;
+    tasks: number;
 }
 
-/** What a task costs: three distributions over the job threads the range and scope put in play. */
+const FORMATS: Record<TaskUsageRow['unit'], (value: number | null) => string> = {
+    tokens: (value) => tokens(value),
+    runs: (value) => num(value, 1),
+    turns: (value) => num(value, 1),
+    duration: (value) => (value === null ? '—' : duration(value / 3_600_000)),
+};
+
+/** The semantic order: what a task costs in tokens, then in board runs, agent turns, time. */
+const row = (kind: string, unit: TaskUsageRow['unit'], d: TaskUsageDistribution): TaskUsageRow => ({
+    kind,
+    unit,
+    avg: d.avg,
+    median: d.p50,
+    p95: d.p95,
+    tasks: d.tasks,
+});
+
+const columns: DataTableColumn<TaskUsageRow>[] = [
+    { key: 'kind', label: 'Measurement', cell: (r) => r.kind, sortValue: (r) => r.kind },
+    {
+        key: 'avg',
+        label: 'Average',
+        align: 'end',
+        cell: (r) => FORMATS[r.unit](r.avg),
+        sortValue: (r) => r.avg,
+    },
+    {
+        key: 'median',
+        label: 'Median',
+        align: 'end',
+        cell: (r) => FORMATS[r.unit](r.median),
+        sortValue: (r) => r.median,
+    },
+    {
+        key: 'p95',
+        label: 'P95',
+        align: 'end',
+        cell: (r) => FORMATS[r.unit](r.p95),
+        sortValue: (r) => r.p95,
+    },
+    { key: 'tasks', label: 'Measured tasks', align: 'end', cell: (r) => r.tasks, sortValue: (r) => r.tasks },
+];
+
+/** What a task costs: four distributions over the job threads the range and scope put in play. */
 export function TaskUsagePanel({ tasks, meta }: { tasks: TaskUsageStats | null; meta: TelemetryMeta }) {
     if (tasks === null) return null;
-    // The task set is what job turns counts — every in-scope task, measured or not. It empty
-    // means the range holds no attributed tasks at all, which is the explicit empty state.
-    const empty = tasks.jobTurnsPerTask.tasks === 0;
+    const rows = [
+        row('Tokens per task', 'tokens', tasks.tokensPerTask),
+        row('Runs per task', 'runs', tasks.jobTurnsPerTask),
+        row('Agent turns per task', 'turns', tasks.agentTurnsPerTask),
+        row('Wall clock per task', 'duration', tasks.wallClockPerTask),
+    ];
+    // The task set is what runs-per-task counts — every in-scope task, measured or not. It empty
+    // means the range holds no attributed tasks at all, which is the explicit empty state: one
+    // table-region message, not four rows of dashes.
+    const empty = rows.every((r) => r.tasks === 0);
     return (
         <TelemetryFrame
             title="Per-task usage"
+            titleId="per-task-usage-heading"
             blurb={
                 <>
                     Average, median and 95th percentile per task — a task is one board thread, first run and follow-ups
@@ -59,31 +88,19 @@ export function TaskUsagePanel({ tasks, meta }: { tasks: TaskUsageStats | null; 
             }
             meta={meta}
         >
-            {empty ? (
-                <p className="muted">No attributed tasks in this range yet.</p>
-            ) : (
-                <div className="cards">
-                    <Distribution label="Tokens per task" d={tasks.tokensPerTask} format={(v) => tokens(v)} />
-                    <Distribution
-                        label="Runs per task"
-                        d={tasks.jobTurnsPerTask}
-                        format={(v) => num(v, 1)}
-                        note="a run is one delivered prompt, follow-ups included"
-                    />
-                    <Distribution
-                        label="Agent turns per task"
-                        d={tasks.agentTurnsPerTask}
-                        format={(v) => num(v, 1)}
-                        note="a task with any unmeasured run is left out, never counted as zero"
-                    />
-                    <Distribution
-                        label="Wall clock per task"
-                        d={tasks.wallClockPerTask}
-                        format={(v) => duration(v / 3_600_000)}
-                        note="execution time the board banked — a task with any never-executed run is left out"
-                    />
-                </div>
-            )}
+            <DataTable
+                labelledBy="per-task-usage-heading"
+                columns={columns}
+                rows={empty ? [] : rows}
+                rowKey={(r) => r.kind}
+                empty={<p className="muted">No attributed tasks in this range yet.</p>}
+            />
+            {!empty ? (
+                <p className="muted">
+                    Agent turns and wall clock are computed over fully measured tasks: a task with any unmeasured run is
+                    left out, never counted as zero. A run is one delivered prompt, follow-ups included.
+                </p>
+            ) : null}
         </TelemetryFrame>
     );
 }

@@ -248,4 +248,23 @@ describe('DataTable markup', () => {
         expect(html).not.toContain('aria-sort');
         expect(html).not.toContain('sortable');
     });
+
+    it('names a compact cell for the screen reader when the column gives a name', () => {
+        // "4k" on the page announces as the exact figure; a column without a name keeps its
+        // text as the name.
+        const columns: DataTableColumn<Row>[] = [
+            {
+                key: 'size',
+                label: 'Size',
+                cell: (r) => r.size,
+                sortValue: (r) => r.size,
+                align: 'end',
+                name: (r) => (r.size === null ? undefined : `${r.size} bytes measured`),
+            },
+        ];
+        const html = render({ columns, rows: [row('r1', 'alpha', 4096)] });
+        expect(html).toContain('aria-label="4096 bytes measured"');
+        const unnamed: DataTableColumn<Row>[] = [{ key: 'name', label: 'Name', cell: (r) => r.name }];
+        expect(render({ columns: unnamed, rows: [row('r1', 'alpha', 1)] })).not.toContain('aria-label=');
+    });
 });

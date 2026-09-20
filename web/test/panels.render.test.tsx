@@ -43,6 +43,9 @@ const meta = (over: Partial<TelemetryMeta> = {}): TelemetryMeta => ({
     ...over,
 });
 
+/** A stats payload with hand-built per-user rows, so the view model's rules are deterministic. */
+const withByUser = (byUser: TelemetryStats['byUser']): TelemetryStats => ({ ...empty, byUser });
+
 const render = (t: TelemetryStats, m: TelemetryMeta) =>
     [
         renderToStaticMarkup(<AiUsagePanel telemetry={t} meta={m} />),
@@ -66,15 +69,82 @@ describe('telemetry panels render', () => {
         expect(html).toContain('bob');
         // The avatar renders only when the account carries one; bob's has none.
         expect(html).toContain('https://example.com/alice.png');
-        // The per-user split: the four token figures as four columns, never summed into one.
-        expect(html).toContain('<th>Input</th>');
-        expect(html).toContain('<th>Output</th>');
-        expect(html).toContain('<th>Cache read</th>');
-        expect(html).toContain('<th>Cache writes</th>');
+        // The per-user split: sortable headers, the four token figures as four columns, never
+        // summed into one — and New tokens is its own measured column, not cache-inclusive.
+        for (const label of ['Sessions', 'New tokens', 'Input', 'Output', 'Cache read', 'Cache write']) {
+            expect(html).toContain(`>${label}</button>`);
+        }
         // Off-board usage is not surfaced at all (#109): the payload keeps the count, the page
         // does not speak it.
         expect(html).not.toContain('no matching board task');
         expect(html).not.toContain('NaN');
+    });
+
+    it('shows a proportional New tokens bar whose accessible name is the exact total', () => {
+        const stats = withByUser([
+            {
+                user: { id: 'u1', login: 'carol', name: 'Carol', avatarUrl: null },
+                sessions: 2,
+                tokens: { input: 3_000, output: 1_000, cacheRead: null, cacheCreation: null },
+            },
+            {
+                user: { id: 'u2', login: 'dave', name: null, avatarUrl: null },
+                sessions: 1,
+                tokens: { input: 1_000, output: null, cacheRead: null, cacheCreation: null },
+            },
+        ]);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={meta()} />);
+        // A partially measured group still has a New tokens total (core's null-aware sum),
+        // never a null dragged to zero and never a null erasing a measured input.
+        expect(html).toContain('4k');
+        expect(html).toContain('1k');
+        // The bar's width is decorative (aria-hidden); the exact figure is the cell's name.
+        expect(html).toContain('<span class="usage-track" aria-hidden="true">');
+        expect(html).toContain('width:100%');
+        expect(html).toContain('width:25%');
+        expect(html).toContain('aria-label="4,000 new tokens"');
+        expect(html).toContain('aria-label="1,000 new tokens"');
+    });
+
+    it('sorts by raw New tokens descending and sinks the unmeasured last', () => {
+        const stats = withByUser([
+            {
+                user: { id: 'u1', login: 'small', name: null, avatarUrl: null },
+                sessions: 1,
+                tokens: { input: 1_000, output: null, cacheRead: null, cacheCreation: null },
+            },
+            {
+                user: { id: 'u2', login: 'big', name: null, avatarUrl: null },
+                sessions: 1,
+                tokens: { input: 400_000, output: null, cacheRead: null, cacheCreation: null },
+            },
+            {
+                user: { id: 'u3', login: 'unmeasured', name: null, avatarUrl: null },
+                sessions: 1,
+                tokens: { input: null, output: null, cacheRead: null, cacheCreation: null },
+            },
+        ]);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={meta()} />);
+        expect(html.indexOf('big')).toBeLessThan(html.indexOf('small'));
+        expect(html.indexOf('small')).toBeLessThan(html.indexOf('unmeasured'));
+        expect(html).toMatch(/aria-sort="descending"/);
+    });
+
+    it('keeps cache tokens out of New tokens', () => {
+        const stats = withByUser([
+            {
+                user: { id: 'u1', login: 'carol', name: null, avatarUrl: null },
+                sessions: 1,
+                tokens: { input: 500, output: 500, cacheRead: 4_500_000_000, cacheCreation: 1_000 },
+            },
+        ]);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={meta()} />);
+        // New tokens is 1k, not 4.5B: the bar is proportional to the measured NEW figure.
+        expect(html).toContain('1k');
+        expect(html).toContain('width:100%');
+        expect(html).toContain('aria-label="1,000 new tokens"');
+        // The cache figures render in their own columns.
+        expect(html).toContain('4.5B');
     });
 
     it('renders an all-null token group as an em dash, never a fabricated zero', () => {
@@ -91,7 +161,7 @@ describe('telemetry panels render', () => {
             { repos: [REPO], now: NOW }
         );
         const html = renderToStaticMarkup(<ByUserPanel telemetry={unmeasured} meta={meta()} />);
-        expect(html).toContain('<td>—</td>');
+        expect(html).toMatch(/<td[^>]*>—<\/td>/);
         expect(html).not.toContain('<td>0</td>');
     });
 
@@ -154,32 +224,39 @@ describe('per-task usage panel', () => {
         wallClockPerTask: dist(0, 0, 0, 0),
     };
 
-    it('renders the four distributions as distinct, labeled figures with their counts', () => {
+    it('renders the four distributions as one table with percentile headers', () => {
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
-        // Four kinds, each named — the terminology rule: never a bare "turns".
+        // Four rows, each named — the terminology rule: never a bare "turns".
         expect(html).toContain('Tokens per task');
         expect(html).toContain('Runs per task');
         expect(html).toContain('Agent turns per task');
         expect(html).toContain('Wall clock per task');
         expect(html).not.toMatch(/>\s*turns\s*</);
-        // Every distribution renders beside its N.
-        expect(html).toContain('7 tasks measured');
+        // Percentile headers: Median is the UI word, even though the field is p50.
+        for (const header of ['Average', 'Median', 'P95', 'Measured tasks']) {
+            expect(html).toContain(`>${header}</button>`);
+        }
+        expect(html).not.toContain('p50');
+        // Every distribution renders beside its N — seven in each row here.
+        expect(html.match(/>7</g)?.length).toBe(4);
         // Nulls and averages format, never NaN.
         expect(html).not.toContain('NaN');
         expect(html).toContain('51.2k');
-        expect(html).toContain('p50');
-        expect(html).toContain('p95');
+        // Sorting is available but not pre-applied: no column starts active.
+        expect(html).not.toContain('aria-sort');
     });
 
     it('renders an explicit empty state, never zero figures, when no task is in range', () => {
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={emptyStats} meta={meta({ status: 'empty' })} />);
+        // ONE table-region empty state, not four zero/dash rows.
         expect(html).toContain('No attributed tasks in this range yet.');
+        expect(html).not.toContain('<table');
         expect(html).not.toContain('NaN');
         // And it renders nothing at all when there is no snapshot yet.
         expect(renderToStaticMarkup(<TaskUsagePanel tasks={null} meta={meta()} />)).toBe('');
     });
 
-    it('names the unmeasured-run rule where the agent-turn figure renders', () => {
+    it('carries the unmeasured-run caveat in a disclosure below the table', () => {
         // Remote Control runs and failed close-time reads store null; a task holding one is
         // excluded. The panel says so instead of rendering a quietly small number.
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
@@ -191,6 +268,17 @@ describe('per-task usage panel', () => {
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={meta()} />);
         expect(html).toContain('1.2h');
         expect(html).not.toContain('4212000');
+    });
+
+    it('keeps each measured count even when the distributions have different denominators', () => {
+        const mixed: TaskUsageStats = {
+            ...populated,
+            agentTurnsPerTask: dist(18.3, 12, 44, 5),
+        };
+        const html = renderToStaticMarkup(<TaskUsagePanel tasks={mixed} meta={meta()} />);
+        // Seven rows carry tokens, runs and wall clock; only five measured agent turns.
+        expect(html.match(/>7</g)?.length).toBe(3);
+        expect(html).toContain('>5<');
     });
 });
 
