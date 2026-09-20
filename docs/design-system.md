@@ -289,7 +289,7 @@ Pages:
 | `SettingsExecutorsPage.tsx` | page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
-| `SettingsOverviewPage.tsx` | page-header, kv, readiness |
+| `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |
 | `SettingsRepositoriesPage.tsx` | page-header, scope-context, panel |
 | `SettingsWorkspacePage.tsx` | page-header, scope-context, panel |
 | `TaskComposerPage.tsx` | page-header, status |

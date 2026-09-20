@@ -2542,6 +2542,6 @@
         font-weight: 600;
         letter-spacing: 0.08em;
         margin: 0 0 4px;
-        text-transform: uppercase;
+        /* No text-transform: the repository label carries case-sensitive owner/name. */
     }
 }

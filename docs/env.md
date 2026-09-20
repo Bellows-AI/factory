@@ -188,7 +188,7 @@ what blanks a typed secret and shows the stored truth — so the panels must NOT
 save: a `key` bump there fires before the editor's own continuation and silently eats the "Saved."
 confirmation (that remount was the bug this paragraph replaces). The after-save GET stays for the
 repository select's options; the editors that did not save keep their drafts, so a concurrent
-admin's write to another scope appears only on reload or repo switch — and that scope's next
+write to another scope appears only on reload or repo switch — and that scope's next
 whole-list PUT clobbers it, the standing trade of draft survival. **No polling**, because the list
 only changes when somebody edits it, and a poll would race the editors' draft state. Whole-list
 PUTs, the repos/executors idiom. The
@@ -199,7 +199,8 @@ deletes the variable), invalid text shows the line errors and stays in the edito
 only write path. Secrets never round-trip through text: a secret row renders its input blank with
 placeholder "set — leave blank to keep". Every role edits every scope: `PUT /api/env/org` and
 `PUT /api/env/repo` accept any member of the installation — membership is the one trust level
-(#99), and there is no admin tier — so the browser gates nothing the server does not. Issue #180
+(#99), and there is no admin tier — and `PUT /api/env/workspace` writes the caller's own rows, so
+the browser gates nothing the server does not. Issue #180
 removed the earlier client-only `disabled` controls (a disabled browser control is not
 authorization, and these ones denied writes the server accepts) and had each editor state its
 scope truth first: what the scope applies to, who may edit it, and the
