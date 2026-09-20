@@ -5,7 +5,7 @@ interface YAxisProps {
     max: number;
     width: number;
     side?: 'left' | 'right';
-    label?: string;
+    label?: string | undefined;
     ticks?: number;
 }
 
@@ -46,7 +46,7 @@ export function YAxis({ scale, max, width, side = 'left', label, ticks = 4 }: YA
 }
 
 interface XLabelsProps {
-    labels: string[];
+    labels: readonly string[];
     bandCentre: (i: number) => number;
     height: number;
     every?: number;
@@ -66,9 +66,32 @@ export function XLabels({ labels, bandCentre, height, every = 1 }: XLabelsProps)
     );
 }
 
-export function ChartRoot({ width, height, children }: { width: number; height: number; children: React.ReactNode }) {
+export function ChartRoot({
+    width,
+    height,
+    children,
+    role = 'img',
+    ariaLabel,
+}: {
+    width: number;
+    height: number;
+    children: React.ReactNode;
+    /**
+     * `img` (default) is the read-only chart; an interactive chart that carries focusable
+     * bucket targets must be `group` — `img` makes its descendants presentational and
+     * drops the roving tab stop out of the accessibility tree.
+     */
+    role?: 'img' | 'group';
+    ariaLabel?: string;
+}) {
     return (
-        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="img" className="chart">
+        <svg
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="xMidYMid meet"
+            role={role}
+            aria-label={ariaLabel}
+            className="chart"
+        >
             {children}
         </svg>
     );

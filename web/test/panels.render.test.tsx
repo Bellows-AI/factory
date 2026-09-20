@@ -9,6 +9,7 @@ import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
 import { tokens } from '../src/format.js';
+import { PAD } from '../src/charts/scale.js';
 import type { TaskUsageStats } from '@factory-ai/core';
 
 /**
@@ -195,11 +196,13 @@ describe('per-task usage panel', () => {
 });
 
 describe('token usage series granularity', () => {
-    it('renders daily buckets with a daily blurb', () => {
+    it('renders a caption naming the buckets, chart first, no leading paragraph', () => {
         expect(telemetry.series.granularity).toBe('week');
         const weeklyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={meta()} />);
-        expect(weeklyHtml).toContain('per ISO week');
-        expect(weeklyHtml).toContain('the range is too long for daily bars');
+        expect(weeklyHtml).toContain('Input and output tokens by ISO week; sessions use the right axis.');
+        // The chart precedes its caption and explanation; nothing narrates before the marks.
+        expect(weeklyHtml.indexOf('<svg')).toBeGreaterThan(-1);
+        expect(weeklyHtml.indexOf('<svg')).toBeLessThan(weeklyHtml.indexOf('Input and output tokens by ISO week;'));
 
         // The month preset spans 30 days: day buckets, named as days.
         const daily = telemetryStats(input, {
@@ -209,9 +212,83 @@ describe('token usage series granularity', () => {
         });
         expect(daily.series.granularity).toBe('day');
         const dailyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={daily} meta={meta()} />);
-        expect(dailyHtml).toContain('per day');
-        expect(dailyHtml).toContain('today is partial');
+        expect(dailyHtml).toContain('Input and output tokens by day; sessions use the right axis.');
+        expect(dailyHtml).toContain('Partial period');
         expect(dailyHtml).not.toContain('NaN');
+    });
+
+    it('toggles series from accessible legend buttons', () => {
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={meta()} />);
+        expect(html.match(/aria-pressed="true"/g)).toHaveLength(3);
+        for (const name of ['Input', 'Output', 'Sessions']) {
+            expect(html).toContain(`>${name}</button>`);
+        }
+    });
+
+    it('explains the calculation after the chart', () => {
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={meta()} />);
+        expect(html).toContain('<details');
+        expect(html).toContain('<summary>How this is calculated</summary>');
+        expect(html).toContain('Cache reads and writes are excluded from the bars');
+        expect(html).toContain('92');
+        expect(html).toContain('Quiet buckets are kept');
+        expect(html.indexOf('<svg')).toBeLessThan(html.indexOf('How this is calculated'));
+    });
+
+    it('exposes full bucket dates and exact un-abbreviated values in the bucket labels', () => {
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={meta()} />);
+        // Weekly buckets carry the full "Week of YYYY-MM-DD", not the axis's abbreviated MM-DD.
+        expect(html).toMatch(/aria-label="[^"]*Week of \d{4}-\d{2}-\d{2}/);
+        // Exact numbers with thousands separators — the abbreviated axis form is not the tooltip form.
+        expect(html).toMatch(/aria-label="[^"]*\d,\d{3}/);
+        expect(html).toMatch(/aria-label="[^"]*partial period/);
+    });
+
+    it('renders a one-bucket range as a compact chart with exact detail', () => {
+        const pointTokens = { input: 12345, output: 6789, cacheRead: null, cacheCreation: null };
+        const one: TelemetryStats = {
+            totals: {
+                sessions: 3,
+                tokens: pointTokens,
+                activeHours: null,
+                linesAdded: null,
+                linesRemoved: null,
+                acceptRatio: null,
+            },
+            otherRepoSessions: 0,
+            sessionsWithoutHook: 0,
+            byUser: [],
+            unattributedSessions: 0,
+            series: {
+                granularity: 'day',
+                points: [
+                    {
+                        start: '2026-08-21',
+                        sessions: 3,
+                        tokens: pointTokens,
+                        linesAdded: 0,
+                        linesRemoved: 0,
+                        partial: true,
+                    },
+                ],
+            },
+            coverage: { from: null, to: null },
+        };
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={one} meta={meta()} />);
+        const [, width, height] = html.match(/viewBox="0 0 (\d+) (\d+)"/)!.map(Number);
+        expect(width).toBeLessThan(900);
+        expect(height).toBeLessThan(280);
+        // A real bar, never a filled panel: no bar mark exceeds a quarter of the compact plot
+        // (the old behavior stretched one bar across the whole band). The hatch is a band-wide
+        // rect by design, so only `bar <series-class>` marks count here.
+        const widths = [...html.matchAll(/<rect\b[^>]*>/g)]
+            .map((m) => m[0])
+            .filter((t) => /^bar[\s"]/.test(t.match(/\bclass="([^"]*)"/)?.[1] ?? ''))
+            .map((t) => Number(t.match(/\bwidth="([\d.]+)"/)?.[1]));
+        expect(widths.length).toBeGreaterThan(0);
+        expect(Math.max(...widths)).toBeLessThanOrEqual((width - PAD.left - PAD.right) / 4);
+        expect(html).toMatch(/aria-label="[^"]*Input 12,345/);
+        expect(html).toContain('Partial period');
     });
 
     it('keeps the x-axis legible at 92 daily points', () => {

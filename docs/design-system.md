@@ -155,7 +155,12 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Frame | `chart-wrap`, `chart` | The overflow scroll and the SVG itself |
 | Grid | `grid`, `grid-alt`, `tick`, `axis-label` | Gridlines (alt = dashed), ticks and labels — all `--ink-muted`/`--chart-grid` |
 | Marks | `bar` (+ `bar-primary`, `bar-ok`, `bar-warn`, `bar-bad`), `line`, `dot` (+ `dot-warn`, `dot-bad`) | Series fills; `dot` default is `--lamp-done` |
-| Legend | `legend`, `swatch`, `swatch-primary`, `swatch-ok` | The color key; swatches stay in step with their bars |
+| Partial | `bar-partial`, `bar-partial-hatch` | The hatch over a partial bucket (the current day/week), painted behind the bars — a non-color mark, grayscale-safe |
+| Bucket target | `bucket-hit` | The transparent rect over each bucket; one roving tab stop, accent edge on `:focus-visible` |
+| Tooltip | `chart-tooltip`, `chart-tooltip-box` | The active bucket's exact readout, rendered inside the SVG so it scales with it |
+| Legend | `legend`, `legend-button`, `swatch`, `swatch-primary`, `swatch-ok`, `swatch-warn` | Series toggle buttons (`aria-pressed`); swatches stay in step with their marks and dim when the series is off |
+| Caption | `chart-caption`, `chart-disclosure` | The one-line caption (carrying the `* Partial period` key when a partial bucket exists) and the calculation `<details>` after the chart |
+| Empty | `chart-empty` | The all-hidden readout — **All series hidden** instead of a broken plot |
 
 ### Task conversation
 
@@ -231,7 +236,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
 | `TaskUsagePanel.tsx` | cards, card |
 | `TelemetryFrame.tsx` | alert, badge |
-| `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
+| `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
 | `WorkspaceReposPanel.tsx` | panel, table |
 | `env-raw.ts` | helper — no markup |
@@ -257,7 +262,7 @@ Charts (`scale.ts` is the band/linear scale helper — no markup):
 | File | Primitives |
 | --- | --- |
 | `Axes.tsx` | grid, tick, axis-label |
-| `BarChart.tsx` | bar, line |
+| `BarChart.tsx` | bar, line, bucket-hit, bar-partial, bar-partial-hatch, chart-tooltip, chart-tooltip-box, chart-empty |
 | `HBarChart.tsx` | bar |
 | `Scatter.tsx` | dot, axis-label |
 | `scale.ts` | helper — no markup |

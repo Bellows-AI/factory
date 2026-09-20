@@ -111,3 +111,12 @@ export function tokens(value: number | null | undefined): string {
     if (value < 1_000_000_000) return `${num(value / 1_000_000, 2)}M`;
     return `${num(value / 1_000_000_000, 2)}B`;
 }
+
+/**
+ * The un-abbreviated figure a tooltip owes the reader — `tokens()` stays the abbreviated
+ * axis and summary form. Same null contract: a dash, never a fabricated zero.
+ */
+export function exactNum(value: number | null | undefined): string {
+    if (value === null || value === undefined) return '—';
+    return value.toLocaleString('en-US');
+}
