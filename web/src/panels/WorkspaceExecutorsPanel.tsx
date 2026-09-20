@@ -3,25 +3,18 @@ import { commitDate } from '../format.js';
 
 /**
  * One row per configured executor — each with the Edit action that reopens the dialog on it — and
- * the empty state that makes "none" a sentence rather than a blank panel.
+ * the empty state that makes "none" a sentence rather than a blank panel. The section's heading
+ * and its Add action are the page header's; this panel is the list.
  */
 export function WorkspaceExecutorsPanel({
     executors,
-    onAdd,
     onEdit,
 }: {
     executors: readonly WorkspaceExecutor[];
-    onAdd: () => void;
     onEdit: (name: string) => void;
 }) {
     return (
         <section className="panel">
-            <div className="panel-head">
-                <h2>Executors</h2>
-                <button type="button" className="primary" onClick={onAdd}>
-                    Add executor
-                </button>
-            </div>
             {executors.length === 0 ? (
                 <p className="muted">No executors configured.</p>
             ) : (

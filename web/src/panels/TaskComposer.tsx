@@ -312,9 +312,6 @@ export function TaskComposer({
     if (repos === null) {
         return (
             <section className="panel">
-                <div className="panel-head">
-                    <h2>Tasks</h2>
-                </div>
                 {workspaceError !== null ? (
                     <p className="muted">
                         {workspaceError}{' '}
@@ -331,9 +328,6 @@ export function TaskComposer({
 
     return (
         <section className="panel task-compose">
-            <div className="panel-head">
-                <h2>Tasks</h2>
-            </div>
             {actionError !== null ? <p className="status">{actionError}</p> : null}
             <div className="composer">
                 <textarea

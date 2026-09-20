@@ -283,6 +283,61 @@
         gap: 12px;
     }
 
+    /* The page's one heading and its slots (issue 159): title and description lead, meta and
+       actions trail. `flex-wrap` lets meta and actions drop below the title at narrow widths
+       without changing DOM order; `baseline` keeps them on the title's line while it fits. */
+    .page-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px 16px;
+    }
+
+    .page-header-eyebrow {
+        color: var(--ink-muted);
+        flex-basis: 100%;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        margin: 0;
+        text-transform: uppercase;
+    }
+
+    /* The title + description column. `min-width: 0` is load-bearing — this slot carries task
+       titles (a command's first line) and must wrap, not push the meta and actions off the page. */
+    .page-header-leading {
+        flex: 1 1 24rem;
+        min-width: 0;
+    }
+
+    .page-header-leading h1 {
+        margin: 0;
+    }
+
+    .page-header-description {
+        color: var(--ink-muted);
+        margin: 4px 0 0;
+        max-width: 68ch;
+    }
+
+    /* The state beside the title: pills, the wall clock, the live activity line. */
+    .page-header-meta {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    /* The page's actions, siblings of the heading — never inside it. `flex: none` keeps a long
+       title from squeezing the buttons; the title wraps instead. */
+    .page-header-actions {
+        align-items: center;
+        display: flex;
+        flex: none;
+        gap: 8px;
+    }
+
     button {
         background: var(--surface-sunken);
         color: var(--ink);
@@ -318,7 +373,7 @@
         flex-wrap: wrap;
     }
 
-    /* The range and the org/my toggle on one line; main's flex gap handles the spacing. */
+    /* The range and the org/my toggle on one line; the page's flex gap handles the spacing. */
     .dashboard-controls {
         display: flex;
         align-items: center;
@@ -1370,13 +1425,16 @@
         white-space: nowrap;
     }
 
-    /* The task's live summary — "what the agent is doing" — one line at the top of the task view while
-       the newest run is going. The same mono, muted, clipped treatment as the sidebar's activity row;
-       spacing and width come from the panel's paragraph rule. */
+    /* The task's live summary — "what the agent is doing" — one line in the page header's meta
+       while the newest run is going. The same mono, muted treatment as the sidebar's activity
+       row; `min-width: 0` lets this nowrap flex child actually clip instead of stretching the
+       row, since a flex item's default min-width would size it to the full line. */
     .task-summary {
         color: var(--ink-muted);
         font-family: var(--font-mono);
         font-size: 12px;
+        margin: 0;
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;

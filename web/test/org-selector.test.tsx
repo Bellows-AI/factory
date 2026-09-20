@@ -118,6 +118,16 @@ describe('AppBar', () => {
         expect(markup).not.toContain('org-select');
     });
 
+    it('carries no telemetry chrome: no heading, no timestamp, no Refresh, no repo names', () => {
+        // The exile (issue 159): telemetry metadata lives in the dashboard's page header — the
+        // app bar is identity and navigation only, on every page.
+        const markup = html();
+        expect(markup).not.toContain('<h1');
+        expect(markup).not.toContain('Refresh');
+        expect(markup).not.toContain('data as of');
+        expect(markup).not.toContain('bellows.ai');
+    });
+
     it('renders the user menu once the session is known, and nothing before it', () => {
         expect(html()).not.toContain('user-menu-button');
         const withSession: Session = {
