@@ -45,14 +45,14 @@ export function SettingsExecutorsPage() {
 
     if (loading && !data) {
         return (
-            <main>
+            <>
                 <p className="status">Loading your workspace…</p>
-            </main>
+            </>
         );
     }
 
     return (
-        <main>
+        <>
             {error ? <p className="status">{error}</p> : null}
 
             <WorkspaceExecutorsPanel
@@ -70,6 +70,6 @@ export function SettingsExecutorsPage() {
                 onSave={saveExecutors}
                 saving={saving}
             />
-        </main>
+        </>
     );
 }

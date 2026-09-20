@@ -32,6 +32,13 @@ const shared = {
 };
 
 /**
+ * The database host, overridable because it is environmental: a dev machine reaches compose's
+ * published port on 127.0.0.1, a board container reaches the declared service by its DNS name
+ * (`E2E_DB_HOST=timescale`) — localhost carries nothing there.
+ */
+const DB_HOST = process.env.E2E_DB_HOST ?? '127.0.0.1';
+
+/**
  * The built SPA is served by the API rather than by Vite, so the suite exercises the same
  * single-origin arrangement as production and needs no proxy rule.
  *
@@ -89,7 +96,7 @@ export default defineConfig({
             env: {
                 ...shared,
                 PORT: String(PORT),
-                DATABASE_URL: 'postgres://factory:factory@127.0.0.1:5432/factory_e2e',
+                DATABASE_URL: `postgres://factory:factory@${DB_HOST}:5432/factory_e2e`,
             },
             timeout: 180_000,
             // Never reuse: a server left over from a previous edit would verify stale code, which
@@ -124,7 +131,7 @@ export default defineConfig({
             env: {
                 ...shared,
                 PORT: String(AUTH_PORT),
-                DATABASE_URL: 'postgres://factory:factory@127.0.0.1:5432/factory_auth_e2e',
+                DATABASE_URL: `postgres://factory:factory@${DB_HOST}:5432/factory_auth_e2e`,
                 AUTH_MODE: 'github',
                 GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
                 GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',

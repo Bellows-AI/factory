@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import type { Job } from '../api/useJobs.js';
+import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor, preview } from '../nav-model.js';
 import { taskDotClass, taskSections } from '../task-tree.js';
 import type { TaskTreeEntry } from '../task-tree.js';
 
@@ -28,27 +29,6 @@ import type { TaskTreeEntry } from '../task-tree.js';
  * (`/tasks`) and is not a task, so the activity ordering can never slide a fresh task above it.
  */
 
-interface Item {
-    readonly to: string;
-    readonly label: string;
-    /** True for `/`, which would otherwise match every path below it. */
-    readonly end?: boolean;
-}
-
-const ITEMS: readonly Item[] = [
-    { to: '/', label: 'Dashboard', end: true },
-    { to: '/settings', label: 'Settings' },
-    { to: '/tasks', label: 'Tasks' },
-];
-
-/** The Settings tree's sections, in the issue's order. Static — no data behind them. */
-const SETTINGS_SECTIONS: readonly Item[] = [
-    { to: '/settings/organization', label: 'Organization' },
-    { to: '/settings/workspace', label: 'Workspace' },
-    { to: '/settings/repos', label: 'Repositories' },
-    { to: '/settings/executors', label: 'Executors' },
-];
-
 /*
  * No "n cloning" badge, deliberately.
  *
@@ -65,7 +45,7 @@ const SETTINGS_SECTIONS: readonly Item[] = [
  */
 
 /** One task row: the dot that says the conversation's present tense, the title, the live summary. */
-function TaskRow({ entry }: { entry: TaskTreeEntry }) {
+function TaskRow({ entry, onNavigate }: { entry: TaskTreeEntry; onNavigate?: (() => void) | undefined }) {
     const dot = taskDotClass(entry.status);
     return (
         <li>
@@ -73,6 +53,7 @@ function TaskRow({ entry }: { entry: TaskTreeEntry }) {
                 to={`/tasks/${entry.id}`}
                 title={entry.title}
                 className={({ isActive }) => (isActive ? 'sidenav-task is-active' : 'sidenav-task')}
+                onClick={onNavigate}
             >
                 {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
                 <span className="sidenav-task-title">{entry.title}</span>
@@ -83,19 +64,33 @@ function TaskRow({ entry }: { entry: TaskTreeEntry }) {
     );
 }
 
-/** A section's rows, or the sentence that says the section is empty. */
-function SectionRows({ entries, empty }: { entries: readonly TaskTreeEntry[]; empty: string }) {
+/** A section's rows — capped at the preview limit — or the sentence that says it is empty. */
+function SectionRows({
+    entries,
+    empty,
+    onNavigate,
+}: {
+    entries: readonly TaskTreeEntry[];
+    empty: string;
+    onNavigate?: (() => void) | undefined;
+}) {
     if (entries.length === 0) return <p className="sidenav-empty">{empty}</p>;
     return (
         <ul className="sidenav-subitems">
-            {entries.map((entry) => (
-                <TaskRow key={entry.id} entry={entry} />
+            {preview(entries).map((entry) => (
+                <TaskRow key={entry.id} entry={entry} onNavigate={onNavigate} />
             ))}
         </ul>
     );
 }
 
-export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
+export function SideNav({
+    tasks,
+    onNavigate,
+}: {
+    tasks: readonly Job[] | null;
+    onNavigate?: (() => void) | undefined;
+}) {
     // History stays folded away until the reader asks for it: the live sections are why the panel
     // is open, and Past tasks must not push them off screen. Session-only — no persistence.
     const [pastOpen, setPastOpen] = useState(false);
@@ -105,22 +100,25 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
     const onSettings = pathname === '/settings' || pathname.startsWith('/settings/');
     const sections = taskSections(tasks);
 
+    /*
+     * `onNavigate` (issue 160) fires on every link activation so the mobile drawer can close
+     * itself after navigation. On desktop the drawer is closed and the call is a no-op, so the
+     * persistent nav's behavior is unchanged; the same wiring serves both renders, so a
+     * navigation implementation cannot forget it.
+     */
+
     return (
-        <nav className="sidenav" aria-label="Sections">
+        <nav className="sidenav" aria-label="Primary">
             <div className="sidenav-brand">Factory</div>
             <ul className="sidenav-items">
-                {ITEMS.map((item) => (
+                {NAV_ITEMS.map((item) => (
                     <li key={item.to}>
                         <NavLink
                             to={item.to}
                             end={item.end ?? false}
                             className={({ isActive }) => (isActive ? 'sidenav-link is-active' : 'sidenav-link')}
-                            /* A tree marks ONE address as the page: on a section page the parent
-                               /settings link is open and lit but explicitly NOT the current page —
-                               the leaf's own link carries aria-current="page". */
-                            aria-current={
-                                item.to === '/settings' ? (pathname === '/settings' ? 'page' : 'false') : undefined
-                            }
+                            onClick={onNavigate}
+                            aria-current={ariaCurrentFor(item, pathname)}
                         >
                             {item.label}
                         </NavLink>
@@ -133,6 +131,7 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
                                             className={({ isActive }) =>
                                                 isActive ? 'sidenav-sublink is-active' : 'sidenav-sublink'
                                             }
+                                            onClick={onNavigate}
                                         >
                                             {section.label}
                                         </NavLink>
@@ -152,12 +151,21 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
                                         className={({ isActive }) =>
                                             isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'
                                         }
+                                        onClick={onNavigate}
                                     >
                                         + New task
                                     </NavLink>
-                                    <SectionRows entries={sections.running} empty="Nothing running" />
+                                    <SectionRows
+                                        entries={sections.running}
+                                        empty="Nothing running"
+                                        onNavigate={onNavigate}
+                                    />
                                     <p className="sidenav-section">Need review ({sections.review.length})</p>
-                                    <SectionRows entries={sections.review} empty="Nothing to review" />
+                                    <SectionRows
+                                        entries={sections.review}
+                                        empty="Nothing to review"
+                                        onNavigate={onNavigate}
+                                    />
                                     <button
                                         type="button"
                                         className="sidenav-section"
@@ -169,8 +177,8 @@ export function SideNav({ tasks }: { tasks: readonly Job[] | null }) {
                                     </button>
                                     {sections.past.length > 0 ? (
                                         <ul className="sidenav-subitems" id="sidenav-past" hidden={!pastOpen}>
-                                            {sections.past.map((entry) => (
-                                                <TaskRow key={entry.id} entry={entry} />
+                                            {preview(sections.past).map((entry) => (
+                                                <TaskRow key={entry.id} entry={entry} onNavigate={onNavigate} />
                                             ))}
                                         </ul>
                                     ) : (

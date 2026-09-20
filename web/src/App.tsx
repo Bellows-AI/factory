@@ -50,7 +50,7 @@ export function App() {
                     <Route index element={<TaskComposerPage />} />
                     <Route path=":id" element={<TaskDetailPage />} />
                 </Route>
-                {/* The member's own account. Reached from the topbar's user menu, not the sidenav:
+                {/* The member's own account. Reached from the app bar's user menu, not the sidenav:
                     it is personal, not a section of the dashboard — `/settings/*` is the
                     organization's tree, so the personal page lives beside it at `/account`. */}
                 <Route path="account" element={<AccountPage />} />

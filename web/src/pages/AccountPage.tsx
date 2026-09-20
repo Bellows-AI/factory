@@ -8,7 +8,7 @@ import { TrackedOrgsPanel } from '../panels/TrackedOrgsPanel.js';
  * stack as plain `section.panel`s — the vocabulary every other page uses — so a new concern is one
  * more block, not a nav framework.
  *
- * Reached from the topbar's user menu at `/account`, not the sidenav: it is personal, not a
+ * Reached from the app bar's user menu at `/account`, not the sidenav: it is personal, not a
  * section of the dashboard. `/settings/*` belongs to the organization's settings tree (issue 150).
  *
  * Both token sections are hidden under `AUTH_MODE=none`: the hook ignores every credential there,
@@ -24,7 +24,7 @@ export function AccountPage() {
     if (!session) return null;
     const github = session.mode === 'github';
     return (
-        <main>
+        <>
             <section className="panel">
                 <div className="panel-head">
                     <h2>Account</h2>
@@ -47,6 +47,6 @@ export function AccountPage() {
                     )}
                 </>
             ) : null}
-        </main>
+        </>
     );
 }
