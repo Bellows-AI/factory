@@ -2089,22 +2089,49 @@
     }
 
     /* The task head's row of controls and its overall wall clock — every button the task can take,
-       at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
-       title from squeezing the buttons; the title wraps instead. */
+        at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
+        title from squeezing the buttons; the title wraps instead. The row itself wraps too, so a
+        360px screen drops Mark done and the overflow under Stop run rather than clipping them. */
     .task-actions {
         align-items: center;
         display: flex;
         flex: none;
+        flex-wrap: wrap;
         gap: 8px;
     }
 
     /* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
-       activity line, never the exit code's red. */
+        activity line, never the exit code's red. */
     .task-clock {
         color: var(--ink-muted);
         font-family: var(--font-mono);
         font-size: 12px;
         white-space: nowrap;
+    }
+
+    /* The remove confirmation (issue 178): the one dialog the task's own actions can raise. It
+        floats over the dimmed page, so it wears the picker's harder hairline; small, because the
+        copy it carries is three sentences and two answers. */
+    .task-remove {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        max-width: 440px;
+        padding: 16px;
+        width: 90vw;
+    }
+
+    .task-remove-title {
+        font-size: 15px;
+        margin: 0 0 8px;
+    }
+
+    .task-remove-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
     }
 
     .composer {

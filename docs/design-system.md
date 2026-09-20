@@ -191,7 +191,8 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose`, `composer-field`, `composer-fields`, `composer-grid`, `composer-helper`, `composer-preflight`, `composer-start`, `composer-blocker`, `composer-param-error`, `composer-param-details` | The message input and its row; `task-compose` is the full-page variant. The guided composer (#176) stacks label-above-control `composer-field` groups — prompt, execution context in a `composer-grid` (one column until 768px), the workflow select, and the `composer-fields` parameter inputs — each with `composer-helper` guidance, a `composer-preflight` sentence before the `composer-start` action row (button, `kbd` shortcut, `composer-blocker` reason), per-field `composer-param-error` lines, and the raw rule only inside `composer-param-details`. A failed field tints its `.composer-select` edge via `aria-invalid` |
-| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution |
+| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
+| Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
 
 ### Environment panel
 
@@ -241,6 +242,7 @@ Components:
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
+| `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
 | `WorkflowParameterFields.tsx` | composer-field, composer-fields, composer-label, composer-select, composer-helper, composer-param-error, composer-param-details |
 
@@ -256,7 +258,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, composer-field, composer-grid, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, kbd, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
-| `TaskHeader.tsx` | page-header, pill, task head |
+| `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
 | `TaskUsagePanel.tsx` | data, align-end, muted |
 | `TelemetryFrame.tsx` | alert, badge |

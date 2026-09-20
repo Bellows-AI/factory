@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
+import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
 import { useTasksPage } from './TasksLayout.js';
@@ -25,14 +26,19 @@ export function TaskDetailPage() {
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
     // The actions' in-flight guards — one mark at a time — live here, beside the mutations they
-    // guard; the header renders them as disabled buttons, the panel none at all.
+    // guard; the header relabels them as in-flight, the panel none at all.
     const [stoppingId, setStoppingId] = useState<string | null>(null);
     const [removingId, setRemovingId] = useState<string | null>(null);
     const [doneId, setDoneId] = useState<string | null>(null);
+    // The remove confirmation's own state: the header's menu item only opens the dialog, the
+    // dialog's Remove task is the one thing that mutates, and a refusal stays inside it.
+    const [removeOpen, setRemoveOpen] = useState(false);
+    const [removeError, setRemoveError] = useState<string | null>(null);
 
     // One page instance serves every /tasks/:id, so a refusal earned on task A would sit above
-    // task B after a sidenav jump. A different id is a different conversation: forget the error
-    // and any in-flight mark. `key` on the panel does the same for the composer's own draft.
+    // task B after a sidenav jump. A different id is a different conversation: forget the error,
+    // any in-flight mark, and a dialog left open. `key` on the panel does the same for the
+    // composer's own draft.
     //
     // The generation is what keeps a RETIRED request from haunting the new task: every action
     // captures it at start, and after each await its tail (error, refresh, navigation, mark
@@ -47,6 +53,8 @@ export function TaskDetailPage() {
         setStoppingId(null);
         setRemovingId(null);
         setDoneId(null);
+        setRemoveOpen(false);
+        setRemoveError(null);
         // Leaving the route invalidates every in-flight action too: without this, a late
         // remove could pass the generation check after unmount and redirect a page the reader
         // has already left (React runs this cleanup before the next id's effect, so a route
@@ -119,29 +127,32 @@ export function TaskDetailPage() {
             const message = await tasks.actions.stop(taskId);
             if (generation.current !== atStart) return;
             if (message !== null) setActionError(message);
-            // Success needs no navigation: the polls repaint the parked run in place.
+            // Success needs no navigation: re-arm the thread poll so the stamped run repaints
+            // the header at once — otherwise the cleared guard would flash the clickable button
+            // back on for up to one 2s tick before the poll carried the stamp in.
+            else detail.refresh();
         } finally {
             if (generation.current === atStart) setStoppingId(null);
         }
     };
 
-    // The confirm lives here, with the navigation it owns: deleting a thread is not an accident
-    // the sidebar should be able to make, and once the board has deleted the rows this page has
-    // nothing left to render — the header falls back to the plain Tasks heading only until the
-    // navigation lands. The refusal needs no confirm, so a TASK_RUNNING state slid past the
-    // button just errors in place like every other refusal.
-    const removeTask = async (taskId: string) => {
-        if (removingId !== null) return;
+    // The confirmation lives in the dialog, and so does the refusal: Remove task confirms
+    // there, the request carries the in-flight mark the dialog disables itself with, and a
+    // refusal stays inside the open dialog as an alert instead of erroring somewhere the
+    // decision is no longer visible. Success is the one navigation — the rows are gone, this
+    // page has nothing left to render, and the inbox is where the task list lives.
+    const removeTask = async () => {
+        if (latest === null || removingId !== null) return;
+        const taskId = latest.id;
         const atStart = generation.current;
         setRemovingId(taskId);
         try {
-            setActionError(null);
-            if (!window.confirm('Remove this task? Every run of the thread and its worktree are deleted.')) return;
+            setRemoveError(null);
             const message = await tasks.actions.remove(taskId);
             // A retired remove must not yank the reader off the task they navigated to.
             if (generation.current !== atStart) return;
             if (message !== null) {
-                setActionError(message);
+                setRemoveError(message);
                 return;
             }
             navigate('/tasks');
@@ -156,11 +167,13 @@ export function TaskDetailPage() {
             <TaskHeader
                 jobs={detail.jobs}
                 stoppingId={stoppingId}
-                removingId={removingId}
                 doneId={doneId}
                 onStop={stopTask}
-                onRemove={removeTask}
                 onDone={doneTask}
+                onRemoveRequest={() => {
+                    setRemoveError(null);
+                    setRemoveOpen(true);
+                }}
             />
             <TaskDetail
                 key={id ?? 'none'}
@@ -170,6 +183,17 @@ export function TaskDetailPage() {
                 sending={sending}
                 onFollowUp={followUp}
             />
+            {detail.jobs !== null && detail.jobs.length > 0 ? (
+                <TaskRemoveDialog
+                    open={removeOpen}
+                    command={detail.jobs[0]!.command}
+                    runCount={detail.jobs.length}
+                    removing={removingId !== null}
+                    error={removeError}
+                    onClose={() => setRemoveOpen(false)}
+                    onConfirm={() => void removeTask()}
+                />
+            ) : null}
         </>
     );
 }
