@@ -48,7 +48,7 @@ export function TaskComposerPage() {
     };
 
     return (
-        <main>
+        <>
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
             <TaskComposer
                 repos={workspace.data?.repos.map(({ owner, name }) => ({ owner, name })) ?? null}
@@ -61,6 +61,6 @@ export function TaskComposerPage() {
                 onSend={send}
                 onRepoChange={setRepo}
             />
-        </main>
+        </>
     );
 }

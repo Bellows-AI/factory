@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { OrgSelector } from '../src/components/OrgSelector.js';
-import { TopBar } from '../src/components/TopBar.js';
+import { AppBar } from '../src/components/AppBar.js';
 import type { Session } from '../src/api/useSession.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 
@@ -68,7 +68,12 @@ describe('OrgSelector', () => {
     });
 });
 
-describe('TopBar', () => {
+describe('AppBar', () => {
+    /*
+     * The global bar (issue 160) is chrome only: the organization selector and the user menu, and
+     * — on mobile — the navigation trigger and the brand. No h1, no telemetry: the dashboard owns
+     * its repo coverage, timestamp and Refresh, and the routed page owns the page's heading.
+     */
     const payload = {
         meta: {
             fetchedAt: '2026-08-21T12:00:00.000Z',
@@ -80,32 +85,37 @@ describe('TopBar', () => {
         },
     } as unknown as StatsPayload;
 
-    const html = (session: Session | null = null) =>
+    const html = (meta: StatsPayload['meta'] | null = payload.meta, session: Session | null = null) =>
         renderToStaticMarkup(
             <MemoryRouter>
-                {/* The menu holds a NavLink, so the TopBar needs a router context to render it. */}
-                <TopBar data={payload} refreshing={false} onRefresh={() => {}} session={session} />
+                {/* The brand is a NavLink and the menu holds one, so the bar needs a router. */}
+                <AppBar meta={meta} session={session} navOpen={false} onOpenNav={() => {}} />
             </MemoryRouter>
         );
 
-    it('puts the selector in the actions group, ahead of Refresh', () => {
+    it('renders the brand, the drawer trigger, then the actions — and no h1', () => {
         const markup = html();
-        expect(markup.indexOf('org-select')).toBeGreaterThan(markup.indexOf('topbar-actions'));
-        expect(markup.indexOf('org-select')).toBeLessThan(markup.indexOf('Refresh'));
+        expect(markup).not.toContain('<h1');
+        expect(markup).toContain('appbar-brand');
+        expect(markup).toContain('>Factory</a>');
+        expect(markup).toContain('Open navigation');
+        expect(markup.indexOf('appbar-trigger')).toBeLessThan(markup.indexOf('appbar-actions'));
     });
 
-    it('keeps naming the repos rather than letting the organization name stand in for them', () => {
-        // The figures below are only interpretable if you know what went into them, and an
-        // organization name does not tell you that. Stops a later "the org name says it all".
-        expect(html()).toContain('bellows.ai');
+    it('exposes the drawer trigger with its state and its target', () => {
+        const markup = html();
+        expect(markup).toContain('aria-expanded="false"');
+        expect(markup).toContain('aria-controls="mobile-nav"');
+    });
+
+    it('puts the selector in the actions group', () => {
+        const markup = html();
+        expect(markup.indexOf('org-select')).toBeGreaterThan(markup.indexOf('appbar-actions'));
     });
 
     it('renders nothing before the first payload rather than an empty control', () => {
-        const markup = renderToStaticMarkup(
-            <TopBar data={null} refreshing={false} onRefresh={() => {}} session={null} />
-        );
+        const markup = html(null);
         expect(markup).not.toContain('org-select');
-        expect(markup).toContain('loading…');
     });
 
     it('renders the user menu once the session is known, and nothing before it', () => {
@@ -129,7 +139,7 @@ describe('TopBar', () => {
             workspacePath: null,
             mode: 'github',
         };
-        const markup = html(withSession);
+        const markup = html(payload.meta, withSession);
         expect(markup).toContain('user-menu-button');
         expect(markup).toContain('octocat');
     });

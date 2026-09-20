@@ -194,7 +194,7 @@ test.describe('date range selector', () => {
 });
 
 test.describe('the organization selector', () => {
-    // Its own case because assertRendersCleanly only scans `main`, and the topbar is outside it.
+    // Its own case because assertRendersCleanly only scans `main`, and the app bar is outside it.
     test('names the organization and is inert', async ({ page }) => {
         await open(page);
 
@@ -207,9 +207,10 @@ test.describe('the organization selector', () => {
         await expect(select).toHaveText('default');
         await expect(select).toHaveAttribute('aria-label', 'Organization: default');
 
-        // Fitting beside Refresh without wrapping is a layout fact no assertion covers.
+        // Fitting on one line with the account menu is a layout fact no assertion covers; the
+        // Refresh action itself lives on the dashboard now, not in the bar.
         await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
-        await page.locator('.topbar').screenshot({ path: `${SHOTS}/topbar-org.png` });
+        await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-org.png` });
     });
 });
 
@@ -226,6 +227,6 @@ test.describe('the user menu', () => {
         await expect(page.getByRole('menuitem', { name: 'Account' })).toBeVisible();
 
         await page.keyboard.press('Escape');
-        await page.locator('.topbar').screenshot({ path: `${SHOTS}/topbar-user-menu.png` });
+        await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-user-menu.png` });
     });
 });

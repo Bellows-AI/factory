@@ -1,6 +1,7 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import type { UserRef } from '@factory-ai/core';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import { decodeCursor, encodeCursor } from './task-summary.js';
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
 import { type ParamValues, type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
 
@@ -206,73 +207,6 @@ export interface Job {
      * has accumulated — never zero, which would claim a measurement that was never made.
      */
     taskWallClockMs: number | null;
-}
-
-/**
- * The task-summary read model (#157): one row per thread ROOT, the present tense read off the
- * chain's newest run. The web inbox consumes these, never raw run lists.
- */
-export type TaskState = 'attention' | 'running' | 'review' | 'past';
-export type TaskSort = 'newest' | 'oldest';
-
-export interface TaskSummary {
-    /** The root job id — the route target. */
-    id: string;
-    /** The root command; the UI derives the first-line title from it. */
-    command: string;
-    /** The newest run's status — the chain head's, not the root's. */
-    status: JobStatus;
-    cancelRequestedAt: string | null;
-    /**
-     * The HEAD's done stamp, exactly what `taskSections()` read — NOT the thread max: a done
-     * root with a queued follow-up is running again, and its bucket follows the head.
-     */
-    doneAt: string | null;
-    repo: string | null;
-    executor: string | null;
-    /** The root's creator — a follow-up's creator is forced to the parent's. */
-    author: UserRef | null;
-    /** The head's live activity line, read off its runtime vitals. */
-    activity: string | null;
-    /** The head's terminal summary — the agent's own last words on the newest run. */
-    summary: string | null;
-    /** The root's creation. */
-    createdAt: string;
-    /** The head's newest of created/started/finished/done — what orders and paginates. */
-    activityAt: string;
-}
-
-export interface TaskCursorPosition {
-    activityAt: string;
-    rootId: string;
-}
-
-export interface TaskListFilters {
-    state: TaskState;
-    q: string | null;
-    repo: string | null;
-    /** Exact case-insensitive login of the root's author. */
-    author: string | null;
-    sort: TaskSort;
-    limit: number;
-    cursor: TaskCursorPosition | null;
-}
-
-export interface TaskNavigation {
-    counts: { running: number; review: number; past: number };
-    /** Up to 3 running tasks, newest first — the sidenav's preview. */
-    running: TaskSummary[];
-    /** Up to 5 review tasks, newest first. */
-    review: TaskSummary[];
-}
-
-export interface TaskListResult {
-    /**
-     * Organization-wide and filter-independent — the counts and previews never move because a
-     * page narrowed. Only `page` obeys the filters.
-     */
-    navigation: TaskNavigation;
-    page: { items: TaskSummary[]; nextCursor: TaskCursorPosition | null };
 }
 
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */
@@ -696,11 +630,81 @@ export interface JobStore {
         limit: number;
     }): Promise<Job[]>;
     /**
-     * The task-summary read model (#157): one row per thread root with head semantics, org-wide
-     * navigation that ignores the filters, and a filtered keyset-paginated page. The route owns
-     * cursor encoding and query validation; the store answers exactly one question.
+     * The task read model (#157): one summary per thread root — identity and authorship from the
+     * ROOT row, present tense from the chain HEAD (the newest member, created then id — the
+     * sidenav's chainHead rule), bucketed running/review/past exactly as `taskSections()` does in
+     * the web layer, including a done task resurrected by a queued follow-up. The response
+     * carries the org's whole navigation (counts and previews, immune to the page's filters) and
+     * one keyset-paginated page on (activity_at, root_id) — never OFFSET. Cursor validation is
+     * the caller's first line of defence and repeated here: a cursor that does not decode under
+     * the handed filters throws rather than answering a page of a different question.
      */
-    listTasks(filters: TaskListFilters): Promise<TaskListResult>;
+    listTasks(filters: TaskListFilters): Promise<TaskListResponse>;
+}
+
+/** The page states the task list serves. `attention` is the inbox view: running and review. */
+export type TaskState = 'attention' | 'running' | 'review' | 'past';
+
+/** Which section of the task tree a task is in right now — the sidenav's three buckets. */
+export type TaskBucket = 'running' | 'review' | 'past';
+
+/**
+ * One task: a thread root with the conversation's present tense. Every field is bounded — the
+ * command, one activity line, one close-time summary — and nothing here is a run detail: no
+ * output tail, no gate state, no runtime object, no session ids. The run's own page is
+ * `GET /api/jobs/:id`; this row is what a list of many tasks renders.
+ */
+export interface TaskSummary {
+    /** The root job id — the route target, the same id `GET /api/jobs/:id` answers for. */
+    id: string;
+    /** The root command; the UI derives the first-line title from it. */
+    command: string;
+    /** The newest run's status — the thread's present tense, the sidenav's chainHead rule. */
+    status: JobStatus;
+    /** The head run's stop-request stamp, when a stop has landed but not yet parked. */
+    cancelRequestedAt: string | null;
+    /** The head run's done stamp — null until the user declares the task done. */
+    doneAt: string | null;
+    /** The grouping labels the task was queued with, inherited by every follow-up. */
+    repo: string | null;
+    executor: string | null;
+    /** The ROOT's creator, resolved at read time — the person the conversation belongs to. */
+    author: UserRef | null;
+    /** The head run's live activity line, as last sampled — not gated on still running here. */
+    activity: string | null;
+    /** The head run's close-time summary — what the newest run did, in the agent's last words. */
+    summary: string | null;
+    /** The root's creation: when the conversation started. */
+    createdAt: string;
+    /** The head run's newest of created/started/finished/done — the task's sort key. */
+    activityAt: string;
+}
+
+/** The org-wide figures a task poll renders beside the list, immune to the page's filters. */
+export interface TaskNavigation {
+    counts: { running: number; review: number; past: number };
+    /** At most three running tasks, newest first — the live work. */
+    running: TaskSummary[];
+    /** At most five finished-but-undeclared tasks, newest first — the reader's queue. */
+    review: TaskSummary[];
+}
+
+/** Everything `GET /api/tasks` accepts; `q`, `repo`, `author` arrive normalized from the route. */
+export interface TaskListFilters {
+    state: TaskState;
+    q?: string | undefined;
+    repo?: string | undefined;
+    /** Compared case-insensitively against the root author's login. */
+    author?: string | undefined;
+    sort: 'newest' | 'oldest';
+    limit: number;
+    /** A cursor this list issued; validated against every other filter before use. */
+    cursor?: string | undefined;
+}
+
+export interface TaskListResponse {
+    navigation: TaskNavigation;
+    page: { items: TaskSummary[]; nextCursor: string | null };
 }
 
 interface JobRow {
@@ -763,90 +767,31 @@ interface JobRow {
 const iso = (value: Date | null): string | null => (value === null ? null : value.toISOString());
 
 /**
- * The section a task sits in, from the HEAD's status and done stamp — the exact rule the web's
- * `taskSections()` applied browser-side, now decided once where the data lives. Moving statuses
- * are Running regardless of any stale stamp; a terminal row without a done stamp awaits the
- * user's verdict (Needs review); with one it is Past.
+ * One row of the task summary read — the `task` CTE's projection. Page rows arrive as parsed
+ * postgres rows (timestamps as Date); the navigation previews arrive inside json, where the same
+ * columns read back as strings — every stamp is accepted in either shape.
  */
-export function taskBucket(status: JobStatus, doneAt: string | null): 'running' | 'review' | 'past' {
-    if (status === 'queued' || status === 'running' || status === 'standby') return 'running';
-    return doneAt === null ? 'review' : 'past';
+interface TaskRow {
+    id: string;
+    command: string;
+    repo: string | null;
+    executor: string | null;
+    created_at: Date | string;
+    status: JobStatus;
+    done_at: Date | string | null;
+    cancel_requested_at: Date | string | null;
+    summary: string | null;
+    runtime: RuntimeVitals | null;
+    activity_at: Date | string;
+    creator_id: string | null;
+    creator_login: string | null;
+    creator_name: string | null;
+    creator_avatar_url: string | null;
 }
 
-const TASK_RUNNING_PREVIEW = 3;
-const TASK_REVIEW_PREVIEW = 5;
-
-/** The task ordering, shared by page and previews: newest/oldest on (activityAt, id). */
-const taskComparator =
-    (sort: TaskSort) =>
-    (a: TaskSummary, b: TaskSummary): number => {
-        if (a.activityAt !== b.activityAt) {
-            const byStamp = a.activityAt < b.activityAt ? -1 : 1;
-            return sort === 'newest' ? -byStamp : byStamp;
-        }
-        const byId = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-        return sort === 'newest' ? -byId : byId;
-    };
-
-/**
- * The keyset predicate: the rows strictly BEYOND the cursor in the sort's direction. ISO stamps
- * from `toISOString` are fixed-width UTC, so lexicographic comparison is timestamp comparison.
- */
-const afterCursor = (task: TaskSummary, cursor: TaskCursorPosition, sort: TaskSort): boolean => {
-    if (task.activityAt !== cursor.activityAt) {
-        const earlier = task.activityAt < cursor.activityAt;
-        return sort === 'newest' ? earlier : !earlier;
-    }
-    if (task.id === cursor.rootId) return false;
-    const earlierId = task.id < cursor.rootId;
-    return sort === 'newest' ? earlierId : !earlierId;
-};
-
-/**
- * The in-memory `listTasks` — the contract the SQL implements over the org's rows, and the
- * implementation the route-test stub delegates to, so HTTP tests exercise real filter and cursor
- * logic offline. `tasks` is the FULL unfiltered summary set: navigation is computed from it
- * whole, the page obeys the filters. Pagination is keyset on `(activityAt, id)` — the input is
- * filtered, ordered, cursor-sliced, then trimmed to `limit`; `nextCursor` exists only when an
- * extra row survived the trim. Never OFFSET.
- */
-export function buildTaskPage(tasks: readonly TaskSummary[], filters: TaskListFilters): TaskListResult {
-    const running = tasks.filter((t) => taskBucket(t.status, t.doneAt) === 'running');
-    const review = tasks.filter((t) => taskBucket(t.status, t.doneAt) === 'review');
-    const navigation: TaskNavigation = {
-        counts: {
-            running: running.length,
-            review: review.length,
-            past: tasks.length - running.length - review.length,
-        },
-        running: [...running].sort(taskComparator('newest')).slice(0, TASK_RUNNING_PREVIEW),
-        review: [...review].sort(taskComparator('newest')).slice(0, TASK_REVIEW_PREVIEW),
-    };
-
-    const q = (filters.q ?? '').trim().toLowerCase();
-    const bucketOf = (t: TaskSummary) => taskBucket(t.status, t.doneAt);
-    const matches =
-        filters.state === 'attention'
-            ? (t: TaskSummary) => bucketOf(t) !== 'past'
-            : (t: TaskSummary) => bucketOf(t) === filters.state;
-    const ordered = tasks
-        .filter(matches)
-        .filter((t) => (q ? t.command.toLowerCase().includes(q) : true))
-        .filter((t) => (filters.repo !== null ? t.repo === filters.repo : true))
-        .filter((t) => {
-            if (filters.author === null) return true;
-            const login = t.author?.login ?? null;
-            return login !== null && login.toLowerCase() === filters.author.toLowerCase();
-        })
-        .sort(taskComparator(filters.sort));
-
-    const { cursor } = filters;
-    const beyond = cursor === null ? ordered : ordered.filter((t) => afterCursor(t, cursor, filters.sort));
-    const items = beyond.slice(0, filters.limit);
-    const last = items[items.length - 1];
-    const nextCursor = beyond.length > filters.limit && last ? { activityAt: last.activityAt, rootId: last.id } : null;
-    return { navigation, page: { items, nextCursor } };
-}
+/** A stamp from either engine: a parsed Date from the row, an ISO string out of the json. */
+const stampOf = (value: Date | string | null): string | null =>
+    value === null ? null : (value instanceof Date ? value : new Date(value)).toISOString();
 
 /**
  * Lays the minted installation token under the claim's stacked environment, in one place and pure
@@ -1071,6 +1016,13 @@ export function createJobStore({
         , du.avatar_url as doner_avatar_url
     `;
 
+    // The task summary's columns once the `task` CTE has named them — selected again inside every
+    // navigation-preview and page subquery, which read the derived set rather than the tables.
+    const taskPreviewColumns = sql`
+        id, command, repo, executor, created_at, status, done_at, cancel_requested_at,
+        summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url
+    `;
+
     // A left join answers null columns when the uuid matched nothing; a matched row always has
     // its login (not null in app_user), so id+login is the honest presence test.
     const userRef = (
@@ -1115,86 +1067,24 @@ export function createJobStore({
         taskWallClockMs: row.task_wall_clock_ms == null ? null : Number(row.task_wall_clock_ms),
     });
 
-    /**
-     * The task read model's shared derivation (#157): every summary row — page, counts and
-     * previews — comes from this CTE, so they cannot disagree about what a task IS. One row per
-     * thread root (`id = root_job_id`), the head resolved with the chainHead shape (newest run,
-     * `created_at desc, id desc, limit 1`), the author the root's creator. `activity_at` is the
-     * head's newest stamp — the same four `activityKey()` reads the web applied browser-side —
-     * and `bucket` is `taskBucket()` spelled in SQL, byte-for-byte the same rule.
-     *
-     * Dates read back as `Date` on the page path and as JSON strings on the preview path, so the
-     * mapper accepts both.
-     */
-    const taskCte = sql`
-        task as (
-            select root.id, root.command, root.created_at, root.repo, root.executor, root.created_by,
-                   cu.id as author_id, cu.github_login as author_login, cu.display_name as author_name,
-                   cu.avatar_url as author_avatar_url,
-                   head.status as status, head.cancel_requested_at as cancel_requested_at,
-                   head.done_at as done_at, head.summary as summary,
-                   head.runtime ->> 'activity' as activity,
-                   date_trunc('milliseconds', greatest(head.created_at, head.started_at, head.finished_at, head.done_at)) as activity_at,
-                   case
-                       when head.status in ('queued', 'running', 'standby') then 'running'
-                       when head.done_at is null then 'review'
-                       else 'past'
-                   end as bucket
-            from job root
-            join lateral (
-                select h.*
-                from job h
-                where h.org_id = ${orgId} and h.root_job_id = root.id
-                order by h.created_at desc, h.id desc
-                limit 1
-            ) head on true
-            left join app_user cu on cu.id = root.created_by
-            where root.org_id = ${orgId} and root.id = root.root_job_id
-        )
-    `;
-
-    // The ordering key above is truncated to the precision the wire carries. timestamptz keeps
-    // microseconds and ISO strings carry milliseconds, so a raw stamp would round-trip through
-    // the cursor TRUNCATED — under `oldest` (the `>` predicate) the cursor row itself would
-    // reappear on the next page. Truncating the key makes the stored order and the served ISO
-    // identical, so a cursor round-trips exactly in both directions.
-
-    interface TaskRow {
-        id: string;
-        command: string;
-        status: JobStatus;
-        cancel_requested_at: Date | string | null;
-        done_at: Date | string | null;
-        repo: string | null;
-        executor: string | null;
-        author_id: string | null;
-        author_login: string | null;
-        author_name: string | null;
-        author_avatar_url: string | null;
-        activity: string | null;
-        summary: string | null;
-        created_at: Date | string;
-        activity_at: Date | string;
-    }
-
-    /** JSON preview rows deliver stamps as ISO-with-offset strings; the page path delivers Dates. */
-    const stamp = (value: Date | string): string =>
-        value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-
-    // Reuses the author mapping, never a synthetic one: a deleted author renders "unknown".
-    const toTaskSummary = (row: TaskRow): TaskSummary => ({
+    // The task summary mapper. Deliberately NOT toJob with synthetic fields: a summary is a
+    // different shape with a different contract — bounded fields only, run detail (output, gates,
+    // the runtime object, session ids) left behind, and the head's activity line carried alone.
+    const toTask = (row: TaskRow): TaskSummary => ({
         id: row.id,
         command: row.command,
         status: row.status,
-        cancelRequestedAt: row.cancel_requested_at === null ? null : stamp(row.cancel_requested_at),
-        doneAt: row.done_at === null ? null : stamp(row.done_at),
+        cancelRequestedAt: stampOf(row.cancel_requested_at),
+        doneAt: stampOf(row.done_at),
         repo: row.repo,
         executor: row.executor,
-        author: userRef(row.author_id, row.author_login, row.author_name, row.author_avatar_url),
-        activity: row.activity,
+        author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
+        activity: row.runtime?.activity ?? null,
         summary: row.summary,
-        createdAt: stamp(row.created_at),
-        activityAt: stamp(row.activity_at),
+        // Both are NOT NULL in the schema — created_at by the column, activity_at through
+        // greatest() with created_at in it.
+        createdAt: stampOf(row.created_at)!,
+        activityAt: stampOf(row.activity_at)!,
     });
 
     return {
@@ -2396,91 +2286,129 @@ export function createJobStore({
 
         async listTasks(filters) {
             await gate();
-            // Navigation first, in ONE statement: the counts and the two previews read the same
-            // derived set, so a preview can never contradict its count. Filter-independent by
-            // construction — the filters below touch only the page.
-            const navRows = await sql<
-                {
-                    running_count: string;
-                    review_count: string;
-                    past_count: string;
-                    running_preview: TaskRow[];
-                    review_preview: TaskRow[];
-                }[]
-            >`
-                with ${taskCte}
-                select
-                    (select count(*) from task where bucket = 'running') as running_count,
-                    (select count(*) from task where bucket = 'review') as review_count,
-                    (select count(*) from task where bucket = 'past') as past_count,
-                    coalesce((
-                        select json_agg(p)
-                        from (
-                            select * from task where bucket = 'running'
-                            order by activity_at desc, id desc
-                            limit ${TASK_RUNNING_PREVIEW}
-                        ) p
-                    ), '[]'::json) as running_preview,
-                    coalesce((
-                        select json_agg(p)
-                        from (
-                            select * from task where bucket = 'review'
-                            order by activity_at desc, id desc
-                            limit ${TASK_REVIEW_PREVIEW}
-                        ) p
-                    ), '[]'::json) as review_preview
-            `;
-            const nav = navRows[0];
-            if (!nav) throw new Error('the task navigation read answered no row');
+            // The route already refused cursors that do not decode under the handed filters; a
+            // store call that carries one anyway is a programming error, thrown rather than
+            // answered with a page of a different question.
+            const cursor = filters.cursor === undefined ? null : decodeCursor(filters.cursor, filters);
+            if (filters.cursor !== undefined && cursor === null) throw new Error('invalid task cursor');
+            const newest = filters.sort === 'newest';
 
-            // The page: the same derivation, narrowed by the filters, keyset-paginated on
-            // (activity_at, id) with the comparison direction following the sort — never OFFSET.
-            // The search is ILIKE on the root command with the wildcards escaped, so a member's
-            // `50%` is a literal, not a pattern.
-            const { cursor } = filters;
-            const stateFilter =
-                filters.state === 'attention'
-                    ? sql`and bucket in ('running', 'review')`
-                    : sql`and bucket = ${filters.state}`;
-            const qPattern = filters.q ? `%${filters.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
-            const cursorFilter =
+            // One statement, one derived set. `head` resolves each thread's newest run exactly as
+            // the sidenav's chainHead does (created desc, id desc); `task` keeps one row per ROOT
+            // — the root row for identity and authorship, the head for the present tense — and
+            // computes the bucket and the activity stamp once, so the state filter, the counts
+            // and the previews cannot disagree. Navigation reads the set UNFILTERED (org-wide,
+            // rule of the read model); the page reads it under every filter, paginated by keyset
+            // on (activity_at, id) — direction flips with the sort, never an OFFSET.
+            const stateWhere = {
+                attention: sql`not (terminal and done_at is not null)`,
+                running: sql`not terminal`,
+                review: sql`terminal and done_at is null`,
+                past: sql`terminal and done_at is not null`,
+            }[filters.state];
+            const pageOrder = newest ? sql`activity_at desc, id desc` : sql`activity_at asc, id asc`;
+            const cursorWhere =
                 cursor === null
                     ? sql``
-                    : filters.sort === 'newest'
+                    : newest
                       ? sql`and (activity_at, id) < (${cursor.activityAt}::timestamptz, ${cursor.rootId}::uuid)`
                       : sql`and (activity_at, id) > (${cursor.activityAt}::timestamptz, ${cursor.rootId}::uuid)`;
-            const direction = filters.sort === 'newest' ? sql`desc` : sql`asc`;
-            const rows = await sql<TaskRow[]>`
-                with ${taskCte}
-                select id, command, status, cancel_requested_at, done_at, repo, executor,
-                       author_id, author_login, author_name, author_avatar_url,
-                       activity, summary, created_at, activity_at
-                from task
-                where true
-                    ${stateFilter}
-                    ${qPattern ? sql`and command ilike ${qPattern} escape '\\'` : sql``}
-                    ${filters.repo !== null ? sql`and repo = ${filters.repo}` : sql``}
-                    ${filters.author !== null ? sql`and lower(author_login) = lower(${filters.author})` : sql``}
-                    ${cursorFilter}
-                order by activity_at ${direction}, id ${direction}
-                limit ${filters.limit + 1}
+
+            const [row] = await sql<
+                {
+                    counts: { running: number; review: number; past: number };
+                    running_preview: TaskRow[] | null;
+                    review_preview: TaskRow[] | null;
+                    page: TaskRow[] | null;
+                }[]
+            >`
+                with head as (
+                    select distinct on (root_job_id)
+                           root_job_id, id, status, done_at, cancel_requested_at,
+                           created_at, started_at, finished_at, summary, runtime
+                    from job
+                    where org_id = ${orgId}
+                    order by root_job_id, created_at desc, id desc
+                ),
+                task as (
+                    -- The root row joins back by PK from the head's root id (one index lookup per
+                    -- thread) rather than scanning the org's runs and filtering id = root_job_id —
+                    -- the EXPLAIN-measured difference between touching every run and touching one
+                    -- row per thread.
+                    select h.root_job_id as id, r.command, r.repo, r.executor, r.created_at,
+                           h.status, h.done_at, h.cancel_requested_at, h.summary, h.runtime,
+                           -- The sort key is truncated to milliseconds, the precision an ISO
+                           -- stamp and a JS Date carry: the cursor's value round-trips EXACTLY,
+                           -- so the exclusive keyset predicate cannot re-admit a row that only
+                           -- differs from the boundary below the millisecond.
+                           date_trunc('milliseconds',
+                                      greatest(h.created_at, h.started_at, h.finished_at, h.done_at)) as activity_at,
+                           (h.status in ('succeeded', 'failed', 'dead', 'stopped')) as terminal,
+                           cu.id as creator_id, cu.github_login as creator_login,
+                           cu.display_name as creator_name, cu.avatar_url as creator_avatar_url
+                    from head h
+                    join job r on r.org_id = ${orgId} and r.id = h.root_job_id
+                    left join app_user cu on cu.id = r.created_by
+                )
+                select
+                    (
+                        select json_build_object(
+                                   'running', count(*) filter (where not terminal),
+                                   'review', count(*) filter (where terminal and done_at is null),
+                                   'past', count(*) filter (where terminal and done_at is not null)
+                               )
+                        from task
+                    ) as counts,
+                    (
+                        select coalesce(json_agg(p), '[]'::json)
+                        from (select ${taskPreviewColumns} from task
+                              where not terminal
+                              order by activity_at desc, id desc limit 3) p
+                    ) as running_preview,
+                    (
+                        select coalesce(json_agg(p), '[]'::json)
+                        from (select ${taskPreviewColumns} from task
+                              where terminal and done_at is null
+                              order by activity_at desc, id desc limit 5) p
+                    ) as review_preview,
+                    (
+                        select coalesce(json_agg(p), '[]'::json)
+                        from (select ${taskPreviewColumns} from task
+                              where ${stateWhere}
+                                ${filters.q === undefined ? sql`` : sql`and strpos(lower(command), lower(${filters.q})) > 0`}
+                                ${filters.repo === undefined ? sql`` : sql`and repo = ${filters.repo}`}
+                                ${filters.author === undefined ? sql`` : sql`and lower(creator_login) = lower(${filters.author})`}
+                                ${cursorWhere}
+                              order by ${pageOrder}
+                              limit ${filters.limit + 1}) p
+                    ) as page
             `;
-            const extra = rows.length > filters.limit;
-            const items = rows.slice(0, filters.limit).map(toTaskSummary);
+
+            // Fetch limit + 1: the extra row is the only honest nextCursor signal — a page filled
+            // exactly is not — and the cursor is minted from the last row RETURNED.
+            const pageRows = (row?.page ?? []).map(toTask);
+            const items = pageRows.slice(0, filters.limit);
             const last = items[items.length - 1];
             return {
                 navigation: {
-                    counts: {
-                        running: Number(nav.running_count),
-                        review: Number(nav.review_count),
-                        past: Number(nav.past_count),
-                    },
-                    running: nav.running_preview.map(toTaskSummary),
-                    review: nav.review_preview.map(toTaskSummary),
+                    counts: row?.counts ?? { running: 0, review: 0, past: 0 },
+                    running: (row?.running_preview ?? []).map(toTask),
+                    review: (row?.review_preview ?? []).map(toTask),
                 },
                 page: {
                     items,
-                    nextCursor: extra && last ? { activityAt: last.activityAt, rootId: last.id } : null,
+                    nextCursor:
+                        pageRows.length > filters.limit && last !== undefined
+                            ? encodeCursor({
+                                  sort: filters.sort,
+                                  state: filters.state,
+                                  q: filters.q,
+                                  repo: filters.repo,
+                                  author: filters.author,
+                                  activityAt: last.activityAt,
+                                  rootId: last.id,
+                              })
+                            : null,
                 },
             };
         },

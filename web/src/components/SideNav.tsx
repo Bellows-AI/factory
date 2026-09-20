@@ -1,5 +1,6 @@
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import type { TaskNavigation, TaskSummary } from '../api/useTasks.js';
+import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor } from '../nav-model.js';
 import { sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree.js';
 
 /**
@@ -7,7 +8,9 @@ import { sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree
  *
  * `NavLink` rather than an anchor so the current page is marked without this component knowing what
  * the current page is. `aria-current="page"` comes from the router; the class is what the stylesheet
- * hangs off, and both are set from the same source so they cannot disagree.
+ * hangs off, and both are set from the same source so they cannot disagree. The route array and the
+ * `aria-current` rule live in `nav-model.ts` — the one model the mobile drawer (issue 160) renders
+ * in compact mode, so there is no second table of contents to forget a route in.
  *
  * Under the Tasks item sits the task preview, a pure selection of the org-wide navigation summary
  * (see `sidenavPreview` in task-tree.ts): up to five rows — running first, then the newest needs-
@@ -19,34 +22,14 @@ import { sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree
  * kept visible even when the five slots would otherwise exclude it) and whether the Settings item
  * renders its section tree.
  *
- * The Settings item does the same at a smaller scale: four static section links (issue 150), rendered
- * only while the member is in the settings area — navigation for the section you are in, not a
- * second table of contents on every page. No data behind them, so nothing is polled for them.
- *
  * The one non-task row is the New task link, pinned above the preview rows: it opens the composer
  * (`/tasks/new`) and is not a task, so the ordering can never slide a fresh task above it.
+ *
+ * `onNavigate` (issue 160) fires on every link activation so the mobile drawer can close itself
+ * after navigation. On desktop the drawer is closed and the call is a no-op, so the persistent
+ * nav's behavior is unchanged; the same wiring serves both renders, so a navigation implementation
+ * cannot forget it.
  */
-
-interface Item {
-    readonly to: string;
-    readonly label: string;
-    /** True for `/`, which would otherwise match every path below it. */
-    readonly end?: boolean;
-}
-
-const ITEMS: readonly Item[] = [
-    { to: '/', label: 'Dashboard', end: true },
-    { to: '/settings', label: 'Settings' },
-    { to: '/tasks', label: 'Tasks' },
-];
-
-/** The Settings tree's sections, in the issue's order. Static — no data behind them. */
-const SETTINGS_SECTIONS: readonly Item[] = [
-    { to: '/settings/organization', label: 'Organization' },
-    { to: '/settings/workspace', label: 'Workspace' },
-    { to: '/settings/repos', label: 'Repositories' },
-    { to: '/settings/executors', label: 'Executors' },
-];
 
 /*
  * No "n cloning" badge, deliberately.
@@ -61,7 +44,7 @@ const SETTINGS_SECTIONS: readonly Item[] = [
  */
 
 /** One preview row: the dot that says the conversation's present tense, the title, the live summary. */
-function TaskRow({ task }: { task: TaskSummary }) {
+function TaskRow({ task, onNavigate }: { task: TaskSummary; onNavigate?: (() => void) | undefined }) {
     const dot = taskDotClass({
         status: task.status,
         cancelRequestedAt: task.cancelRequestedAt,
@@ -74,6 +57,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
                 to={`/tasks/${task.id}`}
                 title={taskTitleFromCommand(task.command)}
                 className={({ isActive }) => (isActive ? 'sidenav-task is-active' : 'sidenav-task')}
+                onClick={onNavigate}
             >
                 {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
                 <span className="sidenav-task-title">{taskTitleFromCommand(task.command)}</span>
@@ -94,7 +78,13 @@ function CountLine({ navigation }: { navigation: TaskNavigation }) {
     return <p className="sidenav-section">{clauses.join(' · ')}</p>;
 }
 
-export function SideNav({ navigation }: { navigation: TaskNavigation | null }) {
+export function SideNav({
+    navigation,
+    onNavigate,
+}: {
+    navigation: TaskNavigation | null;
+    onNavigate?: (() => void) | undefined;
+}) {
     // The Settings tree renders only inside the settings area — the same gating reading the task
     // preview's prop encodes, taken from the location because these links have no data to poll for.
     // The same location names the open task, so its preview row can be kept visible.
@@ -105,21 +95,17 @@ export function SideNav({ navigation }: { navigation: TaskNavigation | null }) {
     const preview = sidenavPreview(navigation, activeId);
 
     return (
-        <nav className="sidenav" aria-label="Sections">
+        <nav className="sidenav" aria-label="Primary">
             <div className="sidenav-brand">Factory</div>
             <ul className="sidenav-items">
-                {ITEMS.map((item) => (
+                {NAV_ITEMS.map((item) => (
                     <li key={item.to}>
                         <NavLink
                             to={item.to}
                             end={item.end ?? false}
                             className={({ isActive }) => (isActive ? 'sidenav-link is-active' : 'sidenav-link')}
-                            /* A tree marks ONE address as the page: on a section page the parent
-                               /settings link is open and lit but explicitly NOT the current page —
-                               the leaf's own link carries aria-current="page". */
-                            aria-current={
-                                item.to === '/settings' ? (pathname === '/settings' ? 'page' : 'false') : undefined
-                            }
+                            onClick={onNavigate}
+                            aria-current={ariaCurrentFor(item, pathname)}
                         >
                             {item.label}
                         </NavLink>
@@ -132,6 +118,7 @@ export function SideNav({ navigation }: { navigation: TaskNavigation | null }) {
                                             className={({ isActive }) =>
                                                 isActive ? 'sidenav-sublink is-active' : 'sidenav-sublink'
                                             }
+                                            onClick={onNavigate}
                                         >
                                             {section.label}
                                         </NavLink>
@@ -153,22 +140,23 @@ export function SideNav({ navigation }: { navigation: TaskNavigation | null }) {
                                         className={({ isActive }) =>
                                             isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'
                                         }
+                                        onClick={onNavigate}
                                     >
                                         + New task
                                     </NavLink>
                                     <ul className="sidenav-subitems">
                                         {preview.rows.map((task) => (
-                                            <TaskRow key={task.id} task={task} />
+                                            <TaskRow key={task.id} task={task} onNavigate={onNavigate} />
                                         ))}
                                     </ul>
                                     {preview.moreReview > 0 ? (
                                         // Plain links, not NavLinks: they are actions into filtered
                                         // views, not addresses, so none of them claims aria-current.
-                                        <Link to="/tasks?state=review" className="sidenav-sublink">
+                                        <Link to="/tasks?state=review" className="sidenav-sublink" onClick={onNavigate}>
                                             +{preview.moreReview} more need review
                                         </Link>
                                     ) : null}
-                                    <Link to="/tasks" className="sidenav-sublink">
+                                    <Link to="/tasks" className="sidenav-sublink" onClick={onNavigate}>
                                         View all tasks
                                     </Link>
                                 </>

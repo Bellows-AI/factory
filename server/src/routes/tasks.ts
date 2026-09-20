@@ -1,88 +1,41 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
-import type { JobStore, TaskCursorPosition, TaskListFilters, TaskSort, TaskState } from '../db/job-store.js';
+import type { JobStore, TaskListFilters, TaskState } from '../db/job-store.js';
+import { decodeCursor, type TaskCursorFilters } from '../db/task-summary.js';
 import type { OrgRegistry } from '../orgs.js';
-import { UUID, bad, guard, repoReason } from './helpers.js';
+import { bad, guard } from './helpers.js';
+import { repoReason } from './jobs.js';
 
 export interface TaskRouteDeps {
-    /** The per-org runtimes; the store a request touches is the CALLER's org's. */
+    /** The per-org runtimes; the board a request reads is the CALLER's org's. */
     orgs: OrgRegistry;
 }
 
-/** The page size bounds — a poll asks for one page, never the whole org. */
-const TASK_LIMIT_DEFAULT = 30;
-const TASK_LIMIT_MAX = 50;
-const TASK_QUERY_MAX = 200;
-const TASK_AUTHOR_MAX = 100;
-/** A login shape, not a people-directory lookup: the member's own filter text. */
-const TASK_AUTHOR_SHAPE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,98}[a-zA-Z0-9])?$/;
+/**
+ * The task list is the read model of the board's threads — what a task INBOX renders, as opposed
+ * to `GET /api/jobs`, the run list the audit views and the driver operations are built on. One
+ * summary per conversation, the newest run's present tense, org-wide navigation counts, and
+ * keyset pagination that survives follow-ups landing between polls.
+ */
 
 const TASK_STATES: readonly TaskState[] = ['attention', 'running', 'review', 'past'];
-const TASK_SORTS: readonly TaskSort[] = ['newest', 'oldest'];
+const SORTS = ['newest', 'oldest'] as const;
 
-/**
- * The cursor payload, bound to everything that would silently change what "after this row" means:
- * its version, the sort, and the normalized filters. A cursor is opaque to the client and decode
- * refuses anything that does not match the request it arrived with.
- */
-interface TaskCursorPayload {
-    v: 1;
-    sort: TaskSort;
-    state: TaskState;
-    q: string | null;
-    repo: string | null;
-    author: string | null;
-    activityAt: string;
-    rootId: string;
-}
+/** The page size bounds: a nav-sized window, not the run list's. */
+const TASK_LIMIT_DEFAULT = 30;
+const TASK_LIMIT_MAX = 50;
 
-/** Opaque to the client: base64url JSON the route itself issued. */
-export const encodeTaskCursor = (payload: TaskCursorPayload): string =>
-    Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+/** A search is one line of a task prompt, not an essay. */
+const QUERY_MAX = 200;
+/** A GitHub login's shape and bound — the author filter matches the root author's login. */
+const AUTHOR_MAX = 100;
+const AUTHOR_SHAPE = /^[A-Za-z0-9-]+$/;
 
-/**
- * Decodes a cursor that must belong to THIS endpoint's question — same version, same sort, same
- * normalized filters. Anything else (a malformed encoding, a foreign payload, a cursor carried
- * over from a different view) is refused as a whole, never partially honored: the page would
- * silently skip or repeat rows. Null means "not a cursor for this query".
- */
-export const decodeTaskCursor = (
-    raw: string,
-    expected: Pick<TaskCursorPayload, 'sort' | 'state' | 'q' | 'repo' | 'author'>
-): TaskCursorPosition | null => {
-    try {
-        const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
-        if (typeof parsed !== 'object' || parsed === null) return null;
-        const payload = parsed as Record<string, unknown>;
-        if (payload.v !== 1) return null;
-        if (payload.sort !== expected.sort) return null;
-        if (payload.state !== expected.state) return null;
-        if (payload.q !== expected.q || payload.repo !== expected.repo || payload.author !== expected.author) {
-            return null;
-        }
-        const { activityAt, rootId } = payload;
-        if (typeof activityAt !== 'string' || !Number.isFinite(Date.parse(activityAt))) return null;
-        if (typeof rootId !== 'string' || !UUID.test(rootId)) return null;
-        return { activityAt, rootId };
-    } catch {
-        return null;
-    }
-};
+const isText = (value: unknown): value is string => typeof value === 'string';
 
-/** One query parameter's text, or undefined when absent. Fastify hands REPEATED keys over as
- * arrays — a caller error, refused with the parameter's own code rather than read as a default. */
-const textParam = (value: unknown): { ok: string | undefined; repeated: boolean } => ({
-    ok: typeof value === 'string' ? value : undefined,
-    repeated: value !== undefined && typeof value !== 'string',
-});
+const oneOf = <T extends string>(value: unknown, allowed: readonly T[]): T | null =>
+    isText(value) && (allowed as readonly string[]).includes(value) ? (value as T) : null;
 
-/**
- * The task-summary read for people: one row per thread root with head semantics, org-wide
- * navigation that never moves with the filters, and a keyset-paginated page. The same
- * authentication as every other human job read — the session cookie, a personal token or a
- * read-only org token; the shared worker secret is refused by the hook, because the driver has
- * no business pulling a human's inbox. The org comes from the credential, never the query.
- */
 export const taskRoutes =
     ({ orgs }: TaskRouteDeps): FastifyPluginAsync =>
     async (app) => {
@@ -94,77 +47,94 @@ export const taskRoutes =
         app.get('/api/tasks', async (request, reply) => {
             const store = await storeOf(request);
             if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', 503);
+            // Fastify's query parser hands repeated keys over as an array, so every param is
+            // shape-checked before use — a malformed filter is a 400, never a TypeError.
             const query = request.query as Record<string, unknown>;
 
-            const stateParam = textParam(query.state);
-            if (stateParam.repeated) return bad(reply, 'BAD_TASK_STATE', 'state must be a single value');
-            const rawState = stateParam.ok ?? 'attention';
-            if (!TASK_STATES.includes(rawState as TaskState)) {
+            const state: TaskState | null = query.state === undefined ? 'attention' : oneOf(query.state, TASK_STATES);
+            if (state === null) {
                 return bad(reply, 'BAD_TASK_STATE', `state must be one of ${TASK_STATES.join(', ')}`);
             }
-            const qParam = textParam(query.q);
-            if (qParam.repeated) return bad(reply, 'BAD_QUERY', 'q must be a single value');
-            const q = qParam.ok === undefined ? null : qParam.ok.trim() || null;
-            if (q !== null && q.length > TASK_QUERY_MAX) {
-                return bad(reply, 'BAD_QUERY', `q exceeds ${TASK_QUERY_MAX} characters`);
+
+            let q: string | undefined;
+            if (query.q !== undefined) {
+                if (!isText(query.q)) return bad(reply, 'BAD_QUERY', 'q must be a string');
+                q = query.q.trim();
+                if (q.length > QUERY_MAX) {
+                    return bad(reply, 'BAD_QUERY', `q must be at most ${QUERY_MAX} characters`);
+                }
+                if (q === '') q = undefined;
             }
-            const repoParam = textParam(query.repo);
-            if (repoParam.repeated) return bad(reply, 'BAD_REPO', 'repo must be a single value');
-            const repo = repoParam.ok === undefined || repoParam.ok === '' ? null : repoParam.ok;
-            if (repo !== null && repoReason(repo) !== null) {
-                return bad(reply, 'BAD_REPO', repoReason(repo) ?? 'repo must be owner/name');
+
+            let repo: string | undefined;
+            if (query.repo !== undefined) {
+                if (!isText(query.repo)) return bad(reply, 'BAD_REPO', 'repo must be owner/name');
+                const reason = repoReason(query.repo);
+                if (reason !== null) return bad(reply, 'BAD_REPO', reason);
+                repo = query.repo;
             }
-            const authorParam = textParam(query.author);
-            if (authorParam.repeated) return bad(reply, 'BAD_AUTHOR', 'author must be a single value');
-            const author = authorParam.ok === undefined || authorParam.ok.trim() === '' ? null : authorParam.ok.trim();
-            if (author !== null && (author.length > TASK_AUTHOR_MAX || !TASK_AUTHOR_SHAPE.test(author))) {
-                return bad(reply, 'BAD_AUTHOR', 'author must be a login of at most 100 characters');
+
+            let author: string | undefined;
+            if (query.author !== undefined) {
+                if (!isText(query.author)) return bad(reply, 'BAD_AUTHOR', 'author must be a string');
+                author = query.author.trim();
+                if (author === '') {
+                    author = undefined;
+                } else if (author.length > AUTHOR_MAX || !AUTHOR_SHAPE.test(author)) {
+                    return bad(
+                        reply,
+                        'BAD_AUTHOR',
+                        `author must be a login of letters, digits and dashes, at most ${AUTHOR_MAX} characters`
+                    );
+                } else {
+                    // Logins compare case-insensitively; the normalized form is what the store
+                    // filters by and what the cursor binds.
+                    author = author.toLowerCase();
+                }
             }
-            const sortParam = textParam(query.sort);
-            if (sortParam.repeated) return bad(reply, 'BAD_SORT', 'sort must be a single value');
-            const rawSort = sortParam.ok ?? 'newest';
-            if (!TASK_SORTS.includes(rawSort as TaskSort)) {
-                return bad(reply, 'BAD_SORT', `sort must be one of ${TASK_SORTS.join(', ')}`);
-            }
-            const limitParam = textParam(query.limit);
-            if (limitParam.repeated) return bad(reply, 'BAD_LIMIT', 'limit must be a single value');
-            const limit = limitParam.ok === undefined ? TASK_LIMIT_DEFAULT : Number(limitParam.ok);
+
+            const sort = query.sort === undefined ? 'newest' : oneOf(query.sort, SORTS);
+            if (sort === null) return bad(reply, 'BAD_SORT', 'sort must be newest or oldest');
+
+            const limit = query.limit === undefined ? TASK_LIMIT_DEFAULT : Number(query.limit);
             if (!Number.isInteger(limit) || limit < 1 || limit > TASK_LIMIT_MAX) {
                 return bad(reply, 'BAD_LIMIT', `limit must be an integer 1..${TASK_LIMIT_MAX}`);
             }
 
-            const expected = { sort: rawSort as TaskSort, state: rawState as TaskState, q, repo, author };
-            const cursorParam = textParam(query.cursor);
-            if (cursorParam.repeated) return bad(reply, 'BAD_CURSOR', 'cursor must be a single value');
-            const rawCursor = cursorParam.ok ?? null;
-            const cursor = rawCursor === null ? null : decodeTaskCursor(rawCursor, expected);
-            if (rawCursor !== null && cursor === null) {
-                return bad(reply, 'BAD_CURSOR', 'cursor does not belong to this query');
+            let cursor: string | undefined;
+            if (query.cursor !== undefined) {
+                // A cursor is only ever spent under the exact query that minted it — decode
+                // against the normalized filters before the store ever sees it.
+                const expected: TaskCursorFilters = {
+                    sort,
+                    state,
+                    ...(q !== undefined && { q }),
+                    ...(repo !== undefined && { repo }),
+                    ...(author !== undefined && { author }),
+                };
+                const raw = query.cursor;
+                if (!isText(raw) || decodeCursor(raw, expected) === null) {
+                    return bad(reply, 'BAD_CURSOR', 'cursor was not issued by this endpoint for this query');
+                }
+                cursor = raw;
             }
 
             const filters: TaskListFilters = {
-                state: expected.state,
-                q,
-                repo,
-                author,
-                sort: expected.sort,
+                state,
+                sort,
                 limit,
-                cursor,
+                ...(q !== undefined && { q }),
+                ...(repo !== undefined && { repo }),
+                ...(author !== undefined && { author }),
+                ...(cursor !== undefined && { cursor }),
             };
-            const listed = await guard(
+
+            const tasks = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'task list failed'),
                 () => store.listTasks(filters)
             );
-            if (!listed.ok) return reply;
-            const { navigation, page } = listed.value;
-            return reply.code(200).send({
-                navigation,
-                page: {
-                    items: page.items,
-                    nextCursor:
-                        page.nextCursor === null ? null : encodeTaskCursor({ v: 1, ...expected, ...page.nextCursor }),
-                },
-            });
+            if (!tasks.ok) return reply;
+            return reply.code(200).send(tasks.value);
         });
     };
