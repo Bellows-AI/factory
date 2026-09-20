@@ -113,47 +113,6 @@ export function describeRepos(repos: { owner: string; name: string }[]): string 
 }
 
 /**
- * The freshness line's age, in the tiers the dashboard header speaks — just now, minutes,
- * hours, days. Distinct from `relativeTime` on purpose: the board table's stamp says
- * "29m ago", the dashboard's headline copy says "4 min ago", and the two vocabularies stay
- * pinned apart by their own tests. `now` is injectable so callers share the page's one tick
- * and tests freeze time; a dash for anything absent or unparseable, like every formatter here.
- */
-export function updatedAgo(iso: string | null | undefined, now: Date = new Date()): string {
-    if (!iso) return '—';
-    const at = Date.parse(iso);
-    if (Number.isNaN(at)) return '—';
-    const seconds = Math.max(0, Math.floor((now.getTime() - at) / 1000));
-    if (seconds < 60) return 'just now';
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes} min ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours} hr ago`;
-    return `${Math.floor(hours / 24)} d ago`;
-}
-
-/**
- * The full localized stamp behind a relative label — the hover-and-focus reveal that says
- * exactly when "4 min ago" was. Explicit-locale when given so tests pin the output; callers
- * omit it to get the user's own.
- */
-export function preciseTimestamp(iso: string | null | undefined, locale?: string): string {
-    if (!iso) return '—';
-    const at = new Date(iso);
-    if (Number.isNaN(at.getTime())) return '—';
-    return at.toLocaleString(locale);
-}
-
-/**
- * A count rendered exactly, digits grouped — the honest number beside a rounded one. The
- * denominator in "2 of 3 measured edit decisions accepted" must never round.
- */
-export function exactInt(value: number | null | undefined): string {
-    if (value === null || value === undefined) return '—';
-    return value.toLocaleString('en-US');
-}
-
-/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */
@@ -168,19 +127,70 @@ export function tokens(value: number | null | undefined): string {
 }
 
 /**
- * How long ago a stamp happened, relative to a caller-supplied `now` so it stays pure — the
- * caller decides what "now" is and the render's poll cadence is the ticker. An absent or
- * unparseable stamp is an em dash like every formatter here.
+ * The exact integer, grouped for reading: 1234567 renders "1,234,567", never "1.2M". The
+ * rounded forms live in `num` and `tokens`; a caller asking for exact means it — counts of
+ * sessions, runs and decisions are small enough to read whole and sum by hand.
+ */
+export function int(value: number | null | undefined): string {
+    if (value === null || value === undefined) return '—';
+    return Math.round(value).toLocaleString('en-US');
+}
+
+/**
+ * How long ago an instant was, against an injected `now` (pure; the caller owns the clock).
+ * A stamp slightly in the future — clock skew, never real — still reads as "just now"
+ * rather than a negative age, and past a month the date itself takes over: "203d ago" is a
+ * guess wearing a number, "2026-01-28" is a fact.
  */
 export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
     if (!iso) return '—';
-    const at = new Date(iso).getTime();
-    if (Number.isNaN(at)) return '—';
-    const seconds = Math.round((now.getTime() - at) / 1000);
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '—';
+    const seconds = Math.max(0, (now.getTime() - at.getTime()) / 1000);
     if (seconds < 60) return 'just now';
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes}m ago`;
     const hours = Math.floor(minutes / 60);
-    if (hours < 48) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    return commitDate(iso);
+}
+
+/**
+ * The full precise stamp: `YYYY-MM-DD HH:MM:SS`, UTC like every formatter here. `taskTime`'s
+ * minutes are not enough when two events land inside the same one — a run's start and its
+ * verdict frequently do.
+ */
+export function timestamp(iso: string | null | undefined): string {
+    if (!iso) return '—';
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '—';
+    return at.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * A window's span in UTC days: "2026-04-15 → 2026-08-21 UTC". An unmeasured end — an
+ * all-time range has no `to`, a store with no coverage has no `from` — stays an em dash
+ * rather than silently reading as now.
+ */
+export function utcRange(from: string | null | undefined, to: string | null | undefined): string {
+    const day = (iso: string | null | undefined): string | null => {
+        if (!iso) return null;
+        const at = new Date(iso);
+        return Number.isNaN(at.getTime()) ? null : at.toISOString().slice(0, 10);
+    };
+    const fromDay = day(from);
+    const toDay = day(to);
+    if (fromDay === null && toDay === null) return '—';
+    return `${fromDay ?? '—'} → ${toDay ?? '—'} UTC`;
+}
+
+/**
+ * Input and output side by side for a table cell, each through `tokens()`. The pair is the
+ * only valid combined view — cache reads and writes stay out — and the null contract is
+ * per figure: an unmeasured side is an em dash, never a coerced zero.
+ */
+export function tokenPair(t: { input: number | null; output: number | null }): string {
+    return `${tokens(t.input)} / ${tokens(t.output)}`;
 }

@@ -1,6 +1,6 @@
 import type { TelemetryStats } from '@factory-ai/core';
 import type { StatsPayload } from '../api/useStats.js';
-import { duration, exactInt, num, pct, tokens } from '../format.js';
+import { duration, int, num, pct, tokens } from '../format.js';
 import { selectionText } from '../dashboardSummary.js';
 
 /**
@@ -20,11 +20,11 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
     // name the decisions without a fabricated count; nothing measured → Not measured.
     const editNote =
         ea.ratio !== null
-            ? `${exactInt(ea.accepted)} of ${exactInt(ea.decisions)} measured edit decisions accepted`
+            ? `${int(ea.accepted)} of ${int(ea.decisions)} measured edit decisions accepted`
             : ea.accepted === null && ea.decisions !== null
-              ? `${exactInt(ea.decisions)} edit decisions measured, accepted count not recorded`
+              ? `${int(ea.decisions)} edit decisions measured, accepted count not recorded`
               : ea.accepted !== null
-                ? `${exactInt(ea.decisions)} measured edit decisions`
+                ? `${int(ea.decisions)} measured edit decisions`
                 : 'Not measured';
     return (
         <section className="usage-summary">

@@ -1,5 +1,5 @@
 import type { FetchState } from '../api/useStats.js';
-import { updatedAgo } from '../format.js';
+import { relativeTime } from '../format.js';
 
 /**
  * The page-level status region — every load, refresh, staleness and error state of the stats
@@ -27,7 +27,7 @@ export function StatusBanner({
             <p className="status error">
                 {error}
                 {hasData && lastGoodSelection
-                    ? ` — showing the last successful read (${lastGoodSelection}), fetched ${updatedAgo(fetchedAt, now)}.`
+                    ? ` — showing the last successful read (${lastGoodSelection}), fetched ${relativeTime(fetchedAt, now)}.`
                     : ' — nothing has rendered yet. Check the telemetry store, then Refresh.'}
             </p>
         );

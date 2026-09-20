@@ -36,13 +36,19 @@ function sumTokens(items: { tokens: TokenTotals }[]): TokenTotals {
     };
 }
 
+/**
+ * Assembles the edit-acceptance figures from the measured sums. `decisions` is the null-aware
+ * denominator; the ratio stays null unless the numerator was measured AND something was —
+ * a rejected count alone proves nothing about acceptance, and zero measured decisions have
+ * no ratio (`ratio()` nulls the zero denominator, keeping 0-of-0 distinct from unmeasured).
+ */
 function editAcceptance(accepted: number | null, rejected: number | null): EditAcceptance {
-    const total = sum([accepted, rejected]);
+    const decisions = sum([accepted, rejected]);
     return {
         accepted,
         rejected,
-        decisions: total,
-        ratio: total === null || total === 0 || accepted === null ? null : ratio(accepted, total),
+        decisions,
+        ratio: accepted === null || decisions === null ? null : ratio(accepted, decisions),
     };
 }
 

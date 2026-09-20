@@ -4,7 +4,7 @@ import { useCompletedJobs } from '../api/useCompletedJobs.js';
 import { AnalyticsToolbar } from '../components/AnalyticsToolbar.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { StatusBanner } from '../components/StatusBanner.js';
-import { describeRepos, preciseTimestamp, updatedAgo } from '../format.js';
+import { describeRepos, relativeTime, timestamp } from '../format.js';
 import { UsageSummaryPanel } from '../panels/UsageSummaryPanel.js';
 import { ByUserPanel } from '../panels/ByUserPanel.js';
 import { RecentTasksPanel } from '../panels/RecentTasksPanel.js';
@@ -79,11 +79,11 @@ export function DashboardPage() {
                             // biome-ignore lint/a11y/noNoninteractiveTabindex: this focusable wrapper is the keyboard path to the revealed timestamp — the stamp must reach keyboard focus, and there is no interactive element to host it on
                             tabIndex={0}
                             className="updated-at"
-                            title={preciseTimestamp(data.meta.fetchedAt)}
+                            title={timestamp(data.meta.fetchedAt)}
                         >
-                            Updated {updatedAgo(data.meta.fetchedAt, now)}
+                            Updated {relativeTime(data.meta.fetchedAt, now)}
                             <time className="updated-at-full" dateTime={data.meta.fetchedAt}>
-                                {preciseTimestamp(data.meta.fetchedAt)}
+                                {timestamp(data.meta.fetchedAt)}
                             </time>
                         </span>
                     ) : (
