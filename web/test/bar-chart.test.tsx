@@ -228,7 +228,7 @@ describe('BarChart exact bucket access', () => {
         expect(label).toContain('hidden: Output');
     });
 
-    it('keeps one roving tab stop whose every target references the tooltip', () => {
+    it('keeps one roving tab stop whose every target references its own tooltip', () => {
         const labels = ['a', 'b', 'c'];
         const svg = renderToStaticMarkup(
             <BarChart
@@ -243,9 +243,45 @@ describe('BarChart exact bucket access', () => {
         expect(hits).toHaveLength(3);
         expect(hits.filter((t) => attr(t, 'tabindex') === '0')).toHaveLength(1);
         expect(hits.filter((t) => attr(t, 'tabindex') === '-1')).toHaveLength(2);
-        // Every target references the tooltip id, so the active one always does — before the
-        // first interaction the reference dangles harmlessly.
-        expect(hits.every((t) => attr(t, 'aria-describedby') === 'chart-bucket-tooltip')).toBe(true);
+        // Every target references the tooltip id, so the active one always does.
+        const refs = hits.map((t) => attr(t, 'aria-describedby'));
+        expect(refs.every((r) => r !== undefined && r !== '')).toBe(true);
+        expect(new Set(refs).size).toBe(1);
+    });
+
+    it('derives the tooltip id per instance, so two charts never share one', () => {
+        const props = {
+            ariaLabel: 'two',
+            labels: ['a'],
+            bucketLabels: ['a'],
+            partial: [false],
+            series: bars([1]),
+        };
+        const svg = renderToStaticMarkup(
+            <>
+                <BarChart {...props} />
+                <BarChart {...props} />
+            </>
+        );
+        const refs = [...svg.matchAll(/aria-describedby="([^"]*)"/g)].map((m) => m[1]);
+        expect(refs.length).toBe(2);
+        expect(new Set(refs).size).toBe(2);
+    });
+
+    it('keeps the full raw precision in the exact readout', () => {
+        const svg = renderToStaticMarkup(
+            <BarChart
+                ariaLabel="precision"
+                labels={['a']}
+                bucketLabels={['2026-08-01']}
+                partial={[false]}
+                series={[{ id: 'input', label: 'Input', values: [1.23456], className: 'bar-primary' }]}
+                line={{ id: 'sessions', label: 'Sessions', values: [0.123456] }}
+            />
+        );
+        const hit = rectTags(svg).find((t) => attr(t, 'class') === 'bucket-hit');
+        expect(attr(hit!, 'aria-label')).toContain('Input 1.23456');
+        expect(attr(hit!, 'aria-label')).toContain('Sessions 0.123456');
     });
 
     it('reads an unmeasured bucket as a dash, never a fabricated zero', () => {

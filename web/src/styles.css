@@ -1083,11 +1083,13 @@
         stroke-width: 2;
     }
 
-    /* The SVG tooltip: the active bucket's exact readout, raised above the plot. */
+    /* The SVG tooltip: the active bucket's exact readout, raised above the plot. It never
+       intercepts the pointer — a box over a neighbour's band must not blind that bucket. */
     .chart-tooltip {
         fill: var(--ink);
         font-family: var(--font-mono);
         font-size: 11px;
+        pointer-events: none;
     }
 
     .chart-tooltip-box {

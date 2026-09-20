@@ -374,9 +374,7 @@ describe('per-task usage panel', () => {
 describe('token usage series granularity', () => {
     it('renders a caption naming the buckets, chart first, no leading paragraph', () => {
         expect(telemetry.series.granularity).toBe('week');
-        const weeklyHtml = renderToStaticMarkup(
-            <TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />
-        );
+        const weeklyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
         expect(weeklyHtml).toContain('Input and output tokens by ISO week; sessions use the right axis.');
         // The chart precedes its caption and explanation; nothing narrates before the marks.
         expect(weeklyHtml.indexOf('<svg')).toBeGreaterThan(-1);

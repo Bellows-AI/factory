@@ -1,10 +1,14 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useId } from 'react';
 import { ChartRoot, XLabels, YAxis } from './Axes.js';
 import { PAD, linearScale, niceMax } from './scale.js';
 
-/** The bucket readout's exact figure, grouped for reading — the same idiom ByUserPanel's accessible names use. */
+/**
+ * The bucket readout's exact figure, grouped for reading — the same idiom ByUserPanel's
+ * accessible names use. The fraction cap is a formality (the raw value in full), not a
+ * rounding decision: the default three digits would quietly truncate the value it names.
+ */
 const exact = (value: number | null | undefined): string =>
-    value === null || value === undefined ? '—' : value.toLocaleString('en-US');
+    value === null || value === undefined ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: 20 });
 
 export interface BarSeries {
     id: string;
@@ -55,7 +59,6 @@ export function rovingIndex(current: number, count: number, key: BucketNavKey): 
     }
 }
 
-const TOOLTIP_ID = 'chart-bucket-tooltip';
 const TOOLTIP_MIN_WIDTH = 150;
 const TOOLTIP_MAX_WIDTH = 320;
 const TOOLTIP_LINE = 14;
@@ -100,8 +103,11 @@ export function BarChart({
     labelEvery = 1,
 }: BarChartProps) {
     const [active, setActive] = useState<number | null>(null);
-    // A range switch can shrink the bucket list under a stale index — clamp, never point at a ghost.
-    const activeIdx = active !== null ? Math.max(0, Math.min(active, labels.length - 1)) : null;
+    // Two charts on one page must never share a tooltip id — the reference would cross charts.
+    const tooltipId = useId();
+    // A range switch can shrink the bucket list under a stale index — clamp, never point at a
+    // ghost; and an empty list has no bucket to be active at all.
+    const activeIdx = active !== null && labels.length > 0 ? Math.max(0, Math.min(active, labels.length - 1)) : null;
     const hitRefs = useRef<(SVGRectElement | null)[]>([]);
 
     const visibleSeries = series.filter((s) => !hiddenSeries?.has(s.id));
@@ -234,7 +240,7 @@ export function BarChart({
                 height={plotBottom - PAD.top}
                 tabIndex={isStop ? 0 : -1}
                 aria-label={parts(i).join(', ')}
-                aria-describedby={TOOLTIP_ID}
+                aria-describedby={tooltipId}
                 onFocus={() => setActive(i)}
                 onPointerMove={() => setActive(i)}
                 onKeyDown={(e) => navigate(i, e)}
@@ -255,7 +261,7 @@ export function BarChart({
         const boxX = Math.max(PAD.left, Math.min(bandCentre(activeIdx) - boxWidth / 2, width - PAD.right - boxWidth));
         const boxY = Math.max(y(stackTotals[activeIdx] ?? 0) - boxHeight - 6, PAD.top);
         tooltip = (
-            <g id={TOOLTIP_ID} className="chart-tooltip">
+            <g id={tooltipId} className="chart-tooltip">
                 <rect className="chart-tooltip-box" x={boxX} y={boxY} width={boxWidth} height={boxHeight} rx="3" />
                 {lines.map((l, n) => (
                     <text key={n} x={boxX + 6} y={boxY + 16 + TOOLTIP_LINE * n}>
