@@ -101,6 +101,12 @@ describe('sortRows', () => {
         expect(desc.map((r) => r.id)).toEqual(['b', 'c', 'a']);
     });
 
+    it('partitions a NaN with the unmeasured, so descending cannot float it to the top', () => {
+        const rows = [row('a', 'a', Number.NaN), row('b', 'b', 5), row('c', 'c', 1)];
+        const desc = sortRows(rows, COLUMNS, { key: 'size', direction: 'descending' });
+        expect(desc.map((r) => r.id)).toEqual(['b', 'c', 'a']);
+    });
+
     it('breaks ties with the original order, so equal values are stable', () => {
         const rows = [row('a', 'first', 1), row('b', 'second', 1), row('c', 'third', 0)];
         const desc = sortRows(rows, COLUMNS, { key: 'size', direction: 'descending' });

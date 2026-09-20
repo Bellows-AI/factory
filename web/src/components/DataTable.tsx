@@ -91,7 +91,9 @@ export function sortRows<T>(rows: readonly T[], columns: readonly DataTableColum
     for (let index = 0; index < rows.length; index++) {
         const row = rows[index] as T;
         const value = sortValueOf(row);
-        if (value === null) unmeasured.push({ row, index });
+        // NaN partitions with the unmeasured: compareValues ranks it last, but only from
+        // inside the measured pool would the descending sign flip throw it to the top.
+        if (value === null || (typeof value === 'number' && Number.isNaN(value))) unmeasured.push({ row, index });
         else measured.push({ row, value, index });
     }
     measured.sort((a, b) => {
@@ -120,59 +122,61 @@ export function DataTable<T>({ labelledBy, rows, columns, rowKey, initialSort, e
                 : { key: column.key, direction: defaultDirectionFor(rows, columns, column.key) }
         );
 
+    // Nothing to scroll when there is nothing to show: the focusable scroll region is only
+    // for real content, so an empty table does not leave a dead tab stop behind.
+    if (rows.length === 0) {
+        return <>{empty}</>;
+    }
+
     return (
         // Scroll rather than spill: cells are nowrap, so the table is as wide as its content
         // needs. A named section is the region landmark; focusable so keyboard users can reach
         // the scrolled columns too (the WCAG focusable-scroll-area pattern).
         // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
         <section className="table-wrap" aria-labelledby={labelledBy} tabIndex={0}>
-            {rows.length === 0 ? (
-                empty
-            ) : (
-                <table className="data">
-                    <thead>
-                        <tr>
-                            {columns.map((column) => {
-                                const active = sort !== null && sort.key === column.key;
-                                // A sort state naming a non-sortable column (a bad `initialSort`)
-                                // must not dress a plain th up as the active sort.
-                                const direction = active && sort !== null && column.sortValue ? sort.direction : null;
-                                const align = column.align === 'end' ? ' align-end' : '';
-                                const className = column.sortValue
-                                    ? `sortable${direction ? (direction === 'ascending' ? ' asc' : ' desc') : ''}${align}`
-                                    : align.trim();
-                                return (
-                                    <th
-                                        key={column.key}
-                                        scope="col"
-                                        className={className || undefined}
-                                        aria-sort={direction ?? undefined}
-                                    >
-                                        {column.sortValue ? (
-                                            <button type="button" onClick={() => activate(column)}>
-                                                {column.label}
-                                            </button>
-                                        ) : (
-                                            column.label
-                                        )}
-                                    </th>
-                                );
-                            })}
+            <table className="data">
+                <thead>
+                    <tr>
+                        {columns.map((column) => {
+                            const active = sort !== null && sort.key === column.key;
+                            // A sort state naming a non-sortable column (a bad `initialSort`)
+                            // must not dress a plain th up as the active sort.
+                            const direction = active && sort !== null && column.sortValue ? sort.direction : null;
+                            const align = column.align === 'end' ? ' align-end' : '';
+                            const className = column.sortValue
+                                ? `sortable${direction ? (direction === 'ascending' ? ' asc' : ' desc') : ''}${align}`
+                                : align.trim();
+                            return (
+                                <th
+                                    key={column.key}
+                                    scope="col"
+                                    className={className || undefined}
+                                    aria-sort={direction ?? undefined}
+                                >
+                                    {column.sortValue ? (
+                                        <button type="button" onClick={() => activate(column)}>
+                                            {column.label}
+                                        </button>
+                                    ) : (
+                                        column.label
+                                    )}
+                                </th>
+                            );
+                        })}
+                    </tr>
+                </thead>
+                <tbody>
+                    {sorted.map((row) => (
+                        <tr key={rowKey(row)}>
+                            {columns.map((column) => (
+                                <td key={column.key} className={column.align === 'end' ? 'align-end' : undefined}>
+                                    {column.cell(row)}
+                                </td>
+                            ))}
                         </tr>
-                    </thead>
-                    <tbody>
-                        {sorted.map((row) => (
-                            <tr key={rowKey(row)}>
-                                {columns.map((column) => (
-                                    <td key={column.key} className={column.align === 'end' ? 'align-end' : undefined}>
-                                        {column.cell(row)}
-                                    </td>
-                                ))}
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            )}
+                    ))}
+                </tbody>
+            </table>
         </section>
     );
 }
