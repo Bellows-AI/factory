@@ -140,8 +140,10 @@ Claude Code session, and this process cannot tell.
 ## What the page reads
 
 `docs/workspace.md` used to say "nothing rendered on the page comes from here". That is no longer
-true: the workspace section of Settings (Settings → Workspace) reports each checkout's branch,
-newest commit and size on disk.
+true: the workspace payload feeds Settings, and since #181 the checkout facts — each checkout's
+branch, newest commit and size on disk — render on Settings → Repositories, beside the selection
+that produced them. Settings → Workspace keeps what is personal: the root sentence, the member's
+own environment scope, and the `Still on disk` list of deselected but unpruned checkouts.
 
 - **Those three are cached, and a cold read is `null` rather than awaited.** The route is polled, and
   read naively that is a `git log` plus a recursive directory walk per repo per member per tick. The

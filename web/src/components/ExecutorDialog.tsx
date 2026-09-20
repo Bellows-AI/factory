@@ -6,7 +6,7 @@ import { mergeExecutors, validateExecutorConfig, type ExecutorRow } from '../wor
 /**
  * Add an executor, or edit an existing one.
  *
- * The same Headless-UI bargain RepoPickerDialog makes: the `Dialog` buys the top layer, focus
+ * The Headless-UI bargain: the `Dialog` buys the top layer, focus
  * trapping, focus restoration, the backdrop and Escape without a hand-rolled trap; no `<form>`
  * submits because CSP sends `form-action 'none'`. The one difference in body is a textarea for
  * the pasted JSON, re-validated on every keystroke by the pure validator — cheap, and the message

@@ -1690,32 +1690,6 @@
         white-space: nowrap;
     }
 
-    .pill-ready {
-        border-color: var(--ok-border);
-        color: var(--lamp-run);
-    }
-
-    .pill-cloning,
-    .pill-queued {
-        border-color: var(--warn-border);
-        color: var(--lamp-wait);
-    }
-
-    .pill-failed {
-        border-color: var(--bad-border);
-        color: var(--lamp-stop);
-    }
-
-    /* The reason travels with the pill rather than in a tooltip: "failed" on its own sends somebody to
-       the server logs for a sentence this row already has. */
-    .pill-reason {
-        color: var(--ink-muted);
-        display: block;
-        font-size: 11px;
-        max-width: 40ch;
-        white-space: normal;
-    }
-
     /* --- The repository picker ---------------------------------------------------------------- */
 
     /* The Headless UI dialog shell. The layer carries the z-index policy (the native <dialog> top

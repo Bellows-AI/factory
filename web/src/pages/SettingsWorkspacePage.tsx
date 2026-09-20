@@ -1,51 +1,23 @@
-import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader.js';
-import { RepoPickerDialog } from '../components/RepoPickerDialog.js';
-import { WorkspaceReposPanel } from '../panels/WorkspaceReposPanel.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
- * The Workspace section of the settings tree: the workspace's info and controls, the repositories
- * checked out into it and the picker that selects them, and the member's own environment scope
- * (issue 150).
+ * The Workspace section of the settings tree, simplified to what is personal (issue 181): the
+ * workspace root, the member's own environment scope, and the orphaned checkouts still on disk.
  *
- * The page header carries the workspace sentence (where the checkouts live, or the no-root
- * configuration note) and the picker button as its action; the panels below hold the lists.
- *
- * The picker is offered automatically the first time the page is seen with nothing selected, and
- * only then — the dismissal is remembered for this page view, the persistent ways back in are the
- * header's button and the empty state.
+ * Selecting repositories moved to Settings → Repositories, where the installation list, the
+ * checkout statuses and the per-repository configuration live; the page links there instead of
+ * hosting a second selection surface. What stays here is the one scope only this member owns.
  */
 export function SettingsWorkspacePage() {
     const { workspace, env } = useSettingsPage();
-    const { data, loading, error, saving, save } = workspace;
-    const [picking, setPicking] = useState(false);
-    /**
-     * Dismissal is remembered for this page view only, so "Not now" is not a decision somebody has
-     * to undo later. The persistent way back in is the header's button and the empty state.
-     */
-    const [dismissed, setDismissed] = useState(false);
-
-    /*
-     * `root !== null` is not optional: local development and the `chromium` browser check both run
-     * with no workspace root, and a dialog appearing there would break a suite that is about the
-     * dashboard. Same posture as `data.telemetry ? … : null` — nothing renders for a feature this
-     * deployment does not have.
-     */
-    useEffect(() => {
-        if (!data || dismissed) return;
-        if (data.root !== null && data.repos.length === 0) setPicking(true);
-    }, [data, dismissed]);
-
-    const close = () => {
-        setPicking(false);
-        setDismissed(true);
-    };
+    const { data, loading, error } = workspace;
 
     // A deliberate configuration, not a failure — hence the sentence rather than an error. It
-    // takes the place of the checkout panels only: the member's environment scope is unrelated
-    // to whether a root is configured and still renders below (issue 150 — on the old Environment
+    // takes the place of the checkout link only: the member's environment scope is unrelated to
+    // whether a root is configured and still renders below (issue 150 — on the old Environment
     // page it rendered on every deployment, and this keeps that true).
     const noRoot = data !== null && data.root === null;
 
@@ -66,8 +38,8 @@ export function SettingsWorkspacePage() {
                 description={
                     noRoot ? (
                         <>
-                            This deployment has no workspace root configured, so no repositories are checked out. Set{' '}
-                            <code>ORG_WORKSPACE_ROOT</code> to turn it on.
+                            This deployment has no workspace root. Tasks cannot run until an operator sets{' '}
+                            <code>ORG_WORKSPACE_ROOT</code>.
                         </>
                     ) : data ? (
                         <>
@@ -76,15 +48,9 @@ export function SettingsWorkspacePage() {
                     ) : undefined
                 }
                 actions={
-                    // The picker seeds itself from the workspace selection, so it exists only when
-                    // that selection is in hand AND there is a root to check out into — opened
-                    // over a failed poll it would read "nothing selected" and its whole-list save
-                    // would deselect every checkout.
-                    data && !noRoot ? (
-                        <button type="button" className="primary" onClick={() => setPicking(true)}>
-                            Select repositories
-                        </button>
-                    ) : undefined
+                    // The link exists only when there is a workspace to check out into; over a
+                    // failed poll there is no root to reason about, so nothing offers management.
+                    data && !noRoot ? <Link to="/settings/repos">Manage repository checkouts</Link> : undefined
                 }
             />
 
@@ -93,46 +59,30 @@ export function SettingsWorkspacePage() {
             {/* Requiring `data` keeps the failed-poll state honest: with no response there is no
                 root to reason about, and the empty-checkout sentence beside the error would claim
                 "nothing checked out" as a fact about the workspace rather than about the request. */}
-            {data && !noRoot ? (
-                <>
-                    {data && data.repos.length ? (
-                        <WorkspaceReposPanel repos={data.repos} />
-                    ) : (
-                        <section className="panel">
-                            <p className="muted">
-                                Nothing checked out yet. Choose repositories and they are cloned in the background.
-                            </p>
-                        </section>
-                    )}
+            {data && !noRoot && data.repos.length === 0 ? (
+                <section className="panel">
+                    <p className="muted">
+                        Nothing checked out yet. Enable repositories under Settings → Repositories and they are cloned
+                        in the background.
+                    </p>
+                </section>
+            ) : null}
 
-                    {/* Deselected repositories are still on disk: nothing prunes, and per-member
-                        checkouts multiply that by the number of members. Listing them is what makes
-                        the growth visible on the page rather than only in `df`. */}
-                    {data && data.orphaned.length ? (
-                        <section className="panel">
-                            <h2>Still on disk</h2>
-                            <p className="muted">
-                                These are no longer selected, but their checkouts have not been removed — they may hold
-                                uncommitted work, so nothing deletes them automatically.
-                            </p>
-                            <ul>
-                                {data.orphaned.map((repo) => (
-                                    <li key={`${repo.owner}/${repo.name}`}>
-                                        {repo.owner}/{repo.name}
-                                    </li>
-                                ))}
-                            </ul>
-                        </section>
-                    ) : null}
-
-                    <RepoPickerDialog
-                        open={picking}
-                        selected={data?.repos ?? []}
-                        onClose={close}
-                        onSave={save}
-                        saving={saving}
-                    />
-                </>
+            {/* Deselected repositories are still on disk: nothing prunes, and per-member
+                checkouts multiply that by the number of members. Listing them is what makes
+                the growth visible on the page rather than only in `df`. Nothing here deletes. */}
+            {data && data.orphaned.length ? (
+                <section className="panel">
+                    <h2>Still on disk</h2>
+                    <p className="muted">Nothing removes these automatically — they may hold uncommitted work.</p>
+                    <ul>
+                        {data.orphaned.map((repo) => (
+                            <li key={`${repo.owner}/${repo.name}`}>
+                                {repo.owner}/{repo.name} — no longer enabled; its checkout remains on disk.
+                            </li>
+                        ))}
+                    </ul>
+                </section>
             ) : null}
 
             {env.error ? <p className="status">{env.error}</p> : null}

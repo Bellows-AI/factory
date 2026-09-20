@@ -150,7 +150,7 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
 | User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar's identity disclosure (Headless UI Menu) |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
-| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox repo/executor pickers; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay` |
+| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox executor picker; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay`. The `dialog-*` shell is shared with the dialogs below |
 | Repository setup | `repo-search`, `repo-columns` | The repositories page's visibly labeled search row, and the summary/list/detail stack that becomes master/detail at ≥1100px; below that the DOM order — summary, list, detail — is the reading order (issue 181) |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
 | Keyboard mark | `kbd` (element) | The shortcut text beside the composer's launch button — documentation of the button, never an affordance |
@@ -166,7 +166,7 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
 | Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
 | Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
-| Pills | `pill`, `pill-ready`, `pill-cloning`, `pill-queued`, `pill-failed`, `pill-reason` | Repo/workspace state chips; the reason travels in the pill |
+| Pills | `pill` | State/type chips — task statuses, executor types, the private repo mark; a pill's text is the whole message, never a color |
 
 ### Charts
 
@@ -240,8 +240,6 @@ Components:
 | `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
-| `RepoPickerDialog.tsx` | picker, pill, status |
-| `RepoStatus.tsx` | pill |
 | `RepositorySetup.tsx` | panel, panel-head, table-wrap, data, pill, repo-search, status, muted, primary |
 | `repository-setup.ts` | helper — no markup |
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
@@ -271,7 +269,6 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
-| `WorkspaceReposPanel.tsx` | panel, table |
 | `env-raw.ts` | helper — no markup |
 
 Pages:
@@ -284,8 +281,8 @@ Pages:
 | `SettingsExecutorsPage.tsx` | page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, panel |
-| `SettingsRepositoriesPage.tsx` | page-header, panel |
-| `SettingsWorkspacePage.tsx` | page-header, panel |
+| `SettingsRepositoriesPage.tsx` | page-header, repo-columns, status, muted |
+| `SettingsWorkspacePage.tsx` | page-header, panel, status, muted |
 | `TaskComposerPage.tsx` | page-header, status |
 | `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
