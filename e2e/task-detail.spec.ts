@@ -22,8 +22,9 @@ function watchConsole(page: Page): string[] {
 /** Queue a task through the real composer and land on its detail page. */
 async function queueTask(page: Page, command: string): Promise<string> {
     await page.goto('/tasks/new');
-    await page.getByPlaceholder('Describe the task…').fill(command);
-    await page.getByRole('button', { name: 'Send' }).click();
+    // The guided composer (#176): the prompt is a labelled field, the action is Start task.
+    await page.getByLabel('What should the agent do?').fill(command);
+    await page.getByRole('button', { name: 'Start task' }).click();
     await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
     return /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
 }

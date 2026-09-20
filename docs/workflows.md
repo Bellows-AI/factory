@@ -18,7 +18,12 @@ by OUTCOME — they are never nodes with containers.
 {
   "entry": "fetch-issue",                      // optional; defaults to the first declared node
   "params": [                                  // optional; see "Launch parameters" below
-    { "name": "issue", "pattern": "#\\d+|https://github\\.com/…/issues/\\d+" }
+    {
+      "name": "issue",
+      "pattern": "#\\d+|https://github\\.com/…/issues/\\d+",
+      "description": "Enter an issue reference such as #123 or a full GitHub issue URL.",
+      "example": "#123"
+    }
   ],
   "nodes": [
     {
@@ -58,10 +63,23 @@ The grammar is closed and the validator (`workflow-schema.ts`) refuses with NAME
 A workflow may declare parameters (`params`), and every declared parameter is REQUIRED at launch —
 there is no optional parameter, because a parametrized workflow like `fix-issue` that launched
 without its issue would burn a full executor run on a prompt the model can only guess at. A
-declaration is `{ name, pattern? }`: the name is a lowercase identifier the prompts reference as
-`{{param.NAME}}` (`param` is therefore a RESERVED node name); the pattern is an optional regex
-SOURCE (≤256 characters) the value must fully match — `^(?:pattern)$`, so authors write a bare
-shape and never anchors. Absent pattern means any non-empty value, bounded at 512 characters.
+declaration is `{ name, pattern?, description?, example? }`: the name is a lowercase identifier the
+prompts reference as `{{param.NAME}}` (`param` is therefore a RESERVED node name); the pattern is an
+optional regex SOURCE (≤256 characters) the value must fully match — `^(?:pattern)$`, so authors
+write a bare shape and never anchors. Absent pattern means any non-empty value, bounded at 512
+characters.
+
+`description` and `example` are PRESENTATION METADATA the composer renders beside the input —
+plain-language guidance and a valid example a generic client can show instead of interpreting the
+regex. Both are optional, validated on the trimmed value (non-empty, at most 160 and 120 characters
+respectively — `BAD_PARAMS` otherwise), and retained trimmed on the normalized definition. `example`
+must be VALID: when the parameter declares a `pattern`, the trimmed example must fully match it
+(`^(?:pattern)$`, the same semantics launch applies) — the composer may pre-fill it, and a hint the
+launch would refuse is exactly the dishonest guidance this metadata exists to replace. The pair
+still participates in NOTHING beyond that: no interpolation, and `checkWorkflowParams` never reads
+them — guidance never substitutes for the pattern at launch. Unknown keys beside them still refuse
+`UNKNOWN_KEY`, and they count toward the unchanged 16 KiB definition cap. The workflow list and
+detail responses carry the fields through the existing parameter summaries.
 
 THE PATTERN GRAMMAR IS A SAFE SUBSET of regular expressions, refused on any doubt (`BAD_PARAMS`).
 A pattern runs in the board's event loop (every launch validates against it) and in every member's
@@ -213,17 +231,23 @@ Resolution for a task, in `POST /api/jobs`:
    prompt.
 
 The resolved definition is SNAPSHOT-FROZEN onto the thread's root row at creation, beside
-`workflow_id`. Follow-up rows reference the root; every transition decision reads the snapshot.
-Editing or deleting a workflow mid-flight changes later tasks, never a running thread — the task
-view can always show the exact graph walked. `job.workflow_id` carries no foreign key on purpose:
-job is an audit record, and deleting a definition must not touch the threads that walked it.
+`workflow_id` — and the resolved record's NAME is frozen with them (`job.workflow_name`, 033): the
+reusable process the member chose, as it was called when the task was created, inherited by every
+successor and user follow-up. Follow-up rows reference the root; every transition decision reads
+the snapshot. Editing or deleting a workflow mid-flight changes later tasks, never a running
+thread — the task view can always show the exact graph walked. `job.workflow_id` carries no foreign
+key on purpose: job is an audit record, and deleting a definition must not touch the threads that
+walked it. The frozen name is held to the same doctrine — a rename or delete rewrites later tasks,
+never existing task history, and a task that never named a workflow keeps null.
 
 ## The blocks and the base workflow
 
 `server/src/db/workflow-templates.ts` holds the board-owned prompt templates and the seeded
 `fix-issue` workflow — the `/fix` skeleton as a graph: fetch-issue → implement → review (x3) →
 gate-fix (x3) → publish. It declares the `issue` parameter — a bare `#123` or a full GitHub issues
-URL — and its fetch block fetches exactly that reference (`gh issue view {{param.issue}} …`), with
+URL, with the composer guidance `description` "Enter an issue reference such as #123 or a full
+GitHub issue URL." and the `example` `#123` — and its fetch block fetches exactly that reference
+(`gh issue view {{param.issue}} …`), with
 the member's own words carried in as `{{command}}`. The old "if none was given, take the issue the
 task describes as text and skip the fetch" fallback is gone: the launch refuses without a valid
 issue instead of improvising. The bare form keeps its `#` so the reference survives into the
@@ -253,13 +277,13 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The transition engine (pure) | `server/src/db/workflow-engine.ts` |
 | The store: CRUD, scope visibility, seed | `server/src/db/workflow-store.ts` |
 | Templates and the base `fix-issue` workflow | `server/src/db/workflow-templates.ts` |
-| Columns (027, 030) and the freeze-at-create snapshot | `server/migrations/027_workflows.sql`, `server/migrations/030_workflow_params.sql` |
+| Columns (027, 030, 033) and the freeze-at-create snapshot | `server/migrations/027_workflows.sql`, `server/migrations/030_workflow_params.sql`, `server/migrations/033_job_workflow_name.sql` |
 | The transition in the verdict's transaction | `job-store.ts` `complete()` |
 | The primary-session follow-up copy | `job-store.ts` `createFollowUp()` |
 | The claim's `publish` flag and the gates opt-out | `job-store.ts` `claim()` |
 | The driver's one publish gate | `driver/src/loop.ts` |
 | CRUD routes and `POST /api/jobs` resolution | `server/src/routes/workflows.ts`, `routes/jobs.ts` |
-| The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/api/useWorkflows.ts` |
+| The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/task-composer.ts`, `web/src/api/useWorkflows.ts` |
 
 ## Tests
 

@@ -310,7 +310,13 @@ export const jobRoutes =
              * workflow never moves a running thread.
              */
             const workflowsStore = await workflowsOf(request);
-            let workflow: { id: string; node: string; snapshot: WorkflowDefinition; params: ParamValues } | null = null;
+            let workflow: {
+                id: string;
+                name: string;
+                node: string;
+                snapshot: WorkflowDefinition;
+                params: ParamValues;
+            } | null = null;
             if (workflowsStore && fields.workflow !== undefined && fields.workflow !== null) {
                 if (typeof fields.workflow !== 'string' || !fields.workflow.trim()) {
                     return bad(reply, 'BAD_WORKFLOW', 'workflow must be a non-empty string');
@@ -358,6 +364,10 @@ export const jobRoutes =
                     }
                     workflow = {
                         id: found.value.id,
+                        // The resolved record's NAME, frozen on the task as workflow_name — the
+                        // same trust pattern as created_by: it travels from the record the store
+                        // resolved, never off the body, which only NAMES a workflow to resolve.
+                        name: found.value.name,
                         node: definition.entry,
                         snapshot: definition,
                         params: checked.values,

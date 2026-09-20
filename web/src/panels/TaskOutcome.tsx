@@ -72,7 +72,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
         ['Worktree', latest.workspacePath],
         // A run without a recorded executor ran the default one — a fact, not an omission.
         ['Executor', latest.executor ?? 'Default executor'],
-        ['Workflow', latest.workflowName ?? null],
+        ['Workflow', latest.workflowName],
         ['Workflow node', latest.workflowNode],
         ['Context', context !== null ? `${tokenCount.format(context)} tok` : null],
         ['Cost', cost !== null ? `$${cost.toFixed(4)}` : null],

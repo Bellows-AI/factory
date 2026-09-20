@@ -111,12 +111,11 @@ export interface Job {
      */
     workflowNode: string | null;
     /**
-     * The workflow NAME the run was claimed under, frozen at claim time — distinct from the node
-     * above, which is the position within it. Absent until the board serves the frozen field
-     * (issue 175): reads use `!= null`, so the missing field and a null row behave identically and
-     * the outcome renders neither.
+     * The workflow the task's thread was launched under — the name frozen on the thread at create
+     * time, inherited by every turn. Null on workflow-less tasks. Distinct from `workflowNode`
+     * (this row's graph position); a rename or delete of the source workflow never changes it.
      */
-    workflowName?: string | null;
+    workflowName: string | null;
     /** The finished task this one asks for adjustments on, when it is a follow-up. */
     followUpTo: string | null;
     /**
