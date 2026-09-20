@@ -61,14 +61,18 @@ const idleEnv = {
     saveRepo: async () => null,
 } as unknown as UseEnv;
 
+/** The layout's unsaved-change registry (issue 181), inert under a static render. */
+const idleUnsaved = { guards: new Map(), setGuard: () => {} };
+
 const render = (
     path: string,
     overrides: { session?: Session; workspace?: Partial<UseWorkspace>; env?: Partial<UseEnv> } = {}
 ) => {
     /**
-     * Publishes what SettingsLayout promises — the shell context plus both polls — with the polls
-     * taken from the overrides, not from the real hooks: the point of this suite is the pages'
-     * POSTURES, and the layout's own fetches are the wiring suite's business.
+     * Publishes what SettingsLayout promises — the shell context, both polls and the unsaved
+     * registry — with the polls taken from the overrides, not from the real hooks: the point of
+     * this suite is the pages' POSTURES, and the layout's own fetches are the wiring suite's
+     * business.
      */
     function SettingsArea() {
         return (
@@ -77,6 +81,7 @@ const render = (
                     session: overrides.session ?? session,
                     workspace: { ...idleWorkspace, ...overrides.workspace },
                     env: { ...idleEnv, ...overrides.env },
+                    unsaved: idleUnsaved,
                 }}
             />
         );
@@ -158,13 +163,36 @@ describe('Settings executors page', () => {
 });
 
 describe('Settings repositories page', () => {
-    it('renders both sections, the repository editor held back until data arrives', () => {
+    it('states nothing about counts while either answer is unresolved — never 0 of 0', () => {
+        // Cold render: the installation list has not been fetched and the workspace poll has not
+        // answered. "0 of 0 repositories enabled" would be two claims about two absent answers.
         const html = render('/settings/repos');
-        expect(html).toContain('Available repositories');
-        expect(html).toContain('Per repository');
-        expect(html).toContain('Choose a repository…');
+        expect(html).toContain('Choose which repositories are checked out for your workspace');
+        expect(html).not.toContain('repositories enabled');
+        expect(html).not.toContain('0 of 0');
         expect(html).not.toContain('No variables configured.');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('says the workspace root is missing, links to Workspace, and holds the save', () => {
+        // `root: null` is a deliberate configuration: availability and configuration stay
+        // readable, but nothing may claim checkouts or save a selection into nothing.
+        const html = render('/settings/repos', {
+            workspace: { loading: false, data: { root: null, repos: [], orphaned: [], executors: [] } },
+        });
+        expect(html).toContain('no workspace root');
+        expect(html).toContain('/settings/workspace');
+        expect(html).toContain('disabled');
+        expect(html).not.toContain('No variables configured.');
+    });
+
+    it('names a failed workspace read rather than stating checkout facts over it', () => {
+        const html = render('/settings/repos', {
+            workspace: { loading: false, error: 'The workspace request failed' },
+        });
+        expect(html).toContain('The workspace request failed');
+        expect(html).not.toContain('Not checked out');
+        expect(html).not.toContain('repositories enabled');
     });
 
     it('renders no repository editor after a failed environment read', () => {
@@ -174,6 +202,12 @@ describe('Settings repositories page', () => {
         expect(html).toContain('The environment request failed');
         expect(html).not.toContain('No variables configured.');
         expect(html).not.toContain('Add variable');
+    });
+
+    it('renders no configuration detail before a repository is chosen', () => {
+        const html = render('/settings/repos');
+        expect(html).not.toContain('Environment for');
+        expect(html).not.toContain('Choose a repository…');
     });
 });
 
@@ -197,10 +231,10 @@ describe('settings page headers', () => {
         expect(render('/settings/organization')).not.toContain('<h2>Organization</h2>');
         expect(render('/settings/workspace')).not.toContain('<h2>Workspace</h2>');
         expect(render('/settings/executors')).not.toContain('<h2>Executors</h2>');
-        // The repositories page's two inner headings name distinct panels; neither restates
-        // the page title.
-        expect(render('/settings/repos')).toContain('<h2>Available repositories</h2>');
-        expect(render('/settings/repos')).toContain('<h2>Per repository</h2>');
+        expect(render('/settings/repos')).not.toContain('<h2>Repositories</h2>');
+        // The repositories page's inner headings name its two panels; neither restates the title.
+        expect(render('/settings/repos')).toContain('<h2>Availability</h2>');
+        expect(render('/settings/repos')).toContain('<h2>Repository list</h2>');
     });
 
     it('carries the workspace sentence in the header, and the picker button in its actions', () => {

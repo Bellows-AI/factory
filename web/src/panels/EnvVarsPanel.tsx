@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { EnvSaveResult } from '../api/useEnv.js';
 import { parseEnvRaw, serializeEnv } from './env-raw.js';
 
@@ -22,6 +22,11 @@ export interface EnvVarsPanelProps {
     onSave: (vars: { name: string; value: string | null; isSecret: boolean }[]) => Promise<EnvSaveResult>;
     /** Rendered read-only while the PUT is in flight or the scope is not the caller's to edit. */
     disabled?: boolean;
+    /**
+     * Reports whether the draft holds unsaved edits — the hook the settings area's unsaved-change
+     * registry needs (issue 181). Fires from an effect, so a static render reports nothing.
+     */
+    onDirtyChange?: (dirty: boolean) => void;
 }
 
 /**
@@ -48,27 +53,35 @@ export interface EnvVarsPanelProps {
  * No `<form>`: the CSP sends `form-action 'none'`, so a submit would be blocked at the browser —
  * the same trap that makes LoginGate an anchor.
  */
-export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = false }: EnvVarsPanelProps) {
+export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = false, onDirtyChange }: EnvVarsPanelProps) {
     const [rows, setRows] = useState<EnvVarDraft[]>(() => initialVars.map((row) => ({ ...row })));
     const [error, setError] = useState<string | null>(null);
     const [saved, setSaved] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [dirty, setDirty] = useState(false);
     const [tab, setTab] = useState<'variables' | 'secrets'>('variables');
     const [rawOpen, setRawOpen] = useState(false);
     const [rawText, setRawText] = useState('');
 
+    useEffect(() => {
+        onDirtyChange?.(dirty);
+    }, [dirty, onDirtyChange]);
+
     const update = (index: number, patch: Partial<EnvVarDraft>) => {
         setSaved(false);
+        setDirty(true);
         setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
     };
 
     const addRow = (isSecret: boolean) => {
         setSaved(false);
+        setDirty(true);
         setRows((current) => [...current, { name: '', value: '', isSecret }]);
     };
 
     const removeRow = (index: number) => {
         setSaved(false);
+        setDirty(true);
         setRows((current) => current.filter((_, i) => i !== index));
     };
 
@@ -94,6 +107,7 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
             return;
         }
         setSaved(false);
+        setDirty(true);
         setError(null);
         setRows([...result.vars, ...rows.filter((row) => row.isSecret)]);
         setRawOpen(false);
@@ -125,6 +139,7 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                 // The confirmation survives because nothing remounts to deliver it.
                 setRows(result.vars.map((row) => ({ ...row })));
                 setSaved(true);
+                setDirty(false);
             }
         } finally {
             setSaving(false);
@@ -196,6 +211,7 @@ export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = fals
                             disabled={locked}
                             onChange={(e) => {
                                 setSaved(false);
+                                setDirty(true);
                                 setRawText(e.target.value);
                             }}
                         />

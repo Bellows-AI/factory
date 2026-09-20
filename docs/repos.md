@@ -43,6 +43,31 @@ each session rather than refetching.
 - **`meta.repos` travels in the payload, not behind a second request.** A page that cannot name the
   repos the figures were computed over cannot be read honestly.
 
+## The settings page (issue 181)
+
+Settings → Repositories is the one place that answers everything about repositories:
+availability, personal checkout selection, checkout status, search, and the repository-wide
+environment of one repository — together, on one page.
+
+- **Selection and status live there now, not on Workspace.** The whole-selection draft seeds from
+  the shared workspace poll, saves as a full replacement (`PUT /api/workspace/repos`, `202`), and
+  adopts the draft as its baseline only on success — a failure keeps both the draft and the
+  last-good statuses. The old Select-repositories modal is deleted; there is no second selection
+  surface to drift.
+- **A selected repository GitHub stops reporting cannot be silently dropped.** It stays listed
+  under "No longer reported by GitHub", deselectable but not newly selectable, and it blocks the
+  whole-list save until removed — the PUT is a full replacement, so saving past it would erase the
+  selection. The same whole-replacement logic is why the save also stays blocked until both the
+  installation list and the workspace poll have answered: an empty draft from an unanswered poll is
+  not a deselection.
+- **The 20-repository ceiling is the server's `MAX_REPOS_PER_USER`, mirrored in the UI**
+  (`web/src/components/repository-setup.ts`). The server remains the authority; the mirrored number
+  only lets a row disable before a doomed request is built.
+- **Per-repo env is member-editable.** The page's old `disabled={!isAdmin}` gate was web-only
+  decoration over routes that accept any installation member (`routes/env.ts` — see
+  [env.md](env.md)); it is gone. Configuration opens on the page via a row's Configure action and
+  does not require personal checkout enablement.
+
 ## Per-org, not per-user
 
 The list is per organization — one App installation's answer, cached per org by the runtime

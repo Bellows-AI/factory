@@ -41,8 +41,7 @@ const checkout = (overrides: Partial<WorkspaceRepo> = {}): WorkspaceRepo => ({
     ...overrides,
 });
 
-const render = (node: React.ReactNode) =>
-    renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
+const render = (node: React.ReactNode) => renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
 
 const summary = (overrides: Record<string, unknown> = {}) =>
     render(
@@ -88,9 +87,9 @@ describe('RepositorySetupSummary', () => {
     it('states the enabled count only once both answers exist — never 0 of 0 unresolved', () => {
         expect(summary()).not.toContain('repositories enabled');
         expect(summary()).not.toContain('0 of 0');
-        expect(
-            summary({ counts: { available: 5, enabled: 2, ready: 1, settingUp: 1, failed: 0 } })
-        ).toContain('2 of 5 repositories enabled');
+        expect(summary({ counts: { available: 5, enabled: 2, ready: 1, settingUp: 1, failed: 0 } })).toContain(
+            '2 of 5 repositories enabled'
+        );
     });
 
     it('carries the ready, setting-up and failed counts with the enabled sentence', () => {
@@ -168,7 +167,9 @@ describe('RepositorySetupList', () => {
     });
 
     it('never fakes a measurement: unmeasured branch, commit and size render as dashes', () => {
-        const html = list({ rows: new Map([['acme/web', checkout({ branch: null, lastCommit: null, sizeBytes: null })]]) });
+        const html = list({
+            rows: new Map([['acme/web', checkout({ branch: null, lastCommit: null, sizeBytes: null })]]),
+        });
         expect(html).toContain('—');
         expect(html).not.toContain('0 B');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
@@ -179,6 +180,14 @@ describe('RepositorySetupList', () => {
         expect(html).toContain('No repositories match');
         expect(html).toContain('zzz');
         expect(list({ shown: [], loaded: false })).not.toContain('No repositories match');
+    });
+
+    it('explains a successful zero list: the App is installed on nothing, an admin must fix it', () => {
+        const html = list({ repos: [], shown: [], loaded: true });
+        expect(html).toContain('not installed on any repositories');
+        expect(html).toContain('administrator');
+        // A filtered empty result over a populated list is the no-match state, not this one.
+        expect(list({ shown: [], loaded: true, search: 'zzz' })).not.toContain('not installed on any repositories');
     });
 
     it('renders rows under a named, keyboard-focusable region, and rows are not clickable', () => {
@@ -228,7 +237,9 @@ describe('RepositorySetupList', () => {
 
 describe('RepositoryConfigDetail', () => {
     it('renders nothing before a repository is chosen — no empty panel', () => {
-        expect(render(<RepositoryConfigDetail repo={null} checkout="Ready" blockedReason={null} headingRef={undefined} />)).toBe('');
+        expect(
+            render(<RepositoryConfigDetail repo={null} checkout="Ready" blockedReason={null} headingRef={undefined} />)
+        ).toBe('');
     });
 
     it('heads with the environment, scopes it to the repository, and states impact and precedence', () => {

@@ -16,7 +16,10 @@ describe('unsaved guards', () => {
 
     it('replaces a guard set twice for the same id — one draft, one reason', () => {
         const first = withGuard(new Map(), { id: 'repo-env:acme/web', reason: 'stale reason' });
-        const second = withGuard(first, { id: 'repo-env:acme/web', reason: 'Repository environment has unsaved changes.' });
+        const second = withGuard(first, {
+            id: 'repo-env:acme/web',
+            reason: 'Repository environment has unsaved changes.',
+        });
         expect(leaveReason(second, 'repo-env:acme/web')).toBe('Repository environment has unsaved changes.');
     });
 

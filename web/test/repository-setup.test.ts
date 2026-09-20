@@ -115,7 +115,9 @@ describe('selection draft', () => {
 
         const full = new Set(Array.from({ length: MAX_SELECTED_REPOS }, (_, i) => `acme/r${i}`));
         expect(toggleSelection(full, 'acme/extra')).toBe(full);
-        expect(toggleSelection(full, 'acme/r0')).toEqual(new Set(Array.from({ length: MAX_SELECTED_REPOS - 1 }, (_, i) => `acme/r${i + 1}`)));
+        expect(toggleSelection(full, 'acme/r0')).toEqual(
+            new Set(Array.from({ length: MAX_SELECTED_REPOS - 1 }, (_, i) => `acme/r${i + 1}`))
+        );
     });
 
     it('says whether anything more can be selected', () => {
@@ -134,9 +136,23 @@ describe('selection draft', () => {
 
 describe('selectionSaveState', () => {
     it('blocks while a save runs, the list has not loaded, or there is no list', () => {
-        expect(selectionSaveState({ saving: true, reposLoading: false, reposData: loaded, absentCount: 0, rootNull: false }).disabled).toBe(true);
-        expect(selectionSaveState({ saving: false, reposLoading: true, reposData: null, absentCount: 0, rootNull: false }).disabled).toBe(true);
-        expect(selectionSaveState({ saving: false, reposLoading: false, reposData: null, absentCount: 0, rootNull: false }).disabled).toBe(true);
+        expect(
+            selectionSaveState({
+                saving: true,
+                reposLoading: false,
+                reposData: loaded,
+                absentCount: 0,
+                rootNull: false,
+            }).disabled
+        ).toBe(true);
+        expect(
+            selectionSaveState({ saving: false, reposLoading: true, reposData: null, absentCount: 0, rootNull: false })
+                .disabled
+        ).toBe(true);
+        expect(
+            selectionSaveState({ saving: false, reposLoading: false, reposData: null, absentCount: 0, rootNull: false })
+                .disabled
+        ).toBe(true);
     });
 
     it('blocks with the mandated sentence while GitHub no longer reports a selected repository', () => {
@@ -148,15 +164,31 @@ describe('selectionSaveState', () => {
             rootNull: false,
         });
         expect(state.disabled).toBe(true);
-        expect(state.reason).toBe('Remove repositories GitHub no longer reports before saving other selection changes.');
+        expect(state.reason).toBe(
+            'Remove repositories GitHub no longer reports before saving other selection changes.'
+        );
     });
 
     it('blocks on a deployment with no workspace root', () => {
-        expect(selectionSaveState({ saving: false, reposLoading: false, reposData: loaded, absentCount: 0, rootNull: true }).disabled).toBe(true);
+        expect(
+            selectionSaveState({
+                saving: false,
+                reposLoading: false,
+                reposData: loaded,
+                absentCount: 0,
+                rootNull: true,
+            }).disabled
+        ).toBe(true);
     });
 
     it('allows a save once the list is loaded and nothing blocks it', () => {
-        const state = selectionSaveState({ saving: false, reposLoading: false, reposData: loaded, absentCount: 0, rootNull: false });
+        const state = selectionSaveState({
+            saving: false,
+            reposLoading: false,
+            reposData: loaded,
+            absentCount: 0,
+            rootNull: false,
+        });
         expect(state.disabled).toBe(false);
         expect(state.reason).toBeNull();
     });
@@ -216,9 +248,11 @@ describe('checkoutCell and checkoutText', () => {
         expect(checkoutText(checkoutCell(true, checkout({ status: 'ready' }), 'ready'))).toBe('Ready');
         expect(checkoutText(checkoutCell(true, checkout({ status: 'queued' }), 'ready'))).toBe('Queued');
         expect(checkoutText(checkoutCell(true, checkout({ status: 'cloning' }), 'ready'))).toBe('Cloning');
-        expect(checkoutText(checkoutCell(true, checkout({ status: 'failed', error: 'fatal: repository not found' }), 'ready'))).toBe(
-            'Failed · fatal: repository not found'
-        );
+        expect(
+            checkoutText(
+                checkoutCell(true, checkout({ status: 'failed', error: 'fatal: repository not found' }), 'ready')
+            )
+        ).toBe('Failed · fatal: repository not found');
     });
 
     it('keeps the states apart when no row exists: selected is unmeasured, unselected is not checked out', () => {

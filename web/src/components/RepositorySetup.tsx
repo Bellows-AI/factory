@@ -63,7 +63,10 @@ export function RepositorySetupSummary({
             {installation ? (
                 <p className="muted">
                     Installation: {installation.account ?? 'GitHub App'}
-                    {installation.repositorySelection ? ` — access to ${installation.repositorySelection} repositories` : ''}.
+                    {installation.repositorySelection
+                        ? ` — access to ${installation.repositorySelection} repositories`
+                        : ''}
+                    .
                 </p>
             ) : null}
             {cachedError ? (
@@ -152,6 +155,7 @@ export function RepositorySetupList({
             </div>
             <p className="muted">Selections are limited to {MAX_SELECTED_REPOS} repositories.</p>
             {shown.length ? (
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" aria-label="Repositories" tabIndex={0}>
                     <table className="data">
                         <thead>
@@ -209,19 +213,27 @@ export function RepositorySetupList({
                 </section>
             ) : loaded && repos.length ? (
                 <p className="status">No repositories match “{search}”</p>
+            ) : loaded ? (
+                <p className="status">
+                    This GitHub App is not installed on any repositories yet. Ask an administrator to update the
+                    installation on GitHub.
+                </p>
             ) : null}
             {absent.length ? (
                 <>
                     <h3>No longer reported by GitHub</h3>
                     <p className="muted">
-                        These repositories stay selected until you remove them — the save will not drop them
-                        silently.
+                        These repositories stay selected until you remove them — the save will not drop them silently.
                     </p>
                     <ul>
                         {absent.map((key) => (
                             <li key={key}>
                                 {key}{' '}
-                                <button type="button" aria-label={`Deselect ${key}`} onClick={() => onDeselectAbsent(key)}>
+                                <button
+                                    type="button"
+                                    aria-label={`Deselect ${key}`}
+                                    onClick={() => onDeselectAbsent(key)}
+                                >
                                     Deselect
                                 </button>
                             </li>
@@ -251,7 +263,13 @@ export interface RepositoryConfigDetailProps {
  * its confirmation survive. Configuration does not require personal checkout enablement; the
  * checkout status is context, not a gate.
  */
-export function RepositoryConfigDetail({ repo, checkout, blockedReason, headingRef, children }: RepositoryConfigDetailProps) {
+export function RepositoryConfigDetail({
+    repo,
+    checkout,
+    blockedReason,
+    headingRef,
+    children,
+}: RepositoryConfigDetailProps) {
     if (!repo) return null;
     const key = repoKey(repo);
     return (
@@ -260,7 +278,9 @@ export function RepositoryConfigDetail({ repo, checkout, blockedReason, headingR
                 Environment for {key}
             </h2>
             <p className="muted">Repository · {key}</p>
-            <p className="muted">Applies to every task using the repository in the organization; any member can edit.</p>
+            <p className="muted">
+                Applies to every task using the repository in the organization; any member can edit.
+            </p>
             <p className="muted">
                 Environment values combine in order: organization, then workspace, then repository — a more specific
                 scope overrides a broader one.
