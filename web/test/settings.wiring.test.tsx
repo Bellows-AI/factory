@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -55,5 +57,29 @@ describe('settings area wiring', () => {
         expect(seen.workspace).toBeTruthy();
         expect(seen.env as UseEnv | undefined).toBeTruthy();
         expect(seen.workspace as UseWorkspace | undefined).toBeTruthy();
+    });
+
+    it('keeps the layout the one owner of both configuration polls', () => {
+        // Exactly one useWorkspace() and one useEnv() call: a second instance would double the
+        // request rate and fork the pages' view of the data.
+        const source = readFileSync(
+            fileURLToPath(new URL('../src/pages/SettingsLayout.tsx', import.meta.url)),
+            'utf8'
+        );
+        expect(source.match(/useWorkspace\(/g) ?? []).toHaveLength(1);
+        expect(source.match(/useEnv\(/g) ?? []).toHaveLength(1);
+    });
+
+    it('starts no repository or executor-config request from the overview (#180)', () => {
+        // The overview derives everything from the polls the layout already owns: repository
+        // facts come from the workspace payload, and the executor-config read carries
+        // credentials — it belongs to the dialog that opens with it, never to a page render.
+        const source = readFileSync(
+            fileURLToPath(new URL('../src/pages/SettingsOverviewPage.tsx', import.meta.url)),
+            'utf8'
+        );
+        expect(source).not.toContain('useRepos');
+        expect(source).not.toContain('listExecutorConfigs');
+        expect(source).not.toContain('fetch(');
     });
 });
