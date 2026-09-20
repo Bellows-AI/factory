@@ -13,61 +13,60 @@ import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
 
 /**
  * The dashboard. The page header owns the telemetry chrome — exact repo coverage, the freshness
- * timestamp and the one Refresh action — because those describe THIS page's figures, not the app.
- * The scope toggle sits beside the range selector but renders ONLY when the session reports a
- * signed-in MEMBER: under AUTH_MODE=none there is no "me" — the session hook still resolves the
- * deployment's `__local__` stand-in, and a toggle for it would advertise a filter the server
- * answers with SCOPE_REQUIRES_USER. `session.mode` is the tell.
+ * timestamp and the one Refresh action — because those describe THIS page's figures, not the app;
+ * the app bar stays chrome-only. The scope toggle sits beside the range selector but renders
+ * ONLY when the session reports a signed-in MEMBER: under AUTH_MODE=none there is no "me" — the
+ * session hook still resolves the deployment's `__local__` stand-in, and a toggle for it would
+ * advertise a filter the server answers with SCOPE_REQUIRES_USER. `session.mode` is the tell.
  */
 export function DashboardPage() {
-    const { data, range, setRange, scope, setScope, session, progress, error, refresh, refreshing } = useShell();
+    const { data, range, setRange, scope, setScope, session, refreshing, refresh, progress, error } = useShell();
     // The board's own completed runs — a poll beside the stats one, not part of the stats
     // payload: this is jobs data, and the dashboard renders it even while telemetry is down.
     const completed = useCompletedJobs();
-    const meta = data?.meta;
 
     return (
         <>
-            <main className="page">
-                <PageHeader
-                    title="Usage overview"
-                    description={meta ? `${describeRepos(meta.repos)} — AI usage telemetry` : 'loading…'}
-                    meta={
-                        meta ? (
-                            <span className="muted">data as of {new Date(meta.fetchedAt).toLocaleString()}</span>
-                        ) : undefined
-                    }
-                    actions={
-                        <button type="button" onClick={refresh} disabled={refreshing}>
-                            {refreshing ? 'Refreshing…' : 'Refresh'}
-                        </button>
-                    }
-                />
-                <div className="dashboard-controls">
-                    <RangeSelector range={range} onChange={setRange} />
-                    {session?.mode === 'github' ? <ScopeToggle scope={scope} onChange={setScope} /> : null}
-                </div>
-                <StatusBanner progress={progress} error={error} hasData={data !== null} />
-                {data ? (
-                    <>
-                        {/* Nothing renders when the feature is switched off:
+            <PageHeader
+                title="Usage overview"
+                description={data ? `${describeRepos(data.meta.repos)} — AI usage telemetry` : 'loading…'}
+                meta={
+                    data ? (
+                        <span className="muted">data as of {new Date(data.meta.fetchedAt).toLocaleString()}</span>
+                    ) : undefined
+                }
+                actions={
+                    // The only action on the stats read, moved with the caption it belongs to.
+                    <button type="button" onClick={refresh} disabled={refreshing}>
+                        {refreshing ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                }
+            />
+            {/* The range and the org/my toggle on one line; the page's flex gap handles the spacing. */}
+            <div className="dashboard-controls">
+                <RangeSelector range={range} onChange={setRange} />
+                {session?.mode === 'github' ? <ScopeToggle scope={scope} onChange={setScope} /> : null}
+            </div>
+            <StatusBanner progress={progress} error={error} hasData={data !== null} />
+            {data ? (
+                <>
+                    {/* Nothing renders when the feature is switched off:
                             empty frames for a feature nobody enabled are just noise. */}
-                        {data.telemetry ? (
-                            <>
-                                <AiUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                                <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                                <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
-                                <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                            </>
-                        ) : null}
-                    </>
-                ) : null}
-                {/* Outside the stats branch on purpose: completed jobs poll their own endpoint,
+                    {data.telemetry ? (
+                        <>
+                            <AiUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                            <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                            <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
+                            <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                        </>
+                    ) : null}
+                </>
+            ) : null}
+            {/* Outside the stats branch on purpose: completed jobs poll their own endpoint,
                     so the recent-tasks view is exactly the degraded-mode surface when the
                     statistics read is cold or failing — hiding it behind `data` would hide it
                     in the one state it exists for. */}
-                <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
-            </main>
+            <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
         </>
     );
 }

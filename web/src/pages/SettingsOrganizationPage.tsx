@@ -16,7 +16,7 @@ export function SettingsOrganizationPage() {
     const { env, session } = useSettingsPage();
     const isAdmin = session?.role === 'admin';
     return (
-        <main className="page">
+        <>
             <PageHeader
                 eyebrow="Settings"
                 title="Organization"
@@ -46,6 +46,6 @@ export function SettingsOrganizationPage() {
                     disabled={!isAdmin}
                 />
             ) : null}
-        </main>
+        </>
     );
 }

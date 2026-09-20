@@ -29,7 +29,7 @@ export function SettingsRepositoriesPage() {
     );
 
     return (
-        <main className="page">
+        <>
             <PageHeader
                 eyebrow="Settings"
                 title="Repositories"
@@ -115,6 +115,6 @@ export function SettingsRepositoriesPage() {
                     ) : null
                 ) : null}
             </section>
-        </main>
+        </>
     );
 }

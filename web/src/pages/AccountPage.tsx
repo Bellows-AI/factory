@@ -25,7 +25,7 @@ export function AccountPage() {
     if (!session) return null;
     const github = session.mode === 'github';
     return (
-        <main className="page">
+        <>
             <PageHeader
                 title="Account"
                 description={
@@ -53,6 +53,6 @@ export function AccountPage() {
                     )}
                 </>
             ) : null}
-        </main>
+        </>
     );
 }

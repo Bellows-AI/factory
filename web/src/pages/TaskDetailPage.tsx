@@ -124,7 +124,7 @@ export function TaskDetailPage() {
     };
 
     return (
-        <main className="page">
+        <>
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
             <TaskHeader
                 jobs={detail.jobs}
@@ -143,6 +143,6 @@ export function TaskDetailPage() {
                 sending={sending}
                 onFollowUp={followUp}
             />
-        </main>
+        </>
     );
 }

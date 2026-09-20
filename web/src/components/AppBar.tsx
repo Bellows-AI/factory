@@ -1,67 +1,55 @@
-import type { OrganizationMeta } from '@factory-ai/core';
+import { NavLink } from 'react-router-dom';
+import type { StatsPayload } from '../api/useStats.js';
 import type { Session } from '../api/useSession.js';
+import { switchOrg } from '../api/org.js';
 import { OrgSelector } from './OrgSelector.js';
 import { UserMenu } from './UserMenu.js';
 
 /**
- * The global app bar — identity and navigation only, no page content and no `h1`. The
- * organization selector and the user menu are its whole desktop contents; the mobile
- * navigation trigger and brand render only once the responsive shell (slice A part 4) wires
- * `onMenuToggle`, so no do-nothing control ships before then.
+ * The global app bar (issue 160): chrome, and nothing but chrome.
  *
- * Telemetry chrome (repo coverage, "data as of", Refresh) lives in the dashboard's page
- * header, not here — this bar is identical on every page.
+ * The desktop bar carries the organization selector and the user menu, aligned to the end — no
+ * `h1`, no telemetry. The dashboard's figures describe the dashboard, so its repo coverage,
+ * timestamp and Refresh live on the dashboard page; a heading would answer "where am I" with the
+ * app's name instead of the page's, which is the routed page's job.
+ *
+ * The mobile bar (at most 900px, see the stylesheet) reveals the navigation trigger and the
+ * Factory brand: the trigger's state is OWNED HERE IN THE SHELL — `navOpen`/`onOpenNav` are the
+ * drawer's props arriving from AppShell, which renders the dialog the `aria-controls` names.
+ * Until the first stats payload lands there is no selector: an empty control would flash, and a
+ * placeholder would advertise a choice the payload has not confirmed.
  */
 export function AppBar({
+    meta,
     session,
-    organization,
-    onMenuToggle,
-    menuExpanded,
+    navOpen,
+    onOpenNav,
 }: {
+    meta: StatsPayload['meta'] | null;
     session: Session | null;
-    /** Null only before the first stats payload; the selector waits rather than flashing empty. */
-    organization: OrganizationMeta | null;
-    /** Mobile navigation trigger — reserved for slice A part 4; nothing renders until it is wired. */
-    onMenuToggle?: () => void;
-    menuExpanded?: boolean;
+    /** Mirrored onto the trigger as `aria-expanded` — the drawer is open or it is not. */
+    navOpen: boolean;
+    onOpenNav: () => void;
 }) {
     return (
-        <header className="app-bar">
-            {onMenuToggle ? (
-                <div className="app-bar-mobile">
-                    <button
-                        type="button"
-                        className="app-bar-trigger"
-                        aria-expanded={menuExpanded ?? false}
-                        aria-label="Toggle navigation"
-                        onClick={onMenuToggle}
-                    >
-                        ☰
-                    </button>
-                    <span className="app-bar-brand">Factory</span>
-                </div>
-            ) : null}
-            <div className="app-bar-actions">
-                {organization ? (
-                    <OrgSelector
-                        organization={organization}
-                        onSwitch={(orgId) => {
-                            // The switch is a server-side session change; on success the reload
-                            // makes every org-scoped read re-probe from scratch. A refusal
-                            // (403/400 — the membership moved under the selector) leaves the
-                            // page untouched: the select's value is bound to the payload, so
-                            // the next poll renders it back on the org the session still holds.
-                            void fetch('/api/auth/org', {
-                                method: 'POST',
-                                headers: { 'content-type': 'application/json' },
-                                body: JSON.stringify({ orgId }),
-                            })
-                                .then((response) => {
-                                    if (response.ok) window.location.reload();
-                                })
-                                .catch(() => {});
-                        }}
-                    />
+        <header className="appbar">
+            <button
+                type="button"
+                className="appbar-trigger"
+                aria-expanded={navOpen}
+                aria-controls="mobile-nav"
+                onClick={onOpenNav}
+            >
+                Open navigation
+            </button>
+            <NavLink to="/" className="appbar-brand">
+                Factory
+            </NavLink>
+            <div className="appbar-actions">
+                {meta ? (
+                    <div className="appbar-org">
+                        <OrgSelector organization={meta.organization} onSwitch={switchOrg} />
+                    </div>
                 ) : null}
                 {/* The corner account affordance. Until the session check answers there is nothing
                     to show — an empty chip would flash on every load. */}

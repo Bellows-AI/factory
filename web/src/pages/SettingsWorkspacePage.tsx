@@ -51,15 +51,15 @@ export function SettingsWorkspacePage() {
 
     if (loading && !data) {
         return (
-            <main className="page">
+            <>
                 <PageHeader eyebrow="Settings" title="Workspace" />
                 <p className="status">Loading your workspace…</p>
-            </main>
+            </>
         );
     }
 
     return (
-        <main className="page">
+        <>
             <PageHeader
                 eyebrow="Settings"
                 title="Workspace"
@@ -145,6 +145,6 @@ export function SettingsWorkspacePage() {
                     onSave={env.saveWorkspace}
                 />
             ) : null}
-        </main>
+        </>
     );
 }

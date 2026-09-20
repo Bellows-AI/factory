@@ -9,7 +9,7 @@ import { signOut, type Session } from '../api/useSession.js';
  * A Headless UI `Menu`, so opening, closing, Escape and arrow-key navigation are the library's and
  * there is nothing to synchronize. The panel anchors below the button and closes itself when an
  * item is picked — the one behavior the old `<details>` owned by hand was closing on navigation,
- * since the app bar survives it and the menu would otherwise still be open on the page it led to.
+ * since the page change survives it and the menu would otherwise still be open on the page it led to.
  */
 export function UserMenu({ session }: { session: Session }) {
     return (

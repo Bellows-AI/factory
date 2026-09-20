@@ -51,7 +51,7 @@ export function TaskComposerPage() {
     };
 
     return (
-        <main className="page">
+        <>
             <PageHeader
                 eyebrow="Tasks"
                 title="New task"
@@ -69,6 +69,6 @@ export function TaskComposerPage() {
                 onSend={send}
                 onRepoChange={setRepo}
             />
-        </main>
+        </>
     );
 }

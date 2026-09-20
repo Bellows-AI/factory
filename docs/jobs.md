@@ -790,6 +790,54 @@ clearing it would throw the thread away with the attempt. The command re-deliver
 which is the ordinary retry semantics for a headless run — and unreachable for Remote Control in
 practice, since a drivable job parks on silence before its lease can expire.
 
+## The task summary read model: `GET /api/tasks` (#157)
+
+`GET /api/jobs` is a RUN list — one row per job row, threads reconstructed by whichever browser
+polled it — and that cannot answer the questions a task INBOX asks: how many tasks does the whole
+organization have running right now, what is the root of a follow-up whose root fell outside the
+newest-50 window, what changed since the last poll without refetching every run's tail. The task
+summary read model is the server's answer, and the run/job endpoints keep their audit-thread and
+driver contracts untouched. The store method is `listTasks(filters)`; `GET /api/tasks` is its only
+route — a person route like the other board reads (session cookie or access token, never the
+worker secret), its org resolved from the credential, never the query.
+
+**One row per TASK, not per run — with the exact bucket semantics the sidenav already renders.**
+The summary's identity fields (id, command, author, createdAt) are the ROOT's; the present tense
+(status, doneAt, cancelRequestedAt, activity, summary) is the chain HEAD's — the newest member by
+created-then-id, the same resolution `chainHead()` applies in the browser. The bucket comes from
+the HEAD's status and the HEAD's done stamp exactly as `taskSections()` derives it: queued,
+running or parked → **running**; terminal without the user's done → **review**; terminal with it →
+**past**. Reading the HEAD's done (not the thread's max, which the grouped terminal list uses for
+its own purposes) is what makes resurrection work: a done task with a fresh queued follow-up has
+a non-terminal head, so the task is running again and the done stamp is gone. The pure half of
+these rules lives in `db/task-summary.ts` (`taskBucket`, `activityAtOf`, the cursor codec), shared
+by the PostgreSQL query and the in-memory `memoryTaskList` so the two implementations cannot
+drift; the web layer keeps title derivation and the running-only presentation rule for activity —
+the API carries the head's stored line verbatim and introduces no second truncation rule.
+
+**`attention` is the inbox view: running and review at once — everything that is not past.** The
+page states are `attention` (the default), `running`, `review` and `past`; the navigation counts
+stay the three buckets.
+
+**Navigation is org-wide and filter-independent; the page obeys every filter.** The response is
+exactly `{ navigation, page }`: `navigation.counts` and the running/review previews (three and
+five rows, newest first) are computed from the full unfiltered task set of the organization, so a
+narrowed page never moves the sidebar's numbers; `page.items` answer `state`, `q` (case-insensitive
+substring of the ROOT command — search is a command search, not a global one), `repo` (exact, the
+same `BAD_REPO` rules as create), `author` (case-insensitive login match on the root author) and
+`sort`. One SQL statement derives the task set once for all of it — counts, previews and page read
+the same rows, so they cannot disagree. A summary carries no output tail, no gate reports, no
+runtime object and no session ids; the activity line is the one bounded field a list renders.
+
+**Pagination is keyset on `(activity_at, root_id)` — never OFFSET.** `activity_at` is the head
+run's newest of created/started/finished/done, truncated to milliseconds (the precision an ISO
+stamp carries, so a cursor's value round-trips exactly and the exclusive comparison cannot
+re-admit the boundary row). Fetch is `limit + 1`: the extra row is the only honest `nextCursor`
+signal, and the cursor is minted from the last row RETURNED. The cursor is base64url JSON with a
+version field that binds the sort and every normalized filter — a cursor minted under one query
+is refused (`400 BAD_CURSOR`) under another rather than silently answering page 2 of a different
+question. New runs landing between polls push rows forward without duplicating or skipping any.
+
 ## Stop and remove: winding a task down, and deleting it
 
 Two person-gated actions (session cookie, like `follow-up`/`done` — the board secret must never move a

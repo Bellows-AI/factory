@@ -104,22 +104,23 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Shell | `shell`, `shell-main` | The two-column frame: sticky sidenav + scrolling main |
+| Shell | `shell`, `shell-main` | The two-column frame: a 240px sticky sidenav that scrolls within `100dvh`, and the content track |
+| Page | `page` | The routed page's content container, carried by the shell's one `main` region (`#main-content`, the skip link's target): 1400px cap, `min-width: 0` — a class, not a `main` selector, so a dialog never inherits page chrome |
+| Skip link | `skip-link` | The off-screen "Skip to main content" anchor that slides in on `:focus-visible`, the first focusable element on every page |
 | Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
-| App bar | `app-bar`, `app-bar-actions`, `app-bar-mobile`, `app-bar-brand`, `app-bar-trigger` | The global bar above every page: org switcher and user menu on desktop; the trigger + brand group renders only once the responsive shell (slice A part 4) wires it |
-| Page | `page` | The routed page's canvas: padding, column gap, max-width — carried by each page's `main`, never a global element rule |
-| Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail |
+| App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: sticky, raised, no `h1`; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
+| Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The routed page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail (issue 159) |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
 
-`PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer: every routed page
-renders exactly one of them, and the `h1` it wraps is the page's only `h1` — panel headings
-below it are `h2`s and must not restate the page title. It is presentational by contract (no
-fetching, no route inspection, no Factory knowledge), slot-driven: `eyebrow` is the section
-above the title, `title` the `h1` itself, `description` the leading column's second line, `meta`
-the state beside the title (pills, clocks, timestamps) and `actions` the page's buttons —
-siblings of the heading, never children of it. An empty slot renders no wrapper, and
+`PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer (issue 159): every
+routed page renders exactly one of them, and the `h1` it wraps is the page's only `h1` — panel
+headings below it are `h2`s and must not restate the page title. It is presentational by
+contract (no fetching, no route inspection, no Factory knowledge), slot-driven: `eyebrow` is the
+section above the title, `title` the `h1` itself, `description` the leading column's second
+line, `meta` the state beside the title (pills, clocks, timestamps) and `actions` the page's
+buttons — siblings of the heading, never children of it. An empty slot renders no wrapper, and
 `flex-wrap` drops meta and actions below the title at narrow widths without changing DOM order.
 
 ### Surfaces and feedback
@@ -140,10 +141,10 @@ siblings of the heading, never children of it. An empty slot renders no wrapper,
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
 | Popover | `popover`, `popover-option` | The shared floating surface for the anchored Headless UI panels — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
 | Range | `range-selector`, `range-presets`, `range-option.active`, `range-custom` | The date-range picker |
-| Org | `org-selector`, `org-select` | The organization switcher in the app bar (Headless UI Listbox) |
+| Org | `org-selector`, `org-select` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
 | Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
-| User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar identity disclosure (Headless UI Menu) |
+| User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar's identity disclosure (Headless UI Menu) |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
 | Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox repo/executor pickers; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay` |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
@@ -184,10 +185,18 @@ siblings of the heading, never children of it. An empty slot renders no wrapper,
 | --- | --- | --- |
 | Env | `env-tab`, `env-tabs`, `env-raw`, `env-errors` | The Variables/Secrets tab strip and the `.env` raw editor |
 
+### Mobile navigation
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `mobile-nav-org` | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the picker's `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link`/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
+
 ### One-offs
 
 `identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
-the dashboard's range/scope row under the page header. Everything else above is a family; these exist because
+the dashboard's range/scope row under the page header, which carries the telemetry caption and
+Refresh that moved here from the old global topbar (issues 160 and 159). Everything else above
+is a family; these exist because
 no family fits, and a new one-off needs a sentence here saying the same.
 
 ## Inventory
@@ -200,13 +209,14 @@ Components:
 
 | File | Primitives |
 | --- | --- |
-| `AppShell.tsx` | shell |
-| `AppBar.tsx` | app-bar |
+| `AppBar.tsx` | appbar, org, user-menu-button |
+| `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table |
 | `ExecutorDialog.tsx` | picker, status |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
+| `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | range |
@@ -243,16 +253,16 @@ Pages:
 
 | File | Primitives |
 | --- | --- |
-| `AccountPage.tsx` | page, page-header, panel |
-| `DashboardPage.tsx` | page, page-header, dashboard-controls |
+| `AccountPage.tsx` | page-header, panel |
+| `DashboardPage.tsx` | page-header, dashboard-controls |
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
-| `SettingsExecutorsPage.tsx` | page, page-header, panel |
+| `SettingsExecutorsPage.tsx` | page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
-| `SettingsOrganizationPage.tsx` | page, page-header, panel |
-| `SettingsRepositoriesPage.tsx` | page, page-header, panel |
-| `SettingsWorkspacePage.tsx` | page, page-header, panel |
-| `TaskComposerPage.tsx` | page, page-header, status |
-| `TaskDetailPage.tsx` | page, page-header, status |
+| `SettingsOrganizationPage.tsx` | page-header, panel |
+| `SettingsRepositoriesPage.tsx` | page-header, panel |
+| `SettingsWorkspacePage.tsx` | page-header, panel |
+| `TaskComposerPage.tsx` | page-header, status |
+| `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
 
 Charts (`scale.ts` is the band/linear scale helper — no markup):

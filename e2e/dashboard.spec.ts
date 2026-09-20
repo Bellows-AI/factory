@@ -207,9 +207,10 @@ test.describe('the organization selector', () => {
         await expect(select).toHaveText('default');
         await expect(select).toHaveAttribute('aria-label', 'Organization: default');
 
-        // Refresh now lives in the dashboard's page header; it must still be reachable.
+        // Fitting on one line with the account menu is a layout fact no assertion covers; the
+        // Refresh action itself lives on the dashboard now, not in the bar.
         await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
-        await page.locator('.app-bar').screenshot({ path: `${SHOTS}/app-bar-org.png` });
+        await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-org.png` });
     });
 });
 
@@ -226,6 +227,6 @@ test.describe('the user menu', () => {
         await expect(page.getByRole('menuitem', { name: 'Account' })).toBeVisible();
 
         await page.keyboard.press('Escape');
-        await page.locator('.app-bar').screenshot({ path: `${SHOTS}/app-bar-user-menu.png` });
+        await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-user-menu.png` });
     });
 });

@@ -47,15 +47,15 @@ export function SettingsExecutorsPage() {
 
     if (loading && !data) {
         return (
-            <main className="page">
+            <>
                 <PageHeader eyebrow="Settings" title="Executors" />
                 <p className="status">Loading your workspace…</p>
-            </main>
+            </>
         );
     }
 
     return (
-        <main className="page">
+        <>
             <PageHeader
                 eyebrow="Settings"
                 title="Executors"
@@ -81,6 +81,6 @@ export function SettingsExecutorsPage() {
                 onSave={saveExecutors}
                 saving={saving}
             />
-        </main>
+        </>
     );
 }
