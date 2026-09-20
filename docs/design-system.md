@@ -143,7 +143,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Table | `table-wrap`, `data`, `sortable`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks |
+| Table | `table-wrap`, `data`, `sortable`, `align-end`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks (it is a labeled, focusable region); a sortable header is a real button, `align-end` right-aligns a numeric column |
 | Key-values | `kv` | The dt/dd definition grid |
 | Per-user | `by-user`, `by-user-user` | The attribution table and its avatar+name cell |
 | Pills | `pill`, `pill-ready`, `pill-cloning`, `pill-queued`, `pill-failed`, `pill-reason` | Repo/workspace state chips; the reason travels in the pill |

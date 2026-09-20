@@ -620,9 +620,30 @@
         letter-spacing: 0.04em;
     }
 
+    /* The header cell is the button's hit area: the button fills the th, inheriting its type so
+       the header looks unchanged, and keyboard focus lands on a real control. */
     table.data th.sortable {
+        padding: 0;
+    }
+
+    table.data th.sortable button {
+        display: block;
+        width: 100%;
+        font: inherit;
+        color: inherit;
+        letter-spacing: inherit;
+        text-transform: inherit;
+        text-align: inherit;
+        background: none;
+        border: none;
+        padding: 5px 8px;
         cursor: pointer;
         user-select: none;
+    }
+
+    table.data th.align-end,
+    table.data td.align-end {
+        text-align: right;
     }
 
     table.data th.asc::after {
