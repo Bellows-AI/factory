@@ -126,7 +126,11 @@ describe('Settings organization page', () => {
             session: { ...session, role: 'member' },
             env: {
                 loading: false,
-                data: { org: [{ name: 'SHARED', value: '1', isSecret: false, updatedAt: '2026-01-01T00:00:00Z' }], workspace: [], repos: [] },
+                data: {
+                    org: [{ name: 'SHARED', value: '1', isSecret: false, updatedAt: '2026-01-01T00:00:00Z' }],
+                    workspace: [],
+                    repos: [],
+                },
             },
         });
         expect(html).not.toContain('disabled=""');

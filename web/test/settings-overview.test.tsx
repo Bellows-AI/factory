@@ -52,11 +52,13 @@ const envRow = (over: { name: string; isSecret?: boolean }) => ({
 
 const emptyEnv: EnvPayload = { org: [], workspace: [], repos: [] };
 
-const input = (over: {
-    session?: Pick<Session, 'organization' | 'role'> | null;
-    workspace?: { data?: WorkspacePayload | null; loading?: boolean; error?: string | null };
-    environment?: { data?: EnvPayload | null; loading?: boolean; error?: string | null };
-} = {}) => ({
+const input = (
+    over: {
+        session?: Pick<Session, 'organization' | 'role'> | null;
+        workspace?: { data?: WorkspacePayload | null; loading?: boolean; error?: string | null };
+        environment?: { data?: EnvPayload | null; loading?: boolean; error?: string | null };
+    } = {}
+) => ({
     session: over.session === undefined ? session : over.session,
     workspace: { data: null, loading: false, error: null, ...over.workspace },
     environment: { data: null, loading: false, error: null, ...over.environment },
@@ -111,7 +113,9 @@ describe('deriveReadiness — loading never reports zero', () => {
 describe('deriveReadiness — initial failure versus stale data', () => {
     it('reports unavailable with the named error when the first workspace read fails', () => {
         const items = byId(
-            ...deriveReadiness(input({ workspace: { data: null, loading: false, error: 'The workspace request failed' } }))
+            ...deriveReadiness(
+                input({ workspace: { data: null, loading: false, error: 'The workspace request failed' } })
+            )
         );
         expect(items.get('workspace')?.status).toBe('Workspace status unavailable');
         expect(items.get('workspace')?.tone).toBe('attention');
@@ -124,7 +128,10 @@ describe('deriveReadiness — initial failure versus stale data', () => {
         const items = byId(
             ...deriveReadiness(
                 input({
-                    workspace: { data: workspaceData({ repos: [repo({ status: 'ready', name: 'web' })] }), error: 'poll failed' },
+                    workspace: {
+                        data: workspaceData({ repos: [repo({ status: 'ready', name: 'web' })] }),
+                        error: 'poll failed',
+                    },
                 })
             )
         );
@@ -135,9 +142,7 @@ describe('deriveReadiness — initial failure versus stale data', () => {
 });
 
 describe('deriveReadiness — root null blocks tasks', () => {
-    const items = byId(
-        ...deriveReadiness(input({ workspace: { data: workspaceData({ root: null }) } }))
-    );
+    const items = byId(...deriveReadiness(input({ workspace: { data: workspaceData({ root: null }) } })));
 
     it('says the workspace is not configured and tasks cannot run', () => {
         expect(items.get('workspace')?.status).toBe('Workspace is not configured; tasks cannot run');
@@ -147,7 +152,10 @@ describe('deriveReadiness — root null blocks tasks', () => {
 
     it('roots the repository item at the missing root, outranking the empty selection', () => {
         expect(items.get('repositories')?.status).toBe('Repository checkouts require a workspace root');
-        expect(items.get('repositories')?.action).toEqual({ label: 'Review workspace setup', to: '/settings/workspace' });
+        expect(items.get('repositories')?.action).toEqual({
+            label: 'Review workspace setup',
+            to: '/settings/workspace',
+        });
     });
 
     it('makes executors unavailable without calling the empty list an error', () => {
@@ -404,7 +412,13 @@ describe('SettingsOverviewPage (render)', () => {
 
     it('renders the five readiness headings in order', () => {
         const html = render();
-        const headings = ['<h2>Organization</h2>', '<h2>Workspace</h2>', '<h2>Repositories</h2>', '<h2>Executors</h2>', '<h2>Environment</h2>'];
+        const headings = [
+            '<h2>Organization</h2>',
+            '<h2>Workspace</h2>',
+            '<h2>Repositories</h2>',
+            '<h2>Executors</h2>',
+            '<h2>Environment</h2>',
+        ];
         let at = -1;
         for (const heading of headings) {
             const next = html.indexOf(heading);

@@ -62,10 +62,7 @@ describe('settings area wiring', () => {
     it('keeps the layout the one owner of both configuration polls', () => {
         // Exactly one useWorkspace() and one useEnv() call: a second instance would double the
         // request rate and fork the pages' view of the data.
-        const source = readFileSync(
-            fileURLToPath(new URL('../src/pages/SettingsLayout.tsx', import.meta.url)),
-            'utf8'
-        );
+        const source = readFileSync(fileURLToPath(new URL('../src/pages/SettingsLayout.tsx', import.meta.url)), 'utf8');
         expect(source.match(/useWorkspace\(/g) ?? []).toHaveLength(1);
         expect(source.match(/useEnv\(/g) ?? []).toHaveLength(1);
     });

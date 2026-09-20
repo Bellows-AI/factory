@@ -93,7 +93,14 @@ function workspaceItem(workspace: ReadinessInput['workspace']): ReadinessItem {
     const { data, loading, error } = workspace;
     if (!data) {
         if (loading) {
-            return { id: 'workspace', heading: 'Workspace', status: 'Checking workspace…', facts: [], tone: 'pending', action: null };
+            return {
+                id: 'workspace',
+                heading: 'Workspace',
+                status: 'Checking workspace…',
+                facts: [],
+                tone: 'pending',
+                action: null,
+            };
         }
         return {
             id: 'workspace',
@@ -129,7 +136,14 @@ function repositoriesItem(workspace: ReadinessInput['workspace']): ReadinessItem
     const { data, loading } = workspace;
     if (!data) {
         if (loading) {
-            return { id: 'repositories', heading: 'Repositories', status: 'Checking repositories…', facts: [], tone: 'pending', action: null };
+            return {
+                id: 'repositories',
+                heading: 'Repositories',
+                status: 'Checking repositories…',
+                facts: [],
+                tone: 'pending',
+                action: null,
+            };
         }
         // The workspace item directly above carries the named error — all three of these items read
         // the same poll, and printing the error three times is noise, not information.
@@ -202,7 +216,14 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
     const { data, loading } = workspace;
     if (!data) {
         if (loading) {
-            return { id: 'executors', heading: 'Executors', status: 'Checking executors…', facts: [], tone: 'pending', action: null };
+            return {
+                id: 'executors',
+                heading: 'Executors',
+                status: 'Checking executors…',
+                facts: [],
+                tone: 'pending',
+                action: null,
+            };
         }
         return {
             id: 'executors',
@@ -248,7 +269,14 @@ function environmentItem(environment: ReadinessInput['environment']): ReadinessI
     const { data, loading, error } = environment;
     if (!data) {
         if (loading) {
-            return { id: 'environment', heading: 'Environment', status: 'Checking environment scopes…', facts: [], tone: 'pending', action: null };
+            return {
+                id: 'environment',
+                heading: 'Environment',
+                status: 'Checking environment scopes…',
+                facts: [],
+                tone: 'pending',
+                action: null,
+            };
         }
         return {
             id: 'environment',

@@ -23,12 +23,7 @@ type ScopeProps =
     | { scope: 'repository'; repository: { owner: string; name: string } };
 
 /** Per-scope copy, in one table so the three editors cannot drift apart. */
-const COPY: {
-    label: string;
-    impact: string;
-    editability: string;
-    precedence: string;
-} = {
+const COPY: Record<ConfigurationScopeId, { label: string; impact: string; editability: string; precedence: string }> = {
     organization: {
         label: 'Organization',
         impact: 'Applies to every member\u2019s tasks in the organization.',
