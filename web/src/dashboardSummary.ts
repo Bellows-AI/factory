@@ -55,7 +55,11 @@ export function rangeText(range: DateRange): string {
     return boundedDays(range.from, range.to);
 }
 
-/** The scope in words — the same word the toolbar renders, so the sentence agrees with it. */
+/**
+ * The scope in words, as the summary sentence speaks it — Organization or Personal. The
+ * GitHub-mode toolbar renders the same choice as its compact Org/Me radios; the sentence
+ * spells out what those stand for.
+ */
 export function scopeWord(scope: ScopeSelection): string {
     return scope === 'org' ? 'Organization' : 'Personal';
 }

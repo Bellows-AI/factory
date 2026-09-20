@@ -106,9 +106,11 @@ test.describe('date range selector', () => {
 
         await selectPreset(page, 'Today', 'day');
         // A sparse day may render the one empty state instead of the summary — that is a
-        // different screen, not the same numbers, and both satisfy "changed".
-        const today = await page.locator('.usage-summary strong').allInnerTexts();
-        expect(today).not.toEqual(allTime);
+        // different screen, not the same numbers, and both satisfy "changed". The poll rides
+        // out the gap between the response reaching the test and React committing the payload.
+        await expect
+            .poll(async () => page.locator('.usage-summary strong').allInnerTexts())
+            .not.toEqual(allTime);
     });
 
     test('the custom picker commits once through Apply, and a draft never requests', async ({
