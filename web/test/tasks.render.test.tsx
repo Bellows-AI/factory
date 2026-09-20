@@ -1,25 +1,34 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
+import { removeDialogTitle, removeDialogBody, TaskRemoveDialog } from '../src/components/TaskRemoveDialog.js';
 import { isTerminal, type Job, type RuntimeVitals, type UseJobs } from '../src/api/useJobs.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
-import {
-    type WorkflowParamChoice,
-    clampedWorkflow,
-    ComposerParamRow,
-    effectiveWorkflows,
-    freshWorkflowDraft,
-    paramsComplete,
-    paramValueMatches,
-    TaskComposer,
-    valuesForWorkflow,
-} from '../src/panels/TaskComposer.js';
+import { WorkflowParameterFields } from '../src/components/WorkflowParameterFields.js';
+import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 import { TaskHeader } from '../src/panels/TaskHeader.js';
 import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
 import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
+import {
+    type WorkflowParamChoice,
+    clampedWorkflow,
+    effectiveWorkflows,
+    freshWorkflowDraft,
+    humanizeParamName,
+    markTouched,
+    paramFieldVerdict,
+    paramsComplete,
+    paramValueMatches,
+    preflightSentence,
+    startBlocker,
+    touchAll,
+    valuesForWorkflow,
+} from '../src/task-composer.js';
 
 /**
  * The same contract the other panel suites pin: props in, markup out, and no DOM — `useEffect`
@@ -86,17 +95,20 @@ const renderComposer = ({
     actionError = null,
     sending = false,
 }: ComposerArgs = {}) =>
+    // The Settings remediation is an SPA Link, so the panel needs a routing context to render.
     renderToStaticMarkup(
-        <TaskComposer
-            repos={repos}
-            workspaceError={workspaceError}
-            onRetryWorkspace={() => {}}
-            executors={executors}
-            workflows={workflows}
-            actionError={actionError}
-            sending={sending}
-            onSend={async () => null}
-        />
+        <MemoryRouter>
+            <TaskComposer
+                repos={repos}
+                workspaceError={workspaceError}
+                onRetryWorkspace={() => {}}
+                executors={executors}
+                workflows={workflows}
+                actionError={actionError}
+                sending={sending}
+                onSend={async () => null}
+            />
+        </MemoryRouter>
     );
 
 interface DetailArgs {
@@ -123,20 +135,18 @@ const renderDetail = ({ jobs = [job()], error = null, actionError = null, sendin
 interface HeaderArgs {
     jobs?: Job[] | null;
     stoppingId?: string | null;
-    removingId?: string | null;
     doneId?: string | null;
 }
 
-const renderHeader = ({ jobs = [job()], stoppingId = null, removingId = null, doneId = null }: HeaderArgs = {}) =>
+const renderHeader = ({ jobs = [job()], stoppingId = null, doneId = null }: HeaderArgs = {}) =>
     renderToStaticMarkup(
         <TaskHeader
             jobs={jobs}
             stoppingId={stoppingId}
-            removingId={removingId}
             doneId={doneId}
             onStop={async () => {}}
-            onRemove={async () => {}}
             onDone={async () => {}}
+            onRemoveRequest={() => {}}
         />
     );
 
@@ -218,7 +228,7 @@ describe('TaskComposer', () => {
         // The tabs are gone; the composer stamps the task with a repo instead. The default is the
         // FIRST selected repository — a member who picked repositories means their tasks to be
         // stamped with one, not with nothing — and `none` stays available for a deliberate
-        // unlabelled run. Same rule, and same default, as the executor select.
+        // unlabelled run, in product words. Same rule, and same default, as the executor select.
         const html = renderComposer({
             repos: [
                 { owner: 'acme', name: 'web' },
@@ -226,19 +236,20 @@ describe('TaskComposer', () => {
             ],
         });
         // The Listbox server-renders the trigger only — the options are client-side — so the
-        // trigger's text is the selected repository, and `aria-label` names the control.
+        // trigger's text is the selected repository, and the visible label names the control.
         const repoTrigger = html.slice(html.indexOf('Repository'), html.indexOf('Executor'));
         expect(repoTrigger).toContain('>acme/web</button>');
         expect(repoTrigger).not.toContain('acme/api');
         const none = renderComposer({ repos: [] });
         const noneTrigger = none.slice(none.indexOf('Repository'), none.indexOf('Executor'));
-        expect(noneTrigger).toContain('>none</button>');
+        expect(noneTrigger).toContain('>No repository</button>');
     });
 
     // A member who configured executors means their tasks to run on one: the FIRST is the
-    // default, and `none` stays available for a deliberate unlabelled run.
+    // default, and `none` stays available in product words — an absent executor is a valid
+    // deployment default, never a blocker.
     it('preselects the first configured executor, and none only when there is none', () => {
-        const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Send<'));
+        const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Start task<'));
 
         const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
         expect(trigger(one)).toContain('>main</button>');
@@ -254,26 +265,71 @@ describe('TaskComposer', () => {
 
         const empty = renderComposer({ repos: [], executors: [] });
         // Only the `none` option exists, and the executor one is the one selected.
-        expect(trigger(empty)).toContain('>none</button>');
+        expect(trigger(empty)).toContain('>Default executor</button>');
     });
 
-    it('keeps the composer reachable when no repository is selected', () => {
-        // A member with nothing picked can still queue: the task simply carries no repo.
+    it('keeps the composer reachable when no repository is selected, and says where to fix that', () => {
+        // A member with nothing picked can still queue: the task simply carries no repo. The
+        // remediation is a pointer at Settings, never a blocker — an absent repository is a
+        // valid way to run.
         const html = renderComposer({ repos: [] });
         expect(html).toContain('<textarea');
-        expect(html).toContain('>Send<');
+        expect(html).toContain('>Start task<');
+        expect(html).toContain('Select repositories in');
+        expect(html).toContain('href="/settings/repositories"');
+        expect(html).toContain('to run against a codebase');
     });
 
-    it('disables Send until a command is typed', () => {
-        // The composer starts empty, which is exactly the state a fresh render has.
+    it('asks what the agent should do, and shows the example without prefilling it', () => {
         const html = renderComposer({});
-        const send = html.slice(html.indexOf('>Send<') - 200, html.indexOf('>Send<'));
-        expect(send).toContain('disabled');
+        expect(html).toContain('What should the agent do?');
+        expect(html).toContain(
+            'Include the outcome you want, relevant files or issue, and checks the agent should run.'
+        );
+        expect(html).toContain(
+            'placeholder="Example: Fix issue #123, update the affected tests, and run the relevant checks."'
+        );
+        // The example is the placeholder, never the value: an empty textarea carries no text.
+        expect(html).not.toContain('>Example: Fix issue #123');
     });
 
-    it("shows the board's refusal in place", () => {
+    it('says what will run before anything runs', () => {
+        // The preflight sentence, from the ACTUAL choices — this render knows no repository, one
+        // executor, no workflow, and it says exactly that much and no more.
+        const html = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
+        expect(html).toContain('Will run without a repository using main executor. Your prompt will run as written.');
+
+        const chosen = renderComposer({
+            repos: [{ owner: 'acme', name: 'web' }],
+            executors: [{ name: 'main', type: 'claude' }],
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
+        });
+        expect(chosen).toContain('Will run in acme/web using main executor');
+    });
+
+    it('disables Start until a command is typed, and says what is missing', () => {
+        // The composer starts empty, which is exactly the state a fresh render has — and a dark
+        // button with no reason on screen is a task that cannot start.
+        const html = renderComposer({});
+        const start = html.slice(html.indexOf('>Start task<') - 200, html.indexOf('>Start task<'));
+        expect(start).toContain('disabled');
+        expect(html).toContain('Describe the task to continue.');
+    });
+
+    it('labels the launch and its shortcut, and the in-flight state too', () => {
+        const idle = renderComposer({});
+        expect(idle).toContain('>Start task</button>');
+        expect(idle).toContain('<kbd');
+        const busy = renderComposer({ sending: true });
+        expect(busy).toContain('>Starting…</button>');
+        expect(busy).toContain('Starting the task…');
+    });
+
+    it("shows the board's refusal in place, as an alert, with the draft intact", () => {
         const html = renderComposer({ actionError: 'Could not queue the task (503)' });
         expect(html).toContain('Could not queue the task (503)');
+        expect(html).toContain('role="alert"');
+        expect(html).toContain('<textarea');
     });
 
     it('never emits a placeholder value', () => {
@@ -317,11 +373,11 @@ describe('TaskComposer', () => {
                 { id: 'w2', name: 'mine', scope: 'user' },
             ],
         });
-        expect(html).toContain('Workflow');
+        expect(html).toContain('Reusable workflow');
+        expect(html).toContain('A workflow can turn this request into a repeatable multi-step process.');
         // Unchosen means NO process: the trigger reads the empty option's label. The offered
         // names are client-side; e2e/composer.spec.ts drives the real dropdown.
-        const workflowTrigger = html.slice(html.indexOf('Workflow'), html.indexOf('>Send<'));
-        expect(workflowTrigger).toContain('>— none —</button>');
+        expect(html).toContain('>No workflow — run prompt as written</button>');
     });
 });
 
@@ -978,9 +1034,9 @@ describe('the task page header', () => {
         // No task yet, so there is nothing to name — the detail poll has not landed.
         const html = renderHeader({ jobs: null });
         expect(html).toContain('<h1>Tasks</h1>');
-        expect(html).not.toContain('>Stop<');
-        expect(html).not.toContain('>Done<');
-        expect(html).not.toContain('>Remove<');
+        expect(html).not.toContain('>Stop run<');
+        expect(html).not.toContain('>Mark done<');
+        expect(html).not.toContain('More task actions');
     });
 
     it('shows the status beside the title', () => {
@@ -989,19 +1045,26 @@ describe('the task page header', () => {
         expect(html).toContain('<span class="pill">succeeded</span>');
     });
 
-    it('offers Stop on the run that is going, and nothing the moment it is not', () => {
-        const running = renderHeader({
-            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
-        });
-        expect(running).toContain('>Stop<');
-        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+    /** The action matrix: stoppable = queued/running/standby, done = the one primary, closed = text. */
+    it('offers Stop run on every state a stop can land on — queued, running, standby', () => {
+        // The board accepts queued and standby stops, not just a moving run.
+        for (const status of ['queued', 'running', 'standby'] as const) {
+            const html = renderHeader({
+                jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
+            });
+            expect(html, status).toContain('>Stop run<');
+            expect(html, status).toContain('chat-stop');
+        }
+        for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
             const html = renderHeader({ jobs: [job({ status })] });
-            expect(html, status).not.toContain('>Stop<');
+            expect(html, status).not.toContain('>Stop run<');
             expect(html, status).not.toContain('Stopping…');
         }
     });
 
-    it('says Stopping, not Stop, once the stop request has landed but the run has not parked', () => {
+    it('says Stopping, not Stop run, once the stop request has landed but the run has not parked', () => {
+        // The board settles the stop at the worker's next heartbeat: pending is not terminal, so
+        // the pending state is a status pill, never a control that looks clickable again.
         const html = renderHeader({
             jobs: [
                 job({
@@ -1015,35 +1078,101 @@ describe('the task page header', () => {
             ],
         });
         expect(html).toContain('Stopping…');
-        expect(html).not.toContain('>Stop<');
+        expect(html).not.toContain('>Stop run<');
         // A run in flight cannot be removed yet: the board refuses with TASK_RUNNING.
-        expect(html).not.toContain('>Remove<');
+        expect(html).not.toContain('More task actions');
     });
 
-    it('offers Done on an open task — terminal, and not yet marked done', () => {
+    it('says Stopping while the stop request itself is in flight, and cannot be re-clicked', () => {
+        const task = job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null });
+        const html = renderHeader({ jobs: [task], stoppingId: task.id });
+        expect(html).toContain('Stopping…');
+        expect(html).not.toContain('>Stop run<');
+        const stop = html.slice(html.indexOf('Stopping…') - 300, html.indexOf('Stopping…'));
+        expect(stop).toContain('disabled');
+    });
+
+    it('offers Mark done as the one primary action on an open task', () => {
         const open = renderHeader({ jobs: [job()] });
-        expect(open).toContain('>Done<');
+        expect(open).toContain('>Mark done<');
+        const doneButton = open.slice(open.indexOf('>Mark done<') - 300, open.indexOf('>Mark done<'));
+        expect(doneButton).toContain('class="primary"');
+        // Failed, dead and stopped are open too until somebody closes them.
+        for (const status of ['failed', 'dead', 'stopped'] as const) {
+            expect(renderHeader({ jobs: [job({ status })] }), status).toContain('>Mark done<');
+        }
 
         const done = renderHeader({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
-        expect(done).not.toContain('>Done<');
+        expect(done).not.toContain('>Mark done<');
 
         // Done is unrelated to sessions and stays available for a run without one.
         const sessionless = renderHeader({ jobs: [job({ sessionId: null })] });
-        expect(sessionless).toContain('>Done<');
+        expect(sessionless).toContain('>Mark done<');
     });
 
-    it('offers Remove on anything not running — queued, parked, finished or dead — and never on one that is', () => {
-        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+    it('labels an in-flight Mark done and disables it', () => {
+        const task = job();
+        const html = renderHeader({ jobs: [task], doneId: task.id });
+        expect(html).toContain('Marking done…');
+        expect(html).not.toContain('>Mark done<');
+        const done = html.slice(html.indexOf('Marking done…') - 300, html.indexOf('Marking done…'));
+        expect(done).toContain('disabled');
+    });
+
+    it('shows closure attribution as status text, never a disabled control', () => {
+        const author = { id: 'a', login: 'octocat', name: null, avatarUrl: null };
+        const attributed = renderHeader({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z', doneBy: author })] });
+        expect(attributed).toContain('Done by octocat');
+        expect(attributed).toContain('chat-done');
+        expect(attributed).not.toContain('disabled');
+
+        // No actor recorded — pre-accounts row — still says the closure out loud.
+        const plain = renderHeader({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
+        expect(plain).toContain('Marked done');
+        expect(plain).not.toContain('disabled');
+        expect(plain).not.toContain('>Mark done<');
+    });
+
+    it('keeps Remove task out of the main action row, behind More task actions', () => {
+        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead', 'stopped'] as const) {
             const html = renderHeader({ jobs: [job({ status })] });
-            expect(html, status).toContain('>Remove<');
+            expect(html, status).toContain('More task actions');
+            // The destructive item lives in the anchored menu, which only the client renders;
+            // the server-rendered action row must carry no Remove control of its own.
+            expect(html, status).not.toContain('>Remove task<');
+            expect(html, status).not.toContain('>Remove<');
+            // The overflow trigger is a secondary control — the page's one primary is Mark done.
+            const at = html.indexOf('More task actions');
+            const trigger = html.slice(html.lastIndexOf('<button', at), at);
+            expect(trigger, status).not.toContain('primary');
         }
-        const running = renderHeader({
-            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
-        });
-        expect(running).not.toContain('>Remove<');
     });
 
-    it('keeps the thread actions on the newest run only — history runs render no Remove of their own', () => {
+    it('hides More task actions while any member of the thread is running', () => {
+        const moving = { exitCode: null, finishedAt: null, startedAt: null, output: null };
+        expect(renderHeader({ jobs: [job({ status: 'running', ...moving })] })).not.toContain('More task actions');
+
+        // A follow-up still going closes the whole thread's menu — the removal would race the run.
+        const root = job({ status: 'stopped' });
+        const child = {
+            ...job({ status: 'running', ...moving }),
+            id: '44444444-4444-4444-8444-444444444444',
+            followUpTo: root.id,
+            rootJobId: root.id,
+        };
+        expect(renderHeader({ jobs: [root, child] })).not.toContain('More task actions');
+
+        // Queued and standby members do not block it: the board has no run to refuse.
+        const queued = {
+            ...job({ status: 'queued', ...moving }),
+            id: '44444444-4444-4444-8444-444444444444',
+            followUpTo: root.id,
+            rootJobId: root.id,
+        };
+        expect(renderHeader({ jobs: [root, queued] })).toContain('More task actions');
+    });
+
+    it('renders the actions on the newest run only — history runs grow none', () => {
         const root = job({ command: 'first command' });
         const child = {
             ...job({ command: 'second command', status: 'failed' }),
@@ -1052,17 +1181,16 @@ describe('the task page header', () => {
             rootJobId: root.id,
         };
         const html = renderHeader({ jobs: [root, child] });
-        expect(html.match(/>Remove</g)).toHaveLength(1);
-        expect(html).not.toContain('>Stop<');
+        expect(html.match(/>Mark done</g)).toHaveLength(1);
+        expect(html.match(/More task actions/g)).toHaveLength(1);
+        expect(html).not.toContain('>Stop run<');
     });
 
-    it('marks an in-flight action disabled, by the guard id the page owns', () => {
-        const task = job({ status: 'stopped' });
-        const html = renderHeader({ jobs: [task], removingId: task.id, doneId: task.id });
-        const remove = html.slice(html.indexOf('>Remove<') - 300, html.indexOf('>Remove<'));
-        expect(remove).toContain('disabled');
-        const done = html.slice(html.indexOf('>Done<') - 300, html.indexOf('>Done<'));
-        expect(done).toContain('disabled');
+    it('renders no empty action wrapper in any state', () => {
+        for (const status of ['queued', 'running', 'standby', 'succeeded', 'failed', 'dead', 'stopped'] as const) {
+            const html = renderHeader({ jobs: [job({ status })] });
+            expect(html, status).not.toContain('<div class="task-actions"></div>');
+        }
     });
 
     it('shows the overall wall clock in the meta, and a dash where nothing is measurable', () => {
@@ -1096,6 +1224,59 @@ describe('the task page header', () => {
             jobs: [job({ taskWallClockMs: null, output: null, exitCode: null, finishedAt: null, startedAt: null })],
         });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+describe('TaskRemoveDialog', () => {
+    /**
+     * The remove confirmation is a Headless UI Dialog, so it portals — and `renderToStaticMarkup`
+     * does not render portals: an open dialog server-renders as Headless' placeholder span, the
+     * same posture the mobile drawer's suite pins. The in-dialog contracts (initial focus, Escape,
+     * backdrop, focus restoration, the live error) are a real browser's to assert —
+     * e2e/task-detail.spec.ts owns them. What a static render CAN hold is the copy the dialog
+     * renders: the helpers below are the component's source of truth, exported pure.
+     */
+    const renderDialog = (over: { open?: boolean } = {}) =>
+        renderToStaticMarkup(
+            <TaskRemoveDialog
+                open={over.open ?? true}
+                command="fix the flaky login test"
+                runCount={2}
+                removing={false}
+                error={null}
+                onClose={() => {}}
+                onConfirm={() => {}}
+            />
+        );
+
+    it('server-renders a placeholder until the client mounts, open or closed', () => {
+        expect(renderDialog()).toContain('<span hidden');
+        expect(renderDialog({ open: false })).toContain('<span hidden');
+    });
+
+    it('names the task in the title \u2014 the root command\u2019s first line, whatever the prose', () => {
+        expect(removeDialogTitle('fix the flaky login test')).toBe('Remove \u201Cfix the flaky login test\u201D?');
+        expect(removeDialogTitle('first line\nsecond line')).toBe('Remove \u201Cfirst line\u201D?');
+    });
+
+    it('states every consequence in the body, with the thread\u2019s real run count', () => {
+        const body = removeDialogBody(3);
+        expect(body).toContain('permanently deletes all 3 runs');
+        expect(body).toContain('their transcript');
+        expect(body).toContain('worktree will be queued for deletion');
+        expect(body).toContain('Published branches and pull requests are not deleted');
+        expect(body).toContain('cannot be undone');
+        // The count is the thread's length, not a decoration: one run reads as one.
+        expect(removeDialogBody(1)).toContain('deletes all 1 runs');
+    });
+});
+
+describe('the remove flow', () => {
+    /** The `window.confirm` path is the thing this dialog replaces — it must be gone outright. */
+    it('carries no window.confirm anywhere in the task actions', () => {
+        const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8');
+        expect(read('../src/pages/TaskDetailPage.tsx')).not.toContain('window.confirm');
+        expect(read('../src/panels/TaskHeader.tsx')).not.toContain('window.confirm');
     });
 });
 
@@ -1285,7 +1466,7 @@ describe('composer parameters', () => {
         expect(html).not.toContain('composer-param');
         // The dropdown renders unchosen; the offered names are client-side, and e2e covers the
         // real dropdown.
-        expect(html.slice(html.indexOf('Workflow'), html.indexOf('>Send<'))).toContain('>— none —</button>');
+        expect(html).toContain('>No workflow — run prompt as written</button>');
     });
 });
 
@@ -1345,38 +1526,116 @@ describe('the workflow choice is clamped to the choices the list offers', () => 
     });
 });
 
-describe('the composer parameter row', () => {
-    // The row renders only once a workflow is chosen — composer state the offline suite cannot
-    // drive — so it is its own exported component: same props-in-markup-out contract, rendered
-    // and pinned here directly.
-    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
-    const renderRow = (params: WorkflowParamChoice[], values: Record<string, string>) =>
-        renderToStaticMarkup(<ComposerParamRow params={params} values={values} onInput={() => {}} />);
+describe('the workflow parameter fields', () => {
+    // The chosen workflow's declared parameters: one labelled input each, plain-language states,
+    // and the raw rule locked inside Format details. Touched state is a prop — the composer owns
+    // it, the fields render it — so every state a keystroke or a blur can produce is renderable
+    // here without a DOM.
+    const issue: WorkflowParamChoice = {
+        name: 'issue',
+        pattern: '#\\d+',
+        description: 'The issue to fix, as #123 or a full issues URL.',
+        example: '#123',
+    };
+    const plain: WorkflowParamChoice = { name: 'notes' };
+    const renderFields = (
+        params: WorkflowParamChoice[],
+        values: Record<string, string> = {},
+        touched: Record<string, boolean> = {}
+    ) =>
+        renderToStaticMarkup(
+            <WorkflowParameterFields
+                params={params}
+                values={values}
+                touched={touched}
+                onInput={() => {}}
+                onBlur={() => {}}
+            />
+        );
 
-    it('marks the blocking inputs invalid and points them at the named needs message', () => {
-        // The gate's reason must reach assistive technology: the blocking field carries
-        // `aria-invalid`, the message carries a stable id, and the field references it — a
-        // screen-reader member learns WHICH field is dark and WHY, not just that Send is.
-        const html = renderRow([issue], {});
-        expect(html).toContain('aria-invalid="true"');
-        expect(html).toContain('aria-describedby="composer-param-error"');
-        expect(html).toContain('id="composer-param-error"');
-        expect(html).toContain('aria-live="polite"');
-        expect(html).toContain('>needs: issue (must match #\\d+)<');
+    it('labels each field with the humanized name and pairs it by id', () => {
+        const html = renderFields([plain]);
+        expect(html).toContain('>Notes</label>');
+        expect(html).toContain('for="composer-param-notes"');
+        expect(html).toContain('id="composer-param-notes"');
     });
 
-    it('keeps the announcement region mounted, silent and unmarked, once every value validates', () => {
-        // A live region can only announce a change it survives, so the region outlives the
-        // message; a valid field carries no invalid state and no error reference.
-        const html = renderRow([issue], { issue: '#12' });
-        expect(html).toContain('id="composer-param-error"');
+    it('renders the author description and example where a member meets them', () => {
+        // The guidance Slice C 1/4 serves: the description beside the field, the example as the
+        // placeholder the empty input shows — never a prefill.
+        const html = renderFields([issue]);
+        expect(html).toContain('id="composer-param-issue-helper"');
+        expect(html).toContain('The issue to fix, as #123 or a full issues URL.');
+        expect(html).toContain('placeholder="Example: #123"');
+        expect(html).not.toContain('>Example: #123<');
+    });
+
+    it('says Required on an untouched empty field without painting it failed', () => {
+        const html = renderFields([plain]);
+        expect(html).toContain('placeholder="Required"');
         expect(html).not.toContain('aria-invalid');
-        expect(html).not.toContain('aria-describedby');
-        expect(html).not.toContain('needs:');
+        expect(html).not.toContain('-error');
+    });
+
+    it('tells a touched empty field it is required, by name, as an error', () => {
+        const html = renderFields([plain], {}, { notes: true });
+        expect(html).toContain('aria-invalid="true"');
+        expect(html).toContain('aria-describedby="composer-param-notes-error"');
+        expect(html).toContain('id="composer-param-notes-error"');
+        expect(html).toContain('Notes is required.');
+    });
+
+    it('rejects an over-length value in words, not in bytes', () => {
+        const html = renderFields([plain], { notes: 'x'.repeat(513) }, { notes: true });
+        expect(html).toContain('Notes must be 512 characters or fewer.');
+    });
+
+    it('reuses the author guidance as the mismatch error when it exists', () => {
+        const html = renderFields([issue], { issue: 'not an issue' }, { issue: true });
+        expect(html).toContain('The issue to fix, as #123 or a full issues URL.');
+        expect(html).not.toContain('does not match the required format');
+    });
+
+    it('falls back to plain-language mismatch copy with no guidance to reuse', () => {
+        const bare: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+        const html = renderFields([bare], { issue: 'not an issue' }, { issue: true });
+        expect(html).toContain('Issue does not match the required format. Open Format details for the technical rule.');
+    });
+
+    it('blames the stored rule, not the member, when the pattern cannot compile', () => {
+        const broken: WorkflowParamChoice = { name: 'issue', pattern: '[' };
+        const html = renderFields([broken], { issue: 'whatever' }, { issue: true });
+        // Apostrophe-free fragment: React escapes the quote, and the sentence is the pin, not its encoding.
+        expect(html).toContain('could not be checked. Ask an administrator to fix the workflow.');
+    });
+
+    it('shows the raw pattern only inside Format details, never in a title or an error', () => {
+        const html = renderFields([issue], { issue: 'not an issue' }, { issue: true });
+        expect(html).toContain('<summary>Format details</summary>');
+        expect(html).toContain('<code>#\\d+</code>');
+        expect(html).not.toContain('title=');
+        // Once per render, and only inside the disclosure: the count is the pin.
+        expect(html.split('#\\d+').length - 1).toBe(1);
+    });
+
+    it('gives two invalid fields two distinct error descriptions', () => {
+        const html = renderFields([plain, issue], {}, { notes: true, issue: true });
+        // The plain field has no helper, so its description is the error alone; the guided one
+        // lists its helper first and its error second — both unique per field.
+        expect(html).toContain('aria-describedby="composer-param-notes-error"');
+        expect(html).toContain('composer-param-issue-helper composer-param-issue-error');
+        expect(html).toContain('Notes is required.');
+        expect(html).toContain('Issue is required.');
+    });
+
+    it('carries no error state once every value validates', () => {
+        const html = renderFields([issue], { issue: '#12' }, { issue: true });
+        expect(html).not.toContain('aria-invalid');
+        expect(html).not.toContain('-error"');
     });
 
     it('never emits a placeholder value', () => {
-        const html = renderRow([issue], { issue: '#12' });
+        const html = renderFields([issue], { issue: '#12' }, { issue: true });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
@@ -1416,8 +1675,12 @@ describe('composer workflow draft resets on a repository change', () => {
     // list's default still effective, which is exactly what is effective while the window is open.
     const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
 
-    it('resets to the mount shape — unchosen workflow, no stored values — so the mount run is a no-op', () => {
-        expect(freshWorkflowDraft()).toEqual({ workflow: '', storedParams: { workflowId: null, values: {} } });
+    it('resets to the mount shape — unchosen workflow, no stored values, no touched fields — so the mount run is a no-op', () => {
+        expect(freshWorkflowDraft()).toEqual({
+            workflow: '',
+            storedParams: { workflowId: null, values: {} },
+            paramTouched: {},
+        });
     });
 
     it('sends no workflow name and hands no values back for whatever the stale list still declares', () => {
@@ -1465,6 +1728,137 @@ describe('effectiveWorkflows', () => {
             { id: 'w3', name: 'fix-issue', scope: 'repo' as const },
         ];
         expect(effectiveWorkflows(list).map((c) => c.id)).toEqual(['w1', 'w3']);
+    });
+});
+
+describe('humanizeParamName', () => {
+    // The fallback label: an identifier a prompt author wrote for the machine, said in words the
+    // composer can show a member.
+    it('splits on separators and capitalizes each word', () => {
+        expect(humanizeParamName('issue')).toBe('Issue');
+        expect(humanizeParamName('issue_number')).toBe('Issue number');
+        expect(humanizeParamName('bug-url')).toBe('Bug url');
+        expect(humanizeParamName('pr_title_prefix')).toBe('Pr title prefix');
+    });
+});
+
+describe('paramFieldVerdict — the per-field plain-language state', () => {
+    const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
+    const guided: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+', description: 'Reference the issue.' };
+
+    it('answers ok with no message for a value the board would accept', () => {
+        expect(paramFieldVerdict(issue, ' #12 ', true)).toEqual({ kind: 'ok', message: null });
+        expect(paramFieldVerdict({ name: 'notes' }, 'anything', false)).toEqual({ kind: 'ok', message: null });
+    });
+
+    it('says Required on an untouched empty field — a hint, not a failure', () => {
+        expect(paramFieldVerdict(issue, undefined, false)).toEqual({ kind: 'untouched', message: null });
+        expect(paramFieldVerdict(issue, '   ', false)).toEqual({ kind: 'untouched', message: null });
+    });
+
+    it('names a touched empty field as required, by its humanized label', () => {
+        expect(paramFieldVerdict(issue, undefined, true)).toEqual({ kind: 'required', message: 'Issue is required.' });
+        expect(paramFieldVerdict({ name: 'pr_title' }, '', true)).toEqual({
+            kind: 'required',
+            message: 'Pr title is required.',
+        });
+    });
+
+    it('bounds the value at the length the board enforces', () => {
+        expect(paramFieldVerdict(issue, 'x'.repeat(513), false).kind).toBe('too-long');
+        expect(paramFieldVerdict(issue, 'x'.repeat(513), false).message).toBe('Issue must be 512 characters or fewer.');
+        expect(paramFieldVerdict(issue, 'x'.repeat(512), false).kind).not.toBe('too-long');
+    });
+
+    it('reuses the author guidance as the mismatch error when the author wrote any', () => {
+        expect(paramFieldVerdict(guided, 'nope', true)).toEqual({ kind: 'mismatch', message: 'Reference the issue.' });
+    });
+
+    it('falls back to plain-language mismatch copy that names the Format details', () => {
+        expect(paramFieldVerdict(issue, 'nope', true)).toEqual({
+            kind: 'mismatch',
+            message: 'Issue does not match the required format. Open Format details for the technical rule.',
+        });
+    });
+
+    it('blames the stored rule when the pattern itself cannot compile', () => {
+        const verdict = paramFieldVerdict({ name: 'issue', pattern: '[' }, 'x', true);
+        expect(verdict.kind).toBe('uncompilable');
+        expect(verdict.message).toBe(
+            "This workflow's format rule could not be checked. Ask an administrator to fix the workflow."
+        );
+    });
+
+    it('never shows regex syntax in a message', () => {
+        for (const value of [undefined, '', 'x'.repeat(513), 'nope']) {
+            for (const touched of [false, true]) {
+                const { message } = paramFieldVerdict(issue, value, touched);
+                expect(message ?? '').not.toMatch(/\\d|\(\?:/);
+            }
+        }
+    });
+
+    it('agrees with the Send gate: every non-ok, non-untouched verdict is a value paramsComplete refuses', () => {
+        const params = [issue, { name: 'notes' }];
+        const values: Record<string, string> = { issue: '#12', notes: 'ok' };
+        expect(paramsComplete(params, values)).toBe(true);
+        for (const name of ['issue', 'notes'] as const) {
+            for (const value of [undefined, '', '   ', 'x'.repeat(513), 'not matching']) {
+                const verdict = paramFieldVerdict(params.find((param) => param.name === name)!, value, true);
+                const broken = { ...values, [name]: value ?? '' };
+                expect(verdict.kind === 'ok' || verdict.kind === 'untouched').toBe(paramsComplete(params, broken));
+            }
+        }
+    });
+});
+
+describe('preflightSentence — what will actually run, before it runs', () => {
+    it('says the repository, the executor and the workflow by their actual names', () => {
+        expect(preflightSentence({ repo: 'acme/web', executor: 'main', workflow: 'fix-issue' })).toBe(
+            'Will run in acme/web using main executor, with the fix-issue workflow.'
+        );
+    });
+
+    it('says the prompt runs as written when no workflow is chosen', () => {
+        expect(preflightSentence({ repo: 'acme/web', executor: null, workflow: null })).toBe(
+            'Will run in acme/web using the default executor. Your prompt will run as written.'
+        );
+    });
+
+    it('says the task runs without a repository when none is selected', () => {
+        expect(preflightSentence({ repo: null, executor: null, workflow: null })).toBe(
+            'Will run without a repository using the default executor. Your prompt will run as written.'
+        );
+        expect(preflightSentence({ repo: null, executor: 'heavy', workflow: 'triage' })).toBe(
+            'Will run without a repository using heavy executor, with the triage workflow.'
+        );
+    });
+});
+
+describe('startBlocker — the one reason Start is dark, in precedence order', () => {
+    it('answers null only when nothing blocks the launch', () => {
+        expect(startBlocker({ sending: false, promptEmpty: false, paramsInvalid: false })).toBeNull();
+    });
+
+    it('puts the in-flight queue first, so a second click cannot double-send', () => {
+        expect(startBlocker({ sending: true, promptEmpty: true, paramsInvalid: true })).toBe('in-flight');
+    });
+
+    it('puts the empty prompt above invalid params — the prompt is the task', () => {
+        expect(startBlocker({ sending: false, promptEmpty: true, paramsInvalid: true })).toBe('empty-prompt');
+        expect(startBlocker({ sending: false, promptEmpty: false, paramsInvalid: true })).toBe('invalid-params');
+    });
+});
+
+describe('the parameter touched-state model', () => {
+    it('marks one field touched without disturbing the others', () => {
+        expect(markTouched({}, 'issue')).toEqual({ issue: true });
+        expect(markTouched({ notes: true }, 'issue')).toEqual({ notes: true, issue: true });
+    });
+
+    it('marks every field touched at once, for an invalid keyboard submission', () => {
+        expect(touchAll(['issue', 'notes'])).toEqual({ issue: true, notes: true });
+        expect(touchAll([])).toEqual({});
     });
 });
 

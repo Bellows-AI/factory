@@ -2089,22 +2089,49 @@
     }
 
     /* The task head's row of controls and its overall wall clock — every button the task can take,
-       at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
-       title from squeezing the buttons; the title wraps instead. */
+        at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
+        title from squeezing the buttons; the title wraps instead. The row itself wraps too, so a
+        360px screen drops Mark done and the overflow under Stop run rather than clipping them. */
     .task-actions {
         align-items: center;
         display: flex;
         flex: none;
+        flex-wrap: wrap;
         gap: 8px;
     }
 
     /* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
-       activity line, never the exit code's red. */
+        activity line, never the exit code's red. */
     .task-clock {
         color: var(--ink-muted);
         font-family: var(--font-mono);
         font-size: 12px;
         white-space: nowrap;
+    }
+
+    /* The remove confirmation (issue 178): the one dialog the task's own actions can raise. It
+        floats over the dimmed page, so it wears the picker's harder hairline; small, because the
+        copy it carries is three sentences and two answers. */
+    .task-remove {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        max-width: 440px;
+        padding: 16px;
+        width: 90vw;
+    }
+
+    .task-remove-title {
+        font-size: 15px;
+        margin: 0 0 8px;
+    }
+
+    .task-remove-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
     }
 
     .composer {
@@ -2143,6 +2170,9 @@
         border-radius: var(--radius-md);
         color: var(--ink);
         font: inherit;
+        /* A long repository or workflow name wraps inside the control, never the page. */
+        max-width: 100%;
+        overflow-wrap: anywhere;
         padding: 2px 6px;
     }
 
@@ -2162,6 +2192,96 @@
 
     .task-compose .composer-input {
         min-height: 160px;
+    }
+
+    /* The guided composer (issue 176): label-above-control fields, the two-column execution
+       context, the plain-language helper and error lines, the preflight sentence, and the Format
+       details that hold a parameter's raw rule. One column until 768px — two columns only where
+       both fields have room, so nothing compresses. */
+    .composer-field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-top: 12px;
+    }
+
+    .composer-fields {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .composer-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr;
+    }
+
+    @media (min-width: 768px) {
+        .composer-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    .composer-helper {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 0;
+    }
+
+    .composer-preflight {
+        color: var(--ink-muted);
+        margin: 12px 0 0;
+    }
+
+    .composer-start {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 12px;
+    }
+
+    .composer-blocker {
+        color: var(--ink-muted);
+        flex-basis: 100%;
+        font-size: 12px;
+        text-align: right;
+    }
+
+    .composer-param-error {
+        color: var(--lamp-stop);
+        font-size: 12px;
+        margin: 0;
+    }
+
+    /* A failed field tints its edge like the status pills do — the lamp is the message's color. */
+    .composer-select[aria-invalid='true'] {
+        border-color: var(--lamp-stop);
+    }
+
+    /* The raw pattern's one home: collapsed by default, the rule inside in mono. */
+    .composer-param-details {
+        font-size: 12px;
+    }
+
+    .composer-param-details code {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        overflow-wrap: anywhere;
+    }
+
+    /* The keyboard path beside the launch button — a documentation mark, not an affordance. */
+    kbd {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        padding: 1px 5px;
+        white-space: nowrap;
     }
 
     /* The app bar's user menu and the settings page's identity section. */

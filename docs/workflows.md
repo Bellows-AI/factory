@@ -72,8 +72,8 @@ characters.
 `description` and `example` are PRESENTATION METADATA the composer renders beside the input —
 plain-language guidance and a valid example a generic client can show instead of interpreting the
 regex. Both are optional, validated on the trimmed value (non-empty, at most 160 and 120 characters
-respectively — `BAD_PARAMS` otherwise), and retained trimmed on the normalized definition. `example` must be VALID: when the parameter declares a `pattern`, the trimmed example must fully
-match it
+respectively — `BAD_PARAMS` otherwise), and retained trimmed on the normalized definition. `example`
+must be VALID: when the parameter declares a `pattern`, the trimmed example must fully match it
 (`^(?:pattern)$`, the same semantics launch applies) — the composer may pre-fill it, and a hint the
 launch would refuse is exactly the dishonest guidance this metadata exists to replace. The pair
 still participates in NOTHING beyond that: no interpolation, and `checkWorkflowParams` never reads
@@ -283,7 +283,7 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The claim's `publish` flag and the gates opt-out | `job-store.ts` `claim()` |
 | The driver's one publish gate | `driver/src/loop.ts` |
 | CRUD routes and `POST /api/jobs` resolution | `server/src/routes/workflows.ts`, `routes/jobs.ts` |
-| The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/api/useWorkflows.ts` |
+| The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/task-composer.ts`, `web/src/api/useWorkflows.ts` |
 
 ## Tests
 
