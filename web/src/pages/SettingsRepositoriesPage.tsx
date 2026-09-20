@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useRepos } from '../api/useRepos.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -22,11 +23,41 @@ export function SettingsRepositoriesPage() {
     const { env, session } = useSettingsPage();
     const repos = useRepos(true);
     const [selectedRepo, setSelectedRepo] = useState<{ owner: string; name: string } | null>(null);
+    // The current editor's dirty flag, mirrored by the panel's onDirtyChange: the switch question
+    // must be asked BEFORE the panel unmounts and its draft dies with it.
+    const [repoDirty, setRepoDirty] = useState(false);
+    const guard = useUnsavedChanges();
 
     const isAdmin = session?.role === 'admin';
     const repoScope = env.data?.repos.find(
         (scope) => selectedRepo && scope.owner === selectedRepo.owner && scope.name === selectedRepo.name
     );
+
+    /**
+     * The select is a guarded detail switch (issue 182): swapping the editor — or clearing the
+     * selection — while its draft is dirty runs the same discard confirmation the route blocker
+     * runs. Continue editing changes nothing (the controlled select keeps its value); Discard
+     * lets the switch through, and the key-bumped panel starts fresh, which IS the reset.
+     */
+    const changeRepo = async (value: string) => {
+        const [owner, name] = value.split('/');
+        const next = owner && name ? { owner, name } : null;
+        const switching =
+            selectedRepo !== null &&
+            (next === null || next.owner !== selectedRepo.owner || next.name !== selectedRepo.name);
+        if (switching && selectedRepo && repoDirty && guard) {
+            const discardConfirmed = await guard.confirmDiscard({
+                id: `repo:${selectedRepo.owner}/${selectedRepo.name}`,
+                label: `${selectedRepo.owner}/${selectedRepo.name}`,
+                dirty: true,
+                // The switch itself is the reset: the old editor unmounts with its draft.
+                discard: () => {},
+            });
+            if (!discardConfirmed) return;
+        }
+        setSelectedRepo(next);
+        setRepoDirty(false);
+    };
 
     return (
         <>
@@ -72,8 +103,7 @@ export function SettingsRepositoriesPage() {
                         aria-label="Repository"
                         value={selectedRepo ? `${selectedRepo.owner}/${selectedRepo.name}` : ''}
                         onChange={(e) => {
-                            const [owner, name] = e.target.value.split('/');
-                            setSelectedRepo(owner && name ? { owner, name } : null);
+                            void changeRepo(e.target.value);
                         }}
                     >
                         <option value="">Choose a repository…</option>
@@ -111,6 +141,9 @@ export function SettingsRepositoriesPage() {
                             initialVars={repoScope?.vars ?? []}
                             onSave={(vars) => env.saveRepo(selectedRepo, vars)}
                             disabled={!isAdmin}
+                            draftId={`repo:${selectedRepo.owner}/${selectedRepo.name}`}
+                            draftLabel={`${selectedRepo.owner}/${selectedRepo.name}`}
+                            onDirtyChange={setRepoDirty}
                         />
                     ) : null
                 ) : null}

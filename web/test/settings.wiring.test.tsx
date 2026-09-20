@@ -6,6 +6,7 @@ import type { UseTasks } from '../src/api/useTasks.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { appRoutes } from '../src/App.js';
 import { useShell } from '../src/components/AppShell.js';
+import { useUnsavedChanges } from '../src/components/UnsavedChangesDialog.js';
 import { SettingsLayout, useSettingsPage } from '../src/pages/SettingsLayout.js';
 
 /**
@@ -27,17 +28,19 @@ function ShellStub() {
     return <Outlet context={{ tasks: fakeTasks }} />;
 }
 
-let seen: { shellTasks: UseTasks | undefined; workspace: unknown; env: unknown } = {
-    shellTasks: undefined,
-    workspace: undefined,
-    env: undefined,
-};
+let seen: {
+    shellTasks: UseTasks | undefined;
+    workspace: unknown;
+    env: unknown;
+    guard: ReturnType<typeof useUnsavedChanges>;
+} = { shellTasks: undefined, workspace: undefined, env: undefined, guard: undefined };
 
 /** Reads both contexts the way the settings pages do. */
 function Probe() {
     const shell = useShell();
     const page = useSettingsPage();
-    seen = { shellTasks: shell.tasks, workspace: page.workspace, env: page.env };
+    const guard = useUnsavedChanges();
+    seen = { shellTasks: shell.tasks, workspace: page.workspace, env: page.env, guard };
     return null;
 }
 
@@ -61,7 +64,7 @@ function settingsRouter() {
 
 describe('settings area wiring', () => {
     it("publishes the shell context AND both polls to the area's pages", () => {
-        seen = { shellTasks: undefined, workspace: undefined, env: undefined };
+        seen = { shellTasks: undefined, workspace: undefined, env: undefined, guard: undefined };
         renderToStaticMarkup(<RouterProvider router={settingsRouter()} />);
         // Identity, not a lookalike: the page must see the very poll instance the shell owns.
         expect(seen.shellTasks).toBe(fakeTasks);
@@ -69,6 +72,17 @@ describe('settings area wiring', () => {
         expect(seen.workspace).toBeTruthy();
         expect(seen.env as UseEnv | undefined).toBeTruthy();
         expect(seen.workspace as UseWorkspace | undefined).toBeTruthy();
+    });
+
+    it('publishes the unsaved-change guard beside the polls, with both of its verbs', () => {
+        // The guard is the layout's own context, deliberately NOT on the outlet context: the
+        // polls keep the shape they always had (issue 182). The layout must be mounted inside a
+        // data router, because its useBlocker throws without one — this mount is the pin.
+        seen = { shellTasks: undefined, workspace: undefined, env: undefined, guard: undefined };
+        renderToStaticMarkup(<RouterProvider router={settingsRouter()} />);
+        expect(seen.guard).toBeTruthy();
+        expect(typeof seen.guard?.registerDraft).toBe('function');
+        expect(typeof seen.guard?.confirmDiscard).toBe('function');
     });
 });
 
