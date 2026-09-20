@@ -1,7 +1,10 @@
 import { useRef, useState } from 'react';
-import { int } from '../format.js';
 import { ChartRoot, XLabels, YAxis } from './Axes.js';
 import { PAD, linearScale, niceMax } from './scale.js';
+
+/** The bucket readout's exact figure, grouped for reading — the same idiom ByUserPanel's accessible names use. */
+const exact = (value: number | null | undefined): string =>
+    value === null || value === undefined ? '—' : value.toLocaleString('en-US');
 
 export interface BarSeries {
     id: string;
@@ -72,8 +75,8 @@ function bucketParts(
 ): string[] {
     const parts: string[] = [bucketLabels[i] ?? ''];
     if (partial[i]) parts.push('partial period');
-    for (const s of series) parts.push(`${s.label} ${int(s.values[i])}`);
-    if (line) parts.push(`${line.label} ${int(line.values[i])}`);
+    for (const s of series) parts.push(`${s.label} ${exact(s.values[i])}`);
+    if (line) parts.push(`${line.label} ${exact(line.values[i])}`);
     const hidden = [
         ...series.filter((s) => hiddenSeries?.has(s.id)).map((s) => s.label),
         ...(line && hiddenSeries?.has(line.id) ? [line.label] : []),

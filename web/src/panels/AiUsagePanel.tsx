@@ -24,7 +24,7 @@ export function AiUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats; m
             />
             <Card value={duration(t.activeHours)} label="active session time" note="excludes idle time" />
             <Card
-                value={pct(t.editAcceptance.ratio)}
+                value={pct(t.acceptRatio)}
                 label="file edits accepted"
                 // A leading em dash reads as a broken value rather than a missing one, and
                 // backfilled sessions have no line counts at all.

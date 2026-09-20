@@ -1,7 +1,7 @@
 import { isTerminal, type Job } from '../api/useJobs.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { wallClock } from '../format.js';
-import { taskSummary } from '../task-tree.js';
+import { taskSummary, taskTitleFromCommand } from '../task-tree.js';
 
 /**
  * The page-level head of `/tasks/:id`, derived from the loaded thread: the task's name — the
@@ -49,7 +49,7 @@ export function TaskHeader({
     return (
         <PageHeader
             eyebrow="Tasks"
-            title={rootTask.command.split('\n')[0]!.trim()}
+            title={taskTitleFromCommand(rootTask.command)}
             meta={
                 <>
                     <span className="pill">{latestTask.status}</span>

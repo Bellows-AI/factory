@@ -1,15 +1,7 @@
 import { HOUR } from './config.js';
 import { dayKey, dayStart, isoWeekKey, ratio, weekStart } from './metrics.js';
 import type { DateRange } from './range.js';
-import type {
-    EditAcceptance,
-    SessionRollup,
-    TelemetryInput,
-    TelemetryPoint,
-    TelemetryStats,
-    TokenTotals,
-    UserRef,
-} from './types.js';
+import type { SessionRollup, TelemetryInput, TelemetryPoint, TelemetryStats, TokenTotals, UserRef } from './types.js';
 
 /**
  * Sums the measured values and returns null only when nothing was measured at all.
@@ -36,20 +28,10 @@ function sumTokens(items: { tokens: TokenTotals }[]): TokenTotals {
     };
 }
 
-/**
- * Assembles the edit-acceptance figures from the measured sums. `decisions` is the null-aware
- * denominator; the ratio stays null unless the numerator was measured AND something was —
- * a rejected count alone proves nothing about acceptance, and zero measured decisions have
- * no ratio (`ratio()` nulls the zero denominator, keeping 0-of-0 distinct from unmeasured).
- */
-function editAcceptance(accepted: number | null, rejected: number | null): EditAcceptance {
-    const decisions = sum([accepted, rejected]);
-    return {
-        accepted,
-        rejected,
-        decisions,
-        ratio: accepted === null || decisions === null ? null : ratio(accepted, decisions),
-    };
+function acceptRatio(accepted: number | null, rejected: number | null): number | null {
+    const total = sum([accepted, rejected]);
+    if (total === null || accepted === null) return null;
+    return ratio(accepted, total);
 }
 
 export interface TelemetryStatsOptions {
@@ -209,7 +191,7 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
             activeHours: totalActive === null ? null : (totalActive * 1000) / HOUR,
             linesAdded: sum(inScope.map((s) => s.linesAdded)),
             linesRemoved: sum(inScope.map((s) => s.linesRemoved)),
-            editAcceptance: editAcceptance(totalAccepted, totalRejected),
+            acceptRatio: acceptRatio(totalAccepted, totalRejected),
         },
         otherRepoSessions,
         sessionsWithoutHook,

@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_PREVIEW, NAV_ITEMS, SETTINGS_SECTIONS, countLabel, preview } from '../src/nav-model.js';
-import type { TaskTreeEntry } from '../src/task-tree.js';
+import type { TaskSummary } from '../src/api/useTasks.js';
 
-const entry = (id: string): TaskTreeEntry => ({
+const entry = (id: string): TaskSummary => ({
     id,
-    title: `task ${id}`,
-    summary: null,
-    status: { status: 'running', cancelRequestedAt: null, doneAt: null },
+    command: `task ${id}`,
+    status: 'running',
+    cancelRequestedAt: null,
+    doneAt: null,
+    repo: null,
+    executor: null,
     author: null,
+    activity: null,
+    summary: null,
+    createdAt: '2026-09-02T12:00:00.000Z',
+    activityAt: '2026-09-02T12:10:00.000Z',
 });
 
 describe('nav model', () => {

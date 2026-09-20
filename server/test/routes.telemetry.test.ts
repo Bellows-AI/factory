@@ -65,12 +65,7 @@ describe('degradation states', () => {
         expect(body.telemetry).not.toBeNull();
         expect(body.telemetry.totals.sessions).toBe(0);
         expect(body.telemetry.totals.tokens.input).toBeNull();
-        expect(body.telemetry.totals.editAcceptance).toEqual({
-            accepted: null,
-            rejected: null,
-            decisions: null,
-            ratio: null,
-        });
+        expect(body.telemetry.totals.acceptRatio).toBeNull();
     });
 
     it('answers 503 with a named code when telemetry is switched off', async () => {

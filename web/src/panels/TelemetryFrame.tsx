@@ -12,14 +12,11 @@ import type { TelemetryMeta } from '../api/useStats.js';
  */
 export function TelemetryFrame({
     title,
-    titleId,
     blurb,
     meta,
     children,
 }: {
     title: string;
-    /** The heading's id, so a table inside the frame can point its labelled region at it. */
-    titleId?: string;
     blurb?: ReactNode;
     meta: TelemetryMeta;
     children: ReactNode;
@@ -27,7 +24,7 @@ export function TelemetryFrame({
     const broken = meta.status === 'unreachable';
     return (
         <section className={broken ? 'panel bad' : 'panel'}>
-            <h2 id={titleId}>
+            <h2>
                 {title}
                 {meta.source === 'fixture' ? <span className="badge">synthetic fixture</span> : null}
             </h2>
