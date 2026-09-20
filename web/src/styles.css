@@ -1949,7 +1949,14 @@
         padding-top: 10px;
     }
 
-    /* The outcome's group label — Result, Execution, Verification, Published work, Services. */
+    .chat-exchange {
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+    }
+
+    /* The run article's section labels — Request / Follow-up, Agent response / Agent activity,
+       Checks and published work. Shared recipe with the outcome's group labels. */
+    .run-label,
     .task-outcome-label {
         color: var(--ink-muted);
         font-size: 12px;
@@ -1958,16 +1965,49 @@
         text-transform: uppercase;
     }
 
-    .chat-exchange {
-        border-top: 1px solid var(--line);
-        padding-top: 10px;
+    .run-label {
+        margin-top: 14px;
     }
 
+    /* The prompt is the member's words as prose — normal text, line breaks kept, not mono just
+       because it is agent input. */
     .msg-user {
-        font-family: var(--font-mono);
         margin: 0;
         white-space: pre-wrap;
         word-break: break-word;
+    }
+
+    /* The stored agent summary — the terminal response, flowing prose like the prompt. */
+    .run-summary {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    /* The raw-output disclosure: collapsed behind a summary, expanded when it is all there is. */
+    .run-output > summary {
+        cursor: pointer;
+        margin: 6px 0;
+    }
+
+    /* The checks-and-publication region: a focus target so the outcome's "View checks in run N"
+       link lands keyboard focus here, not just the scroll position. */
+    .run-work {
+        margin-top: 10px;
+    }
+
+    .run-work:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+    }
+
+    /* One run's publish line: the branch code-styled, the PR link beside it. */
+    .run-publish {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0;
     }
 
     .msg-meta {

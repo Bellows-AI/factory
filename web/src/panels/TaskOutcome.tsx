@@ -119,6 +119,16 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                             <span className="pill gate-failed">{counts.failed} failed</span>
                             <span className="pill gate-running">{counts.running} running</span>
                         </p>
+                        {/* Straight to the newest run's checks — the anchor is a focus target on
+                        the run's own region, so keyboard and pointer land in the same place. */}
+                        <a
+                            href={`#run-${jobs.length}-checks`}
+                            onClick={() =>
+                                (document.getElementById(`run-${jobs.length}-checks`) as HTMLElement | null)?.focus()
+                            }
+                        >
+                            View checks in run {jobs.length}
+                        </a>
                     </section>
                 ) : null}
                 {publish !== null || issue !== null ? (

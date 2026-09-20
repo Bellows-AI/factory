@@ -184,7 +184,8 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit`, `chat-detail` | One turn: prompt, metadata, exit code |
+| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit`, `chat-detail` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
+| Run article | `run-label`, `run-summary`, `run-output`, `run-work`, `run-publish` | One run's sections in reading order: labels (Request / Follow-up / Agent response / activity), the stored summary as flowing prose, the raw-output disclosure (collapsed behind a summary, expanded when it is all there is), the checks-and-publication focus anchor, the publish line |
 | Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
 | Gates | `chat-gates`, `chat-gate-list`, `gate-passed`, `gate-failed`, `gate-running` | The verification-gate tree |
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
@@ -254,9 +255,10 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TrackedOrgsPanel.tsx` | panel, login-button |
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
-| `TaskDetail.tsx` | task-layout, task-conversation, chat, gate, composer, pill, status |
+| `TaskDetail.tsx` | task-layout, task-conversation, panel, composer, status, muted |
 | `TaskHeader.tsx` | page-header, pill, task head |
 | `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
+| `TaskRun.tsx` | chat-exchange, run-label, run-summary, run-output, run-work, run-publish, msg-user, msg-meta, chat-runtime, chat-activity, chat-exit, chat-done, chat-stop, chat-gates, chat-gate-list, gate-passed, gate-failed, gate-running, chat-output, pill, muted, code |
 | `TaskUsagePanel.tsx` | data, align-end, muted |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
