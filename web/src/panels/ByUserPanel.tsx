@@ -1,6 +1,6 @@
 import type { TelemetryStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../api/useStats.js';
-import type { DataTableColumn } from '../components/DataTable.js';
+import type { Column } from '../components/DataTable.js';
 import { DataTable } from '../components/DataTable.js';
 import { tokens } from '../format.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
@@ -45,26 +45,26 @@ export function byUserRows(byUser: TelemetryStats['byUser']): ByUserRow[] {
     }));
 }
 
-const columns: DataTableColumn<ByUserRow>[] = [
+const columns: Column<ByUserRow>[] = [
     {
         key: 'name',
         label: 'User',
-        cell: (row) => (
+        render: (row) => (
             <span className="by-user-user">
                 {row.avatarUrl !== null ? <img className="task-avatar" src={row.avatarUrl} alt="" /> : null}
                 {row.name}
             </span>
         ),
-        sortValue: (row) => row.name,
+        sort: (row) => row.name,
     },
-    { key: 'sessions', label: 'Sessions', cell: (row) => row.sessions, sortValue: (row) => row.sessions, align: 'end' },
+    { key: 'sessions', label: 'Sessions', numeric: true },
     {
         key: 'newTokens',
         label: 'New tokens',
-        align: 'end',
-        sortValue: (row) => row.newTokens,
+        numeric: true,
+        sort: (row) => row.newTokens,
         name: (row) => (row.newTokens === null ? undefined : `${row.newTokens.toLocaleString('en-US')} new tokens`),
-        cell: (row) => (
+        render: (row) => (
             <>
                 {tokens(row.newTokens)}
                 {/* Width is decoration; the exact total is the cell's accessible name. An
@@ -77,22 +77,10 @@ const columns: DataTableColumn<ByUserRow>[] = [
             </>
         ),
     },
-    { key: 'input', label: 'Input', align: 'end', cell: (row) => tokens(row.input), sortValue: (row) => row.input },
-    { key: 'output', label: 'Output', align: 'end', cell: (row) => tokens(row.output), sortValue: (row) => row.output },
-    {
-        key: 'cacheRead',
-        label: 'Cache read',
-        align: 'end',
-        cell: (row) => tokens(row.cacheRead),
-        sortValue: (row) => row.cacheRead,
-    },
-    {
-        key: 'cacheWrite',
-        label: 'Cache write',
-        align: 'end',
-        cell: (row) => tokens(row.cacheWrite),
-        sortValue: (row) => row.cacheWrite,
-    },
+    { key: 'input', label: 'Input', numeric: true, render: (row) => tokens(row.input) },
+    { key: 'output', label: 'Output', numeric: true, render: (row) => tokens(row.output) },
+    { key: 'cacheRead', label: 'Cache read', numeric: true, render: (row) => tokens(row.cacheRead) },
+    { key: 'cacheWrite', label: 'Cache write', numeric: true, render: (row) => tokens(row.cacheWrite) },
 ];
 
 /** Who the agent sessions belong to, one row per user the board's audit rows resolve to. */
@@ -100,7 +88,6 @@ export function ByUserPanel({ telemetry, meta }: { telemetry: TelemetryStats; me
     return (
         <TelemetryFrame
             title="Usage by user"
-            titleId="usage-by-user-heading"
             blurb={
                 <>
                     Sessions and tokens per user, resolved by joining each session to the board task it ran under. The
@@ -111,11 +98,12 @@ export function ByUserPanel({ telemetry, meta }: { telemetry: TelemetryStats; me
             meta={meta}
         >
             <DataTable
-                labelledBy="usage-by-user-heading"
                 columns={columns}
                 rows={byUserRows(telemetry.byUser)}
+                sortable
                 rowKey={(row) => row.id}
-                initialSort={{ key: 'newTokens', direction: 'descending' }}
+                ariaLabel="Usage by user"
+                initialSort={{ key: 'newTokens', descending: true }}
                 empty={<p className="muted">No attributed sessions in the coverage window yet.</p>}
             />
         </TelemetryFrame>

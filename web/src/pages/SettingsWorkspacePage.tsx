@@ -90,7 +90,10 @@ export function SettingsWorkspacePage() {
 
             {error ? <p className="status">{error}</p> : null}
 
-            {!noRoot ? (
+            {/* Requiring `data` keeps the failed-poll state honest: with no response there is no
+                root to reason about, and the empty-checkout sentence beside the error would claim
+                "nothing checked out" as a fact about the workspace rather than about the request. */}
+            {data && !noRoot ? (
                 <>
                     {data && data.repos.length ? (
                         <WorkspaceReposPanel repos={data.repos} />

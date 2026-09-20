@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useOutletContext } from 'react-router-dom';
 import { useStats } from '../api/useStats.js';
 import type { StatsPayload, FetchState } from '../api/useStats.js';
-import { useJobs } from '../api/useJobs.js';
-import type { UseJobs } from '../api/useJobs.js';
+import { useTasks } from '../api/useTasks.js';
+import type { UseTasks } from '../api/useTasks.js';
 import { useSession } from '../api/useSession.js';
 import type { Session } from '../api/useSession.js';
 import { DEFAULT_RANGE, DEFAULT_SCOPE, statsQuery } from './RangeSelector.js';
@@ -32,8 +32,8 @@ export interface ShellContext {
     progress: FetchState | null;
     error: string | null;
     refresh: () => void;
-    /** The one task-list poll, shared by the tasks pages the way the stats poll is. */
-    tasks: UseJobs;
+    /** The one task-overview poll, shared by the tasks pages the way the stats poll is. */
+    tasks: UseTasks;
 }
 
 /** Typed access to what the layout route publishes. */
@@ -67,14 +67,16 @@ export function AppShell() {
     const query = useMemo(() => statsQuery(range, scope), [range, scope]);
     const { data, refreshing, progress, error, refresh } = useStats(query);
 
-    // The task list is the same decision as the stats poll above — one instance, above the Outlet —
-    // with one difference: it is gated to the tasks area. The sidenav's own comment already rejected
-    // a poll that runs on every page for a number nobody is looking at, and a full task list is that
-    // request at a larger size; so the chain runs only while the member is on `/tasks` or under it,
-    // and the sidenav renders no list anywhere else.
+    // The task overview is the same decision as the stats poll above — one instance, above the
+    // Outlet — with one difference: it is gated to the tasks area. The sidenav's own comment
+    // already rejected a poll that runs on every page for a number nobody is looking at, and a
+    // full task list is that request at a larger size; so the chain runs only while the member is
+    // on `/tasks` or under it, and the sidenav renders no preview anywhere else. The hook reads
+    // the URL itself: the inbox's filters come from the query string exactly on `/tasks`, the
+    // composer and detail views ask the default attention question.
     const { pathname } = useLocation();
     const onTasks = pathname === '/tasks' || pathname.startsWith('/tasks/');
-    const tasks = useJobs(onTasks);
+    const tasks = useTasks(onTasks);
 
     // The session for the app bar's user menu. A second `useSession` instance next to the gate's —
     // the account page already does the same; the module-level listener they
@@ -110,7 +112,7 @@ export function AppShell() {
             <a className="skip-link" href="#main-content">
                 Skip to main content
             </a>
-            <SideNav tasks={onTasks ? tasks.jobs : null} onNavigate={() => setNavOpen(false)} />
+            <SideNav navigation={onTasks ? tasks.navigation : null} onNavigate={() => setNavOpen(false)} />
             <div className="shell-main">
                 <AppBar
                     meta={data?.meta ?? null}
@@ -131,7 +133,7 @@ export function AppShell() {
                 open={navOpen}
                 onClose={() => setNavOpen(false)}
                 onNavigate={() => setNavOpen(false)}
-                tasks={onTasks ? tasks.jobs : null}
+                navigation={onTasks ? tasks.navigation : null}
                 meta={data?.meta ?? null}
             />
         </div>

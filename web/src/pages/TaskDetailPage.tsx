@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
@@ -33,11 +33,27 @@ export function TaskDetailPage() {
     // One page instance serves every /tasks/:id, so a refusal earned on task A would sit above
     // task B after a sidenav jump. A different id is a different conversation: forget the error
     // and any in-flight mark. `key` on the panel does the same for the composer's own draft.
+    //
+    // The generation is what keeps a RETIRED request from haunting the new task: every action
+    // captures it at start, and after each await its tail (error, refresh, navigation, mark
+    // clearing) acts only while its own generation is still current — task A's completion can
+    // otherwise clear task B's in-flight mark or yank the reader off task B. Monotonic, so
+    // navigating back to A still counts as a new question.
+    const generation = useRef(0);
     useEffect(() => {
+        generation.current += 1;
         setActionError(null);
+        setSending(false);
         setStoppingId(null);
         setRemovingId(null);
         setDoneId(null);
+        // Leaving the route invalidates every in-flight action too: without this, a late
+        // remove could pass the generation check after unmount and redirect a page the reader
+        // has already left (React runs this cleanup before the next id's effect, so a route
+        // change invalidates twice — harmless; the counter is only compared, never read).
+        return () => {
+            generation.current += 1;
+        };
     }, [id]);
 
     const latest =
@@ -45,13 +61,15 @@ export function TaskDetailPage() {
 
     const followUp = async (command: string): Promise<string | null> => {
         if (latest === null) return 'No task to follow up on';
+        const atStart = generation.current;
         setActionError(null);
         setSending(true);
         try {
             // The adjustment continues the NEWEST run — it is the one that is finished and
             // carries the session the child inherits. No executor on the body: the board binds
             // the follow-up to the executor that ran the task.
-            const result = await tasks.followUp(latest.id, command);
+            const result = await tasks.actions.followUp(latest.id, command);
+            if (generation.current !== atStart) return result.error;
             if (result.error !== null) {
                 setActionError(result.error);
                 return result.error;
@@ -61,15 +79,19 @@ export function TaskDetailPage() {
             detail.refresh();
             return null;
         } finally {
-            setSending(false);
+            // Only the current question releases the composer: a retired follow-up's settle
+            // must not release task B's own in-flight send mid-request.
+            if (generation.current === atStart) setSending(false);
         }
     };
     const doneTask = async (taskId: string) => {
         if (doneId !== null) return;
+        const atStart = generation.current;
         setDoneId(taskId);
         try {
             setActionError(null);
-            const message = await tasks.markDone(taskId);
+            const message = await tasks.actions.markDone(taskId);
+            if (generation.current !== atStart) return;
             if (message !== null) {
                 setActionError(message);
                 return;
@@ -80,7 +102,7 @@ export function TaskDetailPage() {
             // click just closed off.
             detail.refresh();
         } finally {
-            setDoneId(null);
+            if (generation.current === atStart) setDoneId(null);
         }
     };
 
@@ -90,14 +112,16 @@ export function TaskDetailPage() {
     // back `stopped`: the turn ended, the composer below is open again.
     const stopTask = async (taskId: string) => {
         if (stoppingId !== null) return;
+        const atStart = generation.current;
         setStoppingId(taskId);
         try {
             setActionError(null);
-            const message = await tasks.stop(taskId);
+            const message = await tasks.actions.stop(taskId);
+            if (generation.current !== atStart) return;
             if (message !== null) setActionError(message);
             // Success needs no navigation: the polls repaint the parked run in place.
         } finally {
-            setStoppingId(null);
+            if (generation.current === atStart) setStoppingId(null);
         }
     };
 
@@ -108,18 +132,21 @@ export function TaskDetailPage() {
     // button just errors in place like every other refusal.
     const removeTask = async (taskId: string) => {
         if (removingId !== null) return;
+        const atStart = generation.current;
         setRemovingId(taskId);
         try {
             setActionError(null);
             if (!window.confirm('Remove this task? Every run of the thread and its worktree are deleted.')) return;
-            const message = await tasks.remove(taskId);
+            const message = await tasks.actions.remove(taskId);
+            // A retired remove must not yank the reader off the task they navigated to.
+            if (generation.current !== atStart) return;
             if (message !== null) {
                 setActionError(message);
                 return;
             }
             navigate('/tasks');
         } finally {
-            setRemovingId(null);
+            if (generation.current === atStart) setRemovingId(null);
         }
     };
 

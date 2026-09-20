@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import type { DataTableColumn } from '../components/DataTable.js';
+import type { Column } from '../components/DataTable.js';
 import { DataTable } from '../components/DataTable.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import type { Job } from '../api/useJobs.js';
@@ -13,22 +13,22 @@ function title(job: Job): string {
 }
 
 /** The columns take the panel's injected `now` so the relative stamps stay pure in tests. */
-const columns = (now: Date | undefined): DataTableColumn<Job>[] => [
+const columns = (now: Date | undefined): Column<Job>[] => [
     {
         key: 'command',
         label: 'Task',
-        cell: (job) => (
+        render: (job) => (
             <Link className="task-title" to={`/tasks/${job.id}`}>
                 {title(job)}
             </Link>
         ),
-        sortValue: (job) => title(job),
+        sort: (job) => title(job),
     },
-    { key: 'status', label: 'Status', cell: (job) => job.status, sortValue: (job) => job.status },
+    { key: 'status', label: 'Status' },
     {
         key: 'author',
         label: 'Author',
-        cell: (job) =>
+        render: (job) =>
             job.author ? (
                 <span className="by-user-user">
                     {job.author.avatarUrl !== null ? (
@@ -39,28 +39,28 @@ const columns = (now: Date | undefined): DataTableColumn<Job>[] => [
             ) : (
                 'unknown'
             ),
-        sortValue: (job) => job.author?.name ?? job.author?.login ?? '',
+        sort: (job) => job.author?.name ?? job.author?.login ?? '',
     },
     {
         key: 'runtime',
         label: 'Context',
-        align: 'end',
-        cell: (job) => tokens(job.runtime?.contextTokens ?? null),
-        sortValue: (job) => job.runtime?.contextTokens ?? null,
+        numeric: true,
+        render: (job) => tokens(job.runtime?.contextTokens ?? null),
+        sort: (job) => job.runtime?.contextTokens ?? null,
     },
     {
         key: 'taskWallClockMs',
         label: 'Wall clock',
-        align: 'end',
-        cell: (job) => wallClock(job.taskWallClockMs, null),
-        sortValue: (job) => job.taskWallClockMs,
+        numeric: true,
+        render: (job) => wallClock(job.taskWallClockMs, null),
+        sort: (job) => job.taskWallClockMs,
     },
     {
         key: 'finishedAt',
         label: 'Finished',
-        align: 'end',
-        cell: (job) => <RelativeTime at={job.finishedAt} now={now} />,
-        sortValue: (job) => (job.finishedAt === null ? null : Date.parse(job.finishedAt)),
+        numeric: true,
+        render: (job) => <RelativeTime at={job.finishedAt} now={now} />,
+        sort: (job) => (job.finishedAt === null ? null : Date.parse(job.finishedAt)),
     },
 ];
 
@@ -75,7 +75,7 @@ const columns = (now: Date | undefined): DataTableColumn<Job>[] => [
 export function RecentTasksPanel({ jobs, error, now }: { jobs: Job[] | null; error: string | null; now?: Date }) {
     return (
         <section className="panel">
-            <h2 id="task-board-heading">Task board</h2>
+            <h2>Task board</h2>
             <p className="muted">
                 Latest finished tasks from the board; analytics range and scope do not filter this list.
             </p>
@@ -87,11 +87,12 @@ export function RecentTasksPanel({ jobs, error, now }: { jobs: Job[] | null; err
             ) : (
                 <>
                     <DataTable
-                        labelledBy="task-board-heading"
                         columns={columns(now)}
                         rows={jobs}
+                        sortable
                         rowKey={(job) => job.id}
-                        initialSort={{ key: 'finishedAt', direction: 'descending' }}
+                        ariaLabel="Recently completed tasks"
+                        initialSort={{ key: 'finishedAt', descending: true }}
                         empty={<p className="muted">No completed tasks yet.</p>}
                     />
                     {jobs.length > 0 ? (
