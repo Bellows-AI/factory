@@ -995,6 +995,56 @@
         background: var(--lamp-run);
     }
 
+    /* Kept in step with .line, which the sessions series draws with. */
+    .swatch-warn {
+        background: var(--lamp-wait);
+    }
+
+    /* The legend's series toggles: bare buttons wearing the old swatch, dimmed when the
+       series is off — a state the swatch's opacity carries without color alone. */
+    .legend-button {
+        align-items: center;
+        background: none;
+        border: 0;
+        color: var(--ink);
+        cursor: pointer;
+        display: inline-flex;
+        font: inherit;
+        gap: 6px;
+        padding: 0;
+    }
+
+    .legend-button[aria-pressed='false'] {
+        color: var(--ink-muted);
+    }
+
+    .legend-button[aria-pressed='false'] .swatch {
+        opacity: 0.35;
+    }
+
+    /* The swatches' old inter-item spacing, now between the buttons that carry them. */
+    .legend-button:not(:first-child) {
+        margin-left: 10px;
+    }
+
+    /* The chart's one-line caption and the calculation disclosure that follows it. */
+    .chart-caption {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 4px 0 0;
+    }
+
+    .chart-disclosure {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin-top: 8px;
+    }
+
+    .chart-disclosure summary {
+        color: var(--ink);
+        cursor: pointer;
+    }
+
     .bar-primary {
         fill: var(--chart-primary);
     }
@@ -1009,6 +1059,47 @@
 
     .bar-bad {
         fill: var(--lamp-stop);
+    }
+
+    /* The partial bucket's hatch: a non-color mark the series still reads through, painted
+       behind the bars over the bucket's full band. */
+    .bar-partial {
+        fill: url(#partial-hatch);
+    }
+
+    .bar-partial-hatch {
+        fill: none;
+        stroke: var(--line-strong);
+    }
+
+    /* The bucket hit region: invisible until it is the roving tab stop, then an accent edge. */
+    .bucket-hit {
+        fill: transparent;
+    }
+
+    .bucket-hit:focus-visible {
+        outline: none;
+        stroke: var(--accent);
+        stroke-width: 2;
+    }
+
+    /* The SVG tooltip: the active bucket's exact readout, raised above the plot. It never
+       intercepts the pointer — a box over a neighbour's band must not blind that bucket. */
+    .chart-tooltip {
+        fill: var(--ink);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        pointer-events: none;
+    }
+
+    .chart-tooltip-box {
+        fill: var(--surface-raised);
+        stroke: var(--line-strong);
+    }
+
+    .chart-empty {
+        fill: var(--ink-muted);
+        font-size: 12px;
     }
 
     .line {
