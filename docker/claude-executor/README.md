@@ -195,9 +195,15 @@ Bash(git *)` and `if: Bash(gh *)`, so every other command never pays the node bo
 what would move HEAD or rewrite refs in the task worktree: `git switch`, `git checkout` of a
 branch or commit (path-scoped `git checkout -- <paths>` stays allowed), `git worktree` mutations
 (`list` stays allowed), `git branch` delete/rename/copy/force in short, combined and long forms,
-`git reset --hard`, and `git rebase` / `git merge` outright — rebasing onto the default branch is
-the driver sync's job. `--abort`/`--quit` (and rebase's `--continue`) stay allowed, since they
-only unwind a state the driver's own sync can have left behind. The gh arm (issue #82) denies
+`git reset --hard`, and `git rebase` outright — rebasing onto the default branch is
+the driver sync's job, and a rebase rewrites the published task-branch commits. `git merge` is
+allowed in exactly one shape: every operand is an origin remote-tracking ref (`git merge
+origin/main`, flags like `--no-edit` included; `-m`'s value is not read as an operand) — merging
+the remote default in is the one exit from a conflicts dead-end the sync's rebase refuses (job
+`3e85c499`, 2026-09-20), and a merge can neither move HEAD off the task branch nor rewrite the
+published commits, so the invariant survives it. `--abort`/`--quit`/`--continue` stay allowed,
+since they only unwind or complete a state a merge can have left behind. The gh arm (issue #82)
+denies
 `gh pr create` — the pull request belongs to the driver's publish, which writes its title and
 description from a summary of the branch — and `gh pr checkout`, which would move HEAD onto a
 PR's branch. Reading GitHub (`gh pr view`, `gh pr diff`, `gh api …`) and `gh pr comment` stay

@@ -176,3 +176,58 @@ describe('Settings repositories page', () => {
         expect(html).not.toContain('Add variable');
     });
 });
+
+describe('settings page headers', () => {
+    // Every page answers "where am I" with exactly one h1 — the page header's — and the
+    // Settings eyebrow names the tree the page sits in (#159).
+    it.each([
+        ['/settings/organization', 'Organization'],
+        ['/settings/workspace', 'Workspace'],
+        ['/settings/repos', 'Repositories'],
+        ['/settings/executors', 'Executors'],
+    ])('%s carries one h1 naming the section, under the Settings eyebrow', (path, title) => {
+        const html = render(path);
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain(`<h1>${title}</h1>`);
+        expect(html).toContain('page-header-eyebrow');
+        expect(html).toContain('>Settings</p>');
+    });
+
+    it('leaves no inner heading restating the page title', () => {
+        expect(render('/settings/organization')).not.toContain('<h2>Organization</h2>');
+        expect(render('/settings/workspace')).not.toContain('<h2>Workspace</h2>');
+        expect(render('/settings/executors')).not.toContain('<h2>Executors</h2>');
+        // The repositories page's two inner headings name distinct panels; neither restates
+        // the page title.
+        expect(render('/settings/repos')).toContain('<h2>Available repositories</h2>');
+        expect(render('/settings/repos')).toContain('<h2>Per repository</h2>');
+    });
+
+    it('carries the workspace sentence in the header, and the picker button in its actions', () => {
+        const html = render('/settings/workspace', {
+            workspace: { loading: false, data: { root: '/workspaces', repos: [], orphaned: [], executors: [] } },
+        });
+        expect(html).toContain('page-header-description');
+        expect(html).toContain('Your checkouts live at');
+        expect(html).toContain('page-header-actions');
+        expect(html).toContain('Select repositories');
+    });
+
+    it('offers no picker action on a deployment with no workspace root', () => {
+        // `root: null` is a deliberate configuration: there is nothing to check out into, so
+        // the header keeps its sentence and drops its action.
+        const html = render('/settings/workspace', {
+            workspace: { loading: false, data: { root: null, repos: [], orphaned: [], executors: [] } },
+        });
+        expect(html).toContain('no workspace root configured');
+        expect(html).not.toContain('Select repositories');
+    });
+
+    it('puts Add executor in the executors page header', () => {
+        const html = render('/settings/executors', {
+            workspace: { loading: false, data: { root: '/workspaces', repos: [], orphaned: [], executors: [] } },
+        });
+        expect(html).toContain('page-header-actions');
+        expect(html).toContain('Add executor');
+    });
+});
