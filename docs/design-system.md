@@ -202,6 +202,13 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | --- | --- | --- |
 | Env | `env-tab`, `env-tabs`, `env-raw`, `env-errors` | The Variables/Secrets tab strip and the `.env` raw editor |
 
+### Configuration readiness
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Readiness | `readiness`, `readiness-item`, `readiness-item.is-ok`, `readiness-item.is-attention`, `readiness-item.is-pending`, `readiness-status`, `readiness-fact`, `readiness-action` | The configuration overview's five ordered items (#180): raised cards in a grid — two columns above 700px, one at and below it; the tone modifiers tint the item's edge through the status-border tokens while the status text carries the meaning (never color alone), and `overflow-wrap` keeps long paths from widening the page |
+| Scope context | `scope-context`, `scope-context-label` | The readable scope/impact/editability block every environment editor renders before its controls (#180); the label is a small uppercase caption, the precedence sentence `muted` |
+
 ### Mobile navigation
 
 | Primitive | Classes | Use for |
@@ -238,6 +245,7 @@ Components:
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
+| `ConfigurationScope.tsx` | scope-context |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
@@ -280,9 +288,10 @@ Pages:
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
 | `SettingsExecutorsPage.tsx` | page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
-| `SettingsOrganizationPage.tsx` | page-header, panel |
-| `SettingsRepositoriesPage.tsx` | page-header, panel |
-| `SettingsWorkspacePage.tsx` | page-header, panel |
+| `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
+| `SettingsOverviewPage.tsx` | page-header, kv, readiness |
+| `SettingsRepositoriesPage.tsx` | page-header, scope-context, panel |
+| `SettingsWorkspacePage.tsx` | page-header, scope-context, panel |
 | `TaskComposerPage.tsx` | page-header, status |
 | `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
