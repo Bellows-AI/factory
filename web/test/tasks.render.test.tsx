@@ -891,7 +891,12 @@ describe('TaskDetail', () => {
             });
             const html = renderDetail({ jobs: [root] });
             expect(html).toContain('<dt>Issue</dt><dd>#44</dd>');
-            expect(html).toContain('<a href="https://github.com/o/r/pull/9">fix/44</a>');
+            // The PR opens in a new window, not over the dashboard: target=_blank, with
+            // rel=noopener/noreferrer so the opened page cannot reach back into this one.
+            // The url is the text too — the reader sees where the link goes, not a branch slug.
+            expect(html).toContain(
+                '<a href="https://github.com/o/r/pull/9" target="_blank" rel="noopener noreferrer">https://github.com/o/r/pull/9</a>'
+            );
             // A url that is not http(s) stays text — nothing a run echoed becomes a handler href.
             const unsafe = renderDetail({
                 jobs: [job({ output: 'done\n[driver] published fix/44 — javascript:alert(1)' })],
