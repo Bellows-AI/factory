@@ -565,31 +565,27 @@
 
     /* Keyboard focus is visible everywhere (issue 160): a two-pixel accent ring with a two-pixel
        gap, in both themes. `:where` holds the specificity at zero, so nothing that skins its own
-       focus has to fight this rule, and mouse clicks do not ring (only `:focus-visible`). */
-    :where(a, button, input, select, textarea, summary):focus-visible {
+       focus has to fight this rule, and mouse clicks do not ring (only `:focus-visible`). The
+       freshness stamp is in the list because it is focusable on purpose (issue 166) — the
+       keyboard path to the revealed timestamp. */
+    :where(a, button, input, select, textarea, summary, .updated-at):focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
     }
 
-    .range-selector {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        flex-wrap: wrap;
-    }
-
-    /* The range and the org/my toggle on one line; the page's flex gap handles the spacing. */
+    /* The dashboard's control row (issue 160): the analytics toolbar, then the freshness and
+       Refresh cluster that moved here from the old global topbar. */
     .dashboard-controls {
-        display: flex;
         align-items: center;
-        gap: 16px;
+        display: flex;
         flex-wrap: wrap;
+        gap: 16px;
     }
 
     .range-presets {
         display: flex;
-        gap: 6px;
         flex-wrap: wrap;
+        gap: 6px;
     }
 
     .range-option.active {
@@ -597,22 +593,204 @@
         color: var(--accent);
     }
 
-    .range-custom {
+    /* The analytics toolbar (issue 166): visibly labeled groups — Range, Scope, Repositories —
+       a label above each control, read-only values sunken like the inputs they echo. */
+    .toolbar-group {
         display: flex;
-        align-items: center;
-        gap: 12px;
+        flex-direction: column;
+        gap: 4px;
     }
 
-    .range-custom label {
-        display: flex;
-        align-items: center;
-        gap: 6px;
+    /* The Repositories group is a real fieldset; the browser's fieldset chrome gives way to the
+       same shape every toolbar group wears. */
+    fieldset.toolbar-group {
+        border: 0;
+        margin: 0;
+        min-inline-size: 0;
+        padding: 0;
+    }
+
+    .toolbar-label {
         color: var(--ink-muted);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+
+    .toolbar-value {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        display: inline-flex;
+        font: inherit;
+        min-height: 30px;
+        padding: 5px 10px;
+    }
+
+    /* The range presets and the Custom popover trigger on one line inside the group. */
+    .range-picker {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    /* The custom dates live in a popover anchored to the Custom trigger: floating surfaces sit
+       above the page on the picker-dialog edge (--line-strong), never an inline expansion. */
+    .range-popover-root {
+        position: relative;
+    }
+
+    .range-popover {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        left: 0;
+        padding: 12px;
+        position: absolute;
+        top: calc(100% + 6px);
+        z-index: 30;
+    }
+
+    .range-draft {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .range-draft label {
+        align-items: center;
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 12px;
+        gap: 6px;
     }
 
     /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
        renders in the page's theme without this rule carrying one. */
-    .range-custom input,
+    .range-draft input {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        padding: 5px 8px;
+    }
+
+    .range-draft-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+
+    /* The rendered-data summary: one mono line in the status line's voice, describing the
+       payload. It is a polite live region — changes are heard, keystrokes are not. */
+    .analytics-summary {
+        color: var(--ink-muted);
+        flex-basis: 100%;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        margin: 0;
+    }
+
+    /* Freshness: relative copy, with the precise stamp hidden in plain sight — revealed on
+       hover and on keyboard focus (the wrapper is focusable), never title-only. */
+    .updated-at {
+        color: var(--ink-muted);
+        cursor: default;
+        font-size: 12px;
+        position: relative;
+    }
+
+    .updated-at-full {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-md);
+        color: var(--ink);
+        display: none;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        font-style: normal;
+        left: 0;
+        padding: 4px 8px;
+        position: absolute;
+        top: calc(100% + 6px);
+        white-space: nowrap;
+        z-index: 30;
+    }
+
+    .updated-at:hover .updated-at-full,
+    .updated-at:focus .updated-at-full {
+        display: block;
+    }
+
+    /* The metric summary's hierarchy is the grid: Sessions and the wider Token usage group
+       first, the two supporting measures after. Narrow widths restack the same DOM order —
+       presentation never reorders content. */
+    .usage-groups {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+
+    .usage-group {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 14px;
+    }
+
+    .usage-group strong {
+        font-size: 26px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .usage-group span {
+        font-size: 12px;
+    }
+
+    .usage-tokens {
+        grid-column: span 2;
+    }
+
+    .usage-label {
+        color: var(--ink-muted);
+    }
+
+    .usage-measures {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .usage-measure strong {
+        font-size: 20px;
+    }
+
+    /* The one analytics empty state: a raised panel where the figures would be, naming the
+       rendered selection and one next action — never a row of dash tiles. */
+    .usage-empty {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 24px 16px;
+        text-align: center;
+    }
+
+    .usage-empty p {
+        color: var(--ink-muted);
+        margin: 0 auto;
+        max-width: 52ch;
+    }
+
+    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
+       renders in the page's theme without this rule carrying one. */
     .org-select {
         background: var(--surface-sunken);
         color: var(--ink);
@@ -1477,11 +1655,24 @@
         .mobile-nav .sidenav-sublink,
         .mobile-nav .sidenav-newtask,
         .mobile-nav .org-select,
-        .appbar .user-menu-button {
+        .appbar .user-menu-button,
+        .range-option,
+        .range-draft input,
+        .range-draft-actions button,
+        .dashboard-controls button {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* The token group's two-up measures need the width more than the split at this size. */
+        .usage-tokens {
+            grid-column: auto;
+        }
+
+        .usage-measures {
+            grid-template-columns: 1fr;
         }
     }
 

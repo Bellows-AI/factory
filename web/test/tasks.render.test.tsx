@@ -911,14 +911,14 @@ describe('TaskDetail', () => {
             expect(html).toContain('<dt>PR</dt><dd></dd>');
         });
 
-        it('shows a dash for the PR state, which nothing records on the job', () => {
-            // The output line carries a url, not a state; inventing one would be a lie. A
-            // structured PR source is a deliberate follow-up.
+        it('renders no PR state row: nothing records one, and a permanent dash says nothing', () => {
+            // The output line carries a url, not a state; the row was removed rather than
+            // holding a dash forever. A structured PR source is a deliberate follow-up.
             const root = job({
                 command: 'fix #44',
                 output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
             });
-            expect(renderDetail({ jobs: [root] })).toContain('<dt>PR state</dt><dd>—</dd>');
+            expect(renderDetail({ jobs: [root] })).not.toContain('<dt>PR state</dt>');
         });
 
         it("keeps older runs' pills inline and moves only the newest run's to the sidebar", () => {

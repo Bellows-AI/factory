@@ -1,6 +1,6 @@
 import type { TaskUsageDistribution, TaskUsageStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../api/useStats.js';
-import type { Column } from '../components/DataTable.js';
+import type { DataTableColumn } from '../components/DataTable.js';
 import { DataTable } from '../components/DataTable.js';
 import { duration, num, tokens } from '../format.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
@@ -35,30 +35,30 @@ const row = (kind: string, unit: TaskUsageRow['unit'], d: TaskUsageDistribution)
     tasks: d.tasks,
 });
 
-const columns: Column<TaskUsageRow>[] = [
-    { key: 'kind', label: 'Measurement' },
+const columns: DataTableColumn<TaskUsageRow>[] = [
+    { key: 'kind', label: 'Measurement', cell: (r) => r.kind, sortValue: (r) => r.kind },
     {
         key: 'avg',
         label: 'Average',
-        numeric: true,
-        render: (r) => FORMATS[r.unit](r.avg),
-        sort: (r) => r.avg,
+        align: 'end',
+        cell: (r) => FORMATS[r.unit](r.avg),
+        sortValue: (r) => r.avg,
     },
     {
         key: 'median',
         label: 'Median',
-        numeric: true,
-        render: (r) => FORMATS[r.unit](r.median),
-        sort: (r) => r.median,
+        align: 'end',
+        cell: (r) => FORMATS[r.unit](r.median),
+        sortValue: (r) => r.median,
     },
     {
         key: 'p95',
         label: 'P95',
-        numeric: true,
-        render: (r) => FORMATS[r.unit](r.p95),
-        sort: (r) => r.p95,
+        align: 'end',
+        cell: (r) => FORMATS[r.unit](r.p95),
+        sortValue: (r) => r.p95,
     },
-    { key: 'tasks', label: 'Measured tasks', numeric: true },
+    { key: 'tasks', label: 'Measured tasks', align: 'end', cell: (r) => r.tasks, sortValue: (r) => r.tasks },
 ];
 
 /** What a task costs: four distributions over the job threads the range and scope put in play. */
@@ -77,6 +77,7 @@ export function TaskUsagePanel({ tasks, meta }: { tasks: TaskUsageStats | null; 
     return (
         <TelemetryFrame
             title="Per-task usage"
+            titleId="per-task-usage-heading"
             blurb={
                 <>
                     Average, median and 95th percentile per task — a task is one board thread, first run and follow-ups
@@ -88,11 +89,10 @@ export function TaskUsagePanel({ tasks, meta }: { tasks: TaskUsageStats | null; 
             meta={meta}
         >
             <DataTable
+                labelledBy="per-task-usage-heading"
                 columns={columns}
                 rows={empty ? [] : rows}
-                sortable
                 rowKey={(r) => r.kind}
-                ariaLabel="Per-task usage distributions"
                 empty={<p className="muted">No attributed tasks in this range yet.</p>}
             />
             {!empty ? (

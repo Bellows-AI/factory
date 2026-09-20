@@ -34,10 +34,15 @@ describe('totals, recomputed by hand', () => {
         expect(stats.totals.activeHours).toBeCloseTo(seconds / 3600, 9);
     });
 
-    it('matches on the edit accept ratio', () => {
+    it('matches on edit acceptance, recomputed by hand', () => {
         const accepted = mine.reduce((s, x) => s + (x.editsAccepted ?? 0), 0);
         const rejected = mine.reduce((s, x) => s + (x.editsRejected ?? 0), 0);
-        expect(stats.totals.acceptRatio).toBeCloseTo(accepted / (accepted + rejected), 12);
+        expect(stats.totals.editAcceptance).toEqual({
+            accepted,
+            rejected,
+            decisions: accepted + rejected,
+            ratio: accepted / (accepted + rejected),
+        });
     });
 });
 

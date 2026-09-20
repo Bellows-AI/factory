@@ -1,19 +1,34 @@
 import type { FetchState } from '../api/useStats.js';
+import { relativeTime } from '../format.js';
 
+/**
+ * The page-level status region — every load, refresh, staleness and error state of the stats
+ * read, as visible text. Color never carries these states alone, and no metric shell is ever
+ * rendered underneath a state that has no figures.
+ */
 export function StatusBanner({
     progress,
     error,
     hasData,
+    lastGoodSelection,
+    fetchedAt,
+    now,
 }: {
     progress: FetchState | null;
     error: string | null;
     hasData: boolean;
+    /** The rendered selection, named so a stale page says exactly what is still on screen. */
+    lastGoodSelection: string | null;
+    fetchedAt: string | null;
+    now: Date;
 }) {
     if (error) {
         return (
             <p className="status error">
                 {error}
-                {hasData ? ' — showing the last successful fetch below.' : ''}
+                {hasData && lastGoodSelection
+                    ? ` — showing the last successful read (${lastGoodSelection}), fetched ${relativeTime(fetchedAt, now)}.`
+                    : ' — nothing has rendered yet. Check the telemetry store, then Refresh.'}
             </p>
         );
     }
