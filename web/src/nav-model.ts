@@ -1,4 +1,4 @@
-import type { TaskTreeEntry } from './task-tree.js';
+import type { TaskSummary } from './api/useTasks.js';
 
 /**
  * The navigation model, and the only route array in the app.
@@ -46,7 +46,7 @@ export function ariaCurrentFor(item: NavItem, pathname: string): 'page' | 'false
 export const MAX_PREVIEW = 5;
 
 /** The head of a section's list — the rows a navigation column actually shows. */
-export function preview(entries: readonly TaskTreeEntry[]): readonly TaskTreeEntry[] {
+export function preview(entries: readonly TaskSummary[]): readonly TaskSummary[] {
     return entries.slice(0, MAX_PREVIEW);
 }
 

@@ -1,10 +1,9 @@
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 import { NavLink, useLocation } from 'react-router-dom';
-import type { Job } from '../api/useJobs.js';
+import type { TaskNavigation } from '../api/useTasks.js';
 import type { StatsPayload } from '../api/useStats.js';
 import { switchOrg } from '../api/org.js';
 import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor, countLabel } from '../nav-model.js';
-import { taskSections } from '../task-tree.js';
 import { OrgSelector } from './OrgSelector.js';
 
 /** What the drawer calls itself, and what its way out says — asserted by name in e2e. */
@@ -28,21 +27,20 @@ export function MobileNavDialog({
     open,
     onClose,
     onNavigate,
-    tasks,
+    navigation,
     meta,
 }: {
     open: boolean;
     onClose: () => void;
     onNavigate: () => void;
     /** The same prop SideNav gets — the shell's one poll, never a second one. Null off `/tasks*`. */
-    tasks: readonly Job[] | null;
+    navigation: TaskNavigation | null;
     meta: StatsPayload['meta'] | null;
 }) {
     // The Settings tree renders only inside the settings area, the same gating SideNav applies —
     // navigation for the section you are in, not a second table of contents.
     const { pathname } = useLocation();
     const onSettings = pathname === '/settings' || pathname.startsWith('/settings/');
-    const sections = taskSections(tasks);
 
     return (
         <Dialog open={open} onClose={onClose} className="dialog-layer">
@@ -92,17 +90,17 @@ export function MobileNavDialog({
                                   ))
                                 : null}
                         </ul>
-                        {tasks !== null ? (
+                        {navigation !== null ? (
                             <>
                                 {/* Counts as sentences, not bare numbers beside dots — and not a
                                     live region: the poll would announce itself on every refresh.
                                     They and the New task link sit inside the landmark, as the
-                                    sidenav's task tree does. */}
-                                <p className="mobile-nav-count">{countLabel('running', sections.running.length)}</p>
-                                <p className="mobile-nav-count">{countLabel('review', sections.review.length)}</p>
-                                <p className="mobile-nav-count">{countLabel('past', sections.past.length)}</p>
+                                    sidenav's preview does. */}
+                                <p className="mobile-nav-count">{countLabel('running', navigation.counts.running)}</p>
+                                <p className="mobile-nav-count">{countLabel('review', navigation.counts.review)}</p>
+                                <p className="mobile-nav-count">{countLabel('past', navigation.counts.past)}</p>
                                 <NavLink
-                                    to="/tasks"
+                                    to="/tasks/new"
                                     end
                                     className={({ isActive }) =>
                                         isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'

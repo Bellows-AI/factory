@@ -20,7 +20,7 @@ const META = null as unknown as StatsPayload['meta'] | null;
 const render = (open: boolean) =>
     renderToStaticMarkup(
         <MemoryRouter initialEntries={['/tasks']}>
-            <MobileNavDialog open={open} onClose={() => {}} onNavigate={() => {}} tasks={null} meta={META} />
+            <MobileNavDialog open={open} onClose={() => {}} onNavigate={() => {}} navigation={null} meta={META} />
         </MemoryRouter>
     );
 

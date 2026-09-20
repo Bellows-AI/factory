@@ -39,7 +39,7 @@ test.describe('the task composer', () => {
     test('a workflow that declares parameters asks for them before Send', async ({ page }) => {
         const problems = watchConsole(page);
         await awaitSeedRefresh(page);
-        await page.goto('/tasks');
+        await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
         await expect(composer.getByLabel('Repository')).toBeVisible();
@@ -78,7 +78,7 @@ test.describe('the task composer', () => {
     test('an unchosen workflow runs the raw prompt; a chosen one demands its parameters', async ({ page }) => {
         const problems = watchConsole(page);
         await awaitSeedRefresh(page);
-        await page.goto('/tasks');
+        await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
         // Nothing chosen: NO process resolves — the member's words are the whole command, and

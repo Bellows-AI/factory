@@ -15,7 +15,8 @@ const SHOTS = 'artifacts/ui';
 /** Every page the shell routes to, with the name its screenshot carries. */
 const PAGES: ReadonlyArray<[string, string]> = [
     ['/', 'page-dashboard'],
-    ['/tasks', 'page-composer'],
+    ['/tasks', 'page-inbox'],
+    ['/tasks/new', 'page-composer'],
     ['/settings/workspace', 'page-settings-workspace'],
     ['/settings/repos', 'page-settings-repos'],
     ['/settings/executors', 'page-settings-executors'],
@@ -61,7 +62,13 @@ test.describe('the desktop shell', () => {
         for (const [path, name] of [...PAGES, [`/tasks/${id}`, 'page-task-detail'] as [string, string]]) {
             await page.goto(path);
             await expect(page.locator('main#main-content'), path).toHaveCount(1);
-            expect(await page.locator('main h1').count(), `${path} h1 count`).toBeLessThanOrEqual(1);
+            // The dashboard's PageHeader owns the page's one h1; other routes keep the
+            // at-most-one check because several render h2 section headings without a page title.
+            if (path === '/') {
+                expect(await page.locator('main h1').count(), `${path} h1 count`).toBe(1);
+            } else {
+                expect(await page.locator('main h1').count(), `${path} h1 count`).toBeLessThanOrEqual(1);
+            }
             await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
         }
     });
@@ -155,8 +162,10 @@ test.describe('the responsive shell', () => {
         expect(landed).toBe('main-content');
 
         // Ordinary navigation: focus follows the click and nothing pulls it to the main region
-        // behind the user's back.
-        await page.locator('.sidenav-link').first().click();
+        // behind the user's back. A DIFFERENT route must actually be crossed — the first link on
+        // `/` is the active Dashboard link, and clicking it navigates nowhere.
+        await page.locator('.sidenav-link', { hasText: 'Tasks' }).click();
+        await expect(page).toHaveURL('/tasks');
         const after = await page.evaluate(() => document.activeElement?.id ?? 'none');
         expect(after, 'client-side navigation did not move focus to the main region').not.toBe('main-content');
     });

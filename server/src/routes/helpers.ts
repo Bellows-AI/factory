@@ -39,6 +39,27 @@ export function badSegment(label: string, value: string): string | null {
     return null;
 }
 
+export const REPO_SEGMENT_LIMIT = 100;
+
+/**
+ * The `owner/name` repo label rule, shared by everything that accepts one: the task queue (both
+ * writing it and filtering the list by it) and any view that narrows to a repository. Shape only
+ * — never validated against the member's configured rows, which come and go with a PUT.
+ */
+export function repoReason(value: string): string | null {
+    const parts = value.split('/');
+    if (parts.length !== 2) return 'repo must be owner/name';
+    for (const [label, part] of [
+        ['owner', parts[0]!],
+        ['name', parts[1]!],
+    ] as const) {
+        if (part.length > REPO_SEGMENT_LIMIT) return `${label} exceeds ${REPO_SEGMENT_LIMIT} characters`;
+        const reason = badSegment(label, part);
+        if (reason) return reason;
+    }
+    return null;
+}
+
 /**
  * Every store call funnels through here: a failure is a 503, matching the ingest routes.
  *

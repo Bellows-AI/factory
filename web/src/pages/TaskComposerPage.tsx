@@ -38,7 +38,7 @@ export function TaskComposerPage() {
         setActionError(null);
         setSending(true);
         try {
-            const result = await tasks.queue(command, chosenRepo, executor, workflow, workflowParams);
+            const result = await tasks.actions.queue(command, chosenRepo, executor, workflow, workflowParams);
             if (result.error !== null) {
                 setActionError(result.error);
                 return result.error;
