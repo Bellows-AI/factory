@@ -50,6 +50,12 @@ describe('compareValues', () => {
         expect(Number.isNaN(mixed)).toBe(false);
         expect(mixed).toBeLessThan(0); // numbers order before strings, deterministically
     });
+
+    it('ranks a NaN like an unmeasured value, so one can never poison the order', () => {
+        expect(compareValues(Number.NaN, 5)).toBeGreaterThan(0);
+        expect(compareValues(5, Number.NaN)).toBeLessThan(0);
+        expect(Number.isNaN(compareValues(Number.NaN, Number.NaN))).toBe(false);
+    });
 });
 
 describe('sortRows', () => {
@@ -228,5 +234,12 @@ describe('DataTable markup', () => {
         expect(html).not.toContain('<button');
         expect(html).not.toContain('sortable');
         expect(html).toContain('>Name</th>');
+    });
+
+    it('never marks a non-sortable column as the active sort, however bad the initialSort', () => {
+        const columns: DataTableColumn<Row>[] = [{ key: 'name', label: 'Name', cell: (r) => r.name }];
+        const html = render({ columns, initialSort: { key: 'name', direction: 'ascending' } });
+        expect(html).not.toContain('aria-sort');
+        expect(html).not.toContain('sortable');
     });
 });

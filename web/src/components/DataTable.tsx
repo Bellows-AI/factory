@@ -46,12 +46,16 @@ export interface DataTableProps<T> {
  * sort can never see a NaN and reshuffle at random.
  */
 export function compareValues(a: SortValue, b: SortValue): number {
-    if (a === null && b === null) return 0;
-    if (a === null) return 1;
-    if (b === null) return -1;
-    if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
-    if (typeof a === 'number' && typeof b === 'number') return a - b;
-    return typeof a === 'number' ? -1 : 1;
+    // A NaN is not a measurement any more than a null is — it would poison the total order
+    // (every comparison against NaN is false), so it degrades to the null rank.
+    const left = typeof a === 'number' && Number.isNaN(a) ? null : a;
+    const right = typeof b === 'number' && Number.isNaN(b) ? null : b;
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    if (typeof left === 'string' && typeof right === 'string') return left.localeCompare(right);
+    if (typeof left === 'number' && typeof right === 'number') return left - right;
+    return typeof left === 'number' ? -1 : 1;
 }
 
 /**
@@ -130,7 +134,9 @@ export function DataTable<T>({ labelledBy, rows, columns, rowKey, initialSort, e
                         <tr>
                             {columns.map((column) => {
                                 const active = sort !== null && sort.key === column.key;
-                                const direction = active && sort ? sort.direction : null;
+                                // A sort state naming a non-sortable column (a bad `initialSort`)
+                                // must not dress a plain th up as the active sort.
+                                const direction = active && sort !== null && column.sortValue ? sort.direction : null;
                                 const align = column.align === 'end' ? ' align-end' : '';
                                 const className = column.sortValue
                                     ? `sortable${direction ? (direction === 'ascending' ? ' asc' : ' desc') : ''}${align}`

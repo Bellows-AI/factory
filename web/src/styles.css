@@ -646,11 +646,13 @@
         text-align: right;
     }
 
-    table.data th.asc::after {
+    /* The arrow rides the button, not the th: the button fills the cell as a block, so a th
+       pseudo would wrap onto its own line below the label. */
+    table.data th.asc button::after {
         content: ' ↑';
     }
 
-    table.data th.desc::after {
+    table.data th.desc button::after {
         content: ' ↓';
     }
 
