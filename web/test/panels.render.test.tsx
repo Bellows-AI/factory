@@ -260,7 +260,9 @@ describe('per-task usage panel', () => {
     });
 
     it('renders an explicit empty state, never zero figures, when no task is in range', () => {
-        const html = renderToStaticMarkup(<TaskUsagePanel tasks={emptyStats} meta={telemetryMeta({ status: 'empty' })} />);
+        const html = renderToStaticMarkup(
+            <TaskUsagePanel tasks={emptyStats} meta={telemetryMeta({ status: 'empty' })} />
+        );
         expect(html).toContain('No attributed tasks in this range yet.');
         expect(html).not.toContain('NaN');
         // And it renders nothing at all when there is no snapshot yet.

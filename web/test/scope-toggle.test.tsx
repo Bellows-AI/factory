@@ -31,7 +31,19 @@ const payload = {
         fetchedAt: '2026-08-21T12:00:00.000Z',
         repos: [{ owner: 'test-org', name: 'repo' }],
         range: { preset: 'all', from: null, to: null },
-        telemetry: { status: 'empty', reason: null, unattributedSessions: 0 },
+        scope: 'org',
+        telemetry: {
+            status: 'empty',
+            reason: null,
+            source: 'postgres',
+            fetchedAt: '2026-08-21T12:00:00.000Z',
+            ageSeconds: 0,
+            stale: false,
+            repoFilter: ['test-org/repo'],
+            otherRepoSessions: 0,
+            sessionsWithoutHook: 0,
+            unattributedSessions: 0,
+        },
     },
 } as unknown as StatsPayload;
 
@@ -69,7 +81,7 @@ const renderPage = (withSession: Session | null): string =>
 describe('dashboard scope toggle', () => {
     it('renders beside the range selector when the session reports a signed-in member', () => {
         const html = renderPage(session('github'));
-        expect(html).toContain('range-selector');
+        expect(html).toContain('range-presets');
         expect(html).toContain('Whose usage'); // the RadioGroup's aria-label
         expect(html).toContain('Me');
     });
@@ -79,7 +91,7 @@ describe('dashboard scope toggle', () => {
         // mode is the tell: a toggle for the deployment itself would advertise a filter the
         // server refuses with SCOPE_REQUIRES_USER.
         const local = renderPage(session('none'));
-        expect(local).toContain('range-selector');
+        expect(local).toContain('range-presets');
         expect(local).not.toContain('Whose usage');
         expect(local).not.toContain('Me');
 

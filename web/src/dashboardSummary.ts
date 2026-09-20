@@ -110,7 +110,11 @@ export type AnalyticsState = 'ready' | 'partial' | 'empty';
  */
 export function analyticsState(telemetry: TelemetryStats, tasks: TaskUsageStats | null): AnalyticsState {
     if (telemetry.totals.sessions > 0) return 'ready';
-    const measured = tasks !== null && [tasks.tokensPerTask, tasks.jobTurnsPerTask, tasks.agentTurnsPerTask, tasks.wallClockPerTask].some((d) => d.tasks > 0);
+    const measured =
+        tasks !== null &&
+        [tasks.tokensPerTask, tasks.jobTurnsPerTask, tasks.agentTurnsPerTask, tasks.wallClockPerTask].some(
+            (d) => d.tasks > 0
+        );
     return measured ? 'partial' : 'empty';
 }
 

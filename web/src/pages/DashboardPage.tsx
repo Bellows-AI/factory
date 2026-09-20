@@ -64,11 +64,11 @@ export function DashboardPage() {
     // appends where the next read is heading — the request state is never the headline.
     const summary = data
         ? selectionMismatch(range, scope, data.meta)
-          ? `${renderedSelection(data.meta)} · Updating to ${selectionText(
-                resolveRange(range.preset, now, { from: range.from || null, to: range.to || null }),
-                scope
-            )}`
-          : renderedSelection(data.meta)
+            ? `${renderedSelection(data.meta)} · Updating to ${selectionText(
+                  resolveRange(range.preset, now, { from: range.from || null, to: range.to || null }),
+                  scope
+              )}`
+            : renderedSelection(data.meta)
         : null;
 
     const state = data && data.telemetry ? analyticsState(data.telemetry, data.tasks) : null;
@@ -77,9 +77,7 @@ export function DashboardPage() {
         <>
             {/* One h1, carrying the page's name and — once something has rendered — the exact
                 repos the figures combine. Coverage stays visible, not tooltip-buried. */}
-            <h1>
-                {data ? `${describeRepos(data.meta.repos)} — AI usage telemetry` : 'AI usage telemetry'}
-            </h1>
+            <h1>{data ? `${describeRepos(data.meta.repos)} — AI usage telemetry` : 'AI usage telemetry'}</h1>
             <div className="dashboard-controls">
                 <AnalyticsToolbar
                     range={range}
@@ -95,7 +93,12 @@ export function DashboardPage() {
                     // not the telemetry store's inner timestamp. The precise stamp is real text
                     // revealed on hover and keyboard focus (and `dateTime` for assistive tech);
                     // a native title is only the pointer's convenience, never the only copy.
-                    <span className="updated-at" tabIndex={0} title={preciseTimestamp(data.meta.fetchedAt)}>
+                    <span
+                        // biome-ignore lint/a11y/noNoninteractiveTabindex: this focusable wrapper is the keyboard path to the revealed timestamp — the stamp must reach keyboard focus, and there is no interactive element to host it on
+                        tabIndex={0}
+                        className="updated-at"
+                        title={preciseTimestamp(data.meta.fetchedAt)}
+                    >
                         Updated {relativeTime(data.meta.fetchedAt, now)}
                         <time className="updated-at-full" dateTime={data.meta.fetchedAt}>
                             {preciseTimestamp(data.meta.fetchedAt)}

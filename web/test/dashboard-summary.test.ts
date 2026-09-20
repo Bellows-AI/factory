@@ -117,9 +117,9 @@ describe('selectionMismatch', () => {
 
     it('flags a preset or scope difference', () => {
         expect(selectionMismatch({ preset: 'month', from: '', to: '' }, 'org', META())).toBe(true);
-        expect(
-            selectionMismatch({ preset: 'custom', from: '2026-09-13', to: '2026-09-19' }, 'mine', META())
-        ).toBe(true);
+        expect(selectionMismatch({ preset: 'custom', from: '2026-09-13', to: '2026-09-19' }, 'mine', META())).toBe(
+            true
+        );
     });
 
     it('treats an empty custom draft as the all-time request it becomes on the wire', () => {
@@ -164,7 +164,10 @@ describe('analyticsState', () => {
 describe('emptyStateCopy', () => {
     it('sends the reader to broaden the range when the store holds data outside the window', () => {
         const meta = META({ range: { preset: 'custom', from: '2026-09-13T00:00:00.000Z', to: null } } as DateRange);
-        const copy = emptyStateCopy({ coverage: { from: '2026-04-15T12:00:00Z', to: '2026-09-21T00:00:00Z' } } as never, meta);
+        const copy = emptyStateCopy(
+            { coverage: { from: '2026-04-15T12:00:00Z', to: '2026-09-21T00:00:00Z' } } as never,
+            meta
+        );
         expect(copy).toContain('Sep 13');
         expect(copy).toContain('Broaden the range');
     });

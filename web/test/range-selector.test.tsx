@@ -110,7 +110,9 @@ describe('custom-range draft helpers', () => {
 
 describe('RangeDraft', () => {
     const render = (committed = { from: '2026-09-13', to: '2026-09-19' }) =>
-        renderToStaticMarkup(<RangeDraft committed={committed} today="2026-09-20" onApply={() => {}} onClose={() => {}} />);
+        renderToStaticMarkup(
+            <RangeDraft committed={committed} today="2026-09-20" onApply={() => {}} onClose={() => {}} />
+        );
 
     it('seeds both date inputs from the last committed values, bounded to today', () => {
         const html = render();

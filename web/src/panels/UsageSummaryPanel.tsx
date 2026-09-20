@@ -45,7 +45,9 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                             <strong>{tokens(t.tokens.input)}</strong>
                             <span>Input</span>
                             <span className="muted">
-                                {t.tokens.cacheRead === null ? 'Not measured' : `${tokens(t.tokens.cacheRead)} read from cache`}
+                                {t.tokens.cacheRead === null
+                                    ? 'Not measured'
+                                    : `${tokens(t.tokens.cacheRead)} read from cache`}
                             </span>
                         </div>
                         <div className="usage-measure">
@@ -63,7 +65,9 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                     <strong>{duration(t.activeHours)}</strong>
                     <span>Active time</span>
                     <span className="muted">
-                        {t.activeHours === null ? 'Not measured' : `Across ${num(t.sessions, 0)} sessions · idle time excluded`}
+                        {t.activeHours === null
+                            ? 'Not measured'
+                            : `Across ${num(t.sessions, 0)} sessions · idle time excluded`}
                     </span>
                 </div>
                 <div className="usage-group">
