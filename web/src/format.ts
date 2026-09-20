@@ -99,6 +99,60 @@ export function wallClock(
 }
 
 /**
+ * A stamp as age: how long ago a successful read happened, in the coarse tiers the freshness
+ * line speaks — just now, minutes, hours, days. `now` is injectable so callers share the
+ * page's one tick and tests freeze time; a dash for anything absent or unparseable, like
+ * every formatter here.
+ */
+export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
+    if (!iso) return '—';
+    const at = Date.parse(iso);
+    if (Number.isNaN(at)) return '—';
+    const seconds = Math.max(0, Math.floor((now.getTime() - at) / 1000));
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} hr ago`;
+    return `${Math.floor(hours / 24)} d ago`;
+}
+
+/**
+ * The full localized stamp behind a relative label — the hover-and-focus reveal that says
+ * exactly when "4 min ago" was. Explicit-locale when given so tests pin the output; callers
+ * omit it to get the user's own.
+ */
+export function preciseTimestamp(iso: string | null | undefined, locale?: string): string {
+    if (!iso) return '—';
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '—';
+    return at.toLocaleString(locale);
+}
+
+/**
+ * A count rendered exactly, digits grouped — the honest number beside a rounded one. The
+ * denominator in "2 of 3 measured edit decisions accepted" must never round.
+ */
+export function exactInt(value: number | null | undefined): string {
+    if (value === null || value === undefined) return '—';
+    return value.toLocaleString('en-US');
+}
+
+const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * The UTC calendar day, short — "Sep 13". The chart buckets are UTC, so the copy must agree
+ * with them and not with whatever offset the reader's browser sits in; a 00:30Z stamp is
+ * Sep 13 here even where local time still says Sep 12.
+ */
+export function utcShortDate(iso: string | null | undefined): string {
+    if (!iso) return '—';
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '—';
+    return `${UTC_MONTHS[at.getUTCMonth()] as string} ${at.getUTCDate()}`;
+}
+
+/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */
