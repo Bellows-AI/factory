@@ -77,6 +77,34 @@ export function pollDelay(elapsedMs: number): number {
     return 15_000;
 }
 
+/**
+ * The one on-demand executor read — the dialog's only fetch. Module-level because it captures no
+ * hook state: exported so the offline suite can pin the wire shape and its error handling, the
+ * way `pollDelay` and `pollCompletedJobs` are.
+ */
+export const listExecutorConfigs = async (): Promise<
+    { ok: true; executors: WorkspaceExecutorFull[] } | { ok: false; error: string }
+> => {
+    try {
+        const response = await fetch('/api/workspace/executors');
+        if (response.status === 401) {
+            reportUnauthenticated();
+            return { ok: false as const, error: 'Your session expired' };
+        }
+        if (!response.ok) {
+            const body = (await response.json().catch(() => ({}))) as { error?: string };
+            return {
+                ok: false as const,
+                error: body.error ?? `Could not load the executors (${response.status})`,
+            };
+        }
+        const body = (await response.json()) as { executors: WorkspaceExecutorFull[] };
+        return { ok: true as const, executors: body.executors };
+    } catch (e) {
+        return { ok: false as const, error: (e as Error).message };
+    }
+};
+
 export function useWorkspace(): UseWorkspace {
     const [data, setData] = useState<WorkspacePayload | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -220,27 +248,6 @@ export function useWorkspace(): UseWorkspace {
         },
         [start]
     );
-
-    const listExecutorConfigs = useCallback(async () => {
-        try {
-            const response = await fetch('/api/workspace/executors');
-            if (response.status === 401) {
-                reportUnauthenticated();
-                return { ok: false as const, error: 'Your session expired' };
-            }
-            if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                return {
-                    ok: false as const,
-                    error: body.error ?? `Could not load the executors (${response.status})`,
-                };
-            }
-            const body = (await response.json()) as { executors: WorkspaceExecutorFull[] };
-            return { ok: true as const, executors: body.executors };
-        } catch (e) {
-            return { ok: false as const, error: (e as Error).message };
-        }
-    }, []);
 
     return { data, loading, error, saving, save, saveExecutors, listExecutorConfigs, refresh: start };
 }

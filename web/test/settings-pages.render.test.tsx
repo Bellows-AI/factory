@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { UseEnv } from '../src/api/useEnv.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import type { Session } from '../src/api/useSession.js';
@@ -153,7 +153,66 @@ describe('Settings executors page', () => {
     it('says it is loading until the workspace poll answers, executors riding that poll', () => {
         const html = render('/settings/executors');
         expect(html).toContain('Loading your workspace…');
+        expect(html).toContain('Name the personal runner configuration offered when you start a task.');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('scopes the list, carries the guidance, and marks only the first row selected first', () => {
+        const html = render('/settings/executors', {
+            workspace: {
+                loading: false,
+                data: {
+                    root: '/workspaces',
+                    repos: [],
+                    orphaned: [],
+                    executors: [
+                        { name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' },
+                        { name: 'oc', type: 'opencode', createdAt: '2026-09-02T00:00:00.000Z' },
+                    ],
+                },
+            },
+        });
+        expect(html).toContain('page-header-description');
+        expect(html).toContain('The deployment chooses the runner CLI and image');
+        expect(html).toContain('<h2>My workspace</h2>');
+        expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
+        expect(html).toContain('Add executor');
+    });
+
+    it('refuses before any dialog when the deployment has no workspace root', () => {
+        // The executor routes answer 409 WORKSPACE_DISABLED without a root; the page refuses
+        // first — the action never renders, and the sentence points at workspace setup.
+        const html = render('/settings/executors', {
+            workspace: { loading: false, data: { root: null, repos: [], orphaned: [], executors: [] } },
+        });
+        expect(html).toContain('Personal executors are unavailable because this deployment has no workspace root.');
+        // The link is woven into the sentence — "…until <a>workspace setup</a> is complete." — so
+        // the two halves are asserted around it.
+        expect(html).toContain('Tasks cannot run until <a');
+        expect(html).toContain('workspace setup</a> is complete.');
+        expect(html).toContain('href="/settings/workspace"');
+        expect(html).not.toContain('Add executor');
+    });
+
+    it('renders no list after a failed workspace read — the error is the whole story', () => {
+        // "No personal executors configured" beside an error would claim a fact about the
+        // workspace the request never delivered.
+        const html = render('/settings/executors', {
+            workspace: { loading: false, error: 'The workspace request failed' },
+        });
+        expect(html).toContain('The workspace request failed');
+        expect(html).not.toContain('No personal executors configured');
+        expect(html).not.toContain('Add executor');
+    });
+
+    it('fetches nothing on mount — the config read belongs to the dialog open, not the page', () => {
+        // Stubbed at the global the page would fetch through: a static render runs no effects,
+        // and nothing else in these components fetches at module scope.
+        const fetch = vi.fn();
+        vi.stubGlobal('fetch', fetch);
+        render('/settings/executors');
+        expect(fetch).not.toHaveBeenCalled();
+        vi.unstubAllGlobals();
     });
 });
 

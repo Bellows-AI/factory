@@ -187,6 +187,21 @@ come and go with a PUT).
   Field-level rules wait until a consumer exists that can be wrong about them — the opencode
   consumer reads `model`, `small_model` and `provider` only by opencode's own merge semantics, not
   by schema.
+- **The page refuses before any dialog when there is no root.** With `root: null` the header drops
+  its Add action and the page renders a sentence pointing at workspace setup — both executor
+  routes would answer 409 `WORKSPACE_DISABLED` anyway, so the client refuses first instead of
+  discovering it after a fetch.
+- **The first row's marker describes the composer, not a default.** A new-task draft autoselects
+  the first row of the polled list — that is all "Selected first on new tasks" says. Nothing is
+  persisted: there is no default, no ordering UI, no make-default action.
+- **The dialog says what each type's config does.** The claude-code help: stored with the
+  executor, not consumed by the current runner, `{}` unless the deployment documents a consumer.
+  The opencode help: merged over the baked configuration by the deployment's CLI — model and
+  provider apply, permission rules ignored. A note under the Type select says the field describes
+  the config and does not switch the deployment's runner CLI; both helps are tied to their fields
+  with `aria-describedby`, and the actions read "Add executor" / "Save executor".
+- **Types are labelled for people, stored for machines.** List and dialog show "Claude Code" and
+  "OpenCode"; the stored `type` stays the raw union value (`claude-code`, `opencode`).
 - **`config` is never echoed by the poll — one on-demand read excepted.** It may hold credentials
   the member pasted, and `GET /api/workspace` can run every two seconds. The row's `name`, `type`
   and `createdAt` travel; the JSON stays in the table (the claim-time `configFor` read is the one

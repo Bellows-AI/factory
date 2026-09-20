@@ -17,6 +17,36 @@ export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
     opencode: [],
 };
 
+/**
+ * What each type's config actually does, in the words the dialog and the list show.
+ *
+ * The copy is contractual, not decorative (issue 183): claude-code configs are stored-only today —
+ * no consumer reads them — and opencode configs are merged over the deployment's baked
+ * configuration with `permission` stripped board-side to preserve the runner fence (see
+ * docs/workspace.md). The `Record` shape is the same exhaustiveness guard REQUIRED_FIELDS uses: a
+ * new EXECUTOR_TYPES entry cannot compile until it declares its own truth.
+ */
+export const EXECUTOR_TYPE_META: Record<ExecutorType, { label: string; configHelp: string; example: string }> = {
+    'claude-code': {
+        label: 'Claude Code',
+        configHelp:
+            'This JSON is stored with the executor but is not consumed by the current Claude Code runner. Use {} unless your deployment documents another consumer.',
+        example: '{}',
+    },
+    opencode: {
+        label: 'OpenCode',
+        configHelp:
+            'When the deployment runs OpenCode, this object is merged over its baked configuration. Model and provider settings apply; permission rules are ignored to preserve the runner fence.',
+        example:
+            '{ "model": "<provider-id>/<model-id>", "provider": { "api_key": "<from your provider, not stored here>" } }',
+    },
+};
+
+/** The human label for a row's stored type; the raw string falls through for an unknown wire value. */
+export function executorTypeLabel(type: string): string {
+    return EXECUTOR_TYPE_META[type as ExecutorType]?.label ?? type;
+}
+
 /** Half the 64 KiB body budget, so the serialized envelope cannot blow the server limit. */
 export const MAX_CONFIG_BYTES = 32 * 1024;
 
