@@ -125,3 +125,21 @@ export function tokens(value: number | null | undefined): string {
     if (value < 1_000_000_000) return `${num(value / 1_000_000, 2)}M`;
     return `${num(value / 1_000_000_000, 2)}B`;
 }
+
+/**
+ * How long ago a stamp happened, relative to a caller-supplied `now` so it stays pure — the
+ * caller decides what "now" is and the render's poll cadence is the ticker. An absent or
+ * unparseable stamp is an em dash like every formatter here.
+ */
+export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
+    if (!iso) return '—';
+    const at = new Date(iso).getTime();
+    if (Number.isNaN(at)) return '—';
+    const seconds = Math.round((now.getTime() - at) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+}
