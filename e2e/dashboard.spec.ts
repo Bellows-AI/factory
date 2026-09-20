@@ -10,9 +10,13 @@ const SHOTS = 'artifacts/ui';
  */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
-/** `.cards` is the AI usage panel's card row, and the first section on the page. */
-function usageCards(page: Page) {
-    return page.locator('.cards').first().locator('.card');
+/**
+ * The analytics anchor: the metric summary when the selection is ready, the one empty state
+ * when it is not. Every state of the null-not-zero contract renders exactly one of these —
+ * never a row of dash cards — so the anchor is what "the dashboard has answered" looks like.
+ */
+function analyticsAnchor(page: Page) {
+    return page.locator('.usage-summary, .usage-empty').first();
 }
 
 function watchConsole(page: Page): string[] {
@@ -25,10 +29,10 @@ function watchConsole(page: Page): string[] {
     return problems;
 }
 
-/** The dashboard answers 202 while the first read runs, so wait for the cards, not for load. */
+/** The dashboard answers 202 while the first read runs, so wait for the anchor, not for load. */
 async function open(page: Page) {
     await page.goto('/');
-    await expect(usageCards(page)).toHaveCount(5, { timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 }
 
 /**
@@ -50,9 +54,11 @@ async function selectPreset(page: Page, label: string, preset: string) {
 }
 
 async function assertRendersCleanly(page: Page, name: string) {
-    await expect(usageCards(page)).toHaveCount(5);
-    // Every panel that renders must render something: a bare heading is a broken panel.
-    expect(await page.locator('section.panel').count()).toBeGreaterThan(2);
+    await expect(analyticsAnchor(page)).toBeVisible();
+    // A ready selection stands on its panels; the empty selection is the one empty state.
+    if (await page.locator('.usage-summary').count()) {
+        expect(await page.locator('section.panel').count()).toBeGreaterThan(2);
+    }
 
     const text = await page.locator('main').innerText();
     for (const token of FORBIDDEN) expect(text, `${name} contains ${token}`).not.toContain(token);
@@ -74,9 +80,9 @@ test.describe('date range selector', () => {
 
         for (const [label, preset] of [
             ['Today', 'day'],
-            ['This week', 'week'],
-            ['Two weeks', '2w'],
-            ['Month', 'month'],
+            ['7 days', 'week'],
+            ['14 days', '2w'],
+            ['30 days', 'month'],
             ['All time', 'all'],
         ] as const) {
             const { url, range } = await selectPreset(page, label, preset);
@@ -96,14 +102,16 @@ test.describe('date range selector', () => {
         await open(page);
 
         // All time is what the page opens on, so no click is needed to read the baseline.
-        const allTime = await usageCards(page).locator('strong').allInnerTexts();
+        const allTime = await page.locator('.usage-summary strong').allInnerTexts();
 
         await selectPreset(page, 'Today', 'day');
-        const today = await usageCards(page).locator('strong').allInnerTexts();
+        // A sparse day may render the one empty state instead of the summary — that is a
+        // different screen, not the same numbers, and both satisfy "changed".
+        const today = await page.locator('.usage-summary strong').allInnerTexts();
         expect(today).not.toEqual(allTime);
     });
 
-    test('the custom picker applies both bounds and shows all time until one is set', async ({
+    test('the custom picker commits once through Apply, and a draft never requests', async ({
         page,
     }) => {
         const problems = watchConsole(page);
@@ -114,46 +122,66 @@ test.describe('date range selector', () => {
             if (r.url().includes('/api/stats?')) requests.push(r.url());
         });
 
-        await page.getByRole('radio', { name: 'Custom', exact: true }).click();
-        await expect(page.getByText('showing all time until then')).toBeVisible();
-        // An empty custom range resolves to all time, which is the query already on screen, so
-        // it refetches nothing. Sending it as `range=custom` would be a 400 per keystroke.
+        // Custom opens the popover; opening it is not a selection and issues no request.
+        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        const from = page.locator('.range-draft input').first();
+        const to = page.locator('.range-draft input').last();
+        await expect(from).toHaveValue('');
+        await from.fill('2026-07-01');
+        // Typing is a draft: no stats request may fire for it. Escape discards the draft.
+        expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.range-draft')).toHaveCount(0);
         expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
 
-        const from = page.locator('.range-custom input').first();
-        const to = page.locator('.range-custom input').last();
+        // Reopening starts from the committed values — all time here — not the abandoned draft.
+        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        await expect(from).toHaveValue('');
 
+        // Apply commits both bounds exactly once.
+        await from.fill('2026-07-01');
+        await to.fill('2026-08-01');
         const [response] = await Promise.all([
-            page.waitForResponse(
-                (r) => r.url().includes('from=2026-07-01') && r.status() === 200,
-            ),
-            from.fill('2026-07-01'),
+            page.waitForResponse((r) => r.url().includes('range=custom') && r.status() === 200),
+            page.getByRole('button', { name: 'Apply range' }).click(),
         ]);
-        expect(new URL(response.url()).searchParams.get('range')).toBe('custom');
-
-        const [bounded] = await Promise.all([
-            page.waitForResponse((r) => r.url().includes('to=2026-08-01') && r.status() === 200),
-            to.fill('2026-08-01'),
-        ]);
-        const body = (await bounded.json()) as { meta: { range: { from: string; to: string } } };
+        const body = (await response.json()) as { meta: { range: { from: string; to: string } } };
         expect(body.meta.range.from).toBe('2026-07-01T00:00:00.000Z');
         // `to` is exclusive, so the picked day is widened to the start of the next one.
         expect(body.meta.range.to).toBe('2026-08-02T00:00:00.000Z');
 
-        await expect(page.getByText('showing all time until then')).toHaveCount(0);
+        // Clear returns to All time from the same popover.
+        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        const [cleared] = await Promise.all([
+            page.waitForResponse((r) => r.url().includes('range=all') && r.status() === 200),
+            page.getByRole('button', { name: 'Clear' }).click(),
+        ]);
+        expect(new URL(cleared.url()).searchParams.get('range')).toBe('all');
+        await expect(page.getByRole('radio', { name: 'All time', exact: true })).toHaveAttribute(
+            'aria-checked',
+            'true',
+        );
+
         await assertRendersCleanly(page, 'custom-jul');
         expect(problems.join('\n')).toBe('');
     });
 
-    test('a range with almost no data renders empty, not broken', async ({ page }) => {
+    test('a range with almost no data renders empty or ready, never broken', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
         await selectPreset(page, 'Today', 'day');
 
-        // A few sessions in the fixture's last day: the panels must still stand up, and a
+        // Whether the fixture's last day holds a session or not, the page stands: the summary
+        // renders its figures, or the one empty state replaces them — never dash cards, and a
         // metric with no basis must read as unavailable rather than as a measured zero.
-        await assertRendersCleanly(page, 'today-sparse');
-        await expect(usageCards(page).locator('strong').first()).not.toHaveText('');
+        await expect(analyticsAnchor(page)).toBeVisible();
+        const summary = page.locator('.usage-summary');
+        if (await summary.count()) {
+            await expect(summary.locator('strong').first()).not.toHaveText('');
+        }
+        const text = await page.locator('main').innerText();
+        for (const token of FORBIDDEN) expect(text).not.toContain(token);
+        await page.screenshot({ path: `${SHOTS}/today-sparse.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
 
@@ -172,7 +200,7 @@ test.describe('date range selector', () => {
         await open(page);
 
         // The month preset spans 30 days: day buckets, and the blurb says so.
-        await selectPreset(page, 'Month', 'month');
+        await selectPreset(page, '30 days', 'month');
         await expect(page.getByText('tokens per day')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/daily-month.png`, fullPage: true });
 

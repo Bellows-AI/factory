@@ -87,12 +87,14 @@ test.describe('the desktop shell', () => {
     test('dashboard telemetry lives only on the dashboard', async ({ page }) => {
         await page.goto('/');
         await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
-        await expect(page.getByText(/data as of/)).toBeVisible();
+        // The freshness stamp — relative copy with the precise timestamp on reveal — rides the
+        // dashboard, not the chrome.
+        await expect(page.locator('.updated-at')).toBeVisible();
 
         for (const path of ['/tasks', '/settings/workspace']) {
             await page.goto(path);
             await expect(page.getByRole('button', { name: 'Refresh' })).toHaveCount(0);
-            await expect(page.getByText(/data as of/)).toHaveCount(0);
+            await expect(page.locator('.updated-at')).toHaveCount(0);
         }
     });
 

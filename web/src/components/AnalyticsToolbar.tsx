@@ -52,11 +52,12 @@ export function AnalyticsToolbar({
                 <legend className="toolbar-label">Repositories</legend>
                 <span className="toolbar-value">{repoFilter === null ? '—' : countRepos(repoFilter)}</span>
             </fieldset>
-            {summary ? (
-                <p className="analytics-summary" aria-live="polite">
-                    {summary}
-                </p>
-            ) : null}
+            {/* Mounted from the start, empty before the first payload: some screen readers
+                ignore content inserted into a live region that did not already exist, and the
+                first "Updating to …" transition is exactly what must be announced. */}
+            <p className="analytics-summary" aria-live="polite">
+                {summary ?? ''}
+            </p>
         </div>
     );
 }

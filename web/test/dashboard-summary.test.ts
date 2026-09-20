@@ -181,6 +181,19 @@ describe('requestedRange', () => {
     it('resolves a preset against now, like the wire request will be', () => {
         expect(requestedRange({ preset: 'week', from: '', to: '' }, NOW).from).toBe('2026-09-13T12:00:00.000Z');
     });
+
+    it('passes an already-ISO `to` through un-widened — only calendar days widen', () => {
+        const range = requestedRange({ preset: 'custom', from: '', to: '2026-09-19T12:00:00.000Z' }, NOW);
+        expect(range.to).toBe('2026-09-19T12:00:00.000Z');
+        // A mid-day exclusive bound still covers its own day.
+        expect(rangeText(range)).toBe('Through Sep 19');
+    });
+
+    it('names a rolling 24-hour Today window by its two touched days', () => {
+        // "Today" is a rolling lookback, not a calendar day: from noon yesterday to noon today.
+        // The sentence says which days the window touches — pinned so it stays a decision.
+        expect(rangeText(requestedRange({ preset: 'day', from: '', to: '' }, NOW))).toBe('Sep 19–20');
+    });
 });
 
 describe('emptyStateCopy', () => {

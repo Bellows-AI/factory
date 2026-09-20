@@ -61,12 +61,12 @@ export function draftValid(draft: { from: string; to: string }, today: string): 
 }
 
 /**
- * The draft-commit rule: a draft is committed exactly once, through Apply, and an invalid draft
- * commits nothing — the selection passes through untouched. Cancel, Escape and outside clicks
+ * The draft-commit rule: a valid draft becomes the custom selection; an invalid draft commits
+ * nothing — null, and the caller keeps whatever is committed. Cancel, Escape and outside clicks
  * commit nothing the same way: they simply never call this.
  */
-export function applyDraft(range: RangeSelection, draft: { from: string; to: string }, today: string): RangeSelection {
-    if (!draftValid(draft, today)) return range;
+export function applyDraft(draft: { from: string; to: string }, today: string): RangeSelection | null {
+    if (!draftValid(draft, today)) return null;
     return { preset: 'custom', from: draft.from, to: draft.to };
 }
 
@@ -94,7 +94,8 @@ export function RangeDraft({
 }) {
     const [draft, setDraft] = useState(committed);
     const apply = () => {
-        onApply(applyDraft({ preset: 'custom', from: committed.from, to: committed.to }, draft, today));
+        const next = applyDraft(draft, today);
+        if (next) onApply(next);
         onClose();
     };
     return (

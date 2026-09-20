@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { exactInt, preciseTimestamp, relativeTime, utcShortDate } from '../src/format.js';
+import { exactInt, preciseTimestamp, relativeTime } from '../src/format.js';
 
 /**
  * The freshness cluster and the rendered-data summary format time on the page. These helpers
@@ -49,17 +49,5 @@ describe('exactInt', () => {
 
     it('degrades to a dash on null — unmeasured is not zero', () => {
         expect(exactInt(null)).toBe('—');
-    });
-});
-
-describe('utcShortDate', () => {
-    it('renders the UTC calendar day, never the local one', () => {
-        // 00:30Z would be the previous day in any western hemisphere locale.
-        expect(utcShortDate('2026-09-13T00:30:00.000Z')).toBe('Sep 13');
-    });
-
-    it('degrades to a dash on absent or unparseable stamps', () => {
-        expect(utcShortDate('')).toBe('—');
-        expect(utcShortDate('garbage')).toBe('—');
     });
 });

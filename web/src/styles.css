@@ -305,8 +305,10 @@
 
     /* Keyboard focus is visible everywhere (issue 160): a two-pixel accent ring with a two-pixel
        gap, in both themes. `:where` holds the specificity at zero, so nothing that skins its own
-       focus has to fight this rule, and mouse clicks do not ring (only `:focus-visible`). */
-    :where(a, button, input, select, textarea, summary):focus-visible {
+       focus has to fight this rule, and mouse clicks do not ring (only `:focus-visible`). The
+       freshness stamp is in the list because it is focusable on purpose (issue 166) — the
+       keyboard path to the revealed timestamp. */
+    :where(a, button, input, select, textarea, summary, .updated-at):focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
     }

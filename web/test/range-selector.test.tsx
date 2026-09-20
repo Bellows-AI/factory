@@ -68,17 +68,17 @@ describe('custom-range draft helpers', () => {
     it('commits a valid draft once, one-sided bounds included', () => {
         // A pure function called once is one commit: either bound alone is allowed — the API
         // supports half-open custom ranges.
-        expect(applyDraft(DEFAULT_RANGE, { from: '2026-09-01', to: '' }, today)).toEqual({
+        expect(applyDraft({ from: '2026-09-01', to: '' }, today)).toEqual({
             preset: 'custom',
             from: '2026-09-01',
             to: '',
         });
-        expect(applyDraft(DEFAULT_RANGE, { from: '', to: '2026-09-19' }, today)).toEqual({
+        expect(applyDraft({ from: '', to: '2026-09-19' }, today)).toEqual({
             preset: 'custom',
             from: '',
             to: '2026-09-19',
         });
-        expect(applyDraft(DEFAULT_RANGE, { from: '2026-09-01', to: '2026-09-19' }, today)).toEqual({
+        expect(applyDraft({ from: '2026-09-01', to: '2026-09-19' }, today)).toEqual({
             preset: 'custom',
             from: '2026-09-01',
             to: '2026-09-19',
@@ -88,16 +88,12 @@ describe('custom-range draft helpers', () => {
     it('never commits an invalid draft: crossed dates, an empty draft, or a future bound', () => {
         // Cancel issues no change the same way: it simply never calls apply. Only a valid
         // Apply commits.
-        const crossed = applyDraft(DEFAULT_RANGE, { from: '2026-09-02', to: '2026-09-01' }, today);
-        expect(crossed).toBe(DEFAULT_RANGE);
-        const empty = applyDraft(DEFAULT_RANGE, { from: '', to: '' }, today);
-        expect(empty).toBe(DEFAULT_RANGE);
-        const futureTo = applyDraft(DEFAULT_RANGE, { from: '2026-09-01', to: '2026-09-25' }, today);
-        expect(futureTo).toBe(DEFAULT_RANGE);
+        expect(applyDraft({ from: '2026-09-02', to: '2026-09-01' }, today)).toBeNull();
+        expect(applyDraft({ from: '', to: '' }, today)).toBeNull();
+        expect(applyDraft({ from: '2026-09-01', to: '2026-09-25' }, today)).toBeNull();
         // A future `from` on its own is just as meaningless: a "Since 2030" window that can
         // only render an empty state.
-        const futureFrom = applyDraft(DEFAULT_RANGE, { from: '2030-01-01', to: '' }, today);
-        expect(futureFrom).toBe(DEFAULT_RANGE);
+        expect(applyDraft({ from: '2030-01-01', to: '' }, today)).toBeNull();
     });
 
     it('validates the same rule for the disabled state of Apply', () => {

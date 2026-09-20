@@ -138,20 +138,6 @@ export function exactInt(value: number | null | undefined): string {
     return value.toLocaleString('en-US');
 }
 
-const UTC_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/**
- * The UTC calendar day, short — "Sep 13". The chart buckets are UTC, so the copy must agree
- * with them and not with whatever offset the reader's browser sits in; a 00:30Z stamp is
- * Sep 13 here even where local time still says Sep 12.
- */
-export function utcShortDate(iso: string | null | undefined): string {
-    if (!iso) return '—';
-    const at = new Date(iso);
-    if (Number.isNaN(at.getTime())) return '—';
-    return `${UTC_MONTHS[at.getUTCMonth()] as string} ${at.getUTCDate()}`;
-}
-
 /**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
