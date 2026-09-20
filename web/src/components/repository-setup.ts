@@ -156,14 +156,16 @@ export type CheckoutCell =
  * One row's checkout cell.
  *
  * `checking` — the workspace poll has not answered, so nothing about checkouts may be stated as
- * fact. `unknown` — the draft selects the repository but the poll carries no row for it yet: it is
- * not measured, which is an em dash, never a zero. `absent` — nothing selects it and no row
- * exists: not checked out. A row wins over all of those.
+ * fact. `unknown` — not measured: the draft selects the repository but the poll carries no row for
+ * it yet, or the last poll failed and no row is in hand — either way an em dash, never a zero and
+ * never a claimed "Not checked out". `absent` — nothing selects it and the poll answered: not
+ * checked out. A row wins over all of those.
  */
 export function checkoutCell(selected: boolean, row: WorkspaceRepo | undefined, ws: WorkspaceState): CheckoutCell {
     if (ws === 'loading') return { kind: 'checking' };
     if (row) return { kind: 'status', status: row.status, error: row.error };
-    return selected ? { kind: 'unknown' } : { kind: 'absent' };
+    if (selected || ws === 'error') return { kind: 'unknown' };
+    return { kind: 'absent' };
 }
 
 /** The cell as sentence text — the status never relies on color alone. */

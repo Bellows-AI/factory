@@ -151,6 +151,7 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar's identity disclosure (Headless UI Menu) |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
 | Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox repo/executor pickers; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay` |
+| Repository setup | `repo-search`, `repo-columns` | The repositories page's visibly labeled search row, and the summary/list/detail stack that becomes master/detail at ≥1100px; below that the DOM order — summary, list, detail — is the reading order (issue 181) |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
 | Keyboard mark | `kbd` (element) | The shortcut text beside the composer's launch button — documentation of the button, never an affordance |
 
@@ -241,6 +242,8 @@ Components:
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
+| `RepositorySetup.tsx` | panel, panel-head, table-wrap, data, pill, repo-search, status, muted, primary |
+| `repository-setup.ts` | helper — no markup |
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |

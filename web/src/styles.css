@@ -1848,6 +1848,46 @@
         font-size: 12px;
     }
 
+    /* The repository setup page (issue 181): a labeled search row above the list, and the
+       summary/list/detail stack that becomes master/detail beside itself once a wide window can
+       hold both — below 1100px the DOM order (summary, list, detail) is the reading order. */
+    .repo-search {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 12px 0;
+    }
+
+    .repo-search label {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .repo-search input {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        flex: 1;
+        font: inherit;
+        min-width: 12ch;
+        padding: 6px 10px;
+    }
+
+    .repo-columns {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: 1fr;
+    }
+
+    @media (min-width: 1100px) {
+        .repo-columns {
+            align-items: start;
+            grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+        }
+    }
+
     .picker-actions {
         display: flex;
         gap: 8px;

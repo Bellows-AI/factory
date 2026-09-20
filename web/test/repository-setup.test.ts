@@ -17,7 +17,7 @@ import {
     seedSelection,
     toggleSelection,
 } from '../src/components/repository-setup.js';
-import type { CheckoutCell, WorkspaceState } from '../src/components/repository-setup.js';
+import type { WorkspaceState } from '../src/components/repository-setup.js';
 
 const repo = (overrides: Partial<InstallationRepo> = {}): InstallationRepo => ({
     owner: 'acme',
@@ -224,7 +224,9 @@ describe('checkoutCell and checkoutText', () => {
     it('keeps the states apart when no row exists: selected is unmeasured, unselected is not checked out', () => {
         expect(checkoutText(checkoutCell(true, undefined, 'ready'))).toBe('—');
         expect(checkoutText(checkoutCell(false, undefined, 'ready'))).toBe('Not checked out');
-        expect(checkoutText(checkoutCell(false, undefined, 'error') as CheckoutCell)).toBe('Not checked out');
+        // A failed poll is not a measurement either: no row in hand is an em dash, never a claim.
+        expect(checkoutText(checkoutCell(false, undefined, 'error'))).toBe('—');
+        expect(checkoutText(checkoutCell(true, undefined, 'error'))).toBe('—');
     });
 
     it('renders a failed clone without a reason as plain Failed', () => {
