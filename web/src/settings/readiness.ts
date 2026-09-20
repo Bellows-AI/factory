@@ -126,16 +126,18 @@ function workspaceItem(workspace: ReadinessInput['workspace']): ReadinessItem {
 }
 
 function repositoriesItem(workspace: ReadinessInput['workspace']): ReadinessItem {
-    const { data, loading, error } = workspace;
+    const { data, loading } = workspace;
     if (!data) {
         if (loading) {
             return { id: 'repositories', heading: 'Repositories', status: 'Checking repositories…', facts: [], tone: 'pending', action: null };
         }
+        // The workspace item directly above carries the named error — all three of these items read
+        // the same poll, and printing the error three times is noise, not information.
         return {
             id: 'repositories',
             heading: 'Repositories',
             status: 'Repository status unavailable',
-            facts: error ? [{ text: error }] : [],
+            facts: [],
             tone: 'attention',
             action: null,
         };
@@ -197,7 +199,7 @@ function repositoriesItem(workspace: ReadinessInput['workspace']): ReadinessItem
 }
 
 function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
-    const { data, loading, error } = workspace;
+    const { data, loading } = workspace;
     if (!data) {
         if (loading) {
             return { id: 'executors', heading: 'Executors', status: 'Checking executors…', facts: [], tone: 'pending', action: null };
@@ -206,7 +208,7 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
             id: 'executors',
             heading: 'Executors',
             status: 'Executor status unavailable',
-            facts: error ? [{ text: error }] : [],
+            facts: [],
             tone: 'attention',
             action: null,
         };

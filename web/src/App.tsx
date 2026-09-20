@@ -6,6 +6,7 @@ import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
 import { SettingsLayout } from './pages/SettingsLayout.js';
 import { SettingsOrganizationPage } from './pages/SettingsOrganizationPage.js';
+import { SettingsOverviewPage } from './pages/SettingsOverviewPage.js';
 import { SettingsRepositoriesPage } from './pages/SettingsRepositoriesPage.js';
 import { SettingsWorkspacePage } from './pages/SettingsWorkspacePage.js';
 import { TaskComposerPage } from './pages/TaskComposerPage.js';
@@ -23,8 +24,7 @@ import { TasksLayout } from './pages/TasksLayout.js';
  * Two areas nest the same way, each layout owning the polls its pages share: `TasksLayout` owns
  * the workspace poll for `/tasks` and its children — the inbox, the composer, a task's detail —
  * and `SettingsLayout` owns the workspace and environment polls for `/settings/*`. Each index
- * route is its area's default pane: the inbox for tasks, the workspace section for settings
- * (which redirects there).
+ * route is its area's default pane: the inbox for tasks, the configuration overview for settings.
  *
  * Deep links work with no server change — `server/src/app.ts` already serves index.html for any
  * non-`/api/` 404, and `requirementFor()` treats every path outside `/api/` as open, so
@@ -40,9 +40,10 @@ export function App() {
             <Route path="onboarding" element={<OnboardingPage />} />
             <Route element={<AppShell />}>
                 <Route index element={<DashboardPage />} />
-                {/* The organization's settings tree (issue 150): one sidenav item, four sections. */}
+                {/* The organization's settings tree (issues 150 and 180): one sidenav item — an
+                    overview index, then four sections. */}
                 <Route path="settings" element={<SettingsLayout />}>
-                    <Route index element={<Navigate to="/settings/workspace" replace />} />
+                    <Route index element={<SettingsOverviewPage />} />
                     <Route path="organization" element={<SettingsOrganizationPage />} />
                     <Route path="workspace" element={<SettingsWorkspacePage />} />
                     <Route path="repos" element={<SettingsRepositoriesPage />} />

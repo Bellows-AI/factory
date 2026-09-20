@@ -1,7 +1,10 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import type { EnvPayload } from '../src/api/useEnv.js';
+import type { EnvPayload, UseEnv } from '../src/api/useEnv.js';
 import type { Session } from '../src/api/useSession.js';
-import type { WorkspacePayload } from '../src/api/useWorkspace.js';
+import type { WorkspacePayload, UseWorkspace } from '../src/api/useWorkspace.js';
+import { SettingsOverviewPage } from '../src/pages/SettingsOverviewPage.js';
 import { deriveReadiness } from '../src/settings/readiness.js';
 
 /**
@@ -313,5 +316,162 @@ describe('deriveReadiness — organization identity', () => {
         const items = byId(...deriveReadiness(input({ session: null })));
         expect(items.get('organization')?.status).toBe('Checking organization…');
         expect(items.get('organization')?.tone).toBe('pending');
+    });
+});
+
+describe('SettingsOverviewPage (render)', () => {
+    /** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
+    const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
+
+    const fullSession: Session = {
+        authenticated: true,
+        user: {
+            id: '00000000-0000-4000-8000-000000000001',
+            login: 'octocat',
+            name: 'The Octocat',
+            githubUserId: 1,
+            avatarUrl: null,
+        },
+        role: 'member',
+        membership: { invitedAt: null, claimedAt: null },
+        account: { createdAt: null, lastLoginAt: null },
+        organization: { id: 'bellows', name: 'Bellows AI' },
+        organizations: [{ id: 'bellows', name: 'Bellows AI' }],
+        workspacePath: '/workspaces/octocat',
+        mode: 'none',
+    };
+
+    const idleWorkspace = {
+        data: null,
+        loading: true,
+        error: null,
+        saving: false,
+        save: async () => null,
+        saveExecutors: async () => null,
+        listExecutorConfigs: async () => null,
+    } as unknown as UseWorkspace;
+
+    const idleEnv = {
+        data: null,
+        loading: true,
+        error: null,
+        saving: false,
+        refresh: () => {},
+        saveOrg: async () => null,
+        saveWorkspace: async () => null,
+        saveRepo: async () => null,
+    } as unknown as UseEnv;
+
+    const render = (
+        overrides: { session?: Session | null; workspace?: Partial<UseWorkspace>; env?: Partial<UseEnv> } = {}
+    ): string =>
+        renderToStaticMarkup(
+            <MemoryRouter initialEntries={['/settings']}>
+                <Routes>
+                    <Route
+                        element={
+                            <Outlet
+                                context={{
+                                    session: overrides.session === undefined ? fullSession : overrides.session,
+                                    workspace: { ...idleWorkspace, ...overrides.workspace },
+                                    env: { ...idleEnv, ...overrides.env },
+                                }}
+                            />
+                        }
+                    >
+                        <Route path="settings" element={<SettingsOverviewPage />} />
+                    </Route>
+                </Routes>
+            </MemoryRouter>
+        );
+
+    it('renders one h1 with the eyebrow and description naming the organization', () => {
+        const html = render();
+        expect((html.match(/<h1[ >]/g) ?? []).length).toBe(1);
+        expect(html).toContain('Configuration overview');
+        expect(html).toContain('Settings</p>');
+        expect(html).toContain('Review what is configured for Bellows AI and your workspace.');
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('shows the identity definition list without the internal id', () => {
+        const html = render();
+        expect(html).toContain('Bellows AI');
+        expect(html).toContain('Your role');
+        expect(html).toContain('Member');
+        expect(html).not.toContain('bellows');
+    });
+
+    it('renders the five readiness headings in order', () => {
+        const html = render();
+        const headings = ['<h2>Organization</h2>', '<h2>Workspace</h2>', '<h2>Repositories</h2>', '<h2>Executors</h2>', '<h2>Environment</h2>'];
+        let at = -1;
+        for (const heading of headings) {
+            const next = html.indexOf(heading);
+            expect(next, heading).toBeGreaterThan(at);
+            at = next;
+        }
+    });
+
+    it('reads as checking on a cold load, with no action link yet', () => {
+        const html = render({ session: null });
+        expect(html).toContain('Checking workspace…');
+        expect(html).toContain('Checking repositories…');
+        expect(html).toContain('Checking executors…');
+        expect(html).toContain('Checking environment scopes…');
+        expect(html).toContain('Checking your session…');
+        expect(html).not.toContain('readiness-action');
+    });
+
+    it('links every item to its exact destination once the polls answer', () => {
+        const html = render({
+            workspace: {
+                loading: false,
+                data: {
+                    root: '/workspaces/octocat',
+                    repos: [repo({ name: 'web' })],
+                    orphaned: [],
+                    executors: [{ name: 'fast-box', type: 'claude', createdAt: '2026-01-01T00:00:00Z' }],
+                },
+            },
+            env: { loading: false, data: emptyEnv },
+        });
+        expect(html).toContain('href="/settings/organization"');
+        expect(html).toContain('Review organization settings');
+        expect(html).toContain('href="/settings/workspace"');
+        expect(html).toContain('href="/settings/repos"');
+        expect(html).toContain('href="/settings/executors"');
+        expect(html).toContain('Workspace available');
+        expect(html).toContain('1 repository ready');
+        expect(html).toContain('1 personal executor available');
+        expect(html).toContain('No custom environment values');
+    });
+
+    it('sends a missing root to the workspace setup page, never a generic fix', () => {
+        const html = render({
+            workspace: {
+                loading: false,
+                data: { root: null, repos: [], orphaned: [], executors: [] },
+            },
+            env: { loading: false, data: emptyEnv },
+        });
+        expect(html).toContain('Workspace is not configured; tasks cannot run');
+        expect((html.match(/href="\/settings\/workspace"/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('renders a later poll failure as a separate status line under the last-good items', () => {
+        const html = render({
+            workspace: { loading: false, error: 'the workspace poll failed', data: workspaceData() },
+            env: { loading: false, error: 'the environment read failed', data: emptyEnv },
+        });
+        expect(html).toContain('Workspace available');
+        expect(html).toContain('<p class="status">the workspace poll failed</p>');
+        expect(html).toContain('<p class="status">the environment read failed</p>');
+    });
+
+    it('names the error once on an initial failure — the item fact is the announcement', () => {
+        const html = render({ workspace: { loading: false, error: 'the first read failed' } });
+        expect(html).toContain('Workspace status unavailable');
+        expect(html.split('the first read failed').length - 1).toBe(1);
     });
 });
