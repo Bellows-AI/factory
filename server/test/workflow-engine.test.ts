@@ -727,6 +727,20 @@ describe('parameter guidance metadata', () => {
         expect(checkWorkflowParams(def.definition, { issue: '#9' }).ok).toBe(true);
     });
 
+    it('an example must be valid: one the declared pattern would refuse at launch is refused at create', () => {
+        // The composer may pre-fill or hint with the example — an example the launch validation
+        // would then reject is exactly the dishonest guidance this metadata exists to replace.
+        expect(withParams([{ name: 'issue', pattern: '#\\d+', example: 'issue 42' }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS', message: expect.stringContaining('example') },
+        });
+        expect(withParams([{ name: 'issue', pattern: '#\\d+', example: '#42' }]).ok).toBe(true);
+        // The trimmed example is the one validated — the raw form may carry padding.
+        expect(withParams([{ name: 'issue', pattern: '#\\d+', example: ' #42 ' }]).ok).toBe(true);
+        // No pattern declared: any bounded example is valid by construction.
+        expect(withParams([{ name: 'notes', example: 'anything at all' }]).ok).toBe(true);
+    });
+
     it('guidance counts toward the unchanged definition-size gate', () => {
         // 120 valid params, each carrying the maximum 160-character description: every key inside
         // its own bound, the definition as a whole past 16 KiB.

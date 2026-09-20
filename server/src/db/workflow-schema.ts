@@ -408,7 +408,10 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
             // The guidance pair is presentation metadata for the composer: bounded sentences,
             // validated on the TRIMMED value (the marker precedent) and retained trimmed on the
             // normalized definition. They feed nothing else — `checkWorkflowParams` and the
-            // interpolator never read them; guidance never substitutes for the pattern.
+            // interpolator never read them; guidance never substitutes for the pattern. The one
+            // exception that keeps the guidance honest: an EXAMPLE is served as a pre-fill/hint
+            // for an input the launch validates, so an example the declared pattern would refuse
+            // is refused here, with the same full-match semantics as launch.
             let description: string | undefined;
             let example: string | undefined;
             for (const [key, limit] of [
@@ -423,6 +426,9 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
                         'BAD_PARAMS',
                         `params[${i}].${key} must be a non-empty string of at most ${limit} characters`
                     );
+                }
+                if (key === 'example' && pattern !== undefined && !new RegExp(`^(?:${pattern})$`).test(trimmed)) {
+                    return refuse('BAD_PARAMS', `params[${i}].example must match ${pattern}`);
                 }
                 if (key === 'description') description = trimmed;
                 else example = trimmed;

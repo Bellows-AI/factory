@@ -38,7 +38,13 @@ where root.org_id = child.org_id
   and child.workflow_name is null;
 
 -- The row-level restatement of the 1..100 name boundary the workflow table already enforces
--- (workflow_name_ck, 027); backfilled values passed it at the source, so nothing violates.
+-- (workflow_name_ck, 027). Added NOT VALID on purpose: a plain ADD CONSTRAINT scans the whole
+-- table under a write-conflicting lock, which on a large job table would stall creates, claims
+-- and verdicts for the scan's whole duration — and every NEW row is checked from this moment
+-- regardless, while the writes all come from the store, whose names passed workflow_name_ck at
+-- the source. The backfilled rows are validated by 034, whose SHARE UPDATE EXCLUSIVE lock does
+-- not block writes; between the two files the only unvalidated rows are the backfill's own, all
+-- of which satisfy the check by construction.
 alter table job add constraint job_workflow_name_ck check (
     workflow_name is null or (workflow_name <> '' and char_length(workflow_name) <= 100)
-);
+) not valid;

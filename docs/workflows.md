@@ -72,9 +72,12 @@ characters.
 `description` and `example` are PRESENTATION METADATA the composer renders beside the input —
 plain-language guidance and a valid example a generic client can show instead of interpreting the
 regex. Both are optional, validated on the trimmed value (non-empty, at most 160 and 120 characters
-respectively — `BAD_PARAMS` otherwise), and retained trimmed on the normalized definition. They
-participate in NOTHING: no interpolation, no launch validation — `checkWorkflowParams` never reads
-them, and guidance never substitutes for the pattern. Unknown keys beside them still refuse
+respectively — `BAD_PARAMS` otherwise), and retained trimmed on the normalized definition. `example` must be VALID: when the parameter declares a `pattern`, the trimmed example must fully
+match it
+(`^(?:pattern)$`, the same semantics launch applies) — the composer may pre-fill it, and a hint the
+launch would refuse is exactly the dishonest guidance this metadata exists to replace. The pair
+still participates in NOTHING beyond that: no interpolation, and `checkWorkflowParams` never reads
+them — guidance never substitutes for the pattern at launch. Unknown keys beside them still refuse
 `UNKNOWN_KEY`, and they count toward the unchanged 16 KiB definition cap. The workflow list and
 detail responses carry the fields through the existing parameter summaries.
 

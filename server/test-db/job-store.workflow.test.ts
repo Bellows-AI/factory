@@ -517,5 +517,20 @@ describe.skipIf(!enabled)('workflow parameters', () => {
             expect(rows.map((row) => row.workflowName)).toEqual([null]);
             expect((await store.get(job.id))?.workflowName).toBeNull();
         });
+
+        it('the name constraint landed NOT VALID in 033 and was validated by 034', async () => {
+            // The split deploy: 033 adds the check without scanning the table under a
+            // write-blocking lock, 034 validates the backfilled rows after. If 034 is ever lost,
+            // the constraint still guards every new row — but convalidated would read false here.
+            const [row] = await sql<{ convalidated: boolean }[]>`
+                select convalidated from pg_constraint where conname = 'job_workflow_name_ck'
+            `;
+            expect(row!.convalidated).toBe(true);
+            // And it enforces new writes either way.
+            await expect(
+                sql`insert into job (org_id, id, root_job_id, command, workflow_name)
+                    values (${ORG}, gen_random_uuid(), gen_random_uuid(), 'x', ${'w'.repeat(101)})`
+            ).rejects.toThrow(/job_workflow_name_ck/);
+        });
     });
 });
