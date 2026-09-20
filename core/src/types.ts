@@ -49,6 +49,21 @@ export interface TokenTotals {
 }
 
 /**
+ * The edit decisions a session's hook measured, with the denominator behind the acceptance
+ * ratio. `decisions` is the null-aware sum of accepted and rejected — the measured count,
+ * never a client-derived guess — and every field is null when that contributor was never
+ * measured, so 0 accepted of 0 measured decisions stays distinguishable from wholly
+ * unmeasured input. The ratio nulls when the numerator was unmeasured or nothing was
+ * measured at all; otherwise it is within [0, 1].
+ */
+export interface EditAcceptance {
+    accepted: number | null;
+    rejected: number | null;
+    decisions: number | null;
+    ratio: number | null;
+}
+
+/**
  * A person, resolved at read time from the store's own audit rows (never denormalised:
  * logins and display names go stale, joins do not). `name` and `avatarUrl` are optional
  * labels the source may not have; `login` is the display fallback.
@@ -119,7 +134,7 @@ export interface TelemetryStats {
         activeHours: number | null;
         linesAdded: number | null;
         linesRemoved: number | null;
-        acceptRatio: number | null;
+        editAcceptance: EditAcceptance;
     };
     /** Sessions the hook attributed to a different repo. */
     otherRepoSessions: number;

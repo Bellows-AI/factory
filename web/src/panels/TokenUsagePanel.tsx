@@ -104,7 +104,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                     </div>
                     <p className="chart-caption">
                         {caption}
-                        {hasPartial ? ' * Partial period' : null}
+                        {hasPartial ? ' The hatched bucket is a partial period.' : null}
                     </p>
                     <details className="chart-disclosure">
                         <summary>How this is calculated</summary>

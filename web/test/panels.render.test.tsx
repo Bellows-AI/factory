@@ -301,7 +301,7 @@ describe('token usage series granularity', () => {
         expect(daily.series.granularity).toBe('day');
         const dailyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={daily} meta={meta()} />);
         expect(dailyHtml).toContain('Input and output tokens by day; sessions use the right axis.');
-        expect(dailyHtml).toContain('Partial period');
+        expect(dailyHtml).toContain('The hatched bucket is a partial period.');
         expect(dailyHtml).not.toContain('NaN');
     });
 
@@ -376,7 +376,7 @@ describe('token usage series granularity', () => {
         expect(widths.length).toBeGreaterThan(0);
         expect(Math.max(...widths)).toBeLessThanOrEqual((width - PAD.left - PAD.right) / 4);
         expect(html).toMatch(/aria-label="[^"]*Input 12,345/);
-        expect(html).toContain('Partial period');
+        expect(html).toContain('The hatched bucket is a partial period.');
     });
 
     it('keeps the x-axis legible at 92 daily points', () => {

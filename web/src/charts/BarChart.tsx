@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { exactNum } from '../format.js';
+import { int } from '../format.js';
 import { ChartRoot, XLabels, YAxis } from './Axes.js';
 import { PAD, linearScale, niceMax } from './scale.js';
 
@@ -72,8 +72,8 @@ function bucketParts(
 ): string[] {
     const parts: string[] = [bucketLabels[i] ?? ''];
     if (partial[i]) parts.push('partial period');
-    for (const s of series) parts.push(`${s.label} ${exactNum(s.values[i])}`);
-    if (line) parts.push(`${line.label} ${exactNum(line.values[i])}`);
+    for (const s of series) parts.push(`${s.label} ${int(s.values[i])}`);
+    if (line) parts.push(`${line.label} ${int(line.values[i])}`);
     const hidden = [
         ...series.filter((s) => hiddenSeries?.has(s.id)).map((s) => s.label),
         ...(line && hiddenSeries?.has(line.id) ? [line.label] : []),

@@ -771,31 +771,39 @@
         letter-spacing: 0.04em;
     }
 
-    /* Sort controls are real buttons inside the th. The reset keeps the header's typography —
-       a bare <button> would arrive wearing the global control skin. */
-    table.data th button {
-        background: none;
-        border: none;
-        color: inherit;
-        cursor: pointer;
-        font: inherit;
-        letter-spacing: inherit;
+    /* The header cell is the button's hit area: the button fills the th, inheriting its type so
+       the header looks unchanged, and keyboard focus lands on a real control. */
+    table.data th.sortable {
         padding: 0;
-        text-align: inherit;
-        text-transform: inherit;
     }
 
-    /* Numeric columns: figures share a right edge so digits compare by position. */
-    table.data th.num,
-    table.data td.num {
+    table.data th.sortable button {
+        display: block;
+        width: 100%;
+        font: inherit;
+        color: inherit;
+        letter-spacing: inherit;
+        text-transform: inherit;
+        text-align: inherit;
+        background: none;
+        border: none;
+        padding: 5px 8px;
+        cursor: pointer;
+        user-select: none;
+    }
+
+    table.data th.align-end,
+    table.data td.align-end {
         text-align: right;
     }
 
-    table.data th.asc::after {
+    /* The arrow rides the button, not the th: the button fills the cell as a block, so a th
+       pseudo would wrap onto its own line below the label. */
+    table.data th.asc button::after {
         content: ' ↑';
     }
 
-    table.data th.desc::after {
+    table.data th.desc button::after {
         content: ' ↓';
     }
 
