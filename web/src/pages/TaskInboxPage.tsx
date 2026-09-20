@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { PageHeader } from '../components/PageHeader.js';
 import { useTasksPage } from './TasksLayout.js';
 import type { InboxFilters, TaskSummary } from '../api/useTasks.js';
 import { relativeTime, taskTime } from '../format.js';
@@ -134,17 +135,22 @@ export function TaskInboxPage() {
 
     return (
         <section className="inbox">
-            <header className="inbox-head">
-                <div>
-                    <h1>Tasks</h1>
-                    <p className="inbox-meta">
+            {/* The page's one heading lives in the shared PageHeader (issue 159): no eyebrow —
+                "Tasks" over "Tasks" says the same thing twice — the org-wide counts beside it,
+                and New task as the page's one action. */}
+            <PageHeader
+                title="Tasks"
+                meta={
+                    <span className="muted">
                         {metaClauses.length === 0 ? 'Nothing moving' : metaClauses.join(' · ')}
-                    </p>
-                </div>
-                <Link to="/tasks/new" className="inbox-new">
-                    New task
-                </Link>
-            </header>
+                    </span>
+                }
+                actions={
+                    <Link to="/tasks/new" className="inbox-new">
+                        New task
+                    </Link>
+                }
+            />
 
             <div className="inbox-filters">
                 <nav className="inbox-tabs" aria-label="Task state">

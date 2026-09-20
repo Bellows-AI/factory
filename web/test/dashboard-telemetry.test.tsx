@@ -2,8 +2,9 @@ import type { OrganizationMeta } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { describeRepos, DashboardPage } from '../src/pages/DashboardPage.js';
-import type { UseJobs } from '../src/api/useJobs.js';
+import { DashboardPage } from '../src/pages/DashboardPage.js';
+import { describeRepos } from '../src/format.js';
+import type { UseTasks } from '../src/api/useTasks.js';
 import type { RangeSelection, ScopeSelection } from '../src/components/RangeSelector.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 
@@ -19,18 +20,39 @@ const CONFIG: OrganizationMeta = {
     available: [{ id: 'bellows', name: 'Bellows AI' }],
 };
 
+/** The whole meta shape, typed — the fixture drifts silently the moment a cast papers over it. */
 const META: StatsPayload['meta'] = {
     fetchedAt: '2026-08-21T12:00:00.000Z',
     ageSeconds: 0,
     stale: false,
     organization: CONFIG,
     repos: [{ owner: 'Bellows-AI', name: 'bellows.ai' }],
-    baseBranch: 'dev',
+    range: { preset: 'all', from: null, to: null },
+    scope: 'org',
+    scopeLogin: null,
+    telemetry: {
+        status: 'ok',
+        reason: null,
+        source: 'fixture',
+        fetchedAt: '2026-08-21T12:00:00.000Z',
+        ageSeconds: 0,
+        stale: false,
+        repoFilter: ['Bellows-AI/bellows.ai'],
+        otherRepoSessions: 0,
+        sessionsWithoutHook: 0,
+        unattributedSessions: 0,
+    },
 };
 
-const PAYLOAD = { telemetry: null, tasks: null, meta: META } as unknown as StatsPayload;
+const PAYLOAD: StatsPayload = { telemetry: null, tasks: null, meta: META };
 
-const fakeTasks = { jobs: null, error: null } as unknown as UseJobs;
+const fakeTasks = {
+    navigation: null,
+    items: null,
+    nextCursor: null,
+    initial: true,
+    filters: { state: 'attention', q: null, repo: null, author: null, sort: 'newest' },
+} as unknown as UseTasks;
 
 /** The shell context with the dashboard's range/scope/refresh wiring handed over. */
 function ShellStub({ data, refreshing }: { data: StatsPayload | null; refreshing: boolean }) {
@@ -88,12 +110,18 @@ describe('describeRepos', () => {
 });
 
 describe('dashboard telemetry', () => {
-    it('renders the repo coverage, the freshness timestamp and Refresh', () => {
+    it('renders the repo coverage, the freshness timestamp and Refresh in the page header', () => {
         const html = render(PAYLOAD);
+        // The page's one h1 is the header's (issue 159); the telemetry chrome rides beside it.
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>Usage overview</h1>');
+        expect(html).toContain('page-header-description');
+        expect(html).toContain('page-header-meta');
+        expect(html).toContain('page-header-actions');
         expect(html).toContain('bellows.ai');
         expect(html).toContain('AI usage telemetry');
         expect(html).toContain('data as of');
-        expect(html).toContain('Refresh');
+        expect(html).toContain('>Refresh</button>');
     });
 
     it('answers the cold read with loading, and the refresh action with its in-flight state', () => {

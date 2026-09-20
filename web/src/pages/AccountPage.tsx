@@ -2,6 +2,7 @@ import { useSession } from '../api/useSession.js';
 import { AccessTokensSection } from '../panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../panels/IdentityPanel.js';
 import { TrackedOrgsPanel } from '../panels/TrackedOrgsPanel.js';
+import { PageHeader } from '../components/PageHeader.js';
 
 /**
  * The member's own account: identity, then the access tokens minted from here (#70). Sections
@@ -25,10 +26,15 @@ export function AccountPage() {
     const github = session.mode === 'github';
     return (
         <>
+            <PageHeader
+                title="Account"
+                description={
+                    github
+                        ? `Signed in with GitHub as ${session.user.login}.`
+                        : 'Signed in as the deployment\u2019s local user.'
+                }
+            />
             <section className="panel">
-                <div className="panel-head">
-                    <h2>Account</h2>
-                </div>
                 <IdentityPanel session={session} />
             </section>
             {github ? (

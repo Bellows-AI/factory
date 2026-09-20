@@ -16,10 +16,11 @@ export interface NavItem {
     readonly end?: boolean;
 }
 
+/** Observe → act → configure, in that order — the report, then the work, then the configuration. */
 export const NAV_ITEMS: readonly NavItem[] = [
     { to: '/', label: 'Dashboard', end: true },
-    { to: '/settings', label: 'Settings' },
     { to: '/tasks', label: 'Tasks' },
+    { to: '/settings', label: 'Settings' },
 ];
 
 /** The Settings tree's sections, in the issue's order. Static — no data behind them. */

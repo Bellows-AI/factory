@@ -57,26 +57,6 @@ export function taskTime(iso: string | null | undefined): string {
 }
 
 /**
- * A task's age in words — "the row's activity stamp, rendered as the reader speaks it" — beside
- * the precise `<time>` value the row also carries, so the hover/assistive reading never loses
- * the exact stamp. Buckets: under a minute is "just now", then m/h/d, and past a week the date
- * itself, because "14d ago" is less legible than "2026-09-05". A stamp in the future is clock
- * skew between two honest clocks — "just now", never a negative age. Pure: the caller decides
- * what "now" is, the same rule `runDuration` and `wallClock` follow (the 3s poll is the ticker).
- */
-export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
-    if (!iso) return '—';
-    const at = new Date(iso);
-    if (Number.isNaN(at.getTime())) return '—';
-    const seconds = Math.round((now.getTime() - at.getTime()) / 1000);
-    if (seconds < 60) return 'just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
-    if (seconds < 7 * 86_400) return `${Math.floor(seconds / 86_400)}d ago`;
-    return at.toISOString().slice(0, 10);
-}
-
-/**
  * How long a run has taken, or took: from the attempt's start to its finish, or — while it is
  * still going — to `now`, which the caller decides so this stays pure (the detail page re-renders
  * on every 2s poll, which is the ticker). A dash for anything absent, unparseable, or ending
@@ -116,6 +96,40 @@ export function wallClock(
     }
     if (totalMs == null && live === 0) return '—';
     return duration((banked + live) / 3_600_000);
+}
+
+/**
+ * Names every repo rather than reporting a count. "3 repositories combined" hides which three,
+ * and the figures are only interpretable if you know what went into them.
+ */
+export function describeRepos(repos: { owner: string; name: string }[]): string {
+    if (!repos.length) return 'no repositories configured';
+    const owners = new Set(repos.map((r) => r.owner));
+    // One owner is the common case, so repeating it on every entry is noise.
+    if (owners.size === 1 && repos.length > 1) {
+        return `${[...owners][0]}/{${repos.map((r) => r.name).join(', ')}}`;
+    }
+    return repos.map((r) => `${r.owner}/${r.name}`).join(', ');
+}
+
+/**
+ * A task's age in words — "the row's activity stamp, rendered as the reader speaks it" — beside
+ * the precise `<time>` value the row also carries, so the hover/assistive reading never loses
+ * the exact stamp. Buckets: under a minute is "just now", then m/h/d, and past a week the date
+ * itself, because "14d ago" is less legible than "2026-09-05". A stamp in the future is clock
+ * skew between two honest clocks — "just now", never a negative age. Pure: the caller decides
+ * what "now" is, the same rule `runDuration` and `wallClock` follow (the 3s poll is the ticker).
+ */
+export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
+    if (!iso) return '—';
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '—';
+    const seconds = Math.round((now.getTime() - at.getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+    if (seconds < 7 * 86_400) return `${Math.floor(seconds / 86_400)}d ago`;
+    return at.toISOString().slice(0, 10);
 }
 
 /**

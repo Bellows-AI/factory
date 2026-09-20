@@ -72,6 +72,14 @@ describe('SideNav', () => {
         expect(html).not.toContain('href="/env"');
     });
 
+    it('orders the primary navigation Dashboard → Tasks → Settings', () => {
+        // Observe → act → configure (#159): the report first, the work second, the
+        // configuration last. Account is not here at all — it lives in the user menu.
+        const html = render('/');
+        expect(html.indexOf('href="/"')).toBeLessThan(html.indexOf('href="/tasks"'));
+        expect(html.indexOf('href="/tasks"')).toBeLessThan(html.indexOf('href="/settings"'));
+    });
+
     it('renders the Settings tree only inside the settings area', () => {
         const inside = render('/settings/workspace');
         expect(inside).toContain('href="/settings/organization"');

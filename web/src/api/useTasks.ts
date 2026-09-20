@@ -156,9 +156,58 @@ export function firstPageError(items: TaskSummary[] | null, refreshError: string
     return items === null ? refreshError : null;
 }
 
+/** Raised when a page answers 401 — the caller hands the session gate the news and stops quietly. */
+export class TaskAuthExpired extends Error {}
+
 const firstPageUrl = (query: string): string => (query === '' ? '/api/tasks' : `/api/tasks?${query}`);
 const morePageUrl = (query: string, cursor: string): string =>
     `/api/tasks?${query === '' ? '' : `${query}&`}cursor=${encodeURIComponent(cursor)}`;
+
+/**
+ * Reads enough successive keyset pages to REBUILD a previously loaded depth, deduped by task id
+ * (first occurrence wins — the newest position). Exported with the fetch injected so the offline
+ * suite can drive the whole chain: a plain first-page swap on refresh would collapse the pages
+ * the member already paged through, every three seconds while anything runs.
+ *
+ * Returns page one's navigation (org-wide, so any page could serve it — the first is simply the
+ * freshest), the merged rows, the cursor of the LAST page read (null when the list shrank below
+ * the old depth — the loaded depth collapses to what the list still serves), and how many pages
+ * the chain actually read.
+ */
+export async function fetchDepthPages(
+    fetchPage: (url: string) => Promise<TaskListResponse>,
+    query: string,
+    depth: number
+): Promise<{
+    navigation: TaskNavigation;
+    items: TaskSummary[];
+    nextCursor: string | null;
+    pages: number;
+}> {
+    const first = await fetchPage(firstPageUrl(query));
+    const items: TaskSummary[] = [];
+    const known = new Set<string>();
+    for (const task of first.page.items) {
+        if (!known.has(task.id)) {
+            known.add(task.id);
+            items.push(task);
+        }
+    }
+    let cursor = first.page.nextCursor;
+    let pages = 1;
+    while (cursor !== null && pages < depth) {
+        const next = await fetchPage(morePageUrl(query, cursor));
+        for (const task of next.page.items) {
+            if (!known.has(task.id)) {
+                known.add(task.id);
+                items.push(task);
+            }
+        }
+        cursor = next.page.nextCursor;
+        pages += 1;
+    }
+    return { navigation: first.navigation, items, nextCursor: cursor, pages };
+}
 
 /**
  * The ONE task-overview poll. Same discipline as the polls it replaces (`useJobs`): one abortable
@@ -193,6 +242,8 @@ export function useTasks(enabled: boolean): UseTasks {
     const timer = useRef<number | null>(null);
     const controller = useRef<AbortController | null>(null);
     const moreController = useRef<AbortController | null>(null);
+    /** How many keyset pages the member has loaded — the depth every refresh must rebuild. */
+    const depthRef = useRef(1);
     /** Bound at the latest render, so the callbacks below re-arm the current chain. */
     const enabledRef = useRef(enabled);
     enabledRef.current = enabled;
@@ -207,41 +258,43 @@ export function useTasks(enabled: boolean): UseTasks {
         // The query the chain was armed with — read off the ref at tick time, not closure time,
         // so a re-armed chain always asks the CURRENT question.
         setRefreshing(true);
-        try {
-            const response = await fetch(firstPageUrl(queryRef.current), { signal });
-            if (response.status === 401) {
-                setRefreshing(false);
-                reportUnauthenticated();
-                return;
-            }
+        // One page reader for the whole chain: refusals raise (the catch keeps the last good
+        // rows whole — never a half-rebuilt page), and a 401 stops quietly at the gate.
+        const fetchPage = async (url: string): Promise<TaskListResponse> => {
+            const response = await fetch(url, { signal });
+            if (response.status === 401) throw new TaskAuthExpired();
             if (!response.ok) {
-                if (signal.aborted) return;
                 const body = (await response.json().catch(() => ({}))) as { error?: string };
-                const message = body.error ?? `Request failed (${response.status})`;
-                setRefreshError(message);
-                setRefreshing(false);
-                // A failed tick must not end the chain: a transient 503 during a deploy would
-                // otherwise freeze the inbox until somebody acts. The quiet floor is the retry pace.
-                timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 60_000 : 30_000);
-                return;
+                throw new Error(body.error ?? `Request failed (${response.status})`);
             }
-            const body = (await response.json()) as TaskListResponse;
-            // The response can complete after the area was left or the filters moved; landing it
+            return (await response.json()) as TaskListResponse;
+        };
+        try {
+            const rebuilt = await fetchDepthPages(fetchPage, queryRef.current, depthRef.current);
+            // The chain can complete after the area was left or the filters moved; landing it
             // would paint one question's answer onto another.
             if (signal.aborted) return;
-            setNavigation(body.navigation);
-            setItems(body.page.items);
-            setNextCursor(body.page.nextCursor);
+            setNavigation(rebuilt.navigation);
+            setItems(rebuilt.items);
+            setNextCursor(rebuilt.nextCursor);
+            depthRef.current = rebuilt.pages;
             setRefreshError(null);
             setLoadMoreError(null);
             setRefreshing(false);
-            const moving = body.navigation.counts.running > 0;
+            const moving = rebuilt.navigation.counts.running > 0;
             const delay = document.hidden ? (moving ? 15_000 : 60_000) : moving ? 3_000 : 30_000;
             timer.current = window.setTimeout(() => void poll(signal), delay);
         } catch (e) {
             if (signal.aborted) return;
+            if (e instanceof TaskAuthExpired) {
+                setRefreshing(false);
+                reportUnauthenticated();
+                return;
+            }
             setRefreshError((e as Error).message);
             setRefreshing(false);
+            // A failed tick must not end the chain: a transient 503 during a deploy would
+            // otherwise freeze the inbox until somebody acts. The quiet floor is the retry pace.
             timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 60_000 : 30_000);
         }
     }, []);
@@ -290,6 +343,7 @@ export function useTasks(enabled: boolean): UseTasks {
         setRefreshError(null);
         setLoadMoreError(null);
         setLoadingMore(false);
+        depthRef.current = 1;
         start();
         return () => {
             controller.current?.abort();
@@ -336,6 +390,7 @@ export function useTasks(enabled: boolean): UseTasks {
                     return [...prev, ...body.page.items.filter((task) => !known.has(task.id))];
                 });
                 setNextCursor(body.page.nextCursor);
+                depthRef.current += 1;
             } catch (e) {
                 if (!own.signal.aborted) setLoadMoreError((e as Error).message);
             } finally {

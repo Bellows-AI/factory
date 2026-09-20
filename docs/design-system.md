@@ -112,7 +112,17 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Task inbox | `inbox`, `inbox-head`, `inbox-meta`, `inbox-new`, `inbox-filters`, `inbox-tabs`, `inbox-tab`, `inbox-search`, `inbox-sort`, `inbox-rows`, `inbox-row`, `inbox-status`, `inbox-title`, `inbox-activity`, `inbox-repo`, `inbox-author`, `inbox-when`, `inbox-empty`, `inbox-error`, `inbox-note` | The `/tasks` inbox: one responsive grid per row (status label, title link, repo, author, relative age in a `<time>`), URL-state filters, Load more |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: sticky, raised, no `h1`; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
+| Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The routed page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail (issue 159) |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
+
+`PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer (issue 159): every
+routed page renders exactly one of them, and the `h1` it wraps is the page's only `h1` — panel
+headings below it are `h2`s and must not restate the page title. It is presentational by
+contract (no fetching, no route inspection, no Factory knowledge), slot-driven: `eyebrow` is the
+section above the title, `title` the `h1` itself, `description` the leading column's second
+line, `meta` the state beside the title (pills, clocks, timestamps) and `actions` the page's
+buttons — siblings of the heading, never children of it. An empty slot renders no wrapper, and
+`flex-wrap` drops meta and actions below the title at narrow widths without changing DOM order.
 
 ### Surfaces and feedback
 
@@ -168,7 +178,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose` | The message input and its row; `task-compose` is the full-page variant |
-| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The control row, the two-column frame, attribution |
+| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution |
 
 ### Environment panel
 
@@ -185,8 +195,9 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 ### One-offs
 
 `identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
-the dashboard's control row: range, scope, and the telemetry caption and Refresh that moved here
-from the old global topbar (issue 160). Everything else above is a family; these exist because
+the dashboard's range/scope row under the page header, which carries the telemetry caption and
+Refresh that moved here from the old global topbar (issues 160 and 159). Everything else above
+is a family; these exist because
 no family fits, and a new one-off needs a sentence here saying the same.
 
 ## Inventory
@@ -208,6 +219,7 @@ Components:
 | `LoginGate.tsx` | login |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
+| `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | range |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
@@ -228,7 +240,8 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TrackedOrgsPanel.tsx` | panel, login-button |
 | `RecentTasksPanel.tsx` | panel, alert, muted, chart-wrap, by-user, task-avatar |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
-| `TaskDetail.tsx` | task-layout, chat, gate, composer, pill, task head |
+| `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
+| `TaskHeader.tsx` | page-header, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
 | `TaskUsagePanel.tsx` | cards, card |
 | `TelemetryFrame.tsx` | alert, badge |
@@ -241,18 +254,18 @@ Pages:
 
 | File | Primitives |
 | --- | --- |
-| `AccountPage.tsx` | panel |
-| `DashboardPage.tsx` | dashboard-controls |
+| `AccountPage.tsx` | page-header, panel |
+| `DashboardPage.tsx` | page-header, dashboard-controls |
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
-| `SettingsExecutorsPage.tsx` | panel |
+| `SettingsExecutorsPage.tsx` | page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
-| `SettingsOrganizationPage.tsx` | panel |
-| `SettingsRepositoriesPage.tsx` | panel |
-| `SettingsWorkspacePage.tsx` | panel |
-| `TaskComposerPage.tsx` | status |
-| `TaskDetailPage.tsx` | status |
-| `TaskInboxPage.tsx` | inbox, inbox-head, inbox-meta, inbox-new, inbox-filters, inbox-tabs, inbox-tab, inbox-search, inbox-sort, inbox-rows, inbox-row, inbox-status, inbox-title, inbox-activity, inbox-repo, inbox-author, inbox-when, inbox-empty, inbox-error, inbox-note, sidenav-dot, muted |
+| `SettingsOrganizationPage.tsx` | page-header, panel |
+| `SettingsRepositoriesPage.tsx` | page-header, panel |
+| `SettingsWorkspacePage.tsx` | page-header, panel |
+| `TaskComposerPage.tsx` | page-header, status |
+| `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
+| `TaskInboxPage.tsx` | page-header, inbox, inbox-filters, inbox-tabs, inbox-tab, inbox-search, inbox-sort, inbox-rows, inbox-row, inbox-status, inbox-title, inbox-activity, inbox-repo, inbox-author, inbox-when, inbox-empty, inbox-error, inbox-note, sidenav-dot, muted |
 
 Charts (`scale.ts` is the band/linear scale helper — no markup):
 
