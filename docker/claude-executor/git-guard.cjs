@@ -303,11 +303,27 @@ function analyze(segment, depth) {
             return rest.some((t) => t === '--abort' || t === '--quit' || t === '--continue')
                 ? ALLOW
                 : denyOf("'git rebase'");
-        case 'merge':
-            // As with rebase: --abort/--quit unwind an in-progress merge, which only the
-            // driver's own sync can have started; a conflicted merge is completed by the
-            // `git commit` that stays allowed.
-            return rest.some((t) => t === '--abort' || t === '--quit') ? ALLOW : denyOf("'git merge'");
+        case 'merge': {
+            // As with rebase: --abort/--quit unwind an in-progress merge, and --continue
+            // completes one (git commit, also allowed, does the same). Initiation is allowed
+            // ONLY for origin remote-tracking refs: merging origin/<ref> in is the one way a
+            // thread resolves the conflicts the driver's sync rebase refused (job 3e85c499,
+            // 2026-09-20 — the /fix skill's own up-to-date step was the command the guard
+            // denied), and a merge can neither move HEAD off the task branch nor rewrite the
+            // published commits, so the invariant survives it. A local branch, a sha or a
+            // bare merge stays denied. -m/--message/-F/--file take a VALUE the operand scan
+            // must not mistake for a merge target.
+            if (rest.some((t) => t === '--abort' || t === '--quit' || t === '--continue')) return ALLOW;
+            const operands = [];
+            for (let r = 0; r < rest.length; r++) {
+                if (rest[r] === '-m' || rest[r] === '--message' || rest[r] === '-F' || rest[r] === '--file') {
+                    r += 1;
+                } else if (!rest[r].startsWith('-')) operands.push(rest[r]);
+            }
+            return operands.length > 0 && operands.every((t) => /^origin\/[A-Za-z0-9._/-]+$/.test(t))
+                ? ALLOW
+                : denyOf("'git merge' of anything but an origin remote-tracking ref");
+        }
         default:
             return ALLOW;
     }
@@ -403,8 +419,11 @@ const CASES = [
     ['deny', 'git rebase --autostash main'],
     ['deny', 'git rebase --onto main HEAD~2'],
     ['deny', 'git merge'],
-    ['deny', 'git merge origin/main'],
+    ['deny', 'git merge main'],
     ['deny', 'git merge --no-ff feature'],
+    ['deny', 'git merge 62f9a1b'],
+    ['deny', 'git merge FETCH_HEAD'],
+    ['deny', 'git merge origin/main && git checkout main'],
     ['deny', 'git commit -m x && git rebase main'],
     // gh (issue #82): opening a pull request is the driver publish's, not the agent's — and
     // `gh pr checkout` would move HEAD off the task branch, the same damage as `git checkout`.
@@ -448,6 +467,13 @@ const CASES = [
     ['allow', 'git reset --soft HEAD~1'],
     ['allow', 'git merge --abort'],
     ['allow', 'git merge --quit'],
+    ['allow', 'git merge --continue'],
+    ['allow', 'git merge origin/main'],
+    ['allow', 'git merge --no-edit origin/main'],
+    ['allow', 'git merge origin/main --no-edit'],
+    ['allow', 'git merge origin/hotfix'],
+    ['allow', 'git merge origin/feature/nested'],
+    ['allow', 'git merge -m "merge main" origin/main'],
     ['allow', 'git rebase --abort'],
     ['allow', 'git rebase --quit'],
     ['allow', 'git rebase --continue'],
