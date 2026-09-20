@@ -1429,6 +1429,7 @@ describe('TaskOutcome', () => {
             jobs: [
                 job({ status: 'failed', exitCode: 1 }),
                 job({
+                    id: '22222222-2222-4222-8222-222222222222',
                     status: 'stopped',
                     exitCode: 0,
                     doneBy: { id: 'u', login: 'kim', name: null, avatarUrl: null },
@@ -1530,7 +1531,9 @@ describe('TaskOutcome', () => {
             { name: 'lint', status: 'failed' as const, exitCode: 1, output: 'bad' },
             { name: 'build', status: 'running' as const, exitCode: null, output: null },
         ];
-        const html = renderDetail({ jobs: [job({ gates }), job({ gates: null })] });
+        const html = renderDetail({
+            jobs: [job({ gates }), job({ id: '44444444-4444-4444-8444-444444444444', gates: null })],
+        });
         expect(html).not.toContain('View checks');
         const counted = renderDetail({ jobs: [job({ gates })] });
         expect(counted).toContain('1 passed');
@@ -1622,7 +1625,7 @@ describe('TaskOutcome', () => {
                         services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
                     },
                 }),
-                job(),
+                job({ id: '22222222-2222-4222-8222-222222222222' }),
             ],
         });
         expect(stale).not.toContain('Services');
