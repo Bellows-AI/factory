@@ -749,7 +749,9 @@ chain, the task page renders it as one conversation, a follow-up extends the vie
 of navigating away, and the sidenav lists thread roots only — copies of the parent's `repo`,
 `session_id` and `remote_session_id` from insert. The
 repo copy keeps the thread under its repository's name in the task list; the session copies are what make the claim resume the parent
-conversation without any new claim-side rule. Every row also carries `root_job_id` (022): the
+conversation without any new claim-side rule. The thread's frozen `workflow_name` (033) is
+inherited the same way, so every turn of a workflow task carries the name the member chose at
+create. Every row also carries `root_job_id` (022): the
 thread's root, stamped from the parent at follow-up insert and from itself at first insert, next to
 the copied labels. It is the same fact `parent_job_id` implies without a walk, written once so the
 composite is SERVED rather than re-derived — the thread read, the claim's worktree root and
@@ -1220,6 +1222,16 @@ a refusal there would fail every claimed job. Under
 with the daemon's authentication error — the work stays local, loudly.
 
 ## Decisions
+
+**`workflow_name` is frozen audit data, not a live reference (033).** The route stamps the
+RESOLVED record's name on the root row at create — the `created_by` trust pattern: it travels from
+the record the store resolved, never off the body, and no job endpoint accepts one — and every
+graph successor and user follow-up inherits it. `job.workflow_id` names the definition but is
+opaque on reads, and the workflow row is deletable by design, so a deleted definition would
+otherwise take its human name out of task history. The column has no foreign key and no read-time
+join, exactly like `workflow_id`: a rename or delete of the source workflow changes later tasks,
+never existing task history. Null is honest on workflow-less tasks and on pre-033 rows whose
+definition was already gone when the migration backfilled.
 
 **Attribution is a read-time join, never a denormalised label (issue #67).** `author`,
 `stoppedBy` and `doneBy` on the job payloads are `app_user` rows joined at read time off the

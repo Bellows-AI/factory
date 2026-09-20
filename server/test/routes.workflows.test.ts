@@ -35,7 +35,7 @@ const record: WorkflowRecord = {
     scope: 'org',
     userId: null,
     repo: null,
-    params: [{ name: 'issue', pattern: '#\\d+' }],
+    params: [{ name: 'issue', pattern: '#\\d+', description: 'ref', example: '#1' }],
     createdAt: '2026-09-15T00:00:00.000Z',
     updatedAt: '2026-09-15T00:00:00.000Z',
     definition,

@@ -110,6 +110,12 @@ export interface Job {
      * what the task view labels the turn with. Null on every other row.
      */
     workflowNode: string | null;
+    /**
+     * The workflow the task's thread was launched under — the name frozen on the thread at create
+     * time, inherited by every turn. Null on workflow-less tasks. Distinct from `workflowNode`
+     * (this row's graph position); a rename or delete of the source workflow never changes it.
+     */
+    workflowName: string | null;
     /** The finished task this one asks for adjustments on, when it is a follow-up. */
     followUpTo: string | null;
     /**

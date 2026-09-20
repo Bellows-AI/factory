@@ -165,6 +165,15 @@ export interface Job {
      */
     workflowNode: string | null;
     /**
+     * The NAME of the workflow the task's thread was launched under, frozen at create (033): the
+     * route stamps the resolved record's name onto the root row, and every successor and user
+     * follow-up inherits it. This is the reusable process the member chose — `workflowNode` is
+     * only a position in its graph. A later rename or delete of the source workflow never
+     * rewrites it (no foreign key, no read-time join — `workflow_id`'s audit doctrine), and null
+     * is honest on workflow-less tasks and on rows whose definition was already gone.
+     */
+    workflowName: string | null;
+    /**
      * When the user declared the task done — the verdict no run can make. Null until they say so,
      * and only settable on a finished task; it never replaces the run's own outcome.
      */
@@ -402,14 +411,22 @@ export interface JobStore {
             repo: string | null;
             executor: string | null;
             /**
-             * When the task runs a workflow: the resolved workflow — the id, the ENTRY node the
-             * thread's first run walks, the definition SNAPSHOT frozen onto the root row, and the
-             * validated launch parameter values (`{{param.*}}` resolves from them on every row of
-             * the thread). The route validates the values against the definition's declarations
-             * before calling; the store freezes them as given. Null when no workflow resolved,
-             * which is the ordinary create and behaves exactly as it did before 027.
+             * When the task runs a workflow: the resolved workflow — the id, the NAME frozen on
+             * the root row as workflow_name, the ENTRY node the thread's first run walks, the
+             * definition SNAPSHOT frozen onto the root row, and the validated launch parameter
+             * values (`{{param.*}}` resolves from them on every row of the thread). The route
+             * validates the values against the definition's declarations before calling; the
+             * store freezes them as given. The name comes off the resolved record, the same trust
+             * pattern as `createdBy` — never off the body. Null when no workflow resolved, which
+             * is the ordinary create and behaves exactly as it did before 027.
              */
-            workflow?: { id: string; node: string; snapshot: WorkflowDefinition; params: ParamValues } | null;
+            workflow?: {
+                id: string;
+                name: string;
+                node: string;
+                snapshot: WorkflowDefinition;
+                params: ParamValues;
+            } | null;
         }
     ): Promise<{ id: string }>;
     /**
@@ -420,9 +437,9 @@ export interface JobStore {
      * statement that would have created the row, never by a read that could race a claim or a
      * completion in between.
      *
-     * The thread's labels and session are ALL the parent's, taken from the row and never from a
-     * body: an adjustment continues the run it adjusts, on the executor that ran it — a
-     * conversation switching executors mid-thread is exactly the cross-CLI resume the driver
+     * The thread's labels, session and workflow name are ALL the parent's, taken from the row and
+     * never from a body: an adjustment continues the run it adjusts, on the executor that ran it —
+     * a conversation switching executors mid-thread is exactly the cross-CLI resume the driver
      * cannot do. On a workflow thread the session copied is the primary (the first resume run's),
      * whatever node ran last, and the follow-up row itself is off-graph — no `workflow_node` —
      * so its completion re-fires the halted node's edges (docs/workflows.md).
@@ -751,6 +768,8 @@ interface JobRow {
     root_job_id: string;
     /** The row's graph position (027); null on workflow-less rows and user follow-ups. */
     workflow_node: string | null;
+    /** The thread's frozen workflow name (033); null on workflow-less rows. */
+    workflow_name: string | null;
     done_at: Date | null;
     cancel_requested_at: Date | null;
     command_delivered_at: Date | null;
@@ -1055,6 +1074,7 @@ export function createJobStore({
         followUpTo: row.parent_job_id,
         rootJobId: row.root_job_id,
         workflowNode: row.workflow_node ?? null,
+        workflowName: row.workflow_name ?? null,
         doneAt: iso(row.done_at),
         cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,
@@ -1093,14 +1113,16 @@ export function createJobStore({
             // id and root_job_id are the SAME uuid, computed once in the select so the column can
             // be not null from insert — the root's root is itself (022). The workflow triple rides
             // the same insert when a workflow resolved: workflow_id names what the task walks,
-            // workflow_node is the entry the first run carries, the snapshot freezes the graph onto
+            // workflow_name freezes the resolved record's NAME on the row (033), workflow_node is
+            // the entry the first run carries, the snapshot freezes the graph onto
             // the root — where every transition decision reads it — and workflow_params freezes the
             // validated launch values beside it (030). All null on a workflow-less create,
             // byte-identical to the pre-027 insert.
             const rows = await sql<{ id: string }[]>`
-                insert into job (org_id, command, created_by, repo, executor, id, root_job_id, workflow_id, workflow_node, workflow_snapshot, workflow_params)
+                insert into job (org_id, command, created_by, repo, executor, id, root_job_id, workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params)
                 select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
                        ${target.workflow?.id ?? null},
+                       ${target.workflow?.name ?? null},
                        ${target.workflow?.node ?? null},
                        ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
                        ${target.workflow ? sql.json(target.workflow.params as never) : null}
@@ -1136,7 +1158,7 @@ export function createJobStore({
             // reported one yet, so the refusal shape below never changes.
             const rows = await sql<{ id: string }[]>`
                 with parent as (
-                    select id, repo, executor, session_id, remote_session_id, root_job_id
+                    select id, repo, executor, session_id, remote_session_id, root_job_id, workflow_name
                     from job
                     where org_id = ${orgId} and id = ${parentId}
                       and status in ('succeeded','failed','dead','stopped')
@@ -1184,11 +1206,11 @@ export function createJobStore({
                         end as remote_session_id
                     from parent, root
                 )
-                insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id, root_job_id)
+                insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id, root_job_id, workflow_name)
                 select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.id,
                        coalesce(primary_session.session_id, parent.session_id),
                        coalesce(primary_session.remote_session_id, parent.remote_session_id),
-                       parent.root_job_id
+                       parent.root_job_id, parent.workflow_name
                 from parent, root, primary_session
                 returning id
             `;
@@ -2031,6 +2053,7 @@ export function createJobStore({
                 const [root] = await tx<
                     {
                         workflow_id: string | null;
+                        workflow_name: string | null;
                         workflow_snapshot: WorkflowDefinition | null;
                         workflow_params: ParamValues | null;
                         command: string;
@@ -2038,7 +2061,7 @@ export function createJobStore({
                         repo: string | null;
                     }[]
                 >`
-                    select workflow_id, workflow_snapshot, workflow_params, command, created_by, repo from job
+                    select workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo from job
                     where org_id = ${orgId} and id = ${rootJobId}
                 `;
                 if (root?.workflow_snapshot) {
@@ -2108,10 +2131,10 @@ export function createJobStore({
                                 ? primarySessionId(root.workflow_snapshot, engineRows)
                                 : null;
                         await tx`
-                            insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_id, workflow_node)
+                            insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node)
                             values (${orgId}, ${transition.command}, ${root.created_by}, ${completed?.repo ?? root.repo},
                                     ${completed?.executor ?? null}, ${completedId}, ${session}, ${rootJobId},
-                                    ${root.workflow_id}, ${transition.node.name})
+                                    ${root.workflow_id}, ${root.workflow_name}, ${transition.node.name})
                         `;
                     }
                     // `rest` lands nothing: an exhausted loop, an unmatched verdict or marker
@@ -2151,7 +2174,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, workflow_node, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+                       parent_job_id, root_job_id, workflow_node, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                        -- The task's overall wall clock, summed over the thread the WHERE already
                        -- scoped: every member carries the total, so the view reads it off any of
                        -- them. A sum over all-null banks is null — nothing measurable, never zero.
@@ -2172,7 +2195,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
-                       parent_job_id, root_job_id, workflow_node, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+                       parent_job_id, root_job_id, workflow_node, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                        summary, wall_clock_ms
                        ${authorColumns}
                 from job ${authorJoin}
@@ -2230,7 +2253,7 @@ export function createJobStore({
                            head.wall_clock_ms as wall_clock_ms,
                            job.repo as repo, job.executor as executor,
                            job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
-                           job.workflow_node as workflow_node,
+                           job.workflow_node as workflow_node, job.workflow_name as workflow_name,
                            picked.done_at as done_at, head.cancel_requested_at as cancel_requested_at,
                            job.created_at as created_at, head.started_at as started_at,
                            picked.finished_at as finished_at,
@@ -2267,7 +2290,7 @@ export function createJobStore({
             const rows = await sql<JobRow[]>`
                 select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                        session_id, remote_session_id, exit_code, runtime, repo, executor,
-                       parent_job_id, root_job_id, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+                       parent_job_id, root_job_id, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                        -- The close-time summary and the run's own banked clock ride beside the
                        -- vitals, both bounded where output is not (#109).
                        summary, wall_clock_ms
