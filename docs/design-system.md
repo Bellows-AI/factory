@@ -111,7 +111,17 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: sticky, raised, no `h1`; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
+| Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The routed page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail (issue 159) |
 | Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
+
+`PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer (issue 159): every
+routed page renders exactly one of them, and the `h1` it wraps is the page's only `h1` — panel
+headings below it are `h2`s and must not restate the page title. It is presentational by
+contract (no fetching, no route inspection, no Factory knowledge), slot-driven: `eyebrow` is the
+section above the title, `title` the `h1` itself, `description` the leading column's second
+line, `meta` the state beside the title (pills, clocks, timestamps) and `actions` the page's
+buttons — siblings of the heading, never children of it. An empty slot renders no wrapper, and
+`flex-wrap` drops meta and actions below the title at narrow widths without changing DOM order.
 
 ### Surfaces and feedback
 
@@ -146,11 +156,13 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Table | `table-wrap`, `data`, `sortable`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks |
+| Table | `table-wrap`, `data`, `th.asc`, `th.desc`, `num` | Every tabular readout; the wrap scrolls, never shrinks. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. The wrap is a named `<section>` (the region role, implicitly) that is keyboard-focusable, so a scrolled-off column stays reachable. `num` right-aligns a numeric column's header and cells. |
 | Key-values | `kv` | The dt/dd definition grid |
 | Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's five measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order |
 | Analytics empty state | `usage-empty` | The one "nothing measured in this selection" state that replaces the dash-card chorus, naming the selection and one next action |
-| Per-user | `by-user`, `by-user-user` | The attribution table and its avatar+name cell |
+| Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
+| Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
+| Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
 | Pills | `pill`, `pill-ready`, `pill-cloning`, `pill-queued`, `pill-failed`, `pill-reason` | Repo/workspace state chips; the reason travels in the pill |
 
 ### Charts
@@ -172,7 +184,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose` | The message input and its row; `task-compose` is the full-page variant |
-| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The control row, the two-column frame, attribution |
+| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution |
 
 ### Environment panel
 
@@ -189,8 +201,9 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 ### One-offs
 
 `identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
-the dashboard's control row: the analytics toolbar, then the freshness stamp and Refresh that
-moved here from the old global topbar (issue 160). Everything else above is a family; these exist because
+the dashboard's control row under the page header: the analytics toolbar, then the freshness
+stamp and Refresh that moved here from the old global topbar (issues 160 and 159). Everything
+else above is a family; these exist because
 no family fits, and a new one-off needs a sentence here saying the same.
 
 ## Inventory
@@ -207,13 +220,15 @@ Components:
 | `AppBar.tsx` | appbar, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
-| `DataTable.tsx` | table |
+| `DataTable.tsx` | table-wrap, data, th.asc, th.desc, num |
 | `ExecutorDialog.tsx` | picker, status |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
+| `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
+| `RelativeTime.tsx` | none — renders a `<time>` element only |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
@@ -226,15 +241,16 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | File | Primitives |
 | --- | --- |
 | `AccessTokensPanel.tsx` | panel, status |
-| `ByUserPanel.tsx` | by-user, chart-wrap, task-avatar |
+| `ByUserPanel.tsx` | data, num, usage-track, usage-bar, task-avatar, by-user-user |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
 | `TrackedOrgsPanel.tsx` | panel, login-button |
-| `RecentTasksPanel.tsx` | panel, alert, muted, chart-wrap, by-user, task-avatar |
+| `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
-| `TaskDetail.tsx` | task-layout, chat, gate, composer, pill, task head |
+| `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
+| `TaskHeader.tsx` | page-header, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
-| `TaskUsagePanel.tsx` | cards, card |
+| `TaskUsagePanel.tsx` | data, muted |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
@@ -246,16 +262,16 @@ Pages:
 
 | File | Primitives |
 | --- | --- |
-| `AccountPage.tsx` | panel |
-| `DashboardPage.tsx` | dashboard-controls |
+| `AccountPage.tsx` | page-header, panel |
+| `DashboardPage.tsx` | page-header, dashboard-controls |
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
-| `SettingsExecutorsPage.tsx` | panel |
+| `SettingsExecutorsPage.tsx` | page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
-| `SettingsOrganizationPage.tsx` | panel |
-| `SettingsRepositoriesPage.tsx` | panel |
-| `SettingsWorkspacePage.tsx` | panel |
-| `TaskComposerPage.tsx` | status |
-| `TaskDetailPage.tsx` | status |
+| `SettingsOrganizationPage.tsx` | page-header, panel |
+| `SettingsRepositoriesPage.tsx` | page-header, panel |
+| `SettingsWorkspacePage.tsx` | page-header, panel |
+| `TaskComposerPage.tsx` | page-header, status |
+| `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
 
 Charts (`scale.ts` is the band/linear scale helper — no markup):
@@ -268,5 +284,5 @@ Charts (`scale.ts` is the band/linear scale helper — no markup):
 | `Scatter.tsx` | dot, axis-label |
 | `scale.ts` | helper — no markup |
 
-A class used but not defined here (`visually-hidden`, `token-once`, `card-figure`, …) is a hook
-with no styles or a leftover — do not style it by inventing a rule without a row above.
+A class used but not defined here (`visually-hidden`, `token-once`) is a hook with no styles or a
+leftover — do not style it by inventing a rule without a row above.

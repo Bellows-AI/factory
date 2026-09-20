@@ -2,7 +2,8 @@ import type { OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { describeRepos, DashboardPage } from '../src/pages/DashboardPage.js';
+import { DashboardPage } from '../src/pages/DashboardPage.js';
+import { describeRepos } from '../src/format.js';
 import type { UseJobs } from '../src/api/useJobs.js';
 import { DEFAULT_RANGE, DEFAULT_SCOPE } from '../src/components/RangeSelector.js';
 import type { RangeSelection, ScopeSelection } from '../src/components/RangeSelector.js';
@@ -167,11 +168,17 @@ describe('describeRepos', () => {
 });
 
 describe('page header', () => {
-    it('renders exactly one h1 naming the page and, when rendered, its repos', () => {
+    it('renders exactly one h1 from the header primitive, naming the page and its repos', () => {
         const html = render(READY);
-        expect(html.match(/<h1/g)).toHaveLength(1);
+        // The page's one h1 is the header's (issue 159); the telemetry chrome rides in its slots.
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>Usage overview</h1>');
+        expect(html).toContain('page-header-description');
+        expect(html).toContain('page-header-meta');
+        expect(html).toContain('page-header-actions');
         expect(html).toContain('bellows.ai');
         expect(html).toContain('AI usage telemetry');
+        expect(html).toContain('>Refresh</button>');
     });
 
     it('keeps the h1 and drops the loading text while the first read is cold', () => {
@@ -288,9 +295,9 @@ describe('the shared state model', () => {
     it('renders the recent tasks outside the stats branch, in every state', () => {
         // Board data independence: completed jobs poll their own endpoint, so the recent-tasks
         // view renders even while the statistics read is cold or failing.
-        expect(render(null)).toContain('Recently completed');
-        expect(render(READY)).toContain('Recently completed');
-        expect(render(EMPTY)).toContain('Recently completed');
+        expect(render(null)).toContain('Task board');
+        expect(render(READY)).toContain('Task board');
+        expect(render(EMPTY)).toContain('Task board');
     });
 
     it('renders the full telemetry page when the selection is ready', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { exactInt, preciseTimestamp, relativeTime } from '../src/format.js';
+import { exactInt, preciseTimestamp, updatedAgo } from '../src/format.js';
 
 /**
  * The freshness cluster and the rendered-data summary format time on the page. These helpers
@@ -9,23 +9,23 @@ import { exactInt, preciseTimestamp, relativeTime } from '../src/format.js';
 
 const NOW = new Date('2026-09-20T12:00:00.000Z');
 
-describe('relativeTime', () => {
+describe('updatedAgo', () => {
     it('says just now inside the first minute', () => {
-        expect(relativeTime('2026-09-20T11:59:40.000Z', NOW)).toBe('just now');
+        expect(updatedAgo('2026-09-20T11:59:40.000Z', NOW)).toBe('just now');
     });
 
     it('counts minutes and hours', () => {
-        expect(relativeTime('2026-09-20T11:56:00.000Z', NOW)).toBe('4 min ago');
-        expect(relativeTime('2026-09-20T10:00:00.000Z', NOW)).toBe('2 hr ago');
+        expect(updatedAgo('2026-09-20T11:56:00.000Z', NOW)).toBe('4 min ago');
+        expect(updatedAgo('2026-09-20T10:00:00.000Z', NOW)).toBe('2 hr ago');
     });
 
     it('counts days beyond the first day', () => {
-        expect(relativeTime('2026-09-17T12:00:00.000Z', NOW)).toBe('3 d ago');
+        expect(updatedAgo('2026-09-17T12:00:00.000Z', NOW)).toBe('3 d ago');
     });
 
     it('degrades to a dash on absent or unparseable stamps', () => {
-        expect(relativeTime(null, NOW)).toBe('—');
-        expect(relativeTime('not a date', NOW)).toBe('—');
+        expect(updatedAgo(null, NOW)).toBe('—');
+        expect(updatedAgo('not a date', NOW)).toBe('—');
     });
 });
 

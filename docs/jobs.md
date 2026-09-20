@@ -364,9 +364,17 @@ standing on `fix/62-…`). Both runner images now deny the deny-list at the tool
 its CLI's native mechanism — claude-executor through a `PreToolUse` Bash hook
 (`git-guard.cjs`, which parses the command: compounds, `$(…)`, env prefixes, `sh -c`, `git -C`),
 opencode-executor through the baked `permission.bash` table (exact-match allows ranked after the
-deny globs, because opencode resolves rules last-match-wins). Read-only git, `git add` and
-`git commit` stay allowed on both: a commit endangers no checkout, and publishing is the driver's
-publish flow. This is a guardrail, not a security boundary — the agent is root in its container,
+deny globs, because opencode resolves rules last-match-wins). Read-only git, `git add` and `git
+commit` stay allowed on both: a commit endangers no checkout, and publishing is the driver's
+publish flow. `git rebase` stays denied outright — a rebase rewrites the published task-branch
+commits — but `git merge` of an **origin remote-tracking ref** is allowed (the claude guard parses
+it: every operand must be `origin/<ref>`; the opencode table allows the exact `git merge
+origin/main` forms, `--continue` included, so a repo whose default is not `main` needs the table
+widened): merging the remote default in is the one exit from a conflicts dead-end (job
+`3e85c499`, 2026-09-20 — the agent reconciled the files but could not produce the merge commit),
+and a merge can neither move HEAD off the task branch nor rewrite the published commits, so the
+invariant survives it. This is a guardrail, not a security boundary — the agent is root in its
+container,
 and the sync refusal stays the last line of defense. The same images serve both executors, so one
 change covers docker and kubernetes; the case table lives in `git-guard.cjs` itself and is pinned
 twice — offline by vitest (`driver/test/executor-images.test.ts`) and against the baked copy by
@@ -1079,7 +1087,9 @@ with no attempt ever to release it. Two conflicts
 still dead-end the attempt, with the work preserved and named: a rebase whose COMMITS conflict
 aborts itself (the worktree must never sit mid-rebase), and a rebase whose reapplied STASH
 conflicts leaves the markers and the retained autostash in the tree and refuses — a tree with
-unmerged entries is not one to run on. The same
+unmerged entries is not one to run on. The dead-end has an exit, though: a follow-up can merge
+`origin/<default>` in itself (the git guard's one merge allowance, above) and resolve the
+conflicts, after which the next starting sync's rebase is a no-op. The same
 protection covers the worktree PATH: a directory that holds a git tree this sync did
 not create is refused, never deleted — whatever uncommitted work sits there belongs to an agent
 session. The clone's own working tree is never touched — under the worktree model that is

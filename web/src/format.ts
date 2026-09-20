@@ -99,12 +99,27 @@ export function wallClock(
 }
 
 /**
- * A stamp as age: how long ago a successful read happened, in the coarse tiers the freshness
- * line speaks — just now, minutes, hours, days. `now` is injectable so callers share the
- * page's one tick and tests freeze time; a dash for anything absent or unparseable, like
- * every formatter here.
+ * Names every repo rather than reporting a count. "3 repositories combined" hides which three,
+ * and the figures are only interpretable if you know what went into them.
  */
-export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
+export function describeRepos(repos: { owner: string; name: string }[]): string {
+    if (!repos.length) return 'no repositories configured';
+    const owners = new Set(repos.map((r) => r.owner));
+    // One owner is the common case, so repeating it on every entry is noise.
+    if (owners.size === 1 && repos.length > 1) {
+        return `${[...owners][0]}/{${repos.map((r) => r.name).join(', ')}}`;
+    }
+    return repos.map((r) => `${r.owner}/${r.name}`).join(', ');
+}
+
+/**
+ * The freshness line's age, in the tiers the dashboard header speaks — just now, minutes,
+ * hours, days. Distinct from `relativeTime` on purpose: the board table's stamp says
+ * "29m ago", the dashboard's headline copy says "4 min ago", and the two vocabularies stay
+ * pinned apart by their own tests. `now` is injectable so callers share the page's one tick
+ * and tests freeze time; a dash for anything absent or unparseable, like every formatter here.
+ */
+export function updatedAgo(iso: string | null | undefined, now: Date = new Date()): string {
     if (!iso) return '—';
     const at = Date.parse(iso);
     if (Number.isNaN(at)) return '—';
@@ -150,4 +165,22 @@ export function tokens(value: number | null | undefined): string {
     // rendered as the unreadable "4543.89M" before this branch existed.
     if (value < 1_000_000_000) return `${num(value / 1_000_000, 2)}M`;
     return `${num(value / 1_000_000_000, 2)}B`;
+}
+
+/**
+ * How long ago a stamp happened, relative to a caller-supplied `now` so it stays pure — the
+ * caller decides what "now" is and the render's poll cadence is the ticker. An absent or
+ * unparseable stamp is an em dash like every formatter here.
+ */
+export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
+    if (!iso) return '—';
+    const at = new Date(iso).getTime();
+    if (Number.isNaN(at)) return '—';
+    const seconds = Math.round((now.getTime() - at) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
 }

@@ -119,13 +119,31 @@ Then:
 1. You are already on the branch chosen in Phase 1 — `fix/<issue-number>-<short-slug>`, or the
    Factory task branch (`factory/<uuid>`) when this run is a board task; do not cut another.
 2. Commit with a message referencing the issue.
-3. Push the branch.
-4. Open the PR:
+3. Bring the branch up to date with the default branch before pushing — a PR that conflicts with
+   its base wastes the review loop. Up to 2 attempts; each attempt is fetch, merge, resolve,
+   verify:
+   - `git fetch origin <default-branch>` then `git merge origin/<default-branch>`. "Already up
+     to date" is a completed attempt, not a failed one — move straight to pushing.
+   - Merge, never rebase: the branch becomes public on push and Phase 6 keeps appending commits;
+     a merge commit never needs the forbidden force-push.
+   - On conflict, resolve each hunk to the correct combined result — never a blanket
+     `--ours`/`--theirs`. In files your change did not touch, take the default branch's side;
+     where it touched the same lines as the fix, combine both intents (re-read the issue and the
+     planner output if the intent is unclear — that is a stop condition, not a guess).
+   - After every merge — clean, fast-forward or conflict-resolved — re-run `npm test`,
+     `npm run typecheck` and `npm run lint`: a merge can resurrect code the fix removed or break
+     assumptions both sides made independently.
+   - An attempt fails if its conflicts or its post-merge suite cannot be resolved: run
+     `git merge --abort`, fetch again (the default branch may have moved under you), and spend
+     the second attempt. Two failed attempts: STOP — report the conflicting files and why
+     resolution failed, leave the branch unpushed, and never open a PR you know is broken.
+4. Push the branch.
+5. Open the PR:
    `gh pr create --title "<short title>" --body <body> --base <default-branch>`
    Body must include: a summary of the root cause and the fix, the list of changes, the tests
    added and how they were verified, and `Fixes #<N>` on its own line so the issue auto-closes on
    merge. End the body with: `🤖 Generated with [opencode](https://opencode.ai)`
-5. Leave the worktree in place — it holds the branch the PR is from. Report the PR URL and the
+6. Leave the worktree in place — it holds the branch the PR is from. Report the PR URL and the
    worktree path — the run continues into Phase 6, which owns the final summary.
 
 Never force-push, never push directly to the default branch, never `git worktree remove` a

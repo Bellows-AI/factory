@@ -143,6 +143,7 @@ export interface AppConfig {
      * without one, and therefore no `null` to branch on at 30-odd call sites.
      */
     readonly databaseUrl: string;
+    readonly dbPoolMax: number;
     readonly telemetryTtlMs: number;
     /**
      * Where a member's checkouts live: one clone per repo they selected, at
@@ -579,6 +580,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     // off the machine is what decides if running without auth is allowed at all.
     const port = int(env.PORT, 8080, 'PORT');
     const host = env.HOST ?? '127.0.0.1';
+    const dbPoolMax = int(env.DB_POOL_MAX, 50, 'DB_POOL_MAX');
 
     return Object.freeze({
         github,
@@ -587,6 +589,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         webRoot: env.WEB_ROOT ?? null,
         telemetrySource,
         databaseUrl,
+        dbPoolMax,
         telemetryTtlMs: telemetryTtlSeconds * 1000,
         workspaceRoot,
         auth: loadAuth(env, host, port),

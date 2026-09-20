@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useRepos } from '../api/useRepos.js';
+import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -7,9 +8,11 @@ import { useSettingsPage } from './SettingsLayout.js';
  * The Repositories section of the settings tree: every repository the GitHub App installation
  * reports, and the per-repository environment editor (issue 150).
  *
- * The editor is the "Per repository" scope of the old environment page, moved whole: org-wide and
- * per-repository scopes are admin-written because they reach other members' runners, and a member
- * sees the editor read-only with the sentence saying why — the `root: null` posture.
+ * The page header carries the section sentence — what the list is and where selections land —
+ * so the panels below name only themselves. The editor is the "Per repository" scope of the old
+ * environment page, moved whole: org-wide and per-repository scopes are admin-written because
+ * they reach other members' runners, and a member sees the editor read-only with the sentence
+ * saying why — the `root: null` posture.
  *
  * `useRepos` is armed on mount here, where the installation list IS the page's content — the
  * arm-on-focus caution of the old environment page existed only because the list was incidental
@@ -27,14 +30,15 @@ export function SettingsRepositoriesPage() {
 
     return (
         <>
+            <PageHeader
+                eyebrow="Settings"
+                title="Repositories"
+                description="Every repository the GitHub App installation reports. Select the ones to check out under Settings → Workspace."
+            />
             <section className="panel">
                 <div className="panel-head">
                     <h2>Available repositories</h2>
                 </div>
-                <p className="muted">
-                    Every repository the GitHub App installation reports. Select the ones to check out under Settings →
-                    Workspace.
-                </p>
                 {repos.loading ? <p className="status">Loading repositories…</p> : null}
                 {repos.error ? <p className="status">Could not reach GitHub: {repos.error}</p> : null}
                 {repos.data?.meta.error ? (

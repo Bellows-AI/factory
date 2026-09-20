@@ -211,15 +211,102 @@ test.describe('date range selector', () => {
         await expect(page.getByText('per ISO week')).toBeVisible();
         await expect(page.getByText('too long for daily bars')).toBeVisible();
 
-        // The per-task panel: three figures, each labeled with its kind, each beside its count.
+        // The per-task panel: one table now, every row labeled with its kind, each figure under
+        // its Average/Median/P95 header with its measured count beside it.
         const panel = page.locator('section.panel', { hasText: 'Per-task usage' });
         await expect(panel).toBeVisible();
+        for (const label of ['Average', 'Median', 'P95', 'Measured tasks']) {
+            await expect(panel.getByRole('button', { name: label })).toBeVisible();
+        }
         for (const label of ['Tokens per task', 'Runs per task', 'Agent turns per task']) {
             await expect(panel.getByText(label)).toBeVisible();
         }
-        await expect(panel.getByText(/tasks? measured/).first()).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/per-task.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
+    });
+});
+
+test.describe('the supporting tables and the task board', () => {
+    test('a supporting table sorts from the keyboard and announces the active column', async ({ page }) => {
+        await open(page);
+
+        const header = page.getByRole('button', { name: 'New tokens' });
+        const th = page.locator('th', { has: header });
+        // The by-user table opens sorted by New tokens, largest first.
+        await expect(th).toHaveAttribute('aria-sort', 'descending');
+        await header.focus();
+        await page.keyboard.press('Enter');
+        await expect(th).toHaveAttribute('aria-sort', 'ascending');
+        await page.screenshot({ path: `${SHOTS}/by-user-sorted.png`, fullPage: true });
+    });
+
+    test('a recent task title opens the task page', async ({ page }) => {
+        await open(page);
+
+        const link = page.locator('.task-title').first();
+        await expect(link).toBeVisible();
+        const href = await link.getAttribute('href');
+        expect(href).toMatch(/^\/tasks\//);
+        await link.click();
+        await expect(page).toHaveURL(new RegExp(`${href!.replaceAll('/', '\\/')}$`));
+    });
+
+    test('View all tasks opens the task list', async ({ page }) => {
+        await open(page);
+
+        await page.getByRole('link', { name: 'View all tasks' }).click();
+        await expect(page).toHaveURL(/\/tasks$/);
+    });
+
+    test('a board read failure keeps the last good rows while the telemetry stays', async ({ page }) => {
+        test.slow();
+        await open(page);
+        const lastGood = await page.locator('.task-title').first().innerText();
+
+        // Every poll after this point fails: the alert must appear at the next tick (~30s) and
+        // the section must keep its rows — a board failure must not blank a section that was
+        // answering a moment ago, nor take the telemetry down with it.
+        await page.route('**/api/jobs**', (route) =>
+            route.fulfill({ status: 500, body: JSON.stringify({ error: 'board offline' }) })
+        );
+        await expect(page.getByText('The board could not be read — board offline')).toBeVisible({
+            timeout: 60_000,
+        });
+        await expect(page.locator('.task-title').first()).toHaveText(lastGood);
+        await expect(page.locator('section.panel', { hasText: 'Per-task usage' })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/board-degraded.png`, fullPage: true });
+    });
+
+    test('a cold board failure shows the error in place', async ({ page }) => {
+        await page.route('**/api/jobs**', (route) =>
+            route.fulfill({ status: 503, body: JSON.stringify({ error: 'board unreachable' }) })
+        );
+        await page.goto('/');
+        await expect(page.getByText('The board could not be read — board unreachable')).toBeVisible({
+            timeout: 60_000,
+        });
+        await expect(page.locator('.task-title')).toHaveCount(0);
+    });
+
+    test('the page never overflows horizontally at the target widths', async ({ page }) => {
+        await open(page);
+
+        for (const width of [360, 768, 1024, 1440]) {
+            await page.setViewportSize({ width, height: 900 });
+            const overflow = await page.evaluate(
+                () => document.body.scrollWidth - document.body.clientWidth
+            );
+            expect(overflow, `${width}px: body wider than the viewport`).toBeLessThanOrEqual(0);
+            await page.screenshot({ path: `${SHOTS}/width-${width}.png`, fullPage: true });
+        }
+    });
+
+    test('the primary content begins in the first viewport', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.goto('/');
+        const box = await page.locator('main section').first().boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.y).toBeLessThan(900);
     });
 });
 

@@ -14,8 +14,9 @@ describe('nav model', () => {
     it('is the one route array the shell navigates by', () => {
         expect(NAV_ITEMS.map((item) => [item.to, item.label, item.end ?? false])).toEqual([
             ['/', 'Dashboard', true],
-            ['/settings', 'Settings', false],
+            // Observe → act → configure (#159): the report, then the work, then the configuration.
             ['/tasks', 'Tasks', false],
+            ['/settings', 'Settings', false],
         ]);
     });
 

@@ -56,19 +56,18 @@ describe('the workspace panel', () => {
 });
 
 describe('the executors panel', () => {
+    // The panel's own heading and Add button moved to the executors page header (#159); what
+    // stays here is the list itself and each row's Edit action.
     it('says "No executors configured" when the list is empty', () => {
-        const html = renderToStaticMarkup(
-            <WorkspaceExecutorsPanel executors={[]} onAdd={() => {}} onEdit={() => {}} />
-        );
+        const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
         expect(html).toContain('No executors configured');
-        expect(html).toContain('Add executor');
+        expect(html).not.toContain('<h2>Executors</h2>');
     });
 
     it('renders a row per executor with its type, and never a placeholder value', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[{ name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' }]}
-                onAdd={() => {}}
                 onEdit={() => {}}
             />
         );
@@ -85,7 +84,6 @@ describe('the executors panel', () => {
                     { name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' },
                     { name: 'oc', type: 'opencode', createdAt: '2026-09-02T00:00:00.000Z' },
                 ]}
-                onAdd={() => {}}
                 onEdit={() => {}}
             />
         );
