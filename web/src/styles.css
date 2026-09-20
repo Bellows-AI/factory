@@ -2518,6 +2518,13 @@
         white-space: pre-wrap;
     }
 
+    /* A cell's input fills its column, with a floor that keeps the stored-secret instruction —
+        "Leave blank to keep the current secret" — readable instead of clipped to a sliver. */
+    .env-vars td input {
+        min-width: 140px;
+        width: 100%;
+    }
+
     /* Narrow widths reflow an env row into a labeled group instead of compressing Name/Value
         unusably: the header row steps aside and each cell names itself via data-label. */
     @media (max-width: 640px) {

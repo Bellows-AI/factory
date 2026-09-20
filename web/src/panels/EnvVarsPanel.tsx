@@ -385,8 +385,11 @@ export function EnvVarsPanel({
                         </div>
                     </div>
                 ) : null}
-                {countActive(rows, false) === 0 ? <p className="muted">No variables configured.</p> : null}
-                {countActive(rows, false) > 0 ? (
+                {/* The table holds the pending-removal strips too, so it renders while ANY row of
+                    this type exists — removing the last active row must leave its strip and Undo
+                    visible, not an empty scope claiming nothing is configured. */}
+                {!rows.some((row) => !row.isSecret) ? <p className="muted">No variables configured.</p> : null}
+                {rows.some((row) => !row.isSecret) ? (
                     <table className="env-vars">
                         <thead>
                             <tr>
@@ -496,8 +499,8 @@ export function EnvVarsPanel({
                         Add secret
                     </button>
                 </div>
-                {countActive(rows, true) === 0 ? <p className="muted">No secrets configured.</p> : null}
-                {countActive(rows, true) > 0 ? (
+                {!rows.some((row) => row.isSecret) ? <p className="muted">No secrets configured.</p> : null}
+                {rows.some((row) => row.isSecret) ? (
                     <table className="env-vars">
                         <thead>
                             <tr>
