@@ -8,6 +8,7 @@ import {
     RepositorySetupList,
     RepositorySetupSummary,
 } from '../src/components/RepositorySetup.js';
+import { MAX_SELECTED_REPOS } from '../src/components/repository-setup.js';
 
 /**
  * The three repository-setup components, server-rendered (#159's contract: presentational, no
@@ -49,6 +50,7 @@ const summary = (overrides: Record<string, unknown> = {}) =>
             counts={null}
             installation={null}
             cachedError={null}
+            listNotice={null}
             rootNull={false}
             dirty={false}
             saveState={{ disabled: false, reason: null }}
@@ -144,6 +146,24 @@ describe('RepositorySetupSummary', () => {
             'Checkout status is stale — The workspace request failed'
         );
     });
+    it('states the installation list is loading, and names a hard failure, rather than an empty list', () => {
+        // Both postures exist only while no rows are in hand — a cached list renders rows instead.
+        expect(summary({ listNotice: 'Loading repositories…' })).toContain('Loading repositories…');
+        const failed = summary({ listNotice: 'Could not reach GitHub: upstream unavailable' });
+        expect(failed).toContain('Could not reach GitHub: upstream unavailable');
+        expect(summary({ listNotice: null })).not.toContain('Could not reach GitHub');
+    });
+
+    it('associates the save-blocking reason with the disabled action', () => {
+        const html = summary({
+            saveState: {
+                disabled: true,
+                reason: 'Remove repositories GitHub no longer reports before saving other selection changes.',
+            },
+        });
+        expect(html).toContain('id="repo-save-reason"');
+        expect(html).toMatch(/aria-describedby="repo-save-reason"/);
+    });
 });
 
 describe('RepositorySetupList', () => {
@@ -232,6 +252,25 @@ describe('RepositorySetupList', () => {
         expect(html).toContain('Checking checkout status…');
         expect(html).not.toContain('Not checked out');
         expect(html).not.toContain('Ready');
+        // An unchecked box is a selection fact too: while nothing is known, the control itself
+        // is withheld rather than rendered unchecked.
+        expect(html).not.toContain('Enable acme/web in my workspace');
+    });
+
+    it('wires the ceiling into the markup: unchecked rows disable, checked rows never', () => {
+        // Twenty keys, none of them this row's: the row may not be added, the checked ones may
+        // still be removed. The pure ceiling is pinned in repository-setup.test.ts; this pins the
+        // wiring that turns it into a disabled control.
+        const full = new Set(Array.from({ length: MAX_SELECTED_REPOS }, (_, i) => `other/r${i}`));
+        const html = list({ chosen: full });
+        expect(html).toMatch(/<input[^>]*aria-label="Enable acme\/web in my workspace"[^>]*disabled/);
+        const checked = list({ chosen: new Set([...full].slice(0, 19).concat('acme/web')) });
+        expect(checked).not.toMatch(/aria-label="Enable acme\/web in my workspace"[^>]*disabled/);
+    });
+
+    it('locks the absent rows out of a save in flight, like every other control', () => {
+        const html = list({ absent: ['acme/gone'], saving: true });
+        expect(html).toMatch(/aria-label="Deselect acme\/gone"[^>]*disabled/);
     });
 });
 

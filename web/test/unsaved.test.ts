@@ -10,6 +10,13 @@ describe('unsaved guards', () => {
         expect(leaveReason(guards, 'workspace.repos')).toBe('Selection changed — save to update your workspace');
     });
 
+    it('re-registering an unchanged guard is no state change at all', () => {
+        // Effects keep a guard in step with a draft and re-run on unrelated renders; a fresh map
+        // per re-registration would feed the render loop that re-ran them.
+        const guards = withGuard(new Map(), { id: 'workspace.repos', reason: 'Selection changed' });
+        expect(withGuard(guards, { id: 'workspace.repos', reason: 'Selection changed' })).toBe(guards);
+    });
+
     it('reports no reason where no guard stands', () => {
         expect(leaveReason(new Map(), 'workspace.repos')).toBeNull();
     });

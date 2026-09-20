@@ -39,6 +39,9 @@ import { useSettingsPage } from './SettingsLayout.js';
  */
 export function SettingsRepositoriesPage() {
     const { workspace, env, unsaved } = useSettingsPage();
+    // The page's guard effects bind to `setGuard` alone — the coordinator object's identity moves
+    // with every guard change, and an effect keyed on it would chase its own writes forever.
+    const { setGuard } = unsaved;
     const repos = useRepos(true);
     const [search, setSearch] = useState('');
     const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set());
@@ -69,17 +72,17 @@ export function SettingsRepositoriesPage() {
     const dirty = baseline !== null && isDirty(chosen, baseline);
 
     useEffect(() => {
-        unsaved.setGuard('workspace.repos', dirty ? 'Selection changed — save to update your workspace' : null);
-        return () => unsaved.setGuard('workspace.repos', null);
-    }, [dirty, unsaved]);
+        setGuard('workspace.repos', dirty ? 'Selection changed — save to update your workspace' : null);
+        return () => setGuard('workspace.repos', null);
+    }, [dirty, setGuard]);
 
     useEffect(() => {
         if (!configured) return;
         const id = `repo-env:${configured}`;
-        if (detailDirty) unsaved.setGuard(id, 'Repository environment has unsaved changes.');
-        else unsaved.setGuard(id, null);
-        return () => unsaved.setGuard(id, null);
-    }, [configured, detailDirty, unsaved]);
+        if (detailDirty) setGuard(id, 'Repository environment has unsaved changes.');
+        else setGuard(id, null);
+        return () => setGuard(id, null);
+    }, [configured, detailDirty, setGuard]);
 
     // The narrow-widths handoff:Configure moved the reader to the detail, so the focus follows —
     // only where the detail is not already beside the list.
@@ -99,6 +102,15 @@ export function SettingsRepositoriesPage() {
     const absent = loaded ? absentSelection(chosen, reported) : [];
     const loadingCheckouts = workspaceState !== 'ready';
     const countsValue = loaded && workspace.data ? counts(reported, workspace.data.repos, chosen) : null;
+    // The installation list's transient postures, worded like the page has always worded them: a
+    // load in flight says so, and a hard failure is named rather than rendered as an empty list.
+    const reposNotice = !repos.data
+        ? repos.loading
+            ? 'Loading repositories…'
+            : repos.error
+              ? `Could not reach GitHub: ${repos.error}`
+              : null
+        : null;
     const saveState = selectionSaveState({
         saving: workspace.saving,
         reposLoading: repos.loading,
@@ -178,6 +190,7 @@ export function SettingsRepositoriesPage() {
                         installation={repos.data?.installation ?? null}
                         cachedError={repos.data?.meta.error ?? null}
                         fetchedAt={repos.data?.meta.fetchedAt ?? null}
+                        listNotice={reposNotice}
                         rootNull={rootNull}
                         dirty={dirty}
                         saveState={{ disabled: saveDisabled, reason: saveState.reason }}
@@ -224,7 +237,11 @@ export function SettingsRepositoriesPage() {
                                     onSave={(vars) =>
                                         env.saveRepo({ owner: configuredOwner, name: configuredName! }, vars)
                                     }
-                                    onDirtyChange={setDetailDirty}
+                                    onDirtyChange={(dirtyNow) => {
+                                        setDetailDirty(dirtyNow);
+                                        // A saved or reverted detail releases the switch blocker too.
+                                        if (!dirtyNow) setBlockedReason(null);
+                                    }}
                                 />
                             ) : null
                         ) : null}

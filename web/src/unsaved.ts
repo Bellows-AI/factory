@@ -29,8 +29,16 @@ export interface UnsavedCoordinator {
     setGuard: (id: string, reason: string | null) => void;
 }
 
-/** Registers (or replaces) one guard. Pure — the map is copied, never mutated. */
+/**
+ * Registers (or replaces) one guard. Pure — the map is copied, never mutated.
+ *
+ * Re-registering an identical id+reason is a no-op on purpose: effects that keep a guard in step
+ * with a draft re-run on renders that have nothing to do with the draft, and a fresh map each time
+ * would feed back into the very state that re-rendered them.
+ */
 export function withGuard(guards: UnsavedGuards, guard: UnsavedGuard): UnsavedGuards {
+    const existing = guards.get(guard.id);
+    if (existing && existing.reason === guard.reason) return guards;
     const next = new Map(guards);
     next.set(guard.id, guard);
     return next;

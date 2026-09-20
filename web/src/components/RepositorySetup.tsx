@@ -24,6 +24,11 @@ export interface RepositorySetupSummaryProps {
     cachedError: string | null;
     /** When the cached list was fetched — shown beside the cached warning, never faked. */
     fetchedAt?: string | null;
+    /**
+     * The installation list's transient posture — loading in flight, or a hard failure with no
+     * rows in hand. Stated here because an absent list is not an empty one.
+     */
+    listNotice: string | null;
     rootNull: boolean;
     dirty: boolean;
     saveState: SelectionSaveState;
@@ -40,6 +45,7 @@ export function RepositorySetupSummary({
     installation,
     cachedError,
     fetchedAt,
+    listNotice,
     rootNull,
     dirty,
     saveState,
@@ -54,6 +60,7 @@ export function RepositorySetupSummary({
             <div className="panel-head">
                 <h2>Availability</h2>
             </div>
+            {listNotice ? <p className="status">{listNotice}</p> : null}
             {counts ? (
                 <p>
                     {counts.enabled} of {counts.available} repositories enabled · {counts.ready} ready ·{' '}
@@ -82,10 +89,20 @@ export function RepositorySetupSummary({
             ) : null}
             {staleError ? <p className="status">Checkout status is stale — {staleError}</p> : null}
             {dirty ? <p className="status">Selection changed — save to update your workspace</p> : null}
-            {saveState.reason ? <p className="status">{saveState.reason}</p> : null}
+            {saveState.reason ? (
+                <p className="status" id="repo-save-reason">
+                    {saveState.reason}
+                </p>
+            ) : null}
             {failure ? <p className="status">{failure}</p> : null}
             {savedNote ? <p className="muted">Selection saved. Checkouts are being prepared.</p> : null}
-            <button type="button" className="primary" onClick={onSave} disabled={saveState.disabled}>
+            <button
+                type="button"
+                className="primary"
+                onClick={onSave}
+                disabled={saveState.disabled}
+                aria-describedby={saveState.reason ? 'repo-save-reason' : undefined}
+            >
                 {saving ? 'Saving selection…' : 'Save repository selection'}
             </button>
         </section>
@@ -180,13 +197,20 @@ export function RepositorySetupList({
                                 return (
                                     <tr key={key}>
                                         <td>
-                                            <input
-                                                type="checkbox"
-                                                aria-label={`Enable ${key} in my workspace`}
-                                                checked={selected}
-                                                disabled={loadingCheckouts || saving || (!selected && atCeiling)}
-                                                onChange={() => onToggle(key)}
-                                            />
+                                            {/* While the workspace poll is unresolved the box is not
+                                                shown at all: a disabled unchecked box would still
+                                                read as a selection fact, and there is none yet. */}
+                                            {loadingCheckouts ? (
+                                                '—'
+                                            ) : (
+                                                <input
+                                                    type="checkbox"
+                                                    aria-label={`Enable ${key} in my workspace`}
+                                                    checked={selected}
+                                                    disabled={saving || (!selected && atCeiling)}
+                                                    onChange={() => onToggle(key)}
+                                                />
+                                            )}
                                         </td>
                                         <td>
                                             {key}
@@ -229,9 +253,12 @@ export function RepositorySetupList({
                         {absent.map((key) => (
                             <li key={key}>
                                 {key}{' '}
+                                {/* A mid-save click would mutate the draft the request in flight no
+                                    longer reflects — the same lock the rows above honor. */}
                                 <button
                                     type="button"
                                     aria-label={`Deselect ${key}`}
+                                    disabled={saving}
                                     onClick={() => onDeselectAbsent(key)}
                                 >
                                     Deselect
