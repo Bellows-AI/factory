@@ -87,6 +87,12 @@ npm run driver                                             # against a board on 
 docker compose up -d driver                              # or in the stack, with everything else
 ```
 
+In the stack the driver runs the working tree, like the dashboard: the compose service builds
+`docker/driver.Dockerfile`'s `dev` stage and bind-mounts the checkout over it, so an edit is live
+on the next restart and no restart can serve a publisher older than the tree (#174). The baked
+`runtime` stage is untouched and is still what deploys — the chart and `scripts/test-k8s.sh`
+build it with no `--target`.
+
 Everything below describes the docker runner. `EXECUTOR=kubernetes` swaps the platform under it —
 runners become batch Jobs, created and polled and deleted against the API server — while this
 contract, the loop and the lease rules stand untouched. The parallel decisions and what the
@@ -1382,6 +1388,20 @@ stop it, and continue it as a follow-up whose claim carries the session back —
 needs a container. Its leftover sweeps are scoped to the jobs this run created, so a live
 deployment sharing the daemon does not trip them. It creates a
 `*_test` database, four images and a volume, and drops all of them on exit.
+
+One phase runs the driver the way the stack does, not the way the host does: after the host-driven
+phases, the script starts the **compose `driver` service** (`docker compose run`, aimed at the same
+board over `host.docker.internal`, under a compose project name of its own so its volumes tear
+down with it) and settles a job through it. Services are off for that job, as for every other
+host-driven phase — the services phase itself runs with them on, and it deliberately leaves a
+malformed `.bellows.yaml` in the
+stand-in author's tree, and a services readout failing is a job verdict, not this phase's
+business. The compose service runs the
+working tree from a bind mount — `docker/driver.Dockerfile`'s `dev` stage — so the phase greps the
+running container for the checkout's `publish.ts` source and only then queues a job: under the old
+baked-`runtime` compose file the image holds no source at all, and the phase fails exactly the way
+issue #174 went unnoticed. `driver/test/compose.test.ts` pins the file shape offline — bind mount,
+`target: dev`, and that `runtime` stays the last stage the chart ships.
 
 Two things it does that are not decoration:
 
