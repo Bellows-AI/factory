@@ -190,7 +190,8 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose` | The message input and its row; `task-compose` is the full-page variant |
-| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution |
+| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
+| Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
 
 ### Environment panel
 
@@ -240,6 +241,7 @@ Components:
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
+| `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
 
 Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a helper, not a panel):
@@ -254,7 +256,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
-| `TaskHeader.tsx` | page-header, pill, task head |
+| `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
 | `TaskUsagePanel.tsx` | data, align-end, muted |
 | `TelemetryFrame.tsx` | alert, badge |
