@@ -154,10 +154,25 @@ services:
     # means before running this file anywhere shared. The runner image is built once:
     #
     #   docker build -t claude-executor docker/claude-executor   # or opencode-executor
+    #
+    # Like the dashboard above, this service runs the working tree, not a baked build: it used to
+    # build docker/driver.Dockerfile's `runtime` stage, and an `up` or restart without `--build`
+    # silently served the previous image's publisher — `/fix N` PRs went out without a closing
+    # keyword and merged with the issue still open (#174). The baked stage still exists and is
+    # still what deploys (the chart, scripts/test-k8s.sh); it is just not what compose runs.
     driver:
         build:
             context: .
             dockerfile: docker/driver.Dockerfile
+            # NOT the default (last) stage, which is `runtime`. See docker/driver.Dockerfile.
+            target: dev
+        # `npm install` first because the node_modules volumes below are seeded from the image, so
+        # they are only as fresh as the last image build — this reconciles them with the working
+        # tree's lockfile, and costs a few seconds once warm. Both installs share the
+        # bind-mounted package-lock.json; when the lockfile moves, bump it on the host (`npm
+        # install`) rather than letting a container reconcile it first — a root-owned rewrite
+        # would wedge the dashboard's node-uid install.
+        command: sh -c 'npm install && npm run dev -w driver'
         environment:
             JOB_BOARD_URL: http://dashboard:8080
             # The shared board secret — the same ${JOB_BOARD_TOKEN} the dashboard validates
@@ -205,7 +220,28 @@ services:
             # Forwarded to the runner by NAME, so the value never appears in a `docker run` argv.
             CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
             ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+        extra_hosts:
+            # Inert in this stack — JOB_BOARD_URL above names the dashboard — but it lets an
+            # override aim the driver at a board on the host, which is how scripts/test-jobs.sh
+            # runs this service against its 8129 board.
+            - 'host.docker.internal:host-gateway'
         volumes:
+            # The working tree, live — same mount as the dashboard, same reason (issue #174). The
+            # bind mount puts .env inside the container and the driver's dev script hands it to
+            # node --env-file-if-exists; every variable that matters is set in `environment`
+            # above, and node lets a real environment variable win over the file.
+            - .:/app
+            # This container's own linux-native dependency install, one per workspace — `npm
+            # install` reconciles every workspace, so each node_modules needs a shadow or the
+            # install lands in the HOST tree through the bind mount (darwin binaries replaced on
+            # the macOS dev host). Deliberately NOT the dashboard's volumes: this container runs
+            # as root for the docker socket, and root-owned files in a volume the uid-1000
+            # dashboard installs into would wedge its next `npm install` on EACCES.
+            - driver-root-node-modules:/app/node_modules
+            - driver-root-core-node-modules:/app/core/node_modules
+            - driver-root-server-node-modules:/app/server/node_modules
+            - driver-root-web-node-modules:/app/web/node_modules
+            - driver-root-driver-node-modules:/app/driver/node_modules
             # Root on the host, in one line. See docs/security.md.
             - /var/run/docker.sock:/var/run/docker.sock
         depends_on:
@@ -268,3 +304,10 @@ volumes:
     server-node-modules:
     web-node-modules:
     driver-node-modules:
+    # The compose driver's own set, root-owned (see the driver service's volumes): separate from
+    # the dashboard's above because the driver container runs as root and the dashboard as node.
+    driver-root-node-modules:
+    driver-root-core-node-modules:
+    driver-root-server-node-modules:
+    driver-root-web-node-modules:
+    driver-root-driver-node-modules:
