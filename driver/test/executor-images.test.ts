@@ -476,6 +476,10 @@ describe('the opencode-executor git guard policy', () => {
             'git rebase --continue',
             'git merge --abort',
             'git merge --quit',
+            'git merge --continue',
+            'git merge origin/main',
+            'git merge --no-edit origin/main',
+            'git merge origin/main --no-edit',
         ]);
     });
 

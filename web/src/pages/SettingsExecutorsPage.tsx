@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { useWorkspace, type WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
+import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
  * The Executors section of the settings tree: the member's configured executors and the add/edit
  * dialog (issue 150), moved off the workspace page — executors configure what a runner runs with and
- * have nothing to do with checkouts.
+ * have nothing to do with checkouts. The page header owns the section's one action, "Add
+ * executor"; the panel below is the list itself.
  */
 
 /** The executor dialog's state: adding, or editing the row that had this name when it opened. */
@@ -46,6 +48,7 @@ export function SettingsExecutorsPage() {
     if (loading && !data) {
         return (
             <>
+                <PageHeader eyebrow="Settings" title="Executors" />
                 <p className="status">Loading your workspace…</p>
             </>
         );
@@ -53,11 +56,19 @@ export function SettingsExecutorsPage() {
 
     return (
         <>
+            <PageHeader
+                eyebrow="Settings"
+                title="Executors"
+                actions={
+                    <button type="button" className="primary" onClick={() => void openExecutorDialog(null)}>
+                        Add executor
+                    </button>
+                }
+            />
             {error ? <p className="status">{error}</p> : null}
 
             <WorkspaceExecutorsPanel
                 executors={data?.executors ?? []}
-                onAdd={() => void openExecutorDialog(null)}
                 onEdit={(name) => void openExecutorDialog(name)}
             />
 

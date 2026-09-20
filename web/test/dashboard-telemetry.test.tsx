@@ -2,7 +2,8 @@ import type { OrganizationMeta } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { describeRepos, DashboardPage } from '../src/pages/DashboardPage.js';
+import { DashboardPage } from '../src/pages/DashboardPage.js';
+import { describeRepos } from '../src/format.js';
 import type { UseJobs } from '../src/api/useJobs.js';
 import type { RangeSelection, ScopeSelection } from '../src/components/RangeSelector.js';
 import type { StatsPayload } from '../src/api/useStats.js';
@@ -88,12 +89,18 @@ describe('describeRepos', () => {
 });
 
 describe('dashboard telemetry', () => {
-    it('renders the repo coverage, the freshness timestamp and Refresh', () => {
+    it('renders the repo coverage, the freshness timestamp and Refresh in the page header', () => {
         const html = render(PAYLOAD);
+        // The page's one h1 is the header's (issue 159); the telemetry chrome rides beside it.
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>Usage overview</h1>');
+        expect(html).toContain('page-header-description');
+        expect(html).toContain('page-header-meta');
+        expect(html).toContain('page-header-actions');
         expect(html).toContain('bellows.ai');
         expect(html).toContain('AI usage telemetry');
         expect(html).toContain('data as of');
-        expect(html).toContain('Refresh');
+        expect(html).toContain('>Refresh</button>');
     });
 
     it('answers the cold read with loading, and the refresh action with its in-flight state', () => {

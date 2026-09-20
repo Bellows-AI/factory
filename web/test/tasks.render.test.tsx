@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
+import { isTerminal, type Job, type RuntimeVitals, type UseJobs } from '../src/api/useJobs.js';
+import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
 import {
@@ -15,6 +17,9 @@ import {
     valuesForWorkflow,
 } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
+import { TaskHeader } from '../src/panels/TaskHeader.js';
+import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
+import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
 
 /**
  * The same contract the other panel suites pin: props in, markup out, and no DOM — `useEffect`
@@ -104,17 +109,95 @@ interface DetailArgs {
 
 const renderDetail = ({ jobs = [job()], error = null, actionError = null, sending = false }: DetailArgs = {}) =>
     renderToStaticMarkup(
+        // The status, clock and task actions live in the page header (TaskHeader) since #159;
+        // this panel is the conversation itself — transcript, checks, composer, sidebar.
         <TaskDetail
             jobs={jobs}
             error={error}
             actionError={actionError}
             sending={sending}
             onFollowUp={async () => null}
+        />
+    );
+
+interface HeaderArgs {
+    jobs?: Job[] | null;
+    stoppingId?: string | null;
+    removingId?: string | null;
+    doneId?: string | null;
+}
+
+const renderHeader = ({ jobs = [job()], stoppingId = null, removingId = null, doneId = null }: HeaderArgs = {}) =>
+    renderToStaticMarkup(
+        <TaskHeader
+            jobs={jobs}
+            stoppingId={stoppingId}
+            removingId={removingId}
+            doneId={doneId}
             onStop={async () => {}}
             onRemove={async () => {}}
             onDone={async () => {}}
         />
     );
+
+describe('the tasks pages', () => {
+    /**
+     * Page-level renders through a real route tree: the pages read the tasks poll and the
+     * workspace poll from the area's outlet context, both stubbed idle — effects never fire
+     * under renderToStaticMarkup, so the loading posture is what a static render can see. The
+     * point here is the page headings: one h1 per page, no competing inner title.
+     */
+    const fakeTasks = {
+        jobs: null,
+        error: null,
+        queue: async () => ({ id: null, error: null }),
+        followUp: async () => ({ error: null }),
+        stop: async () => null,
+        remove: async () => null,
+        markDone: async () => null,
+    } as unknown as UseJobs;
+    const idleWorkspace = {
+        data: null,
+        loading: true,
+        error: null,
+        saving: false,
+        save: async () => null,
+        saveExecutors: async () => null,
+        listExecutorConfigs: async () => null,
+    } as unknown as UseWorkspace;
+
+    function TasksArea() {
+        return <Outlet context={{ tasks: fakeTasks, workspace: idleWorkspace }} />;
+    }
+
+    const renderPage = (path: string) =>
+        renderToStaticMarkup(
+            <MemoryRouter initialEntries={[path]}>
+                <Routes>
+                    <Route element={<TasksArea />}>
+                        <Route path="tasks">
+                            <Route index element={<TaskComposerPage />} />
+                            <Route path=":id" element={<TaskDetailPage />} />
+                        </Route>
+                    </Route>
+                </Routes>
+            </MemoryRouter>
+        );
+
+    it('the composer page names itself "New task" under the Tasks eyebrow, once', () => {
+        const html = renderPage('/tasks');
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>New task</h1>');
+        expect(html).toContain('page-header-eyebrow');
+        expect(html).not.toContain('<h2>Tasks</h2>');
+    });
+
+    it('the detail page keeps the plain Tasks heading until the thread lands', () => {
+        const html = renderPage('/tasks/22222222-2222-4222-8222-222222222222');
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>Tasks</h1>');
+    });
+});
 
 describe('TaskComposer', () => {
     it('waits for the workspace before offering a repository choice', () => {
@@ -335,93 +418,51 @@ describe('TaskDetail', () => {
         expect(html).toContain('exit 1');
     });
 
-    it('a stopped task has ended the turn: composer, Done, Remove — and never Resume', () => {
+    it('a stopped task has ended the turn: the composer stays open, and never Resume', () => {
         // Stopping is a verdict, not a park: the turn is over, the conversation stays open for an
         // adjustment, and there is no picking the run back up.
         const html = renderDetail({ jobs: [job({ status: 'stopped' })] });
         expect(html).toContain('<textarea');
-        expect(html).toContain('>Done<');
-        expect(html).toContain('>Remove<');
         expect(html).not.toContain('Resume');
     });
 
-    it('offers Done and a follow-up composer on a finished task, and neither on a moving one', () => {
+    it('offers a follow-up composer on a finished task, and neither composer on a moving one', () => {
         // The run ending is not the task ending: these two exist exactly for the gap between "the
         // executor stopped" and "I am satisfied".
         const finished = renderDetail({ jobs: [job()] });
-        expect(finished).toContain('>Done<');
         expect(finished).toContain('<textarea');
         expect(finished).toContain('>Send<');
         for (const status of ['queued', 'running', 'standby'] as const) {
             const moving = renderDetail({
                 jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
             });
-            expect(moving, status).not.toContain('>Done<');
             expect(moving, status).not.toContain('<textarea');
         }
     });
 
-    it('never offers them on a task the user has already marked done', () => {
+    it("keeps the transcript clean of task actions — those are the page header's", () => {
+        // The conversation panel carries no Stop/Done/Remove since the head lifted to the page;
+        // its own composer's Send stays, of course.
+        const finished = renderDetail({ jobs: [job()] });
+        expect(finished).not.toContain('chat-resume');
+        expect(finished).not.toContain('chat-stop');
+        expect(finished).not.toContain('chat-remove');
+        expect(finished).not.toContain('task-actions');
+    });
+
+    it('never offers the composer on a task the user has already marked done', () => {
         const html = renderDetail({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
-        expect(html).not.toContain('>Done<');
         expect(html).not.toContain('<textarea');
         // The verdict is visible, not silently implied by the buttons' absence.
         expect(html).toContain('chat-done');
     });
 
-    it('offers Stop on the run that is going, and nothing the moment it is not', () => {
-        const running = renderDetail({
-            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
-        });
-        expect(running).toContain('>Stop<');
-        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
-            const html = renderDetail({ jobs: [job({ status })] });
-            expect(html, status).not.toContain('>Stop<');
-            expect(html, status).not.toContain('Stopping…');
-        }
-    });
-
-    it('says Stopping, not Stop, once the stop request has landed but the run has not parked', () => {
-        const html = renderDetail({
-            jobs: [
-                job({
-                    status: 'running',
-                    cancelRequestedAt: '2026-09-01T12:01:00.000Z',
-                    exitCode: null,
-                    finishedAt: null,
-                    startedAt: null,
-                    output: null,
-                }),
-            ],
-        });
-        expect(html).toContain('Stopping…');
-        expect(html).not.toContain('>Stop<');
-        // A run in flight cannot be removed yet: the board refuses with TASK_RUNNING.
-        expect(html).not.toContain('>Remove<');
-    });
-
-    it('offers Remove on anything not running — queued, parked, finished or dead — and never on one that is', () => {
-        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
-            const html = renderDetail({ jobs: [job({ status })] });
-            expect(html, status).toContain('>Remove<');
-        }
-        const running = renderDetail({
-            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
-        });
-        expect(running).not.toContain('>Remove<');
-    });
-
-    it('keeps the thread actions on the newest run only — history runs render no Remove of their own', () => {
-        const root = job({ command: 'first command' });
-        const child = {
-            ...job({ command: 'second command', status: 'failed' }),
-            id: '44444444-4444-4444-8444-444444444444',
-            followUpTo: root.id,
-            rootJobId: root.id,
-        };
-        const html = renderDetail({ jobs: [root, child] });
-        expect(html.match(/>Remove</g)).toHaveLength(1);
-        expect(html).not.toContain('>Stop<');
+    it('shows no follow-up composer on a run still going', () => {
+        expect(
+            renderDetail({
+                jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+            })
+        ).not.toContain('<textarea');
     });
 
     it('disables the follow-up Send until text is typed', () => {
@@ -441,8 +482,6 @@ describe('TaskDetail', () => {
         expect(html).not.toContain('<textarea');
         expect(html).not.toContain('>Send<');
         expect(html).toContain('no agent session to continue');
-        // The done verdict is unrelated to sessions and stays available.
-        expect(html).toContain('>Done<');
     });
 
     /**
@@ -464,8 +503,6 @@ describe('TaskDetail', () => {
         expect(html).toContain('now tighten the retry logic');
         // Both messages, in order.
         expect(html.indexOf('fix the flaky login test')).toBeLessThan(html.indexOf('now tighten the retry logic'));
-        // One Done button, on the newest run only.
-        expect(html.match(/>Done</g)).toHaveLength(1);
         expect(html).toContain('<textarea');
     });
 
@@ -611,53 +648,7 @@ describe('TaskDetail', () => {
         });
     });
 
-    /**
-     * The task's live summary — what the agent is doing right now — at the top of the view while
-     * the newest run is going. Fed by the same `runtime.activity` the sidebar's "Task" row reads,
-     * so the two places a task is met (left nav, view top) say the same thing.
-     */
-    describe('summary', () => {
-        const activity = '→ Bash npm test';
-        const runtime = {
-            cpuPercent: 12,
-            memUsedMb: 300,
-            memPercent: null,
-            activity,
-            sampledAt: '2026-09-01T12:02:00.000Z',
-        };
-
-        it("shows the running task's summary at the top of the view", () => {
-            const html = renderDetail({ jobs: [job({ status: 'running', runtime })] });
-            expect(html).toContain('task-summary');
-            expect(html).toContain(activity);
-        });
-
-        it('shows it for the whole chain, from the newest run forward', () => {
-            const root = job({ command: 'first command' });
-            const child = {
-                ...job({ status: 'running', runtime }),
-                id: '44444444-4444-4444-8444-444444444444',
-                followUpTo: root.id,
-                rootJobId: root.id,
-            };
-            const html = renderDetail({ jobs: [root, child] });
-            expect(html).toContain('task-summary');
-            expect(html).toContain(activity);
-        });
-
-        it('shows no summary once the newest run is not going', () => {
-            for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
-                const html = renderDetail({ jobs: [job({ status, runtime })] });
-                expect(html, status).not.toContain('task-summary');
-            }
-        });
-
-        it('shows no summary until the driver samples an activity line', () => {
-            const html = renderDetail({ jobs: [job({ status: 'running', runtime: { ...runtime, activity: null } })] });
-            expect(html).not.toContain('task-summary');
-        });
-    });
-
+    /** The task's live summary moved to the page header's meta (#159). */
     /**
      * The per-turn close-time scrape — `ctx … tok · $…` — belongs to EVERY terminal turn,
      * including the newest: the scrape is written at close, so its absence is how a running turn
@@ -686,7 +677,7 @@ describe('TaskDetail', () => {
         /**
          * One turn's meta line: from its command paragraph to the next turn's. Anchored on the
          * turn's own `msg-user` paragraph, not the first occurrence of the command text — the
-         * task head's `<h2>` repeats the root command above the thread, and a first-occurrence
+         * page header's `<h1>` repeats the root command above the thread, and a first-occurrence
          * slice would stop before the turn's meta ever rendered.
          */
         const turnMeta = (html: string, command: string): string => {
@@ -960,64 +951,146 @@ describe('TaskDetail', () => {
     });
 });
 
-describe('the task head', () => {
-    // The head region sits between the panel's heading and the first turn of the conversation —
-    // slicing it keeps the placement assertions about the title, the controls and the clock from
-    // matching text that merely also appears in a turn below.
-    const head = (html: string): string => html.slice(html.indexOf('panel-head'), html.indexOf('chat-exchange'));
-    /** One turn's meta line — where the controls used to live, and must no longer. */
-    const meta = (html: string): string => html.slice(html.indexOf('msg-user'), html.indexOf('chat-detail'));
+describe('the task page header', () => {
+    /**
+     * The page-level head of `/tasks/:id`: the task's name as the page's one `h1`, its status,
+     * wall clock and live activity in the meta slots, and every action the task can take in the
+     * actions slot — lifted out of the conversation panel (#159).
+     */
 
-    it('names the task after its opening command', () => {
-        const html = renderDetail({ jobs: [job()] });
-        expect(html).toContain('<h2>Task - fix the flaky login test</h2>');
+    it("names the task after its opening command, as the page's one h1", () => {
+        const html = renderHeader({ jobs: [job()] });
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>fix the flaky login test</h1>');
 
-        // A multi-line command is prose; the head carries its first line, the turn carries it all.
-        const multiline = renderDetail({ jobs: [job({ command: 'first line\nsecond line' })] });
-        expect(multiline).toContain('<h2>Task - first line</h2>');
-        expect(head(multiline)).not.toContain('second line');
+        // A multi-line command is prose; the header carries its first line, the turn carries it all.
+        const multiline = renderHeader({ jobs: [job({ command: 'first line\nsecond line' })] });
+        expect(multiline).toContain('<h1>first line</h1>');
+        expect(multiline).not.toContain('second line');
     });
 
     it('keeps the plain Tasks heading while nothing is loaded', () => {
         // No task yet, so there is nothing to name — the detail poll has not landed.
-        expect(renderDetail({ jobs: null })).toContain('<h2>Tasks</h2>');
+        const html = renderHeader({ jobs: null });
+        expect(html).toContain('<h1>Tasks</h1>');
+        expect(html).not.toContain('>Stop<');
+        expect(html).not.toContain('>Done<');
+        expect(html).not.toContain('>Remove<');
     });
 
-    it('keeps the controls in the panel head, out of the turn meta', () => {
-        const running = renderDetail({
-            jobs: [job({ status: 'running', startedAt: '2026-09-01T12:00:01.000Z', finishedAt: null, exitCode: null })],
+    it('shows the status beside the title', () => {
+        const html = renderHeader({ jobs: [job()] });
+        expect(html).toContain('page-header-meta');
+        expect(html).toContain('<span class="pill">succeeded</span>');
+    });
+
+    it('offers Stop on the run that is going, and nothing the moment it is not', () => {
+        const running = renderHeader({
+            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
         });
-        expect(head(running)).toContain('>Stop<');
-        expect(meta(running)).not.toContain('<button');
-
-        const finished = renderDetail({ jobs: [job()] });
-        expect(head(finished)).toContain('>Done<');
-        expect(head(finished)).toContain('>Remove<');
-        expect(meta(finished)).not.toContain('<button');
+        expect(running).toContain('>Stop<');
+        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+            const html = renderHeader({ jobs: [job({ status })] });
+            expect(html, status).not.toContain('>Stop<');
+            expect(html, status).not.toContain('Stopping…');
+        }
     });
 
-    it('says Stopping in the panel head once the stop request has landed', () => {
-        const html = renderDetail({
+    it('says Stopping, not Stop, once the stop request has landed but the run has not parked', () => {
+        const html = renderHeader({
             jobs: [
                 job({
                     status: 'running',
-                    cancelRequestedAt: '2026-09-01T12:02:00.000Z',
-                    startedAt: '2026-09-01T12:00:01.000Z',
-                    finishedAt: null,
+                    cancelRequestedAt: '2026-09-01T12:01:00.000Z',
                     exitCode: null,
+                    finishedAt: null,
+                    startedAt: null,
+                    output: null,
                 }),
             ],
         });
-        expect(head(html)).toContain('Stopping…');
-        expect(head(html)).not.toContain('>Stop<');
+        expect(html).toContain('Stopping…');
+        expect(html).not.toContain('>Stop<');
+        // A run in flight cannot be removed yet: the board refuses with TASK_RUNNING.
+        expect(html).not.toContain('>Remove<');
     });
 
-    it('shows the overall wall clock in the head, and a dash where nothing is measurable', () => {
-        const timed = renderDetail({ jobs: [job({ taskWallClockMs: 5_400_000 })] });
-        expect(head(timed)).toContain('1.5h');
+    it('offers Done on an open task — terminal, and not yet marked done', () => {
+        const open = renderHeader({ jobs: [job()] });
+        expect(open).toContain('>Done<');
 
-        const untimed = renderDetail({ jobs: [job()] });
-        expect(head(untimed)).toContain('—');
+        const done = renderHeader({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
+        expect(done).not.toContain('>Done<');
+
+        // Done is unrelated to sessions and stays available for a run without one.
+        const sessionless = renderHeader({ jobs: [job({ sessionId: null })] });
+        expect(sessionless).toContain('>Done<');
+    });
+
+    it('offers Remove on anything not running — queued, parked, finished or dead — and never on one that is', () => {
+        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead'] as const) {
+            const html = renderHeader({ jobs: [job({ status })] });
+            expect(html, status).toContain('>Remove<');
+        }
+        const running = renderHeader({
+            jobs: [job({ status: 'running', exitCode: null, finishedAt: null, startedAt: null, output: null })],
+        });
+        expect(running).not.toContain('>Remove<');
+    });
+
+    it('keeps the thread actions on the newest run only — history runs render no Remove of their own', () => {
+        const root = job({ command: 'first command' });
+        const child = {
+            ...job({ command: 'second command', status: 'failed' }),
+            id: '44444444-4444-4444-8444-444444444444',
+            followUpTo: root.id,
+            rootJobId: root.id,
+        };
+        const html = renderHeader({ jobs: [root, child] });
+        expect(html.match(/>Remove</g)).toHaveLength(1);
+        expect(html).not.toContain('>Stop<');
+    });
+
+    it('marks an in-flight action disabled, by the guard id the page owns', () => {
+        const task = job({ status: 'stopped' });
+        const html = renderHeader({ jobs: [task], removingId: task.id, doneId: task.id });
+        const remove = html.slice(html.indexOf('>Remove<') - 300, html.indexOf('>Remove<'));
+        expect(remove).toContain('disabled');
+        const done = html.slice(html.indexOf('>Done<') - 300, html.indexOf('>Done<'));
+        expect(done).toContain('disabled');
+    });
+
+    it('shows the overall wall clock in the meta, and a dash where nothing is measurable', () => {
+        const timed = renderHeader({ jobs: [job({ taskWallClockMs: 5_400_000 })] });
+        expect(timed).toContain('1.5h');
+
+        const untimed = renderHeader({ jobs: [job()] });
+        expect(untimed).toContain('—');
+    });
+
+    it('shows the live activity line in the meta while the newest run is going', () => {
+        // Same line the sidebar's "Task" row and the sidenav read — page level now (#159).
+        const runtime = {
+            cpuPercent: 12,
+            memUsedMb: 300,
+            memPercent: null,
+            activity: '→ Bash npm test',
+            sampledAt: '2026-09-01T12:02:00.000Z',
+        };
+        const html = renderHeader({ jobs: [job({ status: 'running', runtime })] });
+        expect(html).toContain('task-summary');
+        expect(html).toContain('→ Bash npm test');
+
+        // Not on a task whose newest run is not going.
+        const quiet = renderHeader({ jobs: [job()] });
+        expect(quiet).not.toContain('task-summary');
+    });
+
+    it('never emits a placeholder value', () => {
+        const html = renderHeader({
+            jobs: [job({ taskWallClockMs: null, output: null, exitCode: null, finishedAt: null, startedAt: null })],
+        });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
 

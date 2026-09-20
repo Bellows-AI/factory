@@ -89,10 +89,15 @@ driver's invariant. The deny lives in `permission.bash` — the config-native ta
 plugin hooking the bash tool because it is the documented mechanism and statically pinnable —
 with a narrower parse than the claude-executor's hook as the honest price:
 `git switch`, `git checkout` of a branch or commit, `git worktree` mutations, `git branch`
-delete/rename/copy/force, `git reset --hard`, and `git rebase` / `git merge` — plus the PR
+delete/rename/copy/force, `git reset --hard`, and `git rebase` — plus the PR
 boundary (issue #82): `gh pr create` (the pull request belongs to the driver's publish, which
 writes its title/description from a summary of the branch) and `gh pr checkout` (it would move
-HEAD off the task branch). Because opencode
+HEAD off the task branch). `git merge` initiation stays denied except for the exact
+`git merge origin/main` forms (with `--continue`): merging the remote default in is the one exit
+from a conflicts dead-end the sync's rebase refuses, and a merge moves neither HEAD nor the
+published commits — the claude-executor's parser accepts any `origin/<ref>` operand, where this
+table's exact-match allows cannot glob, so a repo whose default is not `main` needs the table
+widened by hand. Because opencode
 resolves rules with the **last matching rule winning**, key order is load-bearing: the catch-all
 first, the deny globs next, the allows last — and the allows are **exact matches** (`git worktree
 list`, `git rebase --abort`, `git merge --quit`, …). A trailing-glob allow (say

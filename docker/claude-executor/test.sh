@@ -107,6 +107,9 @@ check 'the guard case table holds in the image' 'GUARD-TABLE-OK' \
 check 'the guard denies over the hook protocol' '"permissionDecision":"deny"' \
     run --entrypoint sh "$IMAGE" -c \
     'node -e "process.stdout.write(JSON.stringify({tool_name:\"Bash\",tool_input:{command:\"git switch main\"}}))" | node /usr/local/bin/git-guard.cjs'
+check 'the guard allows merging origin tracking refs' '' \
+    run --entrypoint sh "$IMAGE" -c \
+    'node -e "process.stdout.write(JSON.stringify({tool_name:\"Bash\",tool_input:{command:\"git merge --no-edit origin/main\"}}))" | node /usr/local/bin/git-guard.cjs'
 check 'settings.json wires the guard hook' 'git-guard.cjs' \
     run --entrypoint cat "$IMAGE" /home/node/.claude/settings.json
 

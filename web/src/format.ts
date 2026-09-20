@@ -99,6 +99,20 @@ export function wallClock(
 }
 
 /**
+ * Names every repo rather than reporting a count. "3 repositories combined" hides which three,
+ * and the figures are only interpretable if you know what went into them.
+ */
+export function describeRepos(repos: { owner: string; name: string }[]): string {
+    if (!repos.length) return 'no repositories configured';
+    const owners = new Set(repos.map((r) => r.owner));
+    // One owner is the common case, so repeating it on every entry is noise.
+    if (owners.size === 1 && repos.length > 1) {
+        return `${[...owners][0]}/{${repos.map((r) => r.name).join(', ')}}`;
+    }
+    return repos.map((r) => `${r.owner}/${r.name}`).join(', ');
+}
+
+/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */
@@ -119,4 +133,22 @@ export function tokens(value: number | null | undefined): string {
 export function exactNum(value: number | null | undefined): string {
     if (value === null || value === undefined) return '—';
     return value.toLocaleString('en-US');
+}
+
+/**
+ * How long ago a stamp happened, relative to a caller-supplied `now` so it stays pure — the
+ * caller decides what "now" is and the render's poll cadence is the ticker. An absent or
+ * unparseable stamp is an em dash like every formatter here.
+ */
+export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
+    if (!iso) return '—';
+    const at = new Date(iso).getTime();
+    if (Number.isNaN(at)) return '—';
+    const seconds = Math.round((now.getTime() - at) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
 }
