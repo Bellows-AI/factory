@@ -1,7 +1,15 @@
 import { HOUR } from './config.js';
 import { dayKey, dayStart, isoWeekKey, ratio, weekStart } from './metrics.js';
 import type { DateRange } from './range.js';
-import type { SessionRollup, TelemetryInput, TelemetryPoint, TelemetryStats, TokenTotals, UserRef } from './types.js';
+import type {
+    EditAcceptance,
+    SessionRollup,
+    TelemetryInput,
+    TelemetryPoint,
+    TelemetryStats,
+    TokenTotals,
+    UserRef,
+} from './types.js';
 
 /**
  * Sums the measured values and returns null only when nothing was measured at all.
@@ -28,10 +36,14 @@ function sumTokens(items: { tokens: TokenTotals }[]): TokenTotals {
     };
 }
 
-function acceptRatio(accepted: number | null, rejected: number | null): number | null {
+function editAcceptance(accepted: number | null, rejected: number | null): EditAcceptance {
     const total = sum([accepted, rejected]);
-    if (total === null || accepted === null) return null;
-    return ratio(accepted, total);
+    return {
+        accepted,
+        rejected,
+        decisions: total,
+        ratio: total === null || total === 0 || accepted === null ? null : ratio(accepted, total),
+    };
 }
 
 export interface TelemetryStatsOptions {
@@ -191,7 +203,7 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
             activeHours: totalActive === null ? null : (totalActive * 1000) / HOUR,
             linesAdded: sum(inScope.map((s) => s.linesAdded)),
             linesRemoved: sum(inScope.map((s) => s.linesRemoved)),
-            acceptRatio: acceptRatio(totalAccepted, totalRejected),
+            editAcceptance: editAcceptance(totalAccepted, totalRejected),
         },
         otherRepoSessions,
         sessionsWithoutHook,

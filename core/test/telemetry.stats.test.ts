@@ -61,10 +61,13 @@ describe('totals, recomputed by hand', () => {
         expect(stats.totals.activeHours).toBeCloseTo(seconds / 3600, 9);
     });
 
-    it('matches on the edit accept ratio', () => {
+    it('matches on the edit acceptance', () => {
         const accepted = inScope.reduce((s, x) => s + (x.editsAccepted ?? 0), 0);
         const rejected = inScope.reduce((s, x) => s + (x.editsRejected ?? 0), 0);
-        expect(stats.totals.acceptRatio).toBeCloseTo(accepted / (accepted + rejected), 12);
+        expect(stats.totals.editAcceptance.accepted).toBe(accepted);
+        expect(stats.totals.editAcceptance.rejected).toBe(rejected);
+        expect(stats.totals.editAcceptance.decisions).toBe(accepted + rejected);
+        expect(stats.totals.editAcceptance.ratio).toBeCloseTo(accepted / (accepted + rejected), 12);
     });
 });
 
@@ -85,9 +88,10 @@ describe('output invariants', () => {
     });
 
     it('keeps every ratio null or within [0,1]', () => {
-        if (stats.totals.acceptRatio === null) return;
-        expect(stats.totals.acceptRatio).toBeGreaterThanOrEqual(0);
-        expect(stats.totals.acceptRatio).toBeLessThanOrEqual(1);
+        const { ratio } = stats.totals.editAcceptance;
+        if (ratio === null) return;
+        expect(ratio).toBeGreaterThanOrEqual(0);
+        expect(ratio).toBeLessThanOrEqual(1);
     });
 
     it('contains no NaN anywhere', () => {
@@ -138,22 +142,49 @@ describe('the null-not-zero contract', () => {
         );
         expect(empty.totals.sessions).toBe(0);
         expect(empty.totals.tokens.input).toBeNull();
-        expect(empty.totals.acceptRatio).toBeNull();
+        expect(empty.totals.editAcceptance.ratio).toBeNull();
+        expect(empty.totals.editAcceptance.decisions).toBeNull();
         expect(empty.series.points).toEqual([]);
     });
 
-    it('returns a null accept ratio when nothing was measured, and 1 when everything was accepted', () => {
+    it('returns a null acceptance when nothing was measured, and 1 when everything was accepted', () => {
         const nothing = telemetryStats(
             { sessions: [session({ editsAccepted: null, editsRejected: null })], coverage: { from: null, to: null } },
             { now: FIXTURE_NOW }
         );
-        expect(nothing.totals.acceptRatio).toBeNull();
+        expect(nothing.totals.editAcceptance.accepted).toBeNull();
+        expect(nothing.totals.editAcceptance.rejected).toBeNull();
+        expect(nothing.totals.editAcceptance.decisions).toBeNull();
+        expect(nothing.totals.editAcceptance.ratio).toBeNull();
 
         const all = telemetryStats(
             { sessions: [session({ editsAccepted: 5, editsRejected: 0 })], coverage: { from: null, to: null } },
             { now: FIXTURE_NOW }
         );
-        expect(all.totals.acceptRatio).toBe(1);
+        expect(all.totals.editAcceptance.accepted).toBe(5);
+        expect(all.totals.editAcceptance.rejected).toBe(0);
+        expect(all.totals.editAcceptance.decisions).toBe(5);
+        expect(all.totals.editAcceptance.ratio).toBe(1);
+    });
+
+    it('keeps a measured zero-out-of-zero distinct from an unmeasured window', () => {
+        const zero = telemetryStats(
+            { sessions: [session({ editsAccepted: 0, editsRejected: 0 })], coverage: { from: null, to: null } },
+            { now: FIXTURE_NOW }
+        );
+        expect(zero.totals.editAcceptance.decisions).toBe(0);
+        expect(zero.totals.editAcceptance.ratio).toBeNull();
+    });
+
+    it('keeps the ratio null when only rejections were measured, while counting the decisions', () => {
+        const partial = telemetryStats(
+            { sessions: [session({ editsAccepted: null, editsRejected: 3 })], coverage: { from: null, to: null } },
+            { now: FIXTURE_NOW }
+        );
+        expect(partial.totals.editAcceptance.accepted).toBeNull();
+        expect(partial.totals.editAcceptance.rejected).toBe(3);
+        expect(partial.totals.editAcceptance.decisions).toBe(3);
+        expect(partial.totals.editAcceptance.ratio).toBeNull();
     });
 });
 

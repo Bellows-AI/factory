@@ -112,6 +112,21 @@ export interface TelemetryPoint {
     partial: boolean;
 }
 
+/**
+ * Edit acceptance, kept whole so the UI can show the measured denominator behind the ratio:
+ * `decisions` is the null-aware sum of accepted + rejected — the number of edit decisions the
+ * hook actually measured, never a client-derived guess — and `ratio` stays null whenever the
+ * numerator was not measured, even when a rejected measurement exists. A measured
+ * zero-accepted-out-of-zero-measured (`decisions: 0`, `ratio: null`) stays distinguishable from
+ * wholly unmeasured input (`decisions: null`). `ratio` is bounded to [0, 1] and never NaN.
+ */
+export interface EditAcceptance {
+    accepted: number | null;
+    rejected: number | null;
+    decisions: number | null;
+    ratio: number | null;
+}
+
 export interface TelemetryStats {
     totals: {
         sessions: number;
@@ -119,7 +134,7 @@ export interface TelemetryStats {
         activeHours: number | null;
         linesAdded: number | null;
         linesRemoved: number | null;
-        acceptRatio: number | null;
+        editAcceptance: EditAcceptance;
     };
     /** Sessions the hook attributed to a different repo. */
     otherRepoSessions: number;

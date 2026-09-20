@@ -27,7 +27,9 @@ from the agent-turn distribution only, while its tokens and job turns still coun
 
 - **`ratio()` returns `null`, never `0`, on a zero denominator.** The entire
   unavailable-vs-zero contract on the page rests on this: "0 accepted edits in 0 decisions" reads
-  as a real answer. `acceptRatio()` nulls for the same reason when nothing was measured at all.
+  as a real answer. `editAcceptance()` nulls the ratio for the same reason when nothing was
+  measured at all — and keeps `decisions` (the null-aware sum of accepted + rejected) separate,
+  so a measured zero-out-of-zero stays distinguishable from wholly unmeasured input.
 - **`sum()` returns `null` only when nothing was measured.** A missing contributor must not drag a
   real total down to a smaller real number, and an all-missing total must not read as zero —
   `linesAdded`, `linesRemoved`, `activeHours` and every token total degrade to null per figure, not
