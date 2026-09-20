@@ -182,7 +182,13 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
                         'PR',
                         published !== null ? (
                             published.url !== null && isHttpUrl(published.url) ? (
-                                <a href={published.url}>{published.branch}</a>
+                                // A new window, not a navigation over the dashboard, and
+                                // rel=noopener/noreferrer so the opened PR cannot reach back
+                                // into this tab. The url is the text — the reader sees where
+                                // the link goes, not a branch slug.
+                                <a href={published.url} target="_blank" rel="noopener noreferrer">
+                                    {published.url}
+                                </a>
                             ) : (
                                 published.branch
                             )
