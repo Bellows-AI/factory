@@ -38,7 +38,8 @@ const BODY_LIMIT = 128 * 1024;
  */
 const REPO_SEGMENT_LIMIT = 100;
 
-function repoReason(value: string): string | null {
+/** Exported for the tasks route, whose `repo` filter is the same label under the same rules. */
+export function repoReason(value: string): string | null {
     const parts = value.split('/');
     if (parts.length !== 2) return 'repo must be owner/name';
     for (const [label, part] of [
