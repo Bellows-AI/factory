@@ -2,102 +2,22 @@ import type { ReactNode } from 'react';
 import { runDuration } from '../format.js';
 import { KeyValues } from '../components/KeyValues.js';
 import type { Job, RuntimeVitals } from '../api/useJobs.js';
+import { isHttpUrl, threadCostUsd, threadContextTokens, threadIssue, threadPublish } from '../task-outcome.js';
 
 /**
- * What the thread is about, derived from what the board already carries — the sidebar's raw
- * material. These read the thread NEWEST first (the chain arrives oldest first), because the
- * newest run is the conversation's present tense.
+ * What the thread is about, derived from what the board already carries. The derivations live in
+ * `task-outcome.ts` (pure, panel-free); this panel only formats and renders them.
  */
-
-/**
- * The issue a command names, in the driver's `publishPlan` precedence order (below) — copied,
- * not imported: web is an independent workspace, the same rule the driver follows toward the
- * server. A match counts only when the digits end the token (a trailing word character means
- * they were a prefix) and the number is one GitHub could have issued: positive, within the
- * safe-integer range.
- */
-const commandIssue = (command: string): number | null => {
-    for (const pattern of [/issues\/(\d+)/, /\/fix\s+#?(\d+)/, /#(\d+)/]) {
-        const match = pattern.exec(command);
-        if (!match || /[\w]/.test(command[match.index + match[0].length] ?? '')) continue;
-        const issue = Number(match[1]);
-        if (Number.isSafeInteger(issue) && issue > 0) return issue;
-    }
-    return null;
-};
-
-/**
- * The issue the task names, with the driver's `publishPlan` precedence (`issues/\d+` before a
- * `/fix <n>` command, before a bare `#\d+`) — the validation lives in `commandIssue` above, the
- * driver reads this same reference to name the task branch and close the issue from the PR, so
- * the sidebar shows the reader what the run is about.
- */
-export function threadIssue(jobs: Job[]): number | null {
-    for (let i = jobs.length - 1; i >= 0; i--) {
-        const issue = commandIssue(jobs[i]!.command);
-        if (issue !== null) return issue;
-    }
-    return null;
-}
-
-/** The PR the driver's publish step created, as far as the board knows it: a branch, maybe a url. */
-export interface ThreadPublish {
-    branch: string;
-    url: string | null;
-}
-
-/**
- * The publish the driver appended to a run's output — `[driver] published <branch> — <prUrl>` —
- * the only place the board carries a PR today. Parsed here rather than made structured, which is
- * honest about being a convention read: a structured field would be a contract change (route,
- * store, driver) and is a deliberate follow-up. Anchored to a line start, because the driver
- * appends whole lines and the agent's own output is arbitrary text that may mention the marker;
- * a url is only linked when it is `https://`, so nothing a run echoed can become a handler href.
- * Null when nothing in the thread was published.
- */
-export function threadPublish(jobs: Job[]): ThreadPublish | null {
-    for (let i = jobs.length - 1; i >= 0; i--) {
-        const output = jobs[i]!.output;
-        if (output === null) continue;
-        const match = /(?:^|\n)\[driver\] published (\S+)(?: — (\S+))?/.exec(output);
-        if (match) return { branch: match[1]!, url: match[2] ?? null };
-    }
-    return null;
-}
-
-/** A publish line's url becomes a link only when it is one the reader can safely open. */
-const isHttpUrl = (url: string): boolean => url.startsWith('https://') || url.startsWith('http://');
 
 /** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
 const tokenCount = new Intl.NumberFormat('en-US');
 
-/**
- * The thread's context: the newest CLOSED turn's scrape — a follow-up resumes the same session,
- * so the last closed turn's count IS the conversation's final context, and summing per-turn
- * counts would double-count the shared prefix. A running turn carries no scrape, so scanning
- * newest-first for the first non-null is exactly "the newest terminal turn's".
- */
-const threadContext = (jobs: Job[]): ReactNode => {
-    for (let i = jobs.length - 1; i >= 0; i--) {
-        const tokens = jobs[i]!.runtime?.contextTokens;
-        if (tokens != null) return `${tokenCount.format(tokens)} tok`;
-    }
-    return null;
-};
+/** The context row's reading: "3,000 tok", or nothing where nothing was measured. */
+const formatContext = (tokens: number | null): ReactNode =>
+    tokens !== null ? `${tokenCount.format(tokens)} tok` : null;
 
-/**
- * The thread's cost: every turn's scraped cost summed. Zero-dollar turns contribute nothing (a
- * zero-dollar run is not billed, and $0.0000 is noise), and a chain where nothing scraped a cost
- * renders nothing — the honest blank, a claude-code thread's ordinary answer today.
- */
-const threadCost = (jobs: Job[]): ReactNode => {
-    let sum = 0;
-    for (const job of jobs) {
-        const cost = job.runtime?.costUsd;
-        if (cost != null && cost > 0) sum += cost;
-    }
-    return sum > 0 ? `$${sum.toFixed(4)}` : null;
-};
+/** The cost row's reading: four decimals, or nothing where nothing was billed. */
+const formatCost = (cost: number | null): ReactNode => (cost !== null ? `$${cost.toFixed(4)}` : null);
 
 /**
  * The task page's right column: one status surface for the whole THREAD — thread-level context
@@ -149,8 +69,9 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
                         ),
                     ],
                     ['Workspace', latest.workspacePath],
-                    ['Context', threadContext(jobs)],
-                    ['Cost', threadCost(jobs)],
+                    // The derivations answer raw numbers; the panel fixes the reading.
+                    ['Context', formatContext(threadContextTokens(jobs))],
+                    ['Cost', formatCost(threadCostUsd(jobs))],
                     // The agent's current activity line, while there is one: a stale line beside a
                     // finished verdict lies about a run that is no longer going.
                     ['Task', latest.status === 'running' && runtime?.activity != null ? runtime.activity : null],

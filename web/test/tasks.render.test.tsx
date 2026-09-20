@@ -4,7 +4,17 @@ import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job, type RuntimeVitals, type UseJobs } from '../src/api/useJobs.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
-import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
+import {
+    closureOf,
+    gateCounts,
+    issueUrl,
+    newestTerminalExit,
+    publicationForRun,
+    threadContextTokens,
+    threadCostUsd,
+    threadIssue,
+    threadPublish,
+} from '../src/task-outcome.js';
 import {
     type WorkflowParamChoice,
     clampedWorkflow,
@@ -1263,6 +1273,156 @@ describe('thread derivations', () => {
             expect(
                 threadPublish([withCommand('x', { output: '[driver] published fix/5 — javascript:alert(1)' })])
             ).toEqual({ branch: 'fix/5', url: 'javascript:alert(1)' });
+        });
+    });
+});
+
+describe('task outcome derivations', () => {
+    // The outcome summary's raw material, as pure data — the panel formats, these decide. All
+    // read the thread NEWEST first (the chain arrives oldest first), because the newest run is
+    // the conversation's present tense.
+    const base = job();
+    const followUp = (over: Partial<Job> = {}): Job => ({
+        ...base,
+        id: '44444444-4444-4444-8444-444444444444',
+        followUpTo: base.id,
+        rootJobId: base.id,
+        ...over,
+    });
+
+    describe('publicationForRun', () => {
+        it('reads one anchored published line from a single row', () => {
+            expect(
+                publicationForRun({
+                    ...base,
+                    output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
+                })
+            ).toEqual({
+                branch: 'fix/44',
+                url: 'https://github.com/o/r/pull/9',
+            });
+        });
+
+        it('keeps a branch with no url, and answers null for a row without output', () => {
+            expect(publicationForRun({ ...base, output: '[driver] published task/20260910' })).toEqual({
+                branch: 'task/20260910',
+                url: null,
+            });
+            expect(publicationForRun({ ...base, output: null })).toBeNull();
+        });
+
+        it('rejects a marker the run echoed mid-line', () => {
+            expect(
+                publicationForRun({ ...base, output: 'the agent said [driver] published fake/1 — not-a-url' })
+            ).toBeNull();
+        });
+    });
+
+    describe('threadContextTokens', () => {
+        it('returns the newest closed turn count, never a sum', () => {
+            // A follow-up resumes the same session: the last closed turn's count IS the
+            // conversation's final context, and summing per-turn counts double-counts the prefix.
+            const jobs = [
+                { ...base, runtime: { ...(base.runtime as RuntimeVitals), contextTokens: 1000 } },
+                followUp({ runtime: { ...(base.runtime as RuntimeVitals), contextTokens: 3000 } }),
+            ];
+            expect(threadContextTokens(jobs)).toBe(3000);
+        });
+
+        it('skips a running newest turn without a scrape and reads the older closed one', () => {
+            const jobs = [
+                { ...base, runtime: { ...(base.runtime as RuntimeVitals), contextTokens: 1000 } },
+                followUp({ status: 'running', runtime: { ...(base.runtime as RuntimeVitals), contextTokens: null } }),
+            ];
+            expect(threadContextTokens(jobs)).toBe(1000);
+        });
+
+        it('answers null when nothing scraped', () => {
+            expect(threadContextTokens([base])).toBeNull();
+        });
+    });
+
+    describe('threadCostUsd', () => {
+        it('sums positive per-turn costs once', () => {
+            const jobs = [
+                { ...base, runtime: { ...(base.runtime as RuntimeVitals), costUsd: 0.01 } },
+                followUp({ runtime: { ...(base.runtime as RuntimeVitals), costUsd: 0.002 } }),
+            ];
+            expect(threadCostUsd(jobs)).toBe(0.012);
+        });
+
+        it('omits absent and zero costs entirely', () => {
+            expect(threadCostUsd([base])).toBeNull();
+            expect(
+                threadCostUsd([{ ...base, runtime: { ...(base.runtime as RuntimeVitals), costUsd: 0 } }])
+            ).toBeNull();
+        });
+    });
+
+    describe('gateCounts', () => {
+        it('counts passed, failed and running', () => {
+            const gates = [
+                { name: 'test', status: 'passed' as const, exitCode: 0, output: null },
+                { name: 'lint', status: 'failed' as const, exitCode: 1, output: null },
+                { name: 'build', status: 'running' as const, exitCode: null, output: null },
+            ];
+            expect(gateCounts(gates)).toEqual({ passed: 1, failed: 1, running: 1 });
+        });
+
+        it('answers all-zero for nothing declared', () => {
+            expect(gateCounts(null)).toEqual({ passed: 0, failed: 0, running: 0 });
+        });
+    });
+
+    describe('issueUrl', () => {
+        it('builds only from a repository an owner/name slug can construct', () => {
+            expect(issueUrl('acme/web', 44)).toBe('https://github.com/acme/web/issues/44');
+            expect(issueUrl(null, 44)).toBeNull();
+            expect(issueUrl('web', 44)).toBeNull();
+            expect(issueUrl('acme/web', null)).toBeNull();
+        });
+    });
+
+    describe('closureOf', () => {
+        it('reads the newest run done attribution first', () => {
+            expect(
+                closureOf([base, followUp({ doneBy: { id: 'u', login: 'kim', name: null, avatarUrl: null } })])
+            ).toEqual({
+                kind: 'done',
+                login: 'kim',
+            });
+        });
+
+        it('reads a stop as stopped or requested by how the run settled', () => {
+            expect(
+                closureOf([
+                    followUp({ status: 'stopped', stoppedBy: { id: 'u', login: 'kim', name: null, avatarUrl: null } }),
+                ])
+            ).toEqual({
+                kind: 'stopped',
+                login: 'kim',
+            });
+            expect(
+                closureOf([followUp({ stoppedBy: { id: 'u', login: 'kim', name: null, avatarUrl: null } })])
+            ).toEqual({
+                kind: 'stop-requested',
+                login: 'kim',
+            });
+        });
+
+        it('answers null while nobody has closed anything', () => {
+            expect(closureOf([base])).toBeNull();
+        });
+    });
+
+    describe('newestTerminalExit', () => {
+        it('reads the newest terminal run exit code, skipping runs without one', () => {
+            expect(newestTerminalExit([base, followUp({ exitCode: null })])).toBe(0);
+            expect(newestTerminalExit([base, followUp({ exitCode: 2 })])).toBe(2);
+        });
+
+        it('answers null while no run has settled', () => {
+            expect(newestTerminalExit([followUp({ status: 'running' })])).toBeNull();
         });
     });
 });

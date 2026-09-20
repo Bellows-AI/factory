@@ -110,6 +110,13 @@ export interface Job {
      * what the task view labels the turn with. Null on every other row.
      */
     workflowNode: string | null;
+    /**
+     * The workflow NAME the run was claimed under, frozen at claim time — distinct from the node
+     * above, which is the position within it. Absent until the board serves the frozen field
+     * (issue 175): reads use `!= null`, so the missing field and a null row behave identically and
+     * the outcome renders neither.
+     */
+    workflowName?: string | null;
     /** The finished task this one asks for adjustments on, when it is a follow-up. */
     followUpTo: string | null;
     /**
