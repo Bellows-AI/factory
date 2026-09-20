@@ -195,10 +195,17 @@ PUTs, the repos/executors idiom. The
 Variables tab edits through a `raw` toggle: on, the table is replaced by a textarea holding the
 scope's non-secret variables one `NAME=value` per line, and toggling off parses it with the same
 strict rules the server enforces — valid text replaces the draft's variable rows (a deleted line
-deletes the variable), invalid text shows the line errors and stays in the editor. Save is the only
-write path. Secrets never round-trip through text: a secret row renders its input blank with
-placeholder "set — leave blank to keep"; a member sees the org and repo editors read-only with a
-sentence saying why (the `root: null` posture).
+deletes the variable), invalid text shows the line errors and stays in the editor. Save is the
+only write path. Secrets never round-trip through text: a secret row renders its input blank with
+placeholder "set — leave blank to keep". Every role edits every scope: `PUT /api/env/org` and
+`PUT /api/env/repo` accept any member of the installation — membership is the one trust level
+(#99), and there is no admin tier — so the browser gates nothing the server does not. Issue #180
+removed the earlier client-only `disabled` controls (a disabled browser control is not
+authorization, and these ones denied writes the server accepts) and had each editor state its
+scope truth first: what the scope applies to, who may edit it, and the
+organization < workspace < repository precedence (`ConfigurationScope`, echoed by the
+`/settings` overview's readiness items). If product policy ever narrows who writes, the server
+grows a tested `403` first, and only then does a page render a readable read-only view.
 
 ## Tests
 
