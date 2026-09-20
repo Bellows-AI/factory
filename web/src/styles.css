@@ -281,7 +281,212 @@
         align-items: center;
         display: flex;
         gap: 12px;
+        /* Desktop shows only the actions (trigger and brand are hidden), and space-between
+           leaves a lone item at the START edge — the actions belong at the end edge. The mobile
+           breakpoint resets this, where all three groups use space-between. */
+        margin-left: auto;
     }
+
+    /* The task inbox at /tasks (issue 158). One responsive grid per row — status mark, title, repo,
+       author, relative age — that wraps the metadata under the title on narrow screens instead of
+       scrolling the page sideways. The row grammar: the status carries a VISIBLE label (color is
+       supplementary), the whole title is the one link, the age rides a precise <time> in its title. */
+    .inbox {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        padding: 24px;
+    }
+
+    .inbox-head {
+        align-items: flex-start;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        justify-content: space-between;
+    }
+
+    .inbox-head h1 {
+        font-size: 20px;
+        margin: 0;
+    }
+
+    .inbox-meta {
+        color: var(--ink-muted);
+        margin: 4px 0 0;
+    }
+
+    .inbox-new {
+        background: var(--accent);
+        border-radius: var(--radius-lg);
+        color: var(--surface);
+        padding: 6px 14px;
+        text-decoration: none;
+    }
+
+    .inbox-filters {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .inbox-tabs,
+    .inbox-sort {
+        align-items: center;
+        display: flex;
+        gap: 4px;
+    }
+
+    .inbox-tab {
+        border: 1px solid transparent;
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        padding: 4px 10px;
+        text-decoration: none;
+    }
+
+    .inbox-tab:hover {
+        background: var(--surface-raised);
+    }
+
+    .inbox-tab.is-active {
+        background: var(--surface-raised);
+        border-color: var(--line);
+        color: var(--accent);
+    }
+
+    .inbox-search {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .inbox-search label,
+    .inbox-sort .muted {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .inbox-search input,
+    .inbox-search select {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        padding: 4px 8px;
+    }
+
+    .inbox-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .inbox-row {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        column-gap: 12px;
+        display: grid;
+        grid-template-columns: 170px minmax(200px, 1fr) 180px 110px 90px;
+        padding: 8px 4px;
+        row-gap: 4px;
+    }
+
+    .inbox-status {
+        align-items: center;
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 12px;
+        gap: 6px;
+    }
+
+    .inbox-title {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .inbox-title a {
+        color: var(--ink);
+        overflow: hidden;
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .inbox-title a:hover {
+        color: var(--accent);
+    }
+
+    .inbox-activity {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .inbox-repo,
+    .inbox-author,
+    .inbox-when {
+        color: var(--ink-muted);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Below the desktop tracks the metadata wraps under the title: one column, the status line on
+       top, the precise age riding the <time> title attribute. */
+    @media (max-width: 900px) {
+        .inbox-row {
+            grid-template-columns: 1fr;
+        }
+
+        .inbox-when {
+            justify-self: start;
+        }
+    }
+
+    .inbox-empty {
+        align-items: center;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 32px 0;
+    }
+
+    .inbox-empty p {
+        color: var(--ink-muted);
+        margin: 0;
+    }
+
+    .inbox-error {
+        align-items: center;
+        color: var(--lamp-stop);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .inbox-error p {
+        margin: 0;
+    }
+
+    .inbox-note {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 0;
+        min-height: 1em;
+    }
+
 
     /* The page's one heading and its slots (issue 159): title and description lead, meta and
        actions trail. `flex-wrap` lets meta and actions drop below the title at narrow widths
@@ -682,31 +887,39 @@
         letter-spacing: 0.04em;
     }
 
-    /* Sort controls are real buttons inside the th. The reset keeps the header's typography —
-       a bare <button> would arrive wearing the global control skin. */
-    table.data th button {
-        background: none;
-        border: none;
-        color: inherit;
-        cursor: pointer;
-        font: inherit;
-        letter-spacing: inherit;
+    /* The header cell is the button's hit area: the button fills the th, inheriting its type so
+       the header looks unchanged, and keyboard focus lands on a real control. */
+    table.data th.sortable {
         padding: 0;
-        text-align: inherit;
-        text-transform: inherit;
     }
 
-    /* Numeric columns: figures share a right edge so digits compare by position. */
-    table.data th.num,
-    table.data td.num {
+    table.data th.sortable button {
+        display: block;
+        width: 100%;
+        font: inherit;
+        color: inherit;
+        letter-spacing: inherit;
+        text-transform: inherit;
+        text-align: inherit;
+        background: none;
+        border: none;
+        padding: 5px 8px;
+        cursor: pointer;
+        user-select: none;
+    }
+
+    table.data th.align-end,
+    table.data td.align-end {
         text-align: right;
     }
 
-    table.data th.asc::after {
+    /* The arrow rides the button, not the th: the button fills the cell as a block, so a th
+       pseudo would wrap onto its own line below the label. */
+    table.data th.asc button::after {
         content: ' ↑';
     }
 
-    table.data th.desc::after {
+    table.data th.desc button::after {
         content: ' ↓';
     }
 
@@ -1155,6 +1368,12 @@
         .appbar-trigger,
         .appbar-brand {
             display: inline-flex;
+        }
+
+        /* Mobile shows all three groups, so space-between places them — the desktop-only
+           end-edge margin comes off here. */
+        .appbar-actions {
+            margin-left: 0;
         }
 
         .appbar-org {

@@ -109,6 +109,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Skip link | `skip-link` | The off-screen "Skip to main content" anchor that slides in on `:focus-visible`, the first focusable element on every page |
 | Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
+| Task inbox | `inbox`, `inbox-head`, `inbox-meta`, `inbox-new`, `inbox-filters`, `inbox-tabs`, `inbox-tab`, `inbox-search`, `inbox-sort`, `inbox-rows`, `inbox-row`, `inbox-status`, `inbox-title`, `inbox-activity`, `inbox-repo`, `inbox-author`, `inbox-when`, `inbox-empty`, `inbox-error`, `inbox-note` | The `/tasks` inbox: one responsive grid per row (status label, title link, repo, author, relative age in a `<time>`), URL-state filters, Load more |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: sticky, raised, no `h1`; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
 | Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The routed page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail (issue 159) |
@@ -153,7 +154,7 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Table | `table-wrap`, `data`, `th.asc`, `th.desc`, `num` | Every tabular readout; the wrap scrolls, never shrinks. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. The wrap is a named `<section>` (the region role, implicitly) that is keyboard-focusable, so a scrolled-off column stays reachable. `num` right-aligns a numeric column's header and cells. |
+| Table | `table-wrap`, `data`, `sortable`, `align-end`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks — a named, keyboard-focusable `<section>` (the region role, implicitly), so a scrolled-off column stays reachable. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. `align-end` right-aligns a numeric column's header and cells. |
 | Key-values | `kv` | The dt/dd definition grid |
 | Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
 | Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
@@ -214,7 +215,7 @@ Components:
 | `AppBar.tsx` | appbar, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
-| `DataTable.tsx` | table-wrap, data, th.asc, th.desc, num |
+| `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
 | `ExecutorDialog.tsx` | picker, status |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
@@ -236,7 +237,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | --- | --- |
 | `AccessTokensPanel.tsx` | panel, status |
 | `AiUsagePanel.tsx` | cards |
-| `ByUserPanel.tsx` | data, num, usage-track, usage-bar, task-avatar, by-user-user |
+| `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
 | `TrackedOrgsPanel.tsx` | panel, login-button |
@@ -245,7 +246,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
 | `TaskHeader.tsx` | page-header, pill, task head |
 | `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
-| `TaskUsagePanel.tsx` | data, muted |
+| `TaskUsagePanel.tsx` | data, align-end, muted |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
@@ -267,6 +268,7 @@ Pages:
 | `TaskComposerPage.tsx` | page-header, status |
 | `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
+| `TaskInboxPage.tsx` | page-header, inbox, inbox-filters, inbox-tabs, inbox-tab, inbox-search, inbox-sort, inbox-rows, inbox-row, inbox-status, inbox-title, inbox-activity, inbox-repo, inbox-author, inbox-when, inbox-empty, inbox-error, inbox-note, sidenav-dot, muted |
 
 Charts (`scale.ts` is the band/linear scale helper — no markup):
 

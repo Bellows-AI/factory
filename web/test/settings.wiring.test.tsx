@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { UseEnv } from '../src/api/useEnv.js';
-import type { UseJobs } from '../src/api/useJobs.js';
+import type { UseTasks } from '../src/api/useTasks.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { useShell } from '../src/components/AppShell.js';
 import { SettingsLayout, useSettingsPage } from '../src/pages/SettingsLayout.js';
@@ -14,14 +14,14 @@ import { SettingsLayout, useSettingsPage } from '../src/pages/SettingsLayout.js'
  * context would shadow the shell's and the pages would lose the task poll. This suite pins that
  * all three arrive — the one part of the page wiring that a static render CAN see.
  */
-const fakeTasks = { jobs: null, error: null } as unknown as UseJobs;
+const fakeTasks = { jobs: null, error: null } as unknown as UseTasks;
 
 /** Stands in for AppShell: the task poll is published exactly one level above the area. */
 function ShellStub() {
     return <Outlet context={{ tasks: fakeTasks }} />;
 }
 
-let seen: { shellTasks: UseJobs | undefined; workspace: unknown; env: unknown } = {
+let seen: { shellTasks: UseTasks | undefined; workspace: unknown; env: unknown } = {
     shellTasks: undefined,
     workspace: undefined,
     env: undefined,
