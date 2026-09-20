@@ -21,23 +21,29 @@ function ShellStub() {
     return <Outlet context={{ tasks: fakeTasks }} />;
 }
 
-let seen: { shellTasks: UseTasks | undefined; workspace: unknown; env: unknown } = {
+let seen: {
+    shellTasks: UseTasks | undefined;
+    workspace: unknown;
+    env: unknown;
+    unsaved: unknown;
+} = {
     shellTasks: undefined,
     workspace: undefined,
     env: undefined,
+    unsaved: undefined,
 };
 
 /** Reads both contexts the way the settings pages do. */
 function Probe() {
     const shell = useShell();
     const page = useSettingsPage();
-    seen = { shellTasks: shell.tasks, workspace: page.workspace, env: page.env };
+    seen = { shellTasks: shell.tasks, workspace: page.workspace, env: page.env, unsaved: page.unsaved };
     return null;
 }
 
 describe('settings area wiring', () => {
     it("publishes the shell context AND both polls to the area's pages", () => {
-        seen = { shellTasks: undefined, workspace: undefined, env: undefined };
+        seen = { shellTasks: undefined, workspace: undefined, env: undefined, unsaved: undefined };
         renderToStaticMarkup(
             <MemoryRouter initialEntries={['/settings']}>
                 <Routes>
@@ -55,5 +61,25 @@ describe('settings area wiring', () => {
         expect(seen.workspace).toBeTruthy();
         expect(seen.env as UseEnv | undefined).toBeTruthy();
         expect(seen.workspace as UseWorkspace | undefined).toBeTruthy();
+    });
+
+    it('publishes the unsaved-change registry beside the polls, empty on a cold render', () => {
+        // Draft guards are area-wide (issue 181): every settings page must be able to register
+        // one, and the registry must be THE instance — a second one would silently drop guards.
+        renderToStaticMarkup(
+            <MemoryRouter initialEntries={['/settings']}>
+                <Routes>
+                    <Route element={<ShellStub />}>
+                        <Route path="settings" element={<SettingsLayout />}>
+                            <Route index element={<Probe />} />
+                        </Route>
+                    </Route>
+                </Routes>
+            </MemoryRouter>
+        );
+        const unsaved = seen.unsaved as { guards: Map<string, unknown>; setGuard: unknown } | undefined;
+        expect(unsaved?.guards).toBeInstanceOf(Map);
+        expect(unsaved?.guards.size).toBe(0);
+        expect(typeof unsaved?.setGuard).toBe('function');
     });
 });

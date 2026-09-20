@@ -5,6 +5,8 @@ import { useWorkspace } from '../api/useWorkspace.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import { useShell } from '../components/AppShell.js';
 import type { ShellContext } from '../components/AppShell.js';
+import { useUnsavedGuards } from '../unsaved.js';
+import type { UnsavedCoordinator } from '../unsaved.js';
 
 /**
  * The layout route of the settings area: `/settings` and everything under it.
@@ -25,6 +27,8 @@ import type { ShellContext } from '../components/AppShell.js';
 export interface SettingsPageContext extends ShellContext {
     workspace: UseWorkspace;
     env: UseEnv;
+    /** The area's shared unsaved-change registry; pages register their drafts against it. */
+    unsaved: UnsavedCoordinator;
 }
 
 /** Typed access to what this layout route publishes. */
@@ -36,6 +40,7 @@ export function SettingsLayout() {
     const shell = useShell();
     const workspace = useWorkspace();
     const env = useEnv();
-    const context: SettingsPageContext = { ...shell, workspace, env };
+    const unsaved = useUnsavedGuards();
+    const context: SettingsPageContext = { ...shell, workspace, env, unsaved };
     return <Outlet context={context} />;
 }
