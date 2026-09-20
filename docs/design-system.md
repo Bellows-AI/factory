@@ -246,6 +246,7 @@ Components:
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
 | `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
+| `UnsavedChangesDialog.tsx` | picker (dialog shell), unsaved, chat-resume, chat-remove |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
 | `WorkflowParameterFields.tsx` | composer-field, composer-fields, composer-label, composer-select, composer-helper, composer-param-error, composer-param-details |
 
