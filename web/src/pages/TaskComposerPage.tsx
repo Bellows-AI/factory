@@ -64,7 +64,9 @@ export function TaskComposerPage() {
                 workspaceError={workspace.error}
                 onRetryWorkspace={workspace.refresh}
                 executors={workspace.data?.executors ?? []}
-                workflows={workflows.workflows ?? []}
+                // Passed through as-is: null while the list is pending or from another context,
+                // and the composer hides the workflow section for exactly that duration.
+                workflows={workflows.workflows}
                 actionError={actionError}
                 sending={sending}
                 onSend={send}

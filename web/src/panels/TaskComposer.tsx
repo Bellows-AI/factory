@@ -159,15 +159,13 @@ export function TaskComposer({
         }
     }, [repos, repo]);
 
-    // A repository change re-fetches the workflow list, and the hook keeps the previous list
-    // while the new request is pending — the page hands that stale list straight through, so a
-    // choice made against it could ride Start into a task stamped with the NEW repository: a
-    // workflow name that may not even exist for the new context, carrying values typed for a
-    // process it was not. The draft resets the moment the repository state changes — the
-    // member's select, the autoselect, the clamp: every path a change arrives by is this one
-    // state — and the member picks again from the list that answers. After the context changed,
-    // a process is the member's explicit call again. The reset targets are the mount values, so
-    // the effect's mount-time run is a no-op.
+    // A repository change re-fetches the workflow list, and the hook answers null for the whole
+    // duration of the new request — the page hands that null straight through, so the previous
+    // context's list cannot sit interactive under it and offer its workflows back. The draft
+    // resets the moment the repository state changes — the member's select, the autoselect, the
+    // clamp: every path a change arrives by is this one state — and the member picks again from
+    // the list that answers. After the context changed, a process is the member's explicit call
+    // again. The reset targets are the mount values, so the effect's mount-time run is a no-op.
     useEffect(() => {
         const reset = freshWorkflowDraft();
         setWorkflow(reset.workflow);

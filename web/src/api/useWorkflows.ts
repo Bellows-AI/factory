@@ -27,15 +27,35 @@ export interface UseWorkflows {
     refresh: () => void;
 }
 
+/** One repository context's answered workflow list: the list, and the context it belongs to. */
+export interface WorkflowAnswer {
+    /** The repository the list was fetched for — null for the no-repository context. */
+    repo: string | null;
+    /** What that context answered with. */
+    workflows: WorkflowChoice[];
+}
+
+/**
+ * The workflow list the composer may offer for `repo`: one the SAME context answered. An answer
+ * is keyed by the repository it was fetched for, so switching the repository makes the previous
+ * list invisible the moment the new request STARTS — not only when the response lands. A list
+ * held over from another context while its successor is pending is exactly how a workflow picked
+ * for one repository gets selected and submitted under another; the composer's own reset clears
+ * the choice, but the stale list must not sit there offering it back.
+ */
+export function answeredWorkflows(answer: WorkflowAnswer | null, repo: string | null): WorkflowChoice[] | null {
+    return answer !== null && answer.repo === repo ? answer.workflows : null;
+}
+
 /**
  * The workflow list the task composer's dropdown is fed by (`GET /api/workflows`), refetched when
- * the repository context changes — repo-scoped workflows exist per repository, so a change of repo
- * is a different list. No polling, unlike `useWorkspace`: the list only changes when somebody
- * creates or deletes a definition, and the composer's dropdown is not a live surface. 401s are
- * handed to the gate like every other read.
+ * the repository context changes — repo-scoped workflows exist per repository, and the previous
+ * context's list reads as null for the whole duration of the new request. No polling, unlike
+ * `useWorkspace`: the list only changes when somebody creates or deletes a definition, and the
+ * composer's dropdown is not a live surface. 401s are handed to the gate like every other read.
  */
 export function useWorkflows(repo: string | null): UseWorkflows {
-    const [workflows, setWorkflows] = useState<WorkflowChoice[] | null>(null);
+    const [answer, setAnswer] = useState<WorkflowAnswer | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [nonce, setNonce] = useState(0);
     const controller = useRef<AbortController | null>(null);
@@ -59,7 +79,7 @@ export function useWorkflows(repo: string | null): UseWorkflows {
                     return;
                 }
                 const body = (await response.json()) as { workflows?: WorkflowChoice[] };
-                setWorkflows(body.workflows ?? []);
+                setAnswer({ repo, workflows: body.workflows ?? [] });
                 setError(null);
             } catch {
                 // Aborted on repo change or unmount — the newer fetch answers instead.
@@ -68,5 +88,5 @@ export function useWorkflows(repo: string | null): UseWorkflows {
         return () => ack.abort();
     }, [repo, nonce]);
 
-    return { workflows, error, refresh };
+    return { workflows: answeredWorkflows(answer, repo), error, refresh };
 }
