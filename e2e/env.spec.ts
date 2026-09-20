@@ -41,8 +41,10 @@ async function open(page: Page) {
 async function clearScope(page: Page, panel: Locator) {
     for (const tabName of [/^Variables \(/, /^Secrets \(/]) {
         await panel.getByRole('tab', { name: tabName }).click();
+        // No iteration cap: the test timeout bounds a runaway sweep, and a cap below the row
+        // count would only move the failure to a more confusing assertion.
         const removeButtons = panel.getByRole('button', { name: /^Remove/ });
-        for (let i = 0; i < 30 && (await removeButtons.count()) > 0; i++) {
+        while ((await removeButtons.count()) > 0) {
             await removeButtons.first().click();
         }
     }
@@ -297,6 +299,55 @@ test.describe('environment editors', () => {
         expect(beforeunloads).toEqual(['beforeunload']);
         expect(page.url()).toContain('/settings/organization');
         expect(problems.join('\n')).toBe('');
+    });
+
+    test('a failed save retains the draft and its pending removals, then a retry succeeds', async ({ page }) => {
+        await open(page);
+
+        const core = corePanel(page);
+        await clearScope(page, core);
+        await core.getByRole('button', { name: 'Add variable' }).click();
+        await core.getByLabel('Variable 1 name').fill('E2E_FAIL_VAR');
+        await core.getByLabel('Variable 1 value').fill('kept');
+        await core.getByRole('button', { name: 'Save changes' }).click();
+        await expect(core.getByText('Changes saved.')).toBeVisible({ timeout: 15_000 });
+
+        // The server stays authoritative: a refusal is answered with its error, and the docs'
+        // promise is that the draft survives it. (No console scan here — the 400 IS the point.)
+        const refusePuts = async () => {
+            await page.route('**/api/env/org', async (route) => {
+                if (route.request().method() === 'PUT') {
+                    await route.fulfill({
+                        status: 400,
+                        contentType: 'application/json',
+                        body: JSON.stringify({ error: 'BAD_VALUE: the value is refused' }),
+                    });
+                } else {
+                    await route.continue();
+                }
+            });
+        };
+        await refusePuts();
+        await core.getByLabel('Variable 1 value').fill('changed');
+        await core.getByRole('button', { name: 'Save changes' }).click();
+        // The error renders as an alert, the inputs keep their text, and save is offered again.
+        await expect(core.getByRole('alert')).toContainText('BAD_VALUE');
+        await expect(core.getByLabel('Variable 1 name')).toHaveValue('E2E_FAIL_VAR');
+        await expect(core.getByLabel('Variable 1 value')).toHaveValue('changed');
+        await expect(core.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+
+        // A removal staged before the failure survives it: Undo is still there after the 400.
+        await core.getByRole('button', { name: 'Remove E2E_FAIL_VAR' }).click();
+        await expect(core.getByText('E2E_FAIL_VAR will be removed when you save.')).toBeVisible();
+        await core.getByRole('button', { name: 'Save changes' }).click();
+        await expect(core.getByRole('alert')).toContainText('BAD_VALUE');
+        await expect(core.getByText('E2E_FAIL_VAR will be removed when you save.')).toBeVisible();
+        await expect(core.getByRole('button', { name: 'Undo' })).toBeVisible();
+
+        await page.unroute('**/api/env/org');
+        await core.getByRole('button', { name: 'Save changes' }).click();
+        await expect(core.getByText('Changes saved.')).toBeVisible({ timeout: 15_000 });
+        await expect(core.getByText('No variables configured.')).toBeVisible();
     });
 
     test('the editor stays usable and overflow-free at a narrow phone width', async ({ page }) => {

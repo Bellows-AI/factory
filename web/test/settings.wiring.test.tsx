@@ -89,11 +89,11 @@ describe('settings area wiring', () => {
 describe('the route table', () => {
     it('builds the routes the data router serves, settings tree intact', () => {
         // The conversion to route objects (issue 182) must not move an address: the settings tree
-        // keeps its four sections and its workspace redirect, and the shell layout route stays
-        // pathless above everything.
+        // keeps its four sections and its workspace redirect, the shell layout route stays
+        // pathless above everything, the detail route survives, and the catch-all stands.
         const paths = (routes: typeof appRoutes, prefix = ''): string[] =>
             routes.flatMap((route) => {
-                const here = prefix + (route.path ?? (route.index ? '' : ''));
+                const here = prefix + (route.path ?? '');
                 return [here, ...paths(route.children ?? [], here && `${here}/`)];
             });
         const all = paths(appRoutes);
@@ -103,7 +103,22 @@ describe('the route table', () => {
         expect(all).toContain('settings/workspace');
         expect(all).toContain('settings/repos');
         expect(all).toContain('settings/executors');
+        expect(all).toContain('tasks');
         expect(all).toContain('tasks/new');
+        expect(all).toContain('tasks/:id');
         expect(all).toContain('account');
+        expect(all).toContain('*');
+        // The settings index is a redirect, not a page of its own. The settings route sits under
+        // the pathless shell layout, so the search walks the whole tree.
+        const findRoute = (routes: typeof appRoutes, path: string): (typeof appRoutes)[number] | undefined => {
+            for (const route of routes) {
+                if (route.path === path) return route;
+                const nested = findRoute((route.children ?? []) as typeof appRoutes, path);
+                if (nested) return nested;
+            }
+            return undefined;
+        };
+        const settings = findRoute(appRoutes, 'settings');
+        expect(settings?.children?.some((child) => child.index === true)).toBe(true);
     });
 });

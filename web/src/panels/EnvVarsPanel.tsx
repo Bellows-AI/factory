@@ -125,6 +125,8 @@ export function EnvVarsPanel({
     });
     const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
     const saveErrorRef = useRef<HTMLParagraphElement | null>(null);
+    const advancedRef = useRef<HTMLDivElement | null>(null);
+    const advancedToggleRef = useRef<HTMLButtonElement | null>(null);
 
     useEffect(() => {
         const request = pendingFocus.current;
@@ -188,9 +190,16 @@ export function EnvVarsPanel({
     };
 
     const closeAdvanced = () => {
+        // Closing unmounts the disclosure's own controls; when the dismissal came from inside
+        // (Apply, Cancel), focus returns to the disclosure's toggle instead of dropping to the
+        // document. A dismissal from outside — the save button adopting the echo — leaves focus
+        // where it is.
+        const active = typeof document === 'undefined' ? null : document.activeElement;
+        const fromInside = advancedRef.current !== null && active !== null && advancedRef.current.contains(active);
         setAdvancedOpen(false);
         setAdvancedText('');
         setAdvancedErrors([]);
+        if (fromInside) advancedToggleRef.current?.focus();
     };
 
     const openAdvanced = () => {
@@ -351,12 +360,21 @@ export function EnvVarsPanel({
                         aria-controls={`${uid}-advanced`}
                         onClick={() => (advancedOpen ? closeAdvanced() : openAdvanced())}
                         disabled={locked}
+                        ref={(el) => {
+                            advancedToggleRef.current = el;
+                        }}
                     >
                         Edit variables as .env
                     </button>
                 </div>
                 {advancedOpen ? (
-                    <div className="env-raw" id={`${uid}-advanced`}>
+                    <div
+                        className="env-raw"
+                        id={`${uid}-advanced`}
+                        ref={(el) => {
+                            advancedRef.current = el;
+                        }}
+                    >
                         <p className="env-advanced-note">
                             This replaces the variable draft for this scope. Secrets are never shown here.
                         </p>

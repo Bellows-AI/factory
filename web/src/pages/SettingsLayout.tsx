@@ -66,6 +66,11 @@ export function SettingsLayout() {
     const dirtyDrafts = () => [...drafts.current.values()].filter((draft) => draft.dirty);
 
     const [pending, setPending] = useState<PendingGuard | null>(null);
+    // The ref mirrors `pending` for the one path that must answer the OLD question when a NEW
+    // one arrives: the browser's Back button can fire the route blocker while a guarded
+    // repository switch's dialog is open, and the abandoned promise must not dangle unsettled.
+    const pendingRef = useRef<PendingGuard | null>(null);
+    pendingRef.current = pending;
 
     const registerDraft = useCallback((draft: UnsavedDraft) => {
         drafts.current.set(draft.id, draft);
@@ -96,6 +101,10 @@ export function SettingsLayout() {
     const blocker = useBlocker(dirtyIds.length > 0);
     useEffect(() => {
         if (blocker.state === 'blocked') {
+            // A draft-kind question still open is answered "keep editing" — its caller's switch
+            // will not happen under a navigation that is itself now being questioned.
+            const orphaned = pendingRef.current;
+            if (orphaned?.kind === 'draft') orphaned.resolve(false);
             setPending({ kind: 'route', proceed: blocker.proceed, reset: blocker.reset });
         }
     }, [blocker.state, blocker.proceed, blocker.reset]);

@@ -118,9 +118,12 @@ describe('the env draft editor', () => {
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
-    it('announces state changes through a polite live region, not an alert', () => {
+    it('renders a polite status region for confirmations — alerts are for errors only', () => {
         const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />);
+        // The clean render carries the live region and no alert: role="alert" is reserved for
+        // the scope error, the save failure and the advanced parser's refusals.
         expect(html).toContain('role="status"');
+        expect(html).not.toContain('role="alert"');
     });
 
     it('renders both panels mounted so the draft spans tabs', () => {
