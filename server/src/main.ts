@@ -38,7 +38,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
 
     // One pool, and one `migrate()`, for every feature sharing the schema. Two runners would
     // race each other.
-    const sql = postgres(config.databaseUrl, { max: 4 });
+    const sql = postgres(config.databaseUrl, { max: config.dbPoolMax });
     // NOT awaited. Migrations retry with backoff for the better part of a minute while the database
     // container starts, and blocking here would hold the whole dashboard hostage to it. Every consumer
     // gates its own queries on `ready` and reports unavailable until then.
