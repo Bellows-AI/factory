@@ -16,7 +16,7 @@ function watchConsole(page: Page): string[] {
     return problems;
 }
 
-test.describe('the task composer', () => {
+test.describe('the guided task composer', () => {
     /**
      * The board owns the base workflow's row and refreshes it at boot — seedBase fires without
      * being awaited (orgs.ts), so the first list read can still serve a stale pre-parameter
@@ -36,90 +36,111 @@ test.describe('the task composer', () => {
         }).toPass({ timeout: 15_000 });
     }
 
-    test('a workflow that declares parameters asks for them before Send', async ({ page }) => {
+    test('a workflow that declares parameters asks for them in words before Start', async ({ page }) => {
         const problems = watchConsole(page);
         await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
+        await expect(composer.getByText('What should the agent do?')).toBeVisible();
         await expect(composer.getByLabel('Repository')).toBeVisible();
         await expect(composer.getByLabel('Executor')).toBeVisible();
-        await expect(composer.getByLabel('Workflow')).toBeVisible();
+        await expect(composer.getByLabel('Reusable workflow')).toBeVisible();
 
         // The board's own process is offered by name: the Listbox opens on the trigger click and
         // its options render in the anchored listbox.
-        const workflow = page.getByLabel('Workflow');
-        await workflow.click();
-        await expect(page.getByRole('option', { name: 'fix-issue' })).toBeAttached();
-
-        // Selecting it must surface one labelled input per declared parameter: the launch
-        // refuses without them, so a select without a form is a task that cannot start.
+        await page.getByLabel('Reusable workflow').click();
         await page.getByRole('option', { name: 'fix-issue' }).click();
-        await expect(workflow).toHaveText('fix-issue');
-        const issue = composer.getByRole('textbox', { name: 'issue' });
+
+        // Selecting it surfaces one labelled input per declared parameter, with the field's
+        // label spoken in words, not the raw identifier.
+        const issue = composer.getByRole('textbox', { name: 'Issue' });
         await expect(issue).toBeVisible();
 
-        // The parameter is required: a value the declaration refuses keeps Send dark.
-        await page.getByPlaceholder('Describe the task…').fill('fix the login crash');
+        await page.getByLabel('What should the agent do?').fill('fix the login crash');
         await issue.fill('not an issue reference');
-        await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled();
+        await issue.blur();
 
-        // A value the declaration accepts lights it.
+        // The refusal names the field and the way out, and never the regex source: the raw rule
+        // lives only under the field's Format details.
+        await expect(
+            composer.getByText('Issue does not match the required format. Open Format details for the technical rule.')
+        ).toBeVisible();
+        await expect(composer.getByText('Format details')).toBeVisible();
+        const visible = await composer.innerText();
+        expect(visible).not.toContain('#\\d+');
+        for (const token of FORBIDDEN) expect(visible, token).not.toContain(token);
+
+        // A value the declaration refuses keeps Start dark, and the blocker says what is missing.
+        const start = page.getByRole('button', { name: 'Start task' });
+        await expect(start).toBeDisabled();
+        await expect(composer.getByText('Complete the required workflow details to continue.')).toBeVisible();
+
+        // A value the declaration accepts lights Start and the preflight speaks the actual choices.
         await issue.fill('#12');
-        await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled();
+        await expect(start).toBeEnabled();
+        await expect(composer.getByText(/, with the fix-issue workflow\./)).toBeVisible();
 
-        const text = await composer.innerText();
-        for (const token of FORBIDDEN) expect(text, `composer contains ${token}`).not.toContain(token);
-
-        await page.screenshot({ path: `${SHOTS}/composer-params.png`, fullPage: true });
+        await page.screenshot({ path: `${SHOTS}/composer-guided.png`, fullPage: true });
+        await page.setViewportSize({ width: 360, height: 800 });
+        await page.screenshot({ path: `${SHOTS}/composer-360.png`, fullPage: true });
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.screenshot({ path: `${SHOTS}/composer-1440.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
 
-    test('an unchosen workflow runs the raw prompt; a chosen one demands its parameters', async ({ page }) => {
+    test('an unchosen workflow runs the raw prompt, and an empty prompt explains the dark Start', async ({
+        page,
+    }) => {
         const problems = watchConsole(page);
         await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
-        // Nothing chosen: NO process resolves — the member's words are the whole command, and
-        // Send lights on the draft alone.
-        await expect(page.getByLabel('Workflow')).toHaveText('— none —');
-        await page.getByPlaceholder('Describe the task…').fill('fix the login crash');
-        const send = page.getByRole('button', { name: 'Send' });
-        await expect(send).toBeEnabled();
-        await expect(composer.locator('.composer-param')).toHaveCount(0);
+        await expect(page.getByLabel('Reusable workflow')).toHaveText('No workflow — run prompt as written');
+
+        // Fresh page, empty prompt: Start is dark by design and says so.
+        const start = page.getByRole('button', { name: 'Start task' });
+        await expect(start).toBeDisabled();
+        await expect(composer.getByText('Describe the task to continue.')).toBeVisible();
+        await expect(composer.locator('.composer-param-error')).toHaveCount(0);
+
+        // The prompt is the only requirement: no process chosen, the member's words are the
+        // whole command, and the preflight says exactly that.
+        await page.getByLabel('What should the agent do?').fill('fix the login crash');
+        await expect(start).toBeEnabled();
+        await expect(composer.getByText('Your prompt will run as written.')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
 
-        // Choosing the parametrized process is the member's explicit act — and it is the only
-        // thing that engages the parameter gate.
-        await page.getByLabel('Workflow').click();
+    test('the keyboard path shares the button validation: marks, focuses, and never queues', async ({ page }) => {
+        const problems = watchConsole(page);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+
+        const composer = page.locator('.composer');
+        await page.getByLabel('Reusable workflow').click();
         await page.getByRole('option', { name: 'fix-issue' }).click();
-        const issue = composer.getByRole('textbox', { name: 'issue' });
-        await expect(issue).toBeVisible();
-        await expect(send).toBeDisabled();
-        // Send is dark by design, and the composer must say what it is waiting for — at the
-        // field, in words, not in the declaration's regex source.
-        await expect(composer.getByText('needs: issue')).toBeVisible();
-        await expect(issue).toHaveAttribute('placeholder', 'required');
+        await page.getByLabel('What should the agent do?').fill('fix the login crash');
 
-        // A bare number is a valid issue number to a reader but not to the declaration: the
-        // pattern demands the `#` (or a full issues URL), and the hint must say so.
-        await issue.fill('12');
-        await expect(send).toBeDisabled();
-        await expect(composer.getByText('must match #')).toBeVisible();
-
-        // A value the declaration refuses keeps Send dark and keeps the reason on screen.
+        const issue = composer.getByRole('textbox', { name: 'Issue' });
         await issue.fill('not an issue reference');
-        await expect(send).toBeDisabled();
-        await expect(composer.getByText('needs: issue')).toBeVisible();
-        await page.screenshot({ path: `${SHOTS}/composer-send-dark-reason.png`, fullPage: true });
 
-        // A value the declaration accepts lights Send and retires the reason.
+        // The shortcut is the button, never a bypass: the invalid submission marks the field,
+        // focuses it, and sends nothing — the member is still on the composer.
+        await issue.press('ControlOrMeta+Enter');
+        await expect(
+            composer.getByText('Issue does not match the required format. Open Format details for the technical rule.')
+        ).toBeVisible();
+        await expect(issue).toBeFocused();
+        expect(page.url()).toContain('/tasks/new');
+
+        // A valid value lets the same shortcut queue: the board answers 201 and the page walks
+        // straight to the new task.
         await issue.fill('#12');
-        await expect(send).toBeEnabled();
-        await expect(composer.getByText('needs: issue')).toBeHidden();
-
-        await page.screenshot({ path: `${SHOTS}/composer-default-needs-param.png`, fullPage: true });
+        await issue.press('ControlOrMeta+Enter');
+        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(problems.join('\n')).toBe('');
     });
 });

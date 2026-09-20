@@ -259,7 +259,7 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The claim's `publish` flag and the gates opt-out | `job-store.ts` `claim()` |
 | The driver's one publish gate | `driver/src/loop.ts` |
 | CRUD routes and `POST /api/jobs` resolution | `server/src/routes/workflows.ts`, `routes/jobs.ts` |
-| The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/api/useWorkflows.ts` |
+| The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/task-composer.ts`, `web/src/api/useWorkflows.ts` |
 
 ## Tests
 

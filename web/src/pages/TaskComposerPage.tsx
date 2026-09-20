@@ -6,19 +6,20 @@ import { TaskComposer } from '../panels/TaskComposer.js';
 import { useTasksPage } from './TasksLayout.js';
 
 /**
- * `/tasks`, the area's index: the big composer, open by default, where a task is typed and started.
+ * `/tasks`, the area's index: the big guided composer, open by default, where a task is written
+ * and started.
  *
- * The page header names the page ("New task", under the Tasks eyebrow) and says where the task
- * will run; the composer panel below is the page's one control surface — no action lives outside
- * it. The task list it belongs to is in the sidenav (fed by the shell's poll), and the board
- * answering `201 { id }` is what makes the issue's third bullet one line: on success the page
- * navigates straight to the new task's detail view — output, status, and the composer for
- * follow-ups.
+ * The page header names the page ("New task", under the Tasks eyebrow); the composer panel below
+ * is the page's one control surface — prompt, execution context, workflow, preflight and the
+ * Start action, in the order a member decides (issue 176) — and no action lives outside it. The
+ * task list it belongs to is in the sidenav (fed by the shell's poll), and the board answering
+ * `201 { id }` is what makes navigation one line: on success the page goes straight to the new
+ * task's detail view; a refusal is an alert above the draft, which stays intact.
  *
  * The workflow list is the page's own read (`GET /api/workflows`), re-fetched when the selected
  * repository changes — repo-scoped workflows exist per repository. It rides beside the workspace
  * poll rather than inside it: a board that serves no workflows simply answers an empty list, and
- * the composer's select stays hidden either way.
+ * the composer's workflow section stays hidden either way.
  */
 export function TaskComposerPage() {
     const { tasks, workspace } = useTasksPage();
@@ -63,7 +64,9 @@ export function TaskComposerPage() {
                 workspaceError={workspace.error}
                 onRetryWorkspace={workspace.refresh}
                 executors={workspace.data?.executors ?? []}
-                workflows={workflows.workflows ?? []}
+                // Passed through as-is: null while the list is pending or from another context,
+                // and the composer hides the workflow section for exactly that duration.
+                workflows={workflows.workflows}
                 actionError={actionError}
                 sending={sending}
                 onSend={send}
