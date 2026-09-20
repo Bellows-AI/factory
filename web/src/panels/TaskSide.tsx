@@ -106,11 +106,10 @@ const threadCost = (jobs: Job[]): ReactNode => {
  *
  * Everything here is either what the board reports or a blank. A value the board does not carry
  * renders nothing rather than a dash (issue 100) — a dash reads as a measurement, and nothing
- * was measured. The two honest gaps are deliberate: the PR is read off the publish line the
- * driver appends to the output (the only place the board carries one today), and no source at
- * all records a PR's state, so that row keeps its dash rather than inventing one. A structured
- * PR field would be a contract change — route, store, driver — and is a follow-up, not part of
- * this panel.
+ * was measured. The one honest gap is deliberate: the PR is read off the publish line the
+ * driver appends to the output (the only place the board carries one today; no source records
+ * a PR's state, so no row claims one). A structured PR field would be a contract change —
+ * route, store, driver — and is a follow-up, not part of this panel.
  */
 export function TaskSide({ jobs }: { jobs: Job[] }) {
     const latest = jobs[jobs.length - 1] as Job;
@@ -194,7 +193,6 @@ export function TaskSide({ jobs }: { jobs: Job[] }) {
                             )
                         ) : null,
                     ],
-                    ['PR state', '—'],
                 ]}
             />
         </aside>
