@@ -42,7 +42,7 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
     /** The workflow triple the create was handed, when one resolved — null when none did. */
-    workflowTargets: { id: string; node: string; snapshot: unknown }[];
+    workflowTargets: { id: string; name: string; node: string; snapshot: unknown }[];
     listed: { status?: JobStatus | 'terminal'; repo?: string | undefined; limit: number }[];
     completed: {
         id: string;
@@ -453,7 +453,7 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual(['fix-issue']);
         expect(jobs.workflowTargets).toEqual([
-            { id: 'wf-1', node: 'implement', snapshot: workflows.record.definition, params: {} },
+            { id: 'wf-1', name: 'fix-issue', node: 'implement', snapshot: workflows.record.definition, params: {} },
         ]);
         // The root command IS the interpolated entry prompt — a workflow task launches its entry
         // node, not the raw chat line.
@@ -554,8 +554,29 @@ describe('POST /api/jobs workflow parameters', () => {
         expect(response.statusCode).toBe(201);
         expect(jobs.commands).toEqual(['fetch #127\n\nasked: fix the login bug']);
         expect(jobs.workflowTargets).toEqual([
-            { id: 'wf-1', node: 'fetch', snapshot: parammedDefinition, params: { issue: '#127' } },
+            { id: 'wf-1', name: 'fix-issue', node: 'fetch', snapshot: parammedDefinition, params: { issue: '#127' } },
         ]);
+    });
+
+    it('stamps the RESOLVED record name — a client-supplied workflowName has no authority', async () => {
+        const jobs = stubStore();
+        const workflows = stubWorkflows({ definition: parammedDefinition });
+        const instance = await harnessWith(jobs, workflows);
+
+        const forged = await post(instance, '/api/jobs', {
+            command: 'fix the login bug',
+            workflow: 'fix-issue',
+            workflowParams: { issue: '#127' },
+            workflowName: 'forged',
+        });
+        expect(forged.statusCode).toBe(201);
+        // The name came off the record the store resolved, never off the body.
+        expect(jobs.workflowTargets[0]!.name).toBe('fix-issue');
+
+        // A body naming no workflow ignores the field entirely: no resolution, no workflow triple.
+        const ghost = await post(instance, '/api/jobs', { command: 'echo hi', workflowName: 'ghost' });
+        expect(ghost.statusCode).toBe(201);
+        expect(jobs.workflowTargets).toHaveLength(1);
     });
 
     it('refuses an interpolated root command over the cap with BAD_COMMAND', async () => {
@@ -1740,6 +1761,7 @@ describe('GET /api/jobs', () => {
         executor: 'main',
         followUpTo: null,
         rootJobId: ID,
+        workflowName: 'fix-issue',
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
@@ -1789,6 +1811,21 @@ describe('GET /api/jobs', () => {
         const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual(job);
+    });
+
+    it('exposes the frozen workflow name on the detail, thread and list payloads — and null without one', async () => {
+        const instance = await harnessWith(stubStore({ job, thread: [job] }));
+
+        const one = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
+        expect(one.json().workflowName).toBe('fix-issue');
+        const thread = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/thread` });
+        expect(thread.json().jobs[0].workflowName).toBe('fix-issue');
+        const list = await instance.inject({ method: 'GET', url: '/api/jobs' });
+        expect(list.json().jobs[0].workflowName).toBe('fix-issue');
+
+        const workflowLess = { ...job, workflowName: null };
+        const plain = await harnessWith(stubStore({ job: workflowLess }));
+        expect((await plain.inject({ method: 'GET', url: `/api/jobs/${ID}` })).json().workflowName).toBeNull();
     });
 
     it('answers 404 for an unknown job', async () => {

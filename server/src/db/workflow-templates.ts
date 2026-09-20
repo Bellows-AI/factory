@@ -32,6 +32,8 @@ export const REVIEW_BLOCKERS_MARKER = 'VERDICT: BLOCKERS';
 export const ISSUE_PARAM: WorkflowParam = {
     name: 'issue',
     pattern: '#\\d+|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\\d+',
+    description: 'Enter an issue reference such as #123 or a full GitHub issue URL.',
+    example: '#123',
 };
 
 const fetchIssuePrompt = `Fetch GitHub issue {{param.issue}} with full detail, comments included —

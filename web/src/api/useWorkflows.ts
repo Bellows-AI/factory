@@ -11,7 +11,7 @@ export interface WorkflowChoice {
     id: string;
     name: string;
     scope: 'org' | 'user' | 'repo';
-    params: { name: string; pattern?: string }[];
+    params: { name: string; pattern?: string; description?: string; example?: string }[];
 }
 
 export interface UseWorkflows {

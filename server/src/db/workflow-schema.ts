@@ -43,6 +43,10 @@ const PARAM_NAME = NODE_NAME;
 /** A parameter's pattern is a regex SOURCE, bounded where author content crosses into RegExp. */
 const PATTERN_LIMIT = 256;
 
+/** Bounded author guidance: the composer renders it beside the input, so it stays a sentence. */
+export const PARAM_DESCRIPTION_LIMIT = 160;
+export const PARAM_EXAMPLE_LIMIT = 120;
+
 /** The character cap on one parameter value — bounded author content, like everything interpolated. */
 export const PARAM_VALUE_LIMIT = 512;
 
@@ -117,6 +121,17 @@ export interface WorkflowParam {
      * shape, never anchors). Absent means any non-empty bounded string.
      */
     pattern?: string;
+    /**
+     * Optional plain-language guidance the composer shows beside the input. Presentation only —
+     * it never participates in interpolation or launch validation. Trimmed, non-empty, at most
+     * 160 characters.
+     */
+    description?: string;
+    /**
+     * Optional valid example the composer may hint with. Presentation only, like `description`.
+     * Trimmed, non-empty, at most 120 characters.
+     */
+    example?: string;
 }
 
 export interface WorkflowDefinition {
@@ -355,7 +370,7 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
             }
             const param = item as Record<string, unknown>;
             for (const key of Object.keys(param)) {
-                if (!['name', 'pattern'].includes(key)) {
+                if (!['name', 'pattern', 'description', 'example'].includes(key)) {
                     return refuse('UNKNOWN_KEY', `unknown key "${key}" in params[${i}]`);
                 }
             }
@@ -390,7 +405,34 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
                 }
                 pattern = param.pattern;
             }
-            params.push({ name, ...(pattern !== undefined ? { pattern } : {}) });
+            // The guidance pair is presentation metadata for the composer: bounded sentences,
+            // validated on the TRIMMED value (the marker precedent) and retained trimmed on the
+            // normalized definition. They feed nothing else — `checkWorkflowParams` and the
+            // interpolator never read them; guidance never substitutes for the pattern.
+            let description: string | undefined;
+            let example: string | undefined;
+            for (const [key, limit] of [
+                ['description', PARAM_DESCRIPTION_LIMIT],
+                ['example', PARAM_EXAMPLE_LIMIT],
+            ] as const) {
+                const raw = param[key];
+                if (raw === undefined) continue;
+                const trimmed = typeof raw === 'string' ? raw.trim() : '';
+                if (!trimmed || trimmed.length > limit) {
+                    return refuse(
+                        'BAD_PARAMS',
+                        `params[${i}].${key} must be a non-empty string of at most ${limit} characters`
+                    );
+                }
+                if (key === 'description') description = trimmed;
+                else example = trimmed;
+            }
+            params.push({
+                name,
+                ...(pattern !== undefined ? { pattern } : {}),
+                ...(description !== undefined ? { description } : {}),
+                ...(example !== undefined ? { example } : {}),
+            });
         }
     }
 

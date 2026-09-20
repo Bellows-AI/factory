@@ -467,7 +467,14 @@ describe('the base workflow walkthrough', () => {
 describe('the seeded issue parameter', () => {
     it('declares a required issue param accepting a bare #number or an issues URL', () => {
         expect(validateDefinition(BASE_WORKFLOW.definition).ok).toBe(true);
-        expect(BASE_WORKFLOW.definition.params).toEqual([{ name: 'issue', pattern: expect.any(String) }]);
+        expect(BASE_WORKFLOW.definition.params).toEqual([
+            {
+                name: 'issue',
+                pattern: expect.any(String),
+                description: 'Enter an issue reference such as #123 or a full GitHub issue URL.',
+                example: '#123',
+            },
+        ]);
         expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: '#127' }).ok).toBe(true);
         expect(
             checkWorkflowParams(BASE_WORKFLOW.definition, { issue: 'https://github.com/acme/widget/issues/44' }).ok
@@ -637,6 +644,97 @@ describe('workflow parameters', () => {
                 edges: [],
             })
         ).toMatchObject({ ok: false, refusal: { code: 'BAD_NODE' } });
+    });
+});
+
+describe('parameter guidance metadata', () => {
+    const nodes = [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true }];
+    const withParams = (params: unknown) => validateDefinition({ entry: 'a', nodes, edges: [], params });
+
+    it('accepts guidance and keeps the trimmed values on the normalized definition', () => {
+        expect(
+            withParams([
+                {
+                    name: 'issue',
+                    pattern: '#\\d+',
+                    description: '  An issue reference, like #123.  ',
+                    example: ' #123 ',
+                },
+                { name: 'notes' },
+            ])
+        ).toMatchObject({
+            ok: true,
+            definition: {
+                params: [
+                    { name: 'issue', pattern: '#\\d+', description: 'An issue reference, like #123.', example: '#123' },
+                    { name: 'notes' },
+                ],
+            },
+        });
+        // A param without guidance stays exactly the two-key shape it always was — no
+        // `description: undefined` luggage on the normalized value.
+        expect(withParams([{ name: 'notes' }])).toMatchObject({
+            ok: true,
+            definition: { params: [{ name: 'notes' }] },
+        });
+    });
+
+    it('refuses blank, over-limit and non-string guidance, each by name', () => {
+        expect(withParams([{ name: 'issue', description: '' }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS', message: expect.stringContaining('description') },
+        });
+        expect(withParams([{ name: 'issue', description: '   ' }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS' },
+        });
+        expect(withParams([{ name: 'issue', description: 'x'.repeat(161) }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS', message: expect.stringContaining('description') },
+        });
+        expect(withParams([{ name: 'issue', description: 42 }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS' },
+        });
+        expect(withParams([{ name: 'issue', example: '' }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS', message: expect.stringContaining('example') },
+        });
+        expect(withParams([{ name: 'issue', example: 'x'.repeat(121) }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS', message: expect.stringContaining('example') },
+        });
+        expect(withParams([{ name: 'issue', example: ['#123'] }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_PARAMS' },
+        });
+    });
+
+    it('guidance does not reopen the grammar — an unknown key beside it still refuses', () => {
+        expect(withParams([{ name: 'issue', description: 'ref', example: '#1', extra: 1 }])).toMatchObject({
+            ok: false,
+            refusal: { code: 'UNKNOWN_KEY' },
+        });
+    });
+
+    it('guidance is presentation only: launch validation never reads it', () => {
+        const def = withParams([{ name: 'issue', pattern: '#\\d+', description: 'like #123', example: '#123' }]);
+        expect(def).toMatchObject({ ok: true });
+        if (!def.ok) throw new Error('fixture refused');
+        // The description names an accepted shape, but the value must still match the PATTERN:
+        // guidance never substitutes for validation.
+        expect(checkWorkflowParams(def.definition, { issue: 'abc' }).ok).toBe(false);
+        expect(checkWorkflowParams(def.definition, { issue: '#9' }).ok).toBe(true);
+    });
+
+    it('guidance counts toward the unchanged definition-size gate', () => {
+        // 120 valid params, each carrying the maximum 160-character description: every key inside
+        // its own bound, the definition as a whole past 16 KiB.
+        const padded = Array.from({ length: 120 }, (_, i) => ({
+            name: `p${i}`,
+            description: 'x'.repeat(160),
+        }));
+        expect(withParams(padded)).toMatchObject({ ok: false, refusal: { code: 'TOO_LARGE' } });
     });
 });
 
