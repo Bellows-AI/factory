@@ -1,131 +1,41 @@
 import { useEffect, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
-
-/** `owner/name` of the first selected repository, or `''` for none — the select's value shape. */
-const firstRepo = (repos: readonly { owner: string; name: string }[] | null): string => {
-    const first = repos?.[0];
-    return first ? `${first.owner}/${first.name}` : '';
-};
-
-/** One declared launch parameter of a workflow, as the list route serves it. */
-export interface WorkflowParamChoice {
-    name: string;
-    pattern?: string;
-}
+import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
+import {
+    clampedWorkflow,
+    effectiveWorkflows,
+    firstRepo,
+    freshWorkflowDraft,
+    markTouched,
+    paramValueMatches,
+    paramsComplete,
+    preflightSentence,
+    resolveWorkflowChoice,
+    startBlocker,
+    touchAll,
+    valuesForWorkflow,
+} from '../task-composer.js';
 
 /**
- * Repo over user over org — the one precedence rule a name matching several visible scopes
- * resolves with, the same tie-break `findByName` walks on the board.
+ * The prompt's example placeholder. The issue number travels as string parts because
+ * `123` directly behind a hash scans as a hex color literal, and the stylesheet's color gate
+ * reads every `.tsx` in the tree — the rendered copy stays exact.
  */
-const DEFAULT_PRECEDENCE: Record<'org' | 'user' | 'repo', number> = { repo: 0, user: 1, org: 2 };
+const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected tests, and run the relevant checks.';
 
 /**
- * The workflows the composer offers: one row per effective NAME, at the scope the launch would
- * resolve. A name is unique per scope only, so the visible list can hold the same name at several
- * scopes — and a Listbox row is clickable in a way a native `<option>` duplicate never was. The
- * options therefore collapse to the same repo-over-user-over-org winner `chosenWorkflow` (and the
- * board's `findByName`) resolves with, in the order the list offered the names; picking a row and
- * picking its name can no longer mean two different definitions.
- */
-export function effectiveWorkflows<T extends { name: string; scope: 'org' | 'user' | 'repo' }>(
-    workflows: readonly T[]
-): T[] {
-    const best = new Map<string, T>();
-    for (const choice of workflows) {
-        const held = best.get(choice.name);
-        if (held === undefined || DEFAULT_PRECEDENCE[choice.scope] < DEFAULT_PRECEDENCE[held.scope]) {
-            best.set(choice.name, choice);
-        }
-    }
-    return workflows.filter((choice) => best.get(choice.name) === choice);
-}
-
-/**
- * The value cap the board enforces (workflow-schema.ts `PARAM_VALUE_LIMIT`), mirrored so Send
- * never lights up for a value the board would refuse.
- */
-const PARAM_VALUE_LIMIT = 512;
-
-/**
- * Whether one value satisfies one declaration — the client mirror of the board's
- * `checkWorkflowParams`: trimmed non-empty, within the value cap, full-matched against the
- * declared pattern. A pattern this browser cannot compile answers false — the launch would be
- * refused by the board anyway, and the client never guesses. Stored patterns are a safe,
- * linear-bounded subset (validated at create), so running them here is cheap.
- */
-export function paramValueMatches(param: WorkflowParamChoice, value: string | undefined): boolean {
-    const trimmed = value?.trim() ?? '';
-    if (!trimmed || trimmed.length > PARAM_VALUE_LIMIT) return false;
-    if (param.pattern !== undefined) {
-        try {
-            if (!new RegExp(`^(?:${param.pattern})$`).test(trimmed)) return false;
-        } catch {
-            return false;
-        }
-    }
-    return true;
-}
-
-/** Whether every declared param has a valid value — the Send gate. */
-export function paramsComplete(params: readonly WorkflowParamChoice[], values: Record<string, string>): boolean {
-    return params.every((param) => paramValueMatches(param, values[param.name]));
-}
-
-/**
- * The stored parameter values, read back scoped to the workflow they were typed for. A value is
- * handed over only while that same workflow is STILL the chosen one: a select or repo switch
- * changes the list's context, so a clear-on-select alone would let `#12` typed for one process
- * sit valid for another — and launch it with a foreign issue. Keying the read to the identity
- * makes that carry impossible, with no gap for the stale values to be shown or sent through. A
- * repository change is handled one layer up, where the whole draft resets (the repo effect below).
- */
-export function valuesForWorkflow(
-    stored: { workflowId: string | null; values: Record<string, string> },
-    workflowId: string | null
-): Record<string, string> {
-    return stored.workflowId === workflowId ? stored.values : {};
-}
-
-/**
- * The workflow draft as a repository change leaves it — and as the composer mounts: the choice
- * back to unchosen, the stored values back to none. One named shape for both moments keeps the
- * reset provably the no-op on mount it must be, and hands the offline suite (which runs no
- * effects) the exact state Send sees after a repo switch to pin.
- */
-export function freshWorkflowDraft(): {
-    workflow: string;
-    storedParams: { workflowId: string | null; values: Record<string, string> };
-} {
-    return { workflow: '', storedParams: { workflowId: null, values: {} } };
-}
-
-/**
- * The workflow select's value, clamped to the choices the ANSWERED list offers: a chosen name the
- * current context no longer serves must not survive invisibly in the draft — its parameter inputs
- * are gone, the vacuous gate lights Send, and the launch carries a name the board refuses with
- * UNKNOWN_WORKFLOW. A fetch still in flight (`null`) says nothing about the coming context, so a
- * choice survives the wait and is judged the moment the list lands.
- */
-export function clampedWorkflow(workflow: string, workflows: readonly { name: string }[] | null): string {
-    if (workflow === '' || workflows === null || workflows.some((choice) => choice.name === workflow)) {
-        return workflow;
-    }
-    return '';
-}
-
-/**
- * The new-task composer, the default right pane of the tasks area.
+ * The guided new-task composer, the default right pane of the tasks area.
  *
- * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`,
- * `useJobs`, `useWorkflows`), so this panel is testable in the offline suite:
- * `renderToStaticMarkup` runs no effects, the page hands it finished props and the suite asserts
- * markup.
+ * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`, `useJobs`,
+ * `useWorkflows`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
+ * effects, the page hands it finished props and the suite asserts markup.
  *
- * The repository is a stamp the member chooses per task — the old repo tabs collapsed into this
- * select, with `none` (null) carrying the same meaning the All tab had. The first selected
- * repository is the default, exactly like the first configured executor. The workflow select sits
- * beside them: a process the task will walk, offered by name, chosen by hand — an unnamed task
- * runs the member's words verbatim, with no process and no parameters.
+ * The page reads top to bottom the way a member decides: what the agent should do, where it will
+ * run, which process will guide it, what is still blocking the launch, and what will actually
+ * run — before Start is ever pressed. The repository, the executor and the workflow are stamps
+ * the member chooses per task, with explicit product words for every deliberate null: no
+ * repository, the deployment's default executor, no workflow. The pure layer beneath — the
+ * verdicts, the preflight sentence, the blocker matrix — lives in `task-composer.ts`.
  */
 export function TaskComposer({
     repos,
@@ -150,21 +60,21 @@ export function TaskComposer({
     executors: readonly { name: string; type: string }[];
     /**
      * The workflow choices for the selected repository's context, or null when the list has not
-     * answered (or this board serves no workflows at all). Null HIDES the select: a board without
-     * the feature renders exactly the composer that came before it. Each choice carries its
-     * declared launch parameters — choosing one renders an explicit input per param, and Send
-     * stays disabled until every one validates. Unchosen, the task runs the member's words
-     * verbatim — no workflow, no parameters.
+     * answered (or this board serves no workflows at all). Null HIDES the section: a board
+     * without the feature renders exactly the composer that came before it. Each choice carries
+     * its declared launch parameters — choosing one renders an explicit, labelled input per
+     * param, and Start stays disabled until every one validates. Unchosen, the task runs the
+     * member's words verbatim — no workflow, no parameters.
      */
     workflows:
         | readonly {
               id: string;
               name: string;
               scope: 'org' | 'user' | 'repo';
-              params?: WorkflowParamChoice[];
+              params?: import('../task-composer.js').WorkflowParamChoice[];
           }[]
         | null;
-    /** Why the last Send did not queue anything. Said in place, never silently. */
+    /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
     actionError: string | null;
     sending: boolean;
     /** `workflow` is a chosen name, or null for no process — the raw prompt runs. */
@@ -186,24 +96,23 @@ export function TaskComposer({
     const [executorTouched, setExecutorTouched] = useState(false);
     const [repo, setRepo] = useState(() => firstRepo(repos));
     const [repoTouched, setRepoTouched] = useState(false);
-    // The workflow starts UNCHOSEN — null, meaning no process: the raw prompt runs. And, unlike
+    // The workflow starts UNCHOSEN — '', meaning no process: the raw prompt runs. And, unlike
     // repo and executor, nothing autoselects one: a process is the member's call, not the first
-    // row's. A repository change returns it to exactly this shape (the repo effect below).
+    // row's. A repository change returns the whole draft to exactly this shape (the repo effect
+    // below).
     const [workflow, setWorkflow] = useState(freshWorkflowDraft().workflow);
     // The declared params of the chosen workflow, filled in the explicit inputs below. Stored
-    // against the identity of the workflow they were typed for — values typed for one process must
-    // never stamp another.
+    // against the identity of the workflow they were typed for — values typed for one process
+    // must never stamp another.
     const [storedParams, setStoredParams] = useState(freshWorkflowDraft().storedParams);
+    // Which parameter fields the member has left (or an invalid keyboard submission has marked).
+    // An untouched empty field is a hint — "Required" — not a painted failure.
+    const [paramTouched, setParamTouched] = useState(freshWorkflowDraft().paramTouched);
 
-    // The workflow whose inputs the composer shows: exactly the member's explicit choice. Nothing
-    // autoselects one — an unnamed task runs the raw prompt, so a process is the member's call,
-    // never a silent resolution. A name is unique per SCOPE only, so a name matching several
-    // visible definitions resolves with the same repo-over-user-over-org precedence `findByName`
-    // uses — never the list's alphabetical accident.
-    const chosenWorkflow =
-        workflows
-            ?.filter((choice) => choice.name === workflow)
-            .sort((a, b) => DEFAULT_PRECEDENCE[a.scope] - DEFAULT_PRECEDENCE[b.scope])[0] ?? null;
+    // The workflow whose inputs the composer shows: exactly the member's explicit choice, at the
+    // scope the board would resolve. Nothing autoselects one — an unnamed task runs the raw
+    // prompt, so a process is the member's call, never a silent resolution.
+    const chosenWorkflow = workflows ? resolveWorkflowChoice(workflows, workflow) : null;
     const declaredParams = chosenWorkflow?.params ?? [];
     const chosenWorkflowId = chosenWorkflow?.id ?? null;
     const paramValues = valuesForWorkflow(storedParams, chosenWorkflowId);
@@ -233,7 +142,7 @@ export function TaskComposer({
 
     // A configured executor can be deleted on the Workspace page while a draft sits here; the
     // select would go blank while `send` still submitted the stale name. Clamp to what exists —
-    // back to the first executor, or none when the list is empty.
+    // back to the first executor, or the deployment default when the list is empty.
     useEffect(() => {
         if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
             setExecutor(executors.length > 0 ? executors[0]!.name : '');
@@ -251,7 +160,7 @@ export function TaskComposer({
 
     // A repository change re-fetches the workflow list, and the hook keeps the previous list
     // while the new request is pending — the page hands that stale list straight through, so a
-    // choice made against it could ride Send into a task stamped with the NEW repository: a
+    // choice made against it could ride Start into a task stamped with the NEW repository: a
     // workflow name that may not even exist for the new context, carrying values typed for a
     // process it was not. The draft resets the moment the repository state changes — the
     // member's select, the autoselect, the clamp: every path a change arrives by is this one
@@ -262,15 +171,19 @@ export function TaskComposer({
         const reset = freshWorkflowDraft();
         setWorkflow(reset.workflow);
         setStoredParams(reset.storedParams);
+        setParamTouched(reset.paramTouched);
     }, [repo]);
 
     // And the workflow: a repository switch refetches the list for the new context, and a chosen
     // name the answered list does not offer must go the way of a deleted executor — clamped to
     // what exists. Unchosen is the only reset target: nothing autoselects a process, so the
-    // member's words run verbatim until one is picked again.
+    // member's words run verbatim until one is picked again. Its touched marks go with it.
     useEffect(() => {
         const clamped = clampedWorkflow(workflow, workflows);
-        if (clamped !== workflow) setWorkflow(clamped);
+        if (clamped !== workflow) {
+            setWorkflow(clamped);
+            setParamTouched({});
+        }
     }, [workflows, workflow]);
 
     // The workflow list's repo context must track the composer's repo WHEREVER the composer sets
@@ -290,11 +203,10 @@ export function TaskComposer({
         }
     }, [repo, reportedRepo, onRepoChange]);
 
+    // The mirror of the board's check: a missing or malformed parameter must never reach the
+    // wire — the composer says nothing and the launch stays dark.
     const send = async () => {
-        if (!draft.trim() || sending) return;
-        // The mirror of the board's check: a missing or malformed parameter must never reach the
-        // wire — the composer says nothing and the Send stays dark (this also gates Cmd+Enter).
-        if (!paramsReady) return;
+        if (!draft.trim() || sending || !paramsReady) return;
         const chosenExecutor = executor === '' ? null : executor;
         const chosenRepo = repo === '' ? null : repo;
         const chosenWorkflowName = workflow === '' ? null : workflow;
@@ -308,6 +220,36 @@ export function TaskComposer({
                 : null;
         if ((await onSend(draft, chosenRepo, chosenExecutor, chosenWorkflowName, chosenParams)) === null) setDraft('');
     };
+
+    // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
+    // button, never a bypass. An invalid keyboard submission owes the member the same screen a
+    // tab-through would have left: every field marked, the first invalid one focused, and no
+    // request sent. An empty prompt is the missing task itself; the visible blocker says so.
+    const blocker = startBlocker({ sending, promptEmpty: draft.trim() === '', paramsInvalid: !paramsReady });
+    const attemptStart = () => {
+        if (blocker === null) {
+            void send();
+            return;
+        }
+        if (blocker === 'invalid-params') {
+            setParamTouched(touchAll(declaredParams.map((param) => param.name)));
+            const first = declaredParams.find((param) => !paramValueMatches(param, paramValues[param.name]));
+            if (first) document.getElementById(`composer-param-${first.name}`)?.focus();
+        }
+    };
+    const blockerCopy =
+        blocker === 'in-flight'
+            ? 'Starting the task…'
+            : blocker === 'empty-prompt'
+              ? 'Describe the task to continue.'
+              : blocker === 'invalid-params'
+                ? 'Complete the required workflow details to continue.'
+                : null;
+    const preflight = preflightSentence({
+        repo: repo === '' ? null : repo,
+        executor: executor === '' ? null : executor,
+        workflow: workflow === '' ? null : workflow,
+    });
 
     if (repos === null) {
         return (
@@ -328,20 +270,39 @@ export function TaskComposer({
 
     return (
         <section className="panel task-compose">
-            {actionError !== null ? <p className="status">{actionError}</p> : null}
+            {actionError !== null ? (
+                <p className="status" role="alert">
+                    {actionError}
+                </p>
+            ) : null}
             <div className="composer">
-                <textarea
-                    className="composer-input"
-                    placeholder="Describe the task…"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
-                    }}
-                />
-                <div className="composer-row">
-                    <div className="composer-label">
-                        Repository{' '}
+                <div className="composer-field">
+                    <label className="composer-label" htmlFor="composer-prompt">
+                        What should the agent do?
+                    </label>
+                    <p className="composer-helper" id="composer-prompt-helper">
+                        Include the outcome you want, relevant files or issue, and checks the agent should run.
+                    </p>
+                    <textarea
+                        id="composer-prompt"
+                        className="composer-input"
+                        aria-describedby="composer-prompt-helper"
+                        placeholder={PROMPT_PLACEHOLDER}
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) attemptStart();
+                        }}
+                    />
+                </div>
+
+                <h2>Execution context</h2>
+                <div className="composer-grid">
+                    <div className="composer-field">
+                        <span className="composer-label" id="composer-repo-label">
+                            Repository
+                        </span>
+                        <p className="composer-helper">Run without a repository checkout.</p>
                         <Listbox
                             value={repo}
                             onChange={(next) => {
@@ -350,12 +311,12 @@ export function TaskComposer({
                                 // Reporting upward is the reporting effect's job — one path.
                             }}
                         >
-                            <ListboxButton className="composer-select" aria-label="Repository">
-                                {repo === '' ? 'none' : repo}
+                            <ListboxButton className="composer-select" aria-labelledby="composer-repo-label">
+                                {repo === '' ? 'No repository' : repo}
                             </ListboxButton>
                             <ListboxOptions anchor="bottom start" className="popover">
                                 <ListboxOption value="" className="popover-option">
-                                    none
+                                    No repository
                                 </ListboxOption>
                                 {repos.map(({ owner, name }) => {
                                     const full = `${owner}/${name}`;
@@ -368,8 +329,11 @@ export function TaskComposer({
                             </ListboxOptions>
                         </Listbox>
                     </div>
-                    <div className="composer-label">
-                        Executor{' '}
+                    <div className="composer-field">
+                        <span className="composer-label" id="composer-executor-label">
+                            Executor
+                        </span>
+                        <p className="composer-helper">Use the deployment&rsquo;s default runner.</p>
                         <Listbox
                             value={executor}
                             onChange={(next) => {
@@ -377,12 +341,12 @@ export function TaskComposer({
                                 setExecutor(next);
                             }}
                         >
-                            <ListboxButton className="composer-select" aria-label="Executor">
-                                {executor === '' ? 'none' : executor}
+                            <ListboxButton className="composer-select" aria-labelledby="composer-executor-label">
+                                {executor === '' ? 'Default executor' : executor}
                             </ListboxButton>
                             <ListboxOptions anchor="bottom start" className="popover">
                                 <ListboxOption value="" className="popover-option">
-                                    none
+                                    Default executor
                                 </ListboxOption>
                                 {executors.map((candidate) => (
                                     <ListboxOption
@@ -396,114 +360,78 @@ export function TaskComposer({
                             </ListboxOptions>
                         </Listbox>
                     </div>
-                    {workflows !== null ? (
-                        <div className="composer-label">
-                            Workflow{' '}
-                            <Listbox
-                                value={workflow}
-                                onChange={(next) => {
-                                    setWorkflow(next);
-                                    // The values reset through the identity-keyed read: the changed
-                                    // choice re-resolves the chosen workflow, and stale values
-                                    // stop being handed back. A repo switch goes further and resets
-                                    // the whole draft — the repo effect below.
-                                }}
-                            >
-                                <ListboxButton className="composer-select" aria-label="Workflow">
-                                    {workflow === '' ? '— none —' : workflow}
-                                </ListboxButton>
-                                <ListboxOptions anchor="bottom start" className="popover">
-                                    <ListboxOption value="" className="popover-option">
-                                        — none —
-                                    </ListboxOption>
-                                    {effectiveWorkflows(workflows).map((choice) => (
-                                        <ListboxOption key={choice.id} value={choice.name} className="popover-option">
-                                            {choice.name}
-                                        </ListboxOption>
-                                    ))}
-                                </ListboxOptions>
-                            </Listbox>
-                        </div>
-                    ) : null}
-                    <button
-                        type="button"
-                        className="primary"
-                        disabled={!draft.trim() || sending || !paramsReady}
-                        onClick={() => void send()}
-                    >
-                        Send
-                    </button>
                 </div>
-                {declaredParams.length > 0 ? (
-                    <ComposerParamRow
-                        params={declaredParams}
-                        values={paramValues}
-                        onInput={(name, value) =>
-                            setStoredParams({
-                                workflowId: chosenWorkflowId,
-                                values: { ...paramValues, [name]: value },
-                            })
-                        }
-                    />
+                {repos.length === 0 ? (
+                    <p className="muted">
+                        Select repositories in <a href="/settings/repositories">Settings</a> to run against a codebase
+                    </p>
                 ) : null}
+
+                {workflows !== null ? (
+                    <div className="composer-field">
+                        <h2 id="composer-workflow-label">Reusable workflow</h2>
+                        <p className="composer-helper">
+                            A workflow can turn this request into a repeatable multi-step process.
+                        </p>
+                        <Listbox
+                            value={workflow}
+                            onChange={(next) => {
+                                setWorkflow(next);
+                                // The values reset through the identity-keyed read, and this
+                                // choice's touched marks reset with it: fields the member never
+                                // reached in the new process must not arrive pre-failed.
+                                setParamTouched({});
+                                // A repo switch goes further and resets the whole draft — the
+                                // repo effect above.
+                            }}
+                        >
+                            <ListboxButton className="composer-select" aria-labelledby="composer-workflow-label">
+                                {workflow === '' ? 'No workflow — run prompt as written' : workflow}
+                            </ListboxButton>
+                            <ListboxOptions anchor="bottom start" className="popover">
+                                <ListboxOption value="" className="popover-option">
+                                    No workflow — run prompt as written
+                                </ListboxOption>
+                                {effectiveWorkflows(workflows).map((choice) => (
+                                    <ListboxOption key={choice.id} value={choice.name} className="popover-option">
+                                        {choice.name}
+                                    </ListboxOption>
+                                ))}
+                            </ListboxOptions>
+                        </Listbox>
+                    </div>
+                ) : null}
+
+                {declaredParams.length > 0 ? (
+                    <div className="composer-field">
+                        <h2>Workflow details</h2>
+                        <WorkflowParameterFields
+                            params={declaredParams}
+                            values={paramValues}
+                            touched={paramTouched}
+                            onInput={(name, value) =>
+                                setStoredParams({
+                                    workflowId: chosenWorkflowId,
+                                    values: { ...paramValues, [name]: value },
+                                })
+                            }
+                            onBlur={(name) => setParamTouched(markTouched(paramTouched, name))}
+                        />
+                    </div>
+                ) : null}
+
+                <p className="composer-preflight" aria-live="polite">
+                    {preflight}
+                </p>
+
+                <div className="composer-start">
+                    <button type="button" className="primary" disabled={blocker !== null} onClick={attemptStart}>
+                        {sending ? 'Starting…' : 'Start task'}
+                    </button>
+                    <kbd>Ctrl/⌘ + Enter</kbd>
+                    {blockerCopy !== null ? <span className="composer-blocker">{blockerCopy}</span> : null}
+                </div>
             </div>
         </section>
-    );
-}
-
-/**
- * The chosen workflow's declared parameters: one explicit input per declaration, and the list of
- * the ones still blocking Send, named in words. Each blocking input carries `aria-invalid` and
- * references the message by id, so a screen reader hears WHICH field is dark and why — a disabled
- * button alone says neither. The message's region stays mounted while the row does, because a
- * live region can only announce a change it survives, and speaks politely: it updates per
- * keystroke, not as an alarm.
- */
-export function ComposerParamRow({
-    params,
-    values,
-    onInput,
-}: {
-    /** The declared parameters of the chosen workflow, one input each. */
-    params: readonly WorkflowParamChoice[];
-    /** The member's typed values so far, keyed by parameter name. */
-    values: Record<string, string>;
-    /** One keystroke: the parameter's name, and the field's new value. */
-    onInput: (name: string, value: string) => void;
-}) {
-    // The declarations Send is still dark for — empty, over-length or pattern-refused values
-    // alike. Named in place below: a disabled button with no reason on screen is a task that
-    // cannot start.
-    const missing = params.filter((param) => !paramValueMatches(param, values[param.name]));
-    return (
-        <div className="composer-row">
-            {params.map((param) => {
-                const invalid = !paramValueMatches(param, values[param.name]);
-                return (
-                    <label key={param.name} className="composer-label composer-param">
-                        {param.name}{' '}
-                        <input
-                            className="composer-select"
-                            placeholder="required"
-                            title={param.pattern !== undefined ? `must match ${param.pattern}` : undefined}
-                            aria-invalid={invalid || undefined}
-                            aria-describedby={invalid ? 'composer-param-error' : undefined}
-                            maxLength={512}
-                            value={values[param.name] ?? ''}
-                            onChange={(e) => onInput(param.name, e.target.value)}
-                        />
-                    </label>
-                );
-            })}
-            <span id="composer-param-error" className="muted" aria-live="polite">
-                {missing.length > 0
-                    ? `needs: ${missing
-                          .map((param) =>
-                              param.pattern !== undefined ? `${param.name} (must match ${param.pattern})` : param.name
-                          )
-                          .join(', ')}`
-                    : ''}
-            </span>
-        </div>
     );
 }
