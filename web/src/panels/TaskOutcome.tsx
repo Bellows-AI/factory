@@ -121,9 +121,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                         the run's own region, so keyboard and pointer land in the same place. */}
                         <a
                             href={`#run-${jobs.length}-checks`}
-                            onClick={() =>
-                                (document.getElementById(`run-${jobs.length}-checks`) as HTMLElement | null)?.focus()
-                            }
+                            onClick={() => document.getElementById(`run-${jobs.length}-checks`)?.focus()}
                         >
                             View checks in run {jobs.length}
                         </a>

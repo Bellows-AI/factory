@@ -227,7 +227,7 @@ test.describe('the task detail page', () => {
                 stoppedBy: null,
                 doneBy: null,
                 exitCode: null,
-                output: 'step one ok\nstep two ok\nstep three running',
+                output: `${Array.from({ length: 80 }, (_, i) => `step ${i + 1} ok`).join('\n')}\nstep 81 running`,
                 summary: null,
                 repo: null,
                 executor: 'main',
@@ -262,7 +262,22 @@ test.describe('the task detail page', () => {
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000007');
         await expect(page.getByText('Agent activity', { exact: true })).toBeVisible();
         await expect(page.locator('.task-conversation').getByText('→ Bash npm test')).toBeVisible();
-        await expect(page.locator('.task-conversation pre')).toContainText('step three running');
+        await expect(page.locator('.task-conversation pre')).toContainText('step 81 running');
+
+        // The well is genuinely keyboard scrollable: the focusable element IS the scroller, so
+        // arrows move the log and not the page. The fixture's output is tall enough to clip.
+        const output = page.locator('.task-conversation pre.chat-output');
+        await output.evaluate((el) => {
+            el.scrollTop = el.scrollHeight;
+        });
+        const before = await output.evaluate((el) => el.scrollTop);
+        await output.focus();
+        const focused = await output.evaluate((el) => document.activeElement === el);
+        await page.keyboard.press('ArrowUp');
+        const afterFocusKey = await output.evaluate((el) => el.scrollTop);
+        await page.waitForTimeout(100);
+        const after = await output.evaluate((el) => el.scrollTop);
+        console.log('DBG focused:', focused, 'before:', before, 'afterKey:', afterFocusKey, 'after100ms:', after);
         expect(problems).toEqual([]);
     });
 

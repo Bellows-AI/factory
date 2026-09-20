@@ -184,7 +184,7 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit`, `chat-detail` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
+| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
 | Run article | `run-label`, `run-summary`, `run-output`, `run-well`, `run-work`, `run-publish` | One run's sections in reading order: labels (Request / Follow-up / Agent response / activity), the stored summary as flowing prose, the raw-output disclosure (collapsed behind a summary, expanded when it is all there is), the checks-and-publication focus anchor, the publish line |
 | Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
 | Gates | `chat-gates`, `chat-gate-list`, `gate-passed`, `gate-failed`, `gate-running` | The verification-gate tree |

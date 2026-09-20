@@ -4,9 +4,9 @@ import { runDuration, timestamp } from '../format.js';
 import { isHttpUrl, publicationForRun } from '../task-outcome.js';
 
 /**
- * One output well: a clipped log a keyboard user can actually reach. The wrapping section is
- * the named, focusable scroll region — the scrolled-off top of a clipped log is unreachable
- * without it — and the text inside stays exactly what the run produced, in a `pre`.
+ * One output well: a clipped log a keyboard user can actually reach. The wrapping section names
+ * the region; the `pre` carries the focus, because it is the element that scrolls — keyboard
+ * scroll chains walk up from the focused element, never down into a descendant.
  */
 function OutputWell({
     text,
@@ -18,9 +18,9 @@ function OutputWell({
     liveRef?: Ref<HTMLPreElement> | undefined;
 }) {
     return (
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-        <section className="run-well" tabIndex={0} aria-label={labelled ? 'Raw output' : undefined}>
-            <pre className="chat-output" ref={liveRef}>
+        <section className="run-well" aria-label={labelled ? 'Raw output' : undefined}>
+            {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable */}
+            <pre className="chat-output" tabIndex={0} ref={liveRef}>
                 {text}
             </pre>
         </section>

@@ -1674,13 +1674,13 @@ describe('TaskRun', () => {
     });
 
     it('output wells are keyboard scrollable, and the live well carries a label', () => {
-        // A clipped well nobody can focus is a log nobody can read: every output well is a
-        // focusable scroll region, and the live one — whose only visible label sits above it —
-        // names itself for assistive tech.
+        // A clipped well nobody can focus is a log nobody can read: the pre itself is the
+        // focusable scroll target, and the live one — whose only visible label sits above it —
+        // is named by its wrapping region.
         const live = renderDetail({
             jobs: [job({ status: 'running', output: 'tail', runtime: runtime({ activity: 'working' }) })],
         });
-        expect(live).toMatch(/<section[^>]*class="run-well"[^>]*aria-label="Raw output"/);
+        expect(live).toMatch(/<section[^>]*class="run-well"[^>]*aria-label="Raw output"[^>]*>\s*<pre[^>]*tabindex="0"/);
 
         const finished = articleOf(
             renderDetail({

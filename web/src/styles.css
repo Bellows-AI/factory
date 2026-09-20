@@ -1990,9 +1990,9 @@
         margin: 6px 0;
     }
 
-    /* One run's output well: the focusable named scroll region around the raw log — the same
-       keyboard contract as the data table's scroll wrap. */
-    .run-well:focus {
+    /* The output well's focus ring lives on the pre, because the pre is what scrolls — focus
+       and scroll target must be the same element for keyboard arrows to move the log. */
+    .chat-output:focus {
         outline: 2px solid var(--accent);
         outline-offset: 4px;
     }
@@ -2029,10 +2029,6 @@
         color: var(--lamp-stop);
         font-family: var(--font-mono);
         font-size: 12px;
-    }
-
-    .chat-detail {
-        margin-top: 8px;
     }
 
     /* The running attempt's sampled vitals — the "is it stuck or working" strip above the output. */
