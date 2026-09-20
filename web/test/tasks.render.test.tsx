@@ -7,7 +7,17 @@ import { removeDialogTitle, removeDialogBody, TaskRemoveDialog } from '../src/co
 import { isTerminal, type Job, type RuntimeVitals, type UseJobs } from '../src/api/useJobs.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
-import { threadIssue, threadPublish } from '../src/panels/TaskSide.js';
+import {
+    closureOf,
+    gateCounts,
+    issueUrl,
+    newestTerminalExit,
+    publicationForRun,
+    threadContextTokens,
+    threadCostUsd,
+    threadIssue,
+    threadPublish,
+} from '../src/task-outcome.js';
 import { WorkflowParameterFields } from '../src/components/WorkflowParameterFields.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
@@ -50,6 +60,7 @@ function job(overrides: Partial<Job> = {}): Job {
         output: null,
         repo: null,
         executor: null,
+        workflowName: null,
         workflowNode: null,
         followUpTo: null,
         rootJobId: '11111111-1111-4111-8111-111111111111',
@@ -121,15 +132,17 @@ interface DetailArgs {
 
 const renderDetail = ({ jobs = [job()], error = null, actionError = null, sending = false }: DetailArgs = {}) =>
     renderToStaticMarkup(
-        // The status, clock and task actions live in the page header (TaskHeader) since #159;
-        // this panel is the conversation itself — transcript, checks, composer, sidebar.
-        <TaskDetail
-            jobs={jobs}
-            error={error}
-            actionError={actionError}
-            sending={sending}
-            onFollowUp={async () => null}
-        />
+        // The sessionless branch carries a router Link (Start a new task), so the panel renders
+        // under a router the same way the page mounts it.
+        <MemoryRouter>
+            <TaskDetail
+                jobs={jobs}
+                error={error}
+                actionError={actionError}
+                sending={sending}
+                onFollowUp={async () => null}
+            />
+        </MemoryRouter>
     );
 
 interface HeaderArgs {
@@ -390,9 +403,9 @@ describe('TaskDetail', () => {
         expect(html).toContain('2026-09-01 12:00');
     });
 
-    it('labels history turns with their workflow node, and stays quiet without one', () => {
-        // A workflow thread's rows read as the graph they walked: the node sits beside the status
-        // pill on every HISTORY turn that carries one, and a turn without one renders as before.
+    it('labels turns with their workflow node in the quiet footer, and stays quiet without one', () => {
+        // A workflow thread's rows read as the graph they walked: the node sits in the footer of
+        // every turn that carries one, and a turn without one renders as before.
         const html = renderDetail({
             jobs: [
                 job({ workflowNode: 'implement' }),
@@ -404,7 +417,9 @@ describe('TaskDetail', () => {
                 }),
             ],
         });
-        expect(html).toContain('class="pill">implement</span>');
+        expect(html).toContain('node implement');
+        const second = html.slice(html.indexOf('second'), html.indexOf('</article>', html.indexOf('second')));
+        expect(second).not.toContain('node ');
         const plain = renderDetail({ jobs: [job()] });
         expect(plain).not.toContain('class="pill">implement</span>');
     });
@@ -432,14 +447,14 @@ describe('TaskDetail', () => {
         expect(plain).not.toContain('done by');
     });
 
-    it('shows who queued the task in the status sidebar, honestly unknown for a pre-accounts row', () => {
+    it('shows who started the task in the outcome, honestly unknown for a pre-accounts row', () => {
         const author = { id: 'a', login: 'octocat', name: 'The Octocat', avatarUrl: 'https://x/a.png' };
-        expect(renderDetail({ jobs: [job({ author })] })).toContain('Queued by');
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');
         expect(renderDetail({ jobs: [job({ author })] })).toContain('The Octocat');
         expect(renderDetail({ jobs: [job({ author })] })).toContain('https://x/a.png');
 
         const unknown = renderDetail({ jobs: [job()] });
-        expect(unknown).toContain('Queued by');
+        expect(unknown).toContain('Started by');
         expect(unknown).toContain('unknown');
     });
 
@@ -461,7 +476,7 @@ describe('TaskDetail', () => {
         });
         expect(waiting).toContain('Waiting for the executor');
         const empty = renderDetail({ jobs: [job({ output: null })] });
-        expect(empty).toContain('No output recorded');
+        expect(empty).toContain('finished without a captured agent response');
     });
 
     it('says so in place when the task could not be loaded', () => {
@@ -487,7 +502,7 @@ describe('TaskDetail', () => {
         // executor stopped" and "I am satisfied".
         const finished = renderDetail({ jobs: [job()] });
         expect(finished).toContain('<textarea');
-        expect(finished).toContain('>Send<');
+        expect(finished).toContain('Send follow-up');
         for (const status of ['queued', 'running', 'standby'] as const) {
             const moving = renderDetail({
                 jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
@@ -498,7 +513,7 @@ describe('TaskDetail', () => {
 
     it("keeps the transcript clean of task actions — those are the page header's", () => {
         // The conversation panel carries no Stop/Done/Remove since the head lifted to the page;
-        // its own composer's Send stays, of course.
+        // its own composer's Send follow-up stays, of course.
         const finished = renderDetail({ jobs: [job()] });
         expect(finished).not.toContain('chat-resume');
         expect(finished).not.toContain('chat-stop');
@@ -608,7 +623,10 @@ describe('TaskDetail', () => {
                     }),
                 ],
             });
-            const summary = html.slice(html.indexOf('Checks'), html.indexOf('</summary>'));
+            // The gates summary is the first summary AFTER the outcome's own — anchor the slice
+            // on the gates disclosure itself, not on the first summary in the page.
+            const start = html.indexOf('chat-gates');
+            const summary = html.slice(start, html.indexOf('</summary>', start));
             expect(summary).toContain('pill gate-passed');
             expect(summary).toContain('pill gate-failed');
             expect(summary).toContain('pill gate-running');
@@ -784,231 +802,27 @@ describe('TaskDetail', () => {
             expect(html).not.toContain('$0.0000');
         });
     });
-
-    /**
-     * The status sidebar: one column beside the conversation, fed by the NEWEST run — the same
-     * run the composer and Done verdict belong to. Everything it shows is either what the board
-     * reports or a blank where nothing was; nothing is inferred.
-     */
-    describe('sidebar', () => {
-        const runtime = {
-            cpuPercent: 12,
-            memUsedMb: 300,
-            memPercent: 2,
-            activity: '→ Bash npm test',
-            sampledAt: '2026-09-01T12:02:00.000Z',
-        };
-
-        it('renders a status sidebar fed by the newest run', () => {
-            const html = renderDetail({ jobs: [job({ executor: 'main' })] });
-            expect(html).toContain('task-side');
-            expect(html).toContain('<h2>Status</h2>');
-            expect(html).toContain('<h2>Connections</h2>');
-            expect(html).toContain('<span class="pill">succeeded</span>');
-            expect(html).toContain('<span class="pill">main</span>');
-        });
-
-        it('shows the workspace directory the board reports, and blank when there is none', () => {
-            const named = renderDetail({ jobs: [job({ workspacePath: 'org-1/user-2' })] });
-            expect(named).toContain('<dt>Workspace</dt><dd>org-1/user-2</dd>');
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Workspace</dt><dd></dd>');
-        });
-
-        /**
-         * The thread's context and cost (issue #60): Context is the newest CLOSED turn's scrape —
-         * a follow-up resumes the same session, so the last turn's count IS the conversation's
-         * final context, and summing would double-count the shared prefix. Cost is the sum of
-         * every turn's scraped cost, where zero-dollar turns contribute nothing.
-         */
-        it('shows the thread context — the newest closed turn, never a sum', () => {
-            const closed = { ...runtime, contextTokens: 30433, costUsd: 0.1 };
-            const running = {
-                cpuPercent: 12,
-                memUsedMb: 300,
-                memPercent: null,
-                activity: null,
-                sampledAt: '2026-09-01T12:02:00.000Z',
-            };
-            const root = job({ command: 'first command', runtime: closed });
-            const html = renderDetail({
-                jobs: [
-                    root,
-                    {
-                        ...job({ command: 'second command', status: 'running', runtime: running }),
-                        id: '44444444-4444-4444-8444-444444444444',
-                        followUpTo: root.id,
-                        rootJobId: root.id,
+    it('never emits a placeholder value', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    executor: null,
+                    workspacePath: null,
+                    output: null,
+                    exitCode: null,
+                    runtime: {
+                        cpuPercent: 12,
+                        memUsedMb: 300,
+                        memPercent: 2,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        contextTokens: null,
+                        costUsd: null,
                     },
-                ],
-            });
-            // The newest turn is running and carries no scrape; the last CLOSED turn's count is
-            // the conversation's final context.
-            expect(html).toContain('<dt>Context</dt><dd>30,433 tok</dd>');
+                }),
+            ],
         });
-
-        it('shows the whole chain as the Cost row, once it costs something', () => {
-            const root = job({ command: 'first command', runtime: { ...runtime, contextTokens: 1000, costUsd: 0.1 } });
-            const html = renderDetail({
-                jobs: [
-                    root,
-                    {
-                        ...job({
-                            command: 'second command',
-                            runtime: { ...runtime, contextTokens: 90433, costUsd: 0.21 },
-                        }),
-                        id: '44444444-4444-4444-8444-444444444444',
-                        followUpTo: root.id,
-                        rootJobId: root.id,
-                    },
-                ],
-            });
-            expect(html).toContain('<dt>Cost</dt><dd>$0.3100</dd>');
-            // Context is NOT summed: the last turn's count IS the conversation's final context.
-            expect(html).toContain('<dt>Context</dt><dd>90,433 tok</dd>');
-        });
-
-        it('stays silent about a thread that cost nothing, and about one nothing scraped', () => {
-            const free = renderDetail({
-                jobs: [job({ runtime: { ...runtime, contextTokens: 1200, costUsd: 0 } })],
-            });
-            expect(free).toContain('<dt>Context</dt><dd>1,200 tok</dd>');
-            expect(free).toContain('<dt>Cost</dt><dd></dd>');
-            expect(free).not.toContain('$0.0000');
-
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Context</dt><dd></dd>');
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Cost</dt><dd></dd>');
-        });
-
-        /**
-         * The attempt's declared services and their states (issue #60) — the "did db come up"
-         * answer, from the newest attempt only: a fleet is attempt-scoped on the driver side, and
-         * an older attempt's is long gone.
-         */
-        it('lists the newest attempt\u2019s services with their states', () => {
-            const html = renderDetail({
-                jobs: [
-                    job({
-                        status: 'running',
-                        runtime: { ...runtime, services: [{ name: 'db', image: 'postgres:16', state: 'running' }] },
-                    }),
-                ],
-            });
-            expect(html).toContain('<h2>Services</h2>');
-            expect(html).toContain('<dt>db</dt><dd>running</dd>');
-        });
-
-        it('renders nothing about services when the attempt declared none, and nothing from older attempts', () => {
-            expect(renderDetail({ jobs: [job()] })).not.toContain('Services</h2>');
-            expect(renderDetail({ jobs: [job({ runtime: { ...runtime, services: [] } })] })).not.toContain(
-                'Services</h2>'
-            );
-
-            const root = job({
-                command: 'first command',
-                runtime: { ...runtime, services: [{ name: 'db', image: 'postgres:16', state: 'running' }] },
-            });
-            const html = renderDetail({
-                jobs: [
-                    root,
-                    {
-                        ...job({ command: 'second command' }),
-                        id: '44444444-4444-4444-8444-444444444444',
-                        followUpTo: root.id,
-                        rootJobId: root.id,
-                    },
-                ],
-            });
-            expect(html).not.toContain('Services</h2>');
-            expect(html).not.toContain('<dt>db</dt>');
-        });
-
-        it('shows the running time of a finished run, and nothing before it starts or while parked', () => {
-            // 12:00:01 -> 12:04:00, the factory job's span.
-            expect(renderDetail({ jobs: [job()] })).toContain('<dt>Running time</dt><dd>4m</dd>');
-            // A queued job has no attempt yet, and a parked one is not running: either way a
-            // ticking clock would lie.
-            const queued = renderDetail({ jobs: [job({ status: 'queued', startedAt: null, finishedAt: null })] });
-            expect(queued).toContain('<dt>Running time</dt><dd></dd>');
-            const parked = renderDetail({ jobs: [job({ status: 'standby' })] });
-            expect(parked).toContain('<dt>Running time</dt><dd></dd>');
-        });
-
-        it('shows the current task while the run is going, and nothing once it is not', () => {
-            const live = renderDetail({ jobs: [job({ status: 'running', runtime })] });
-            expect(live).toContain('<dt>Task</dt><dd>→ Bash npm test</dd>');
-            expect(renderDetail({ jobs: [job({ runtime })] })).toContain('<dt>Task</dt><dd></dd>');
-            expect(renderDetail({ jobs: [job()] })).not.toContain('chat-activity');
-        });
-
-        it('shows the issue reference and the published PR of the thread', () => {
-            const root = job({
-                command: 'fix https://github.com/o/r/issues/44 please',
-                output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
-            });
-            const html = renderDetail({ jobs: [root] });
-            expect(html).toContain('<dt>Issue</dt><dd>#44</dd>');
-            // The PR opens in a new window, not over the dashboard: target=_blank, with
-            // rel=noopener/noreferrer so the opened page cannot reach back into this one.
-            // The url is the text too — the reader sees where the link goes, not a branch slug.
-            expect(html).toContain(
-                '<a href="https://github.com/o/r/pull/9" target="_blank" rel="noopener noreferrer">https://github.com/o/r/pull/9</a>'
-            );
-            // A url that is not http(s) stays text — nothing a run echoed becomes a handler href.
-            const unsafe = renderDetail({
-                jobs: [job({ output: 'done\n[driver] published fix/44 — javascript:alert(1)' })],
-            });
-            expect(unsafe).not.toContain('<a href="javascript:');
-            expect(unsafe).toContain('fix/44');
-        });
-
-        it('renders blanks for a thread with no issue and no PR', () => {
-            const html = renderDetail({ jobs: [job()] });
-            expect(html).toContain('<dt>Issue</dt><dd></dd>');
-            expect(html).toContain('<dt>PR</dt><dd></dd>');
-        });
-
-        it('renders no PR state row: nothing records one, and a permanent dash says nothing', () => {
-            // The output line carries a url, not a state; the row was removed rather than
-            // holding a dash forever. A structured PR source is a deliberate follow-up.
-            const root = job({
-                command: 'fix #44',
-                output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
-            });
-            expect(renderDetail({ jobs: [root] })).not.toContain('<dt>PR state</dt>');
-        });
-
-        it("keeps older runs' pills inline and moves only the newest run's to the sidebar", () => {
-            const root = job({ command: 'first command' });
-            const child = {
-                ...job({ command: 'second command' }),
-                id: '44444444-4444-4444-8444-444444444444',
-                followUpTo: root.id,
-                rootJobId: root.id,
-            };
-            const html = renderDetail({ jobs: [root, child] });
-            const rootMeta = html.slice(html.indexOf('first command'), html.indexOf('chat-detail'));
-            expect(rootMeta).toContain('<span class="pill');
-            const childMeta = html.slice(
-                html.indexOf('second command'),
-                html.indexOf('chat-detail', html.indexOf('second command'))
-            );
-            expect(childMeta).not.toContain('<span class="pill');
-        });
-
-        it('never emits a placeholder value', () => {
-            const html = renderDetail({
-                jobs: [
-                    job({
-                        executor: null,
-                        workspacePath: null,
-                        output: null,
-                        exitCode: null,
-                        runtime: { ...runtime, activity: null, contextTokens: null, costUsd: null },
-                    }),
-                ],
-            });
-            for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
-        });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
 
@@ -1445,6 +1259,658 @@ describe('thread derivations', () => {
                 threadPublish([withCommand('x', { output: '[driver] published fix/5 — javascript:alert(1)' })])
             ).toEqual({ branch: 'fix/5', url: 'javascript:alert(1)' });
         });
+    });
+});
+
+describe('task outcome derivations', () => {
+    // The outcome summary's raw material, as pure data — the panel formats, these decide. All
+    // read the thread NEWEST first (the chain arrives oldest first), because the newest run is
+    // the conversation's present tense.
+    const base = job();
+    const followUp = (over: Partial<Job> = {}): Job => ({
+        ...base,
+        id: '44444444-4444-4444-8444-444444444444',
+        followUpTo: base.id,
+        rootJobId: base.id,
+        ...over,
+    });
+
+    describe('publicationForRun', () => {
+        it('reads one anchored published line from a single row', () => {
+            expect(
+                publicationForRun({
+                    ...base,
+                    output: 'done\n[driver] published fix/44 — https://github.com/o/r/pull/9',
+                })
+            ).toEqual({
+                branch: 'fix/44',
+                url: 'https://github.com/o/r/pull/9',
+            });
+        });
+
+        it('keeps a branch with no url, and answers null for a row without output', () => {
+            expect(publicationForRun({ ...base, output: '[driver] published task/20260910' })).toEqual({
+                branch: 'task/20260910',
+                url: null,
+            });
+            expect(publicationForRun({ ...base, output: null })).toBeNull();
+        });
+
+        it('rejects a marker the run echoed mid-line', () => {
+            expect(
+                publicationForRun({ ...base, output: 'the agent said [driver] published fake/1 — not-a-url' })
+            ).toBeNull();
+        });
+    });
+
+    describe('threadContextTokens', () => {
+        it('returns the newest closed turn count, never a sum', () => {
+            // A follow-up resumes the same session: the last closed turn's count IS the
+            // conversation's final context, and summing per-turn counts double-counts the prefix.
+            const jobs = [
+                { ...base, runtime: { ...(base.runtime as RuntimeVitals), contextTokens: 1000 } },
+                followUp({ runtime: { ...(base.runtime as RuntimeVitals), contextTokens: 3000 } }),
+            ];
+            expect(threadContextTokens(jobs)).toBe(3000);
+        });
+
+        it('skips a running newest turn without a scrape and reads the older closed one', () => {
+            const jobs = [
+                { ...base, runtime: { ...(base.runtime as RuntimeVitals), contextTokens: 1000 } },
+                followUp({ status: 'running', runtime: { ...(base.runtime as RuntimeVitals), contextTokens: null } }),
+            ];
+            expect(threadContextTokens(jobs)).toBe(1000);
+        });
+
+        it('answers null when nothing scraped', () => {
+            expect(threadContextTokens([base])).toBeNull();
+        });
+    });
+
+    describe('threadCostUsd', () => {
+        it('sums positive per-turn costs once', () => {
+            const jobs = [
+                { ...base, runtime: { ...(base.runtime as RuntimeVitals), costUsd: 0.01 } },
+                followUp({ runtime: { ...(base.runtime as RuntimeVitals), costUsd: 0.002 } }),
+            ];
+            expect(threadCostUsd(jobs)).toBe(0.012);
+        });
+
+        it('omits absent and zero costs entirely', () => {
+            expect(threadCostUsd([base])).toBeNull();
+            expect(
+                threadCostUsd([{ ...base, runtime: { ...(base.runtime as RuntimeVitals), costUsd: 0 } }])
+            ).toBeNull();
+        });
+    });
+
+    describe('gateCounts', () => {
+        it('counts passed, failed and running', () => {
+            const gates = [
+                { name: 'test', status: 'passed' as const, exitCode: 0, output: null },
+                { name: 'lint', status: 'failed' as const, exitCode: 1, output: null },
+                { name: 'build', status: 'running' as const, exitCode: null, output: null },
+            ];
+            expect(gateCounts(gates)).toEqual({ passed: 1, failed: 1, running: 1 });
+        });
+
+        it('answers all-zero for nothing declared', () => {
+            expect(gateCounts(null)).toEqual({ passed: 0, failed: 0, running: 0 });
+        });
+    });
+
+    describe('issueUrl', () => {
+        it('builds only from a repository an owner/name slug can construct', () => {
+            expect(issueUrl('acme/web', 44)).toBe('https://github.com/acme/web/issues/44');
+            expect(issueUrl(null, 44)).toBeNull();
+            expect(issueUrl('web', 44)).toBeNull();
+            expect(issueUrl('acme/web', null)).toBeNull();
+        });
+    });
+
+    describe('closureOf', () => {
+        it('reads the newest run done attribution first', () => {
+            expect(
+                closureOf([base, followUp({ doneBy: { id: 'u', login: 'kim', name: null, avatarUrl: null } })])
+            ).toEqual({
+                kind: 'done',
+                login: 'kim',
+            });
+        });
+
+        it('reads a stop as stopped or requested by how the run settled', () => {
+            expect(
+                closureOf([
+                    followUp({ status: 'stopped', stoppedBy: { id: 'u', login: 'kim', name: null, avatarUrl: null } }),
+                ])
+            ).toEqual({
+                kind: 'stopped',
+                login: 'kim',
+            });
+            expect(
+                closureOf([followUp({ stoppedBy: { id: 'u', login: 'kim', name: null, avatarUrl: null } })])
+            ).toEqual({
+                kind: 'stop-requested',
+                login: 'kim',
+            });
+        });
+
+        it('answers null while nobody has closed anything', () => {
+            expect(closureOf([base])).toBeNull();
+        });
+    });
+
+    describe('newestTerminalExit', () => {
+        it('reads the newest terminal run exit code, skipping runs without one', () => {
+            expect(newestTerminalExit([base, followUp({ exitCode: null })])).toBe(0);
+            expect(newestTerminalExit([base, followUp({ exitCode: 2 })])).toBe(2);
+        });
+
+        it('answers null while no run has settled', () => {
+            expect(newestTerminalExit([followUp({ status: 'running' })])).toBeNull();
+        });
+    });
+});
+
+describe('TaskOutcome', () => {
+    it('renders above the conversation in DOM order, as an expanded native disclosure', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html.indexOf('task-outcome')).toBeGreaterThan(-1);
+        expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-conversation'));
+        expect(html).toMatch(/<details[^>]*class="task-outcome[^"]*"[^>]*open/);
+        expect(html).toContain('<h2>Outcome</h2>');
+        // The conversation names itself too: heading-by-heading navigation has to reach the
+        // page's dominant panel, not just the summary beside it.
+        expect(html).toMatch(/task-conversation[^>]*"[^>]*>[\s\S]{0,80}?<h2>Conversation<\/h2>/);
+    });
+
+    it('shows the current status, the closure attribution and the newest terminal exit', () => {
+        const html = renderDetail({
+            jobs: [
+                job({ status: 'failed', exitCode: 1 }),
+                job({
+                    id: '22222222-2222-4222-8222-222222222222',
+                    status: 'stopped',
+                    exitCode: 0,
+                    doneBy: { id: 'u', login: 'kim', name: null, avatarUrl: null },
+                    stoppedBy: { id: 'u', login: 'lee', name: null, avatarUrl: null },
+                }),
+            ],
+        });
+        expect(html).toContain('stopped');
+        expect(html).toContain('done by kim');
+        expect(html).toContain('stopped by lee');
+        expect(html).toContain('exit 0');
+    });
+
+    it('names the root author as Started by, unknown when nobody is recorded', () => {
+        const author = { id: 'u', login: 'kim', name: 'Kim Doe', avatarUrl: null };
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');
+        expect(renderDetail({ jobs: [job({ author })] })).toContain('Kim Doe');
+        expect(renderDetail({ jobs: [job()] })).toContain('unknown');
+    });
+
+    it('carries the task wall clock under the em-dash convention', () => {
+        const banked = renderDetail({ jobs: [job({ taskWallClockMs: 3_600_000 })] });
+        expect(banked).toContain('1h');
+        const unbanked = renderDetail({ jobs: [job()] });
+        expect(unbanked).toContain('Wall clock');
+    });
+
+    it('renders repository, worktree, executor — omitting the absent rows', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    repo: 'acme/web',
+                    workspacePath: 'repos/web',
+                    executor: 'main',
+                    workflowName: 'fix-issue',
+                    workflowNode: 'implement',
+                }),
+            ],
+        });
+        expect(html).toContain('Repository');
+        expect(html).toContain('acme/web');
+        expect(html).toContain('<dt>Worktree</dt><dd>repos/web</dd>');
+        expect(html).toContain('Executor');
+        expect(html).toContain('main');
+        expect(html).toContain('Workflow');
+        expect(html).toContain('fix-issue');
+        expect(html).toContain('Workflow node');
+        expect(html).toContain('implement');
+
+        const bare = renderDetail({ jobs: [job()] });
+        expect(bare).not.toContain('Repository');
+        expect(bare).not.toContain('Worktree');
+        expect(bare).not.toContain('Workflow node');
+        expect(bare).not.toContain('fix-issue');
+    });
+
+    it('names the default executor when the run carries none', () => {
+        expect(renderDetail({ jobs: [job()] })).toContain('Default executor');
+    });
+
+    it('renders the frozen workflow name and the node as different concepts', () => {
+        const html = renderDetail({ jobs: [job({ workflowName: 'fix-issue', workflowNode: 'implement' })] });
+        const name = html.indexOf('fix-issue');
+        const node = html.indexOf('implement');
+        expect(name).toBeGreaterThan(-1);
+        expect(node).toBeGreaterThan(-1);
+        expect(name).not.toBe(node);
+    });
+
+    it('shows thread context and cost, and fabricates neither', () => {
+        const measured = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        contextTokens: 3000,
+                        costUsd: 0.01,
+                    },
+                }),
+            ],
+        });
+        expect(measured).toContain('3,000 tok');
+        expect(measured).toContain('$0.0100');
+
+        const bare = renderDetail({ jobs: [job()] });
+        expect(bare).not.toContain('Context');
+        expect(bare).not.toContain('Cost');
+        expect(bare).not.toContain('0 tok');
+        expect(bare).not.toContain('$0.00');
+    });
+
+    it('summarizes the NEWEST run gates only, with words carrying the meaning', () => {
+        const gates = [
+            { name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' },
+            { name: 'lint', status: 'failed' as const, exitCode: 1, output: 'bad' },
+            { name: 'build', status: 'running' as const, exitCode: null, output: null },
+        ];
+        const html = renderDetail({
+            jobs: [job({ gates }), job({ id: '44444444-4444-4444-8444-444444444444', gates: null })],
+        });
+        expect(html).not.toContain('View checks');
+        const counted = renderDetail({ jobs: [job({ gates })] });
+        expect(counted).toContain('1 passed');
+        expect(counted).toContain('1 failed');
+        expect(counted).toContain('1 running');
+        // Gate output stays on the run — the outcome's own slice never duplicates it.
+        const outcome = counted.slice(counted.indexOf('task-outcome'), counted.indexOf('task-conversation'));
+        expect(outcome).not.toContain('ok');
+    });
+
+    it('renders the published branch code-styled, linking only a safe url', () => {
+        const linked = renderDetail({
+            jobs: [job({ output: '[driver] published fix/44 — https://github.com/o/r/pull/9' })],
+        });
+        expect(linked).toContain('<code>fix/44</code>');
+        expect(linked).toContain('Open pull request');
+        expect(linked).toContain('rel="noopener noreferrer"');
+        expect(linked).not.toContain('PR state');
+
+        const unsafe = renderDetail({
+            jobs: [job({ output: '[driver] published fix/5 — javascript:alert(1)' })],
+        });
+        expect(unsafe).toContain('<code>fix/5</code>');
+        expect(unsafe).not.toContain('<a href="javascript:');
+    });
+
+    it('shows a branch without a url as the branch alone', () => {
+        const html = renderDetail({ jobs: [job({ output: '[driver] published task/20260910' })] });
+        expect(html).toContain('<code>task/20260910</code>');
+        expect(html).not.toContain('Open pull request');
+    });
+
+    it('links Open issue only when the repository makes the url constructible', () => {
+        const linked = renderDetail({ jobs: [job({ repo: 'acme/web', command: 'fix #44 please' })] });
+        expect(linked).toContain('Open issue #44');
+        expect(linked).toContain('href="https://github.com/acme/web/issues/44"');
+        const unlinked = renderDetail({ jobs: [job({ command: 'fix #44 please' })] });
+        expect(unlinked).not.toContain('Open issue');
+        expect(unlinked).toContain('#44');
+    });
+
+    it('renders the newest attempt services as last-reported states, collapsing past three', () => {
+        const services = [
+            { name: 'timescale', image: 'timescale', state: 'running' },
+            { name: 'api', image: 'api', state: 'exited' },
+            { name: 'web', image: 'web', state: 'running' },
+        ];
+        const html = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        services,
+                    },
+                }),
+            ],
+        });
+        expect(html).toContain('timescale');
+        expect(html).toContain('exited');
+        const more = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        services: [...services, { name: 'db2', image: 'db2', state: 'running' }],
+                    },
+                }),
+            ],
+        });
+        expect(more).toContain('and 1 more');
+        // An older attempt's fleet is long gone — the outcome reads the newest attempt only.
+        const stale = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+                    },
+                }),
+                job({ id: '22222222-2222-4222-8222-222222222222' }),
+            ],
+        });
+        expect(stale).not.toContain('Services');
+        expect(stale).not.toContain('<dt>db</dt>');
+        expect(renderDetail({ jobs: [job()] })).not.toContain('Services');
+    });
+
+    it('never emits placeholder values anywhere in the outcome', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    author: { id: 'u', login: 'kim', name: null, avatarUrl: null },
+                    gates: [{ name: 'test', status: 'passed', exitCode: 0, output: null }],
+                    output: '[driver] published fix/44 — https://github.com/o/r/pull/9',
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        contextTokens: 100,
+                        costUsd: 0.5,
+                    },
+                    workflowName: 'fix-issue',
+                    workflowNode: 'implement',
+                    repo: 'acme/web',
+                    workspacePath: 'repos/web',
+                }),
+            ],
+        });
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+describe('TaskRun', () => {
+    const root = job({ command: 'first command' });
+    const child = (over: Partial<Job> = {}): Job => ({
+        ...job(),
+        id: '44444444-4444-4444-8444-444444444444',
+        followUpTo: root.id,
+        rootJobId: root.id,
+        command: 'second command',
+        ...over,
+    });
+    /** One run's article slice — the markup between its marker and its close. */
+    const articleOf = (html: string, marker: string): string => {
+        const start = html.indexOf(marker);
+        return html.slice(start, html.indexOf('</article>', start));
+    };
+    const runtime = (over: Partial<RuntimeVitals> = {}): RuntimeVitals => ({
+        cpuPercent: null,
+        memUsedMb: null,
+        memPercent: null,
+        activity: null,
+        sampledAt: '2026-09-01T12:02:00.000Z',
+        ...over,
+    });
+
+    it('labels the root run Request and every later run Follow-up, oldest first', () => {
+        const html = renderDetail({ jobs: [root, child()] });
+        expect(html.indexOf('>Request<')).toBeGreaterThan(-1);
+        expect(html.indexOf('>Request<')).toBeLessThan(html.indexOf('>Follow-up<'));
+        expect(html.match(/<article/g)?.length).toBe(2);
+    });
+
+    it('a running run with activity reads the activity sentence, not a verdict', () => {
+        const html = articleOf(
+            renderDetail({ jobs: [job({ status: 'running', runtime: runtime({ activity: '→ Bash npm test' }) })] }),
+            'Agent activity'
+        );
+        expect(html).toContain('→ Bash npm test');
+    });
+
+    it('a running run with output renders it live and bounded, after the activity', () => {
+        const html = articleOf(
+            renderDetail({
+                jobs: [
+                    job({
+                        status: 'running',
+                        runtime: runtime({ activity: 'reading logs' }),
+                        output: 'tail line\nnewer tail line',
+                    }),
+                ],
+            }),
+            'Agent activity'
+        );
+        expect(html).toContain('<pre class="chat-output"');
+        expect(html).toContain('newer tail line');
+        expect(html.indexOf('reading logs')).toBeLessThan(html.indexOf('<pre'));
+    });
+
+    it('a queued or running run without output is waiting for the executor', () => {
+        expect(renderDetail({ jobs: [job({ status: 'queued', startedAt: null, finishedAt: null })] })).toContain(
+            'Waiting for the executor…'
+        );
+        expect(renderDetail({ jobs: [job({ status: 'running', output: null })] })).toContain(
+            'Waiting for the executor…'
+        );
+    });
+
+    it('a terminal run renders its stored summary as flowing prose, the primary response', () => {
+        const html = articleOf(renderDetail({ jobs: [job({ summary: 'Fixed the login retry.' })] }), 'Agent response');
+        expect(html).toContain('run-summary');
+        expect(html).toContain('Fixed the login retry.');
+        expect(html).not.toContain('<pre');
+    });
+
+    it('a terminal run with summary and output shows the summary first, output collapsed', () => {
+        const html = articleOf(
+            renderDetail({ jobs: [job({ summary: 'Fixed the login retry.', output: 'raw lines' })] }),
+            'Agent response'
+        );
+        expect(html.indexOf('Fixed the login retry.')).toBeLessThan(html.indexOf('View raw output'));
+        const output = html.slice(html.indexOf('<details'));
+        expect(output).toContain('run-output');
+        expect(output).not.toMatch(/<details[^>]*open/);
+    });
+
+    it('a terminal run without a summary says so, and shows its output expanded', () => {
+        const html = articleOf(renderDetail({ jobs: [job({ output: 'raw lines' })] }), 'Agent response');
+        expect(html).toContain('No agent summary was captured.');
+        expect(html.slice(html.indexOf('No agent summary'))).toMatch(/<details[^>]*open/);
+        expect(html).toContain('raw lines');
+    });
+
+    it('a terminal run with neither summary nor output carries the explanatory copy', () => {
+        expect(renderDetail({ jobs: [job({ output: null })] })).toContain(
+            'This run finished without a captured agent response. Check its exit status and checks below.'
+        );
+    });
+
+    it('keeps gates attached to the run that produced them', () => {
+        const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
+        const html = renderDetail({ jobs: [{ ...root, gates }, child()] });
+        expect(articleOf(html, 'first command')).toContain('chat-gates');
+        expect(articleOf(html, 'second command')).not.toContain('chat-gates');
+    });
+
+    it('renders the per-run publication beside its run checks, under a stable anchor', () => {
+        const html = renderDetail({
+            jobs: [
+                job({ gates: [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }] }),
+                child({ output: '[driver] published fix/2 — https://github.com/o/r/pull/2' }),
+            ],
+        });
+        const second = articleOf(html, 'second command');
+        expect(second).toContain('id="run-2-checks"');
+        expect(second).toContain('tabindex="-1"');
+        expect(second).toContain('run-publish');
+        expect(second).toContain('<code>fix/2</code>');
+    });
+
+    it('the outcome links View checks in run N only when the newest run has gates', () => {
+        const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
+        const linked = renderDetail({ jobs: [job({ gates })] });
+        expect(linked).toContain('View checks in run 1');
+        expect(linked).toContain('href="#run-1-checks"');
+        expect(renderDetail({ jobs: [job(), child()] })).not.toContain('View checks');
+    });
+
+    it('metadata follows the work in markup order, and omits what the run does not carry', () => {
+        const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
+        const html = renderDetail({
+            jobs: [
+                job({
+                    executor: 'main',
+                    workflowName: 'fix-issue',
+                    workflowNode: 'implement',
+                    gates,
+                    runtime: runtime({ contextTokens: 3000, costUsd: 0.01 }),
+                }),
+            ],
+        });
+        const article = articleOf(html, 'fix the flaky login test');
+        const workAt = article.indexOf('run-work');
+        const metaAt = article.indexOf('msg-meta', workAt);
+        expect(workAt).toBeGreaterThan(-1);
+        expect(metaAt).toBeGreaterThan(workAt);
+        expect(article).toContain('workflow fix-issue');
+        expect(article).toContain('node implement');
+        expect(article).toContain('4m');
+        expect(article).toContain('exit 0');
+        expect(article).toContain('ctx 3,000 tok');
+        expect(article).toContain('$0.0100');
+
+        const bare = articleOf(renderDetail({ jobs: [job()] }), 'first command');
+        expect(bare).not.toContain('workflow');
+        expect(bare).not.toContain('node ');
+        expect(bare).not.toContain('ctx');
+    });
+
+    it('carries the stop and done attributions, and the parked marker, in the footer', () => {
+        const stopped = articleOf(
+            renderDetail({
+                jobs: [job({ status: 'stopped', stoppedBy: { id: 'u', login: 'lee', name: null, avatarUrl: null } })],
+            }),
+            'fix the flaky login test'
+        );
+        expect(stopped).toContain('stopped by lee');
+        const requested = articleOf(
+            renderDetail({
+                jobs: [job({ status: 'running', stoppedBy: { id: 'u', login: 'lee', name: null, avatarUrl: null } })],
+            }),
+            'fix the flaky login test'
+        );
+        expect(requested).toContain('stop requested by lee');
+        const done = articleOf(
+            renderDetail({ jobs: [job({ doneBy: { id: 'u', login: 'kim', name: null, avatarUrl: null } })] }),
+            'fix the flaky login test'
+        );
+        expect(done).toContain('done by kim');
+        expect(articleOf(renderDetail({ jobs: [job({ status: 'standby' })] }), 'fix the flaky login test')).toContain(
+            'parked'
+        );
+    });
+
+    it('renders the prompt as prose with preserved line breaks, never as mono code', () => {
+        const html = renderDetail({ jobs: [job({ command: 'line one\nline two' })] });
+        const article = articleOf(html, 'msg-user');
+        expect(article).toContain('msg-user');
+        expect(article).not.toContain('<pre');
+        expect(article).toContain('line two');
+    });
+
+    it('keeps summary and output as untrusted text', () => {
+        const html = renderDetail({
+            jobs: [job({ summary: '**bold** and <script>alert(1)</script>', output: '<script>alert(1)</script>' })],
+        });
+        expect(html).not.toContain('<script>');
+        expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('output wells are keyboard scrollable, and the live well carries a label', () => {
+        // A clipped well nobody can focus is a log nobody can read: the pre itself is the
+        // focusable scroll target, and the live one — whose only visible label sits above it —
+        // is named by its wrapping region.
+        const live = renderDetail({
+            jobs: [job({ status: 'running', output: 'tail', runtime: runtime({ activity: 'working' }) })],
+        });
+        expect(live).toMatch(/<section[^>]*class="run-well"[^>]*aria-label="Raw output"[^>]*>\s*<pre[^>]*tabindex="0"/);
+
+        const finished = articleOf(
+            renderDetail({
+                jobs: [
+                    job({
+                        output: 'raw lines',
+                        gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'gate log' }],
+                    }),
+                ],
+            }),
+            'Agent response'
+        );
+        expect(finished).toContain('tabindex="0"');
+        expect(finished.match(/tabindex="0"/g)?.length).toBe(2);
+    });
+});
+
+describe('follow-up composer', () => {
+    it('labels the composer Ask for a follow-up, with its helper and the shortcut visible', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html).toContain('Ask for a follow-up');
+        expect(html).toContain('The agent continues the same task, checkout, executor, and session.');
+        expect(html).toContain('Ctrl/⌘ + Enter');
+        expect(html).toMatch(/<label[^>]*for="follow-up-command"/);
+        expect(html).toContain('id="follow-up-command"');
+    });
+
+    it('carries the placeholder and the send copy, including the sending state', () => {
+        expect(renderDetail({ jobs: [job()] })).toContain('Describe the adjustment…');
+        expect(renderDetail({ jobs: [job()] })).toContain('Send follow-up');
+        expect(renderDetail({ jobs: [job()], sending: true })).toContain('Sending…');
+    });
+
+    it('a terminal open sessionless run explains itself and links Start a new task', () => {
+        const html = renderDetail({ jobs: [job({ sessionId: null })] });
+        expect(html).toContain('no agent session to continue');
+        expect(html).toContain('href="/tasks/new"');
+        expect(html).toContain('Start a new task');
+        expect(html).not.toContain('Ask for a follow-up');
+    });
+
+    it('a closed task renders no composer and no sessionless note', () => {
+        const html = renderDetail({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
+        expect(html).not.toContain('Ask for a follow-up');
+        expect(html).not.toContain('no agent session to continue');
     });
 });
 

@@ -113,7 +113,7 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done` | Task state as one painted pixel; running/stopping breathe (halo via `lamp-glow`) |
 | App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: sticky, raised, no `h1`; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
 | Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The routed page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail (issue 159) |
-| Grids | `two-up`, `task-layout` | Two-panel dashboards; conversation + sidebar |
+| Grids | `two-up`, `task-layout` | Two-panel dashboards; the task page's outcome + conversation grid (`task-outcome`/`task-conversation` are its areas) |
 
 `PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer (issue 159): every
 routed page renders exactly one of them, and the `h1` it wraps is the page's only `h1` — panel
@@ -185,13 +185,15 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit`, `chat-detail` | One turn: prompt, metadata, exit code |
+| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
+| Run article | `run-label`, `run-summary`, `run-output`, `run-well`, `run-work`, `run-publish` | One run's sections in reading order: labels (Request / Follow-up / Agent response / activity), the stored summary as flowing prose, the raw-output disclosure (collapsed behind a summary, expanded when it is all there is), the checks-and-publication focus anchor, the publish line |
 | Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
 | Gates | `chat-gates`, `chat-gate-list`, `gate-passed`, `gate-failed`, `gate-running` | The verification-gate tree |
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose`, `composer-field`, `composer-fields`, `composer-grid`, `composer-helper`, `composer-preflight`, `composer-start`, `composer-blocker`, `composer-param-error`, `composer-param-details` | The message input and its row; `task-compose` is the full-page variant. The guided composer (#176) stacks label-above-control `composer-field` groups — prompt, execution context in a `composer-grid` (one column until 768px), the workflow select, and the `composer-fields` parameter inputs — each with `composer-helper` guidance, a `composer-preflight` sentence before the `composer-start` action row (button, `kbd` shortcut, `composer-blocker` reason), per-field `composer-param-error` lines, and the raw rule only inside `composer-param-details`. A failed field tints its `.composer-select` edge via `aria-invalid` |
-| Task head | `task-actions`, `task-layout`, `task-queued-by`, `task-avatar` | The task's action row (now inside the page header), the two-column frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
+| Outcome | `task-outcome`, `task-outcome-summary`, `task-outcome-body`, `task-outcome-label` | The task page's summary disclosure: result, execution, verification, published work, services — one `<details>`, expanded by default, whose grid area flips from above the conversation (narrow) to a bounded right column (≥1024px) without a second component |
+| Task head | `task-actions`, `task-layout`, `task-avatar` | The task's action row (now inside the page header), the outcome/conversation grid frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
 | Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
 
 ### Environment panel
@@ -257,9 +259,10 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TrackedOrgsPanel.tsx` | panel, login-button |
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, composer-field, composer-grid, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, kbd, chat-resume, task-compose |
-| `TaskDetail.tsx` | task-layout, chat, gate, composer, pill |
+| `TaskDetail.tsx` | task-layout, task-conversation, panel-head, panel, composer, status, muted |
 | `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done |
-| `TaskSide.tsx` | panel, pill, chat-done, chat-exit, msg-meta, task-avatar |
+| `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
+| `TaskRun.tsx` | chat-exchange, run-label, run-summary, run-output, run-well, run-work, run-publish, msg-user, msg-meta, chat-runtime, chat-activity, chat-exit, chat-done, chat-stop, chat-gates, chat-gate-list, gate-passed, gate-failed, gate-running, chat-output, pill, muted, code |
 | `TaskUsagePanel.tsx` | data, align-end, muted |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |

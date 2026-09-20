@@ -1,88 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
-import { taskTime } from '../format.js';
-import { TaskSide } from './TaskSide.js';
-
-/**
- * One run's verification gates, as the reader meets them: a collapsible "Checks" list, one row per
- * gate with its status, each row expanding to the gate's output.
- *
- * Native `<details>`, deliberately: collapsible with zero JavaScript, and visible to the
- * render-to-string suite. There is deliberately no history control — the board stores the
- * current/last state only, so the list is exactly what this run last reported.
- */
-function Checks({ gates }: { gates: GateCheck[] }) {
-    return (
-        <details className="chat-gates">
-            <summary>
-                Checks{' '}
-                <span className="pill gate-passed">{gates.filter((g) => g.status === 'passed').length} passed</span>
-                <span className="pill gate-failed">{gates.filter((g) => g.status === 'failed').length} failed</span>
-                <span className="pill gate-running">{gates.filter((g) => g.status === 'running').length} running</span>
-            </summary>
-            <ul className="chat-gate-list">
-                {gates.map((gate) => (
-                    <li key={gate.name}>
-                        <details>
-                            <summary>
-                                <span>{gate.name}</span>
-                                <span className={`pill gate-${gate.status}`}>{gate.status}</span>
-                                {gate.exitCode !== null ? (
-                                    <span className="chat-exit">exit {gate.exitCode}</span>
-                                ) : null}
-                            </summary>
-                            {gate.output !== null ? <pre className="chat-output">{gate.output}</pre> : null}
-                        </details>
-                    </li>
-                ))}
-            </ul>
-        </details>
-    );
-}
-
-/** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
-const tokenCount = new Intl.NumberFormat('en-US');
-
-/**
- * The running attempt's sampled container vitals — CPU and memory — rendered above the output
- * while the run is going only. A finished run's last sample is a post-mortem detail; the verdict
- * and the exit code are what the reader wants there, and a stale "cpu 167%" beside them lies about
- * a run that is no longer going. (The agent's current activity line lives in the status sidebar,
- * the task summary at the top of this view, and the nav's task-tree summary — "currently running
- * task", wherever the task is met.) Null — or absent — numbers mean the sample could not read
- * them this round: a services-only sample renders no pills rather than pills that lie with zeros.
- * Absent is its own case because the board's key-wise merge omits unreadable halves instead of
- * storing nulls.
- */
-function Runtime({ runtime }: { runtime: RuntimeVitals }) {
-    if (runtime.cpuPercent == null && runtime.memUsedMb == null) return null;
-    return (
-        <p className="chat-runtime">
-            {runtime.cpuPercent != null ? <span className="pill">cpu {Math.round(runtime.cpuPercent)}%</span> : null}
-            {runtime.memUsedMb != null ? (
-                <span className="pill">
-                    mem {Math.round(runtime.memUsedMb)} MiB
-                    {runtime.memPercent != null ? ` (${Math.round(runtime.memPercent)}%)` : ''}
-                </span>
-            ) : null}
-        </p>
-    );
-}
+import { Link } from 'react-router-dom';
+import { isTerminal, type Job } from '../api/useJobs.js';
+import { TaskOutcome } from './TaskOutcome.js';
+import { TaskRun } from './TaskRun.js';
 
 /**
  * One task, whole: the follow-up chain rendered as ONE conversation — the root command first,
- * every adjustment after it, each with its run's verdict and output — and, while the newest run
- * can still take one, the composer to continue it.
+ * every adjustment after it, each as a `TaskRun` article reading request → response → checks →
+ * metadata — and, while the newest run can still take one, the composer to continue it. The
+ * thread-level outcome summary (`TaskOutcome`) leads the layout's DOM.
  *
  * Props in, markup out, like every panel: the detail poll lives in the page (`useThread`) and
- * this component owns only the follow-up draft. The task's title, status, clock, activity and
- * action buttons are the page header's (`TaskHeader`) — this panel is the transcript, the
- * checks, the composer and the sidebar. Follow-ups are new rows on the board (it is an audit
- * record of what ran), but they are NOT new tasks here: the chain renders top to bottom in this
- * one view, and sending an adjustment extends it in place.
- *
- * Output is rendered as text — a container's stdout is arbitrary bytes, and the Remote Control
- * ones are a captured TUI — so it travels in a `<pre>` and never as markup.
+ * this component owns only the follow-up draft and the live-output tail. The task's title,
+ * status, clock, activity and action buttons are the page header's (`TaskHeader`). Follow-ups
+ * are new rows on the board (it is an audit record of what ran), but they are NOT new tasks
+ * here: the chain renders top to bottom in this one view, and sending an adjustment extends it
+ * in place.
  */
 export function TaskDetail({
     jobs,
@@ -103,10 +36,9 @@ export function TaskDetail({
     const [draft, setDraft] = useState('');
     const outputRef = useRef<HTMLPreElement | null>(null);
 
-    // The conversation continues on the newest run: the composer, the Done verdict and the
-    // live-output scroll all belong to it. Older runs are history — their Done is someone
-    // else's to click, and their output never grows again. Computed before the early return,
-    // because the scroll effect below needs it on every render.
+    // The conversation continues on the newest run: the composer, the live-output tail and the
+    // Done verdict all belong to it. Older runs are history — their output never grows again.
+    // Computed before the early return, because the scroll effect below needs it on every render.
     const latest = jobs === null || jobs.length === 0 ? null : jobs[jobs.length - 1];
 
     // The output streams in while the newest run goes (the driver flushes tails to the board, and
@@ -131,11 +63,8 @@ export function TaskDetail({
 
     // The run ending is not the task ending: the member can ask for an adjustment or close the
     // task by hand. Neither exists once they have said done. The assertion is sound: the early
-    // return above guarantees a non-empty chain, and `latestTask` is its newest member. (Named
-    // apart from the per-run `task` in the map below, which shadows it otherwise.)
+    // return above guarantees a non-empty chain, and `latestTask` is its newest member.
     const latestTask = latest as Job;
-    // The thread arrives oldest first, so its first member is the ROOT — the page header names
-    // the task after it. The turn below renders the whole command.
     // A follow-up continues the newest run's agent session, and the board refuses one for a run
     // that never reported a session — every run whose driver died before reporting — with 409
     // NO_SESSION. Offering the composer there would be a control that can only fail, so the page
@@ -152,108 +81,71 @@ export function TaskDetail({
     };
 
     return (
-        <div className="task-layout">
-            <section className="panel">
-                {actionError !== null ? <p className="status">{actionError}</p> : null}
-                {jobs.map((task) => {
-                    // The newest run's statuses live in the sidebar — one status surface for the
-                    // whole task, fed by the run the composer and Done act on. History runs keep
-                    // theirs inline: the sidebar does not carry their per-run verdicts, and
-                    // deleting these would erase what each attempt was.
-                    const history = task.id !== latestTask.id;
-                    return (
-                        <article className="chat-exchange" key={task.id}>
-                            <p className="msg-user">{task.command}</p>
-                            <p className="msg-meta">
-                                {history ? <span className="pill">{task.status}</span> : null}
-                                {history && task.workflowNode !== null ? (
-                                    <span className="pill">{task.workflowNode}</span>
-                                ) : null}
-                                {history && task.executor !== null ? (
-                                    <span className="pill">{task.executor}</span>
-                                ) : null}
-                                {history && task.doneAt !== null ? <span className="pill chat-done">done</span> : null}
-                                {history && task.exitCode !== null ? (
-                                    <span className="chat-exit">exit {task.exitCode}</span>
-                                ) : null}
-                                {/* The verdict's actor, whenever the row carries one — a fact of the
-                                run, not of its liveness, so the newest turn shows it too. The stop
-                                is stamped at REQUEST time and outlives the settle (complete clears
-                                the flag, never the actor), so the status decides whether the ask
-                                landed: "stopped" only on a row that settled stopped, "stop
-                                requested" on one still moving or finished on its own. */}
-                                {task.stoppedBy !== null ? (
-                                    <span className="pill chat-stop">
-                                        {task.status === 'stopped' ? 'stopped by' : 'stop requested by'}{' '}
-                                        {task.stoppedBy.login}
-                                    </span>
-                                ) : null}
-                                {task.doneBy !== null ? (
-                                    <span className="pill chat-done">done by {task.doneBy.login}</span>
-                                ) : null}
-                                <span className="muted">{taskTime(task.createdAt)}</span>
-                                {task.runtime?.contextTokens != null ? (
-                                    <span className="chat-activity">
-                                        ctx {tokenCount.format(task.runtime.contextTokens)} tok
-                                        {task.runtime.costUsd != null && task.runtime.costUsd > 0
-                                            ? ` · $${task.runtime.costUsd.toFixed(4)}`
-                                            : ''}
-                                    </span>
-                                ) : null}
-                                {task.status === 'standby' ? <span className="pill">parked</span> : null}
-                            </p>
-                            <div className="chat-detail">
-                                {task.status === 'running' && task.runtime ? <Runtime runtime={task.runtime} /> : null}
-                                {task.gates !== undefined && task.gates !== null && task.gates.length > 0 ? (
-                                    <Checks gates={task.gates} />
-                                ) : null}
-                                {task.output !== null ? (
-                                    <pre
-                                        ref={task.id === latestTask.id ? outputRef : undefined}
-                                        className="chat-output"
-                                    >
-                                        {task.output}
-                                    </pre>
-                                ) : isTerminal(task.status) ? (
-                                    <p className="muted">No output recorded.</p>
-                                ) : (
-                                    <p className="muted">Waiting for the executor…</p>
-                                )}
-                            </div>
-                        </article>
-                    );
-                })}
-                {canFollowUp ? (
-                    <div className="composer">
-                        <textarea
-                            className="composer-input"
-                            placeholder="Describe the adjustment…"
-                            value={draft}
-                            onChange={(e) => setDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
-                            }}
-                        />
-                        <div className="composer-row">
-                            <button
-                                type="button"
-                                className="primary"
-                                disabled={!draft.trim() || sending}
-                                onClick={() => void send()}
-                            >
-                                Send
-                            </button>
-                        </div>
+        <>
+            {/* The action/thread error leads the page, above both columns — it is about the
+            reader's last ask, not about either panel's content. */}
+            {actionError !== null ? <p className="status">{actionError}</p> : null}
+            <div className="task-layout">
+                {/* The outcome summary: what happened and where, above the conversation in the
+                DOM so a narrow screen reads it first (the grid moves it right from 1024px). */}
+                <TaskOutcome jobs={jobs} />
+                <section className="task-conversation panel">
+                    {/* The conversation names itself: heading-by-heading navigation must reach
+                    the page's dominant panel, not only the summary beside it. */}
+                    <div className="panel-head">
+                        <h2>Conversation</h2>
                     </div>
-                ) : null}
-                {sessionless ? (
-                    <p className="muted">
-                        This run has no agent session to continue, so it cannot take a follow-up. Queue a new task
-                        instead.
-                    </p>
-                ) : null}
-            </section>
-            <TaskSide jobs={jobs} />
-        </div>
+                    {jobs.map((task, index) => (
+                        <TaskRun
+                            key={task.id}
+                            job={task}
+                            index={index + 1}
+                            liveRef={task.id === latestTask.id && !isTerminal(task.status) ? outputRef : undefined}
+                        />
+                    ))}
+                    {canFollowUp ? (
+                        <div className="composer">
+                            {/* A visible label and a helper sentence: the composer continues the
+                            task, it does not start a new one. */}
+                            <label className="composer-label" htmlFor="follow-up-command">
+                                Ask for a follow-up
+                            </label>
+                            <p className="composer-label">
+                                The agent continues the same task, checkout, executor, and session.
+                            </p>
+                            <textarea
+                                id="follow-up-command"
+                                className="composer-input"
+                                placeholder="Describe the adjustment…"
+                                value={draft}
+                                onChange={(e) => setDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
+                                }}
+                            />
+                            <div className="composer-row">
+                                {/* The shortcut is written down, and it is the same guarded path
+                                the button takes — one send logic, two ways in. */}
+                                <span className="composer-label">Ctrl/⌘ + Enter</span>
+                                <button
+                                    type="button"
+                                    className="primary"
+                                    disabled={!draft.trim() || sending}
+                                    onClick={() => void send()}
+                                >
+                                    {sending ? 'Sending…' : 'Send follow-up'}
+                                </button>
+                            </div>
+                        </div>
+                    ) : null}
+                    {sessionless ? (
+                        <p className="muted">
+                            This run has no agent session to continue, so it cannot take a follow-up.{' '}
+                            <Link to="/tasks/new">Start a new task</Link>
+                        </p>
+                    ) : null}
+                </section>
+            </div>
+        </>
     );
 }
