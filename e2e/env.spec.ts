@@ -53,7 +53,9 @@ test.describe('environment editors', () => {
         await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
 
         await page.goto('/settings/repos');
-        await expect(page.getByRole('heading', { name: 'Per repository' })).toBeVisible({ timeout: 60_000 });
+        // The per-repository editor (#150) moved behind a row's Configure action (#181); with no
+        // installation rows the offline board cannot reach it, so this pins the page itself.
+        await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
         const reposText = await page.locator('main').innerText();
         for (const token of FORBIDDEN) expect(reposText, `repos section contains ${token}`).not.toContain(token);
         await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
