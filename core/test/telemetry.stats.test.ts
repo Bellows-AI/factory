@@ -61,10 +61,14 @@ describe('totals, recomputed by hand', () => {
         expect(stats.totals.activeHours).toBeCloseTo(seconds / 3600, 9);
     });
 
-    it('matches on the edit accept ratio', () => {
+    it('matches on edit acceptance, recomputed by hand', () => {
         const accepted = inScope.reduce((s, x) => s + (x.editsAccepted ?? 0), 0);
         const rejected = inScope.reduce((s, x) => s + (x.editsRejected ?? 0), 0);
-        expect(stats.totals.acceptRatio).toBeCloseTo(accepted / (accepted + rejected), 12);
+        const ea = stats.totals.editAcceptance;
+        expect(ea.accepted).toBe(accepted);
+        expect(ea.rejected).toBe(rejected);
+        expect(ea.decisions).toBe(accepted + rejected);
+        expect(ea.ratio).toBeCloseTo(accepted / (accepted + rejected), 12);
     });
 });
 
@@ -85,9 +89,10 @@ describe('output invariants', () => {
     });
 
     it('keeps every ratio null or within [0,1]', () => {
-        if (stats.totals.acceptRatio === null) return;
-        expect(stats.totals.acceptRatio).toBeGreaterThanOrEqual(0);
-        expect(stats.totals.acceptRatio).toBeLessThanOrEqual(1);
+        const ea = stats.totals.editAcceptance;
+        if (ea.ratio === null) return;
+        expect(ea.ratio).toBeGreaterThanOrEqual(0);
+        expect(ea.ratio).toBeLessThanOrEqual(1);
     });
 
     it('contains no NaN anywhere', () => {
@@ -138,22 +143,57 @@ describe('the null-not-zero contract', () => {
         );
         expect(empty.totals.sessions).toBe(0);
         expect(empty.totals.tokens.input).toBeNull();
-        expect(empty.totals.acceptRatio).toBeNull();
+        expect(empty.totals.editAcceptance).toEqual({ accepted: null, rejected: null, decisions: null, ratio: null });
         expect(empty.series.points).toEqual([]);
     });
+});
 
-    it('returns a null accept ratio when nothing was measured, and 1 when everything was accepted', () => {
-        const nothing = telemetryStats(
-            { sessions: [session({ editsAccepted: null, editsRejected: null })], coverage: { from: null, to: null } },
+describe('edit acceptance invariants', () => {
+    const withEdits = (accepted: number | null, rejected: number | null) =>
+        telemetryStats(
+            {
+                sessions: [session({ editsAccepted: accepted, editsRejected: rejected })],
+                coverage: { from: null, to: null },
+            },
             { now: FIXTURE_NOW }
-        );
-        expect(nothing.totals.acceptRatio).toBeNull();
+        ).totals.editAcceptance;
 
-        const all = telemetryStats(
-            { sessions: [session({ editsAccepted: 5, editsRejected: 0 })], coverage: { from: null, to: null } },
+    it('reports wholly unmeasured input as four nulls, never zeros', () => {
+        expect(withEdits(null, null)).toEqual({ accepted: null, rejected: null, decisions: null, ratio: null });
+    });
+
+    it('keeps measured zero-of-zero distinguishable from unmeasured', () => {
+        // "0 accepted edits in 0 decisions" is a real answer; the ratio still nulls on the
+        // zero denominator rather than reading as 0.
+        expect(withEdits(0, 0)).toEqual({ accepted: 0, rejected: 0, decisions: 0, ratio: null });
+    });
+
+    it('keeps the ratio null when only rejections were measured', () => {
+        // A numerator that was never measured proves nothing about acceptance, however many
+        // rejections were counted.
+        expect(withEdits(null, 3)).toEqual({ accepted: null, rejected: 3, decisions: 3, ratio: null });
+    });
+
+    it('sums mixed sessions null-aware, never folding a missing contributor to zero', () => {
+        const ea = telemetryStats(
+            {
+                sessions: [
+                    session({ sessionId: 'a', editsAccepted: 2, editsRejected: 1 }),
+                    session({ sessionId: 'b', editsAccepted: null, editsRejected: 4 }),
+                    session({ sessionId: 'c', editsAccepted: 3, editsRejected: null }),
+                ],
+                coverage: { from: null, to: null },
+            },
             { now: FIXTURE_NOW }
-        );
-        expect(all.totals.acceptRatio).toBe(1);
+        ).totals.editAcceptance;
+        expect(ea.accepted).toBe(5);
+        expect(ea.rejected).toBe(5);
+        expect(ea.decisions).toBe(10);
+        expect(ea.ratio).toBeCloseTo(0.5, 12);
+    });
+
+    it('reads all-accepted as ratio 1', () => {
+        expect(withEdits(5, 0).ratio).toBe(1);
     });
 });
 

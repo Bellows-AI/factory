@@ -1,17 +1,19 @@
-import type { OrganizationMeta } from '@factory-ai/core';
+import type { OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { DashboardPage } from '../src/pages/DashboardPage.js';
 import { describeRepos } from '../src/format.js';
-import type { UseTasks } from '../src/api/useTasks.js';
+import type { UseJobs } from '../src/api/useJobs.js';
+import { DEFAULT_RANGE, DEFAULT_SCOPE } from '../src/components/RangeSelector.js';
 import type { RangeSelection, ScopeSelection } from '../src/components/RangeSelector.js';
-import type { StatsPayload } from '../src/api/useStats.js';
+import type { FetchState, StatsPayload } from '../src/api/useStats.js';
+import type { Session } from '../src/api/useSession.js';
 
 /**
- * The telemetry that used to live in the global chrome (issue 160) now belongs to the one page
- * whose figures it describes: repo coverage, the freshness timestamp and Refresh render on the
- * dashboard and nowhere else, and the app bar stays chrome-only.
+ * The page-level contract: the toolbar and its labeled groups, the rendered-data summary that
+ * speaks for the payload, the freshness cluster, and the shared state model decided once above
+ * the panels. Static markup only — the pure helpers behind the copy have their own suites.
  */
 
 const CONFIG: OrganizationMeta = {
@@ -20,54 +22,110 @@ const CONFIG: OrganizationMeta = {
     available: [{ id: 'bellows', name: 'Bellows AI' }],
 };
 
-/** The whole meta shape, typed — the fixture drifts silently the moment a cast papers over it. */
 const META: StatsPayload['meta'] = {
     fetchedAt: '2026-08-21T12:00:00.000Z',
     ageSeconds: 0,
     stale: false,
     organization: CONFIG,
     repos: [{ owner: 'Bellows-AI', name: 'bellows.ai' }],
-    range: { preset: 'all', from: null, to: null },
+    range: { preset: 'custom', from: '2026-08-14T12:00:00.000Z', to: '2026-08-21T12:00:00.000Z' },
     scope: 'org',
     scopeLogin: null,
     telemetry: {
         status: 'ok',
         reason: null,
-        source: 'fixture',
+        source: 'postgres',
         fetchedAt: '2026-08-21T12:00:00.000Z',
         ageSeconds: 0,
         stale: false,
         repoFilter: ['Bellows-AI/bellows.ai'],
-        otherRepoSessions: 0,
-        sessionsWithoutHook: 0,
-        unattributedSessions: 0,
+        otherRepoSessions: 1,
+        sessionsWithoutHook: 1,
+        unattributedSessions: 4,
     },
-};
+} as StatsPayload['meta'];
 
-const PAYLOAD: StatsPayload = { telemetry: null, tasks: null, meta: META };
+/** A minimal "ready" telemetry: two measured sessions with real totals for the summary panel. */
+const READY_TELEMETRY = {
+    totals: {
+        sessions: 2,
+        tokens: { input: 1200, output: 300, cacheRead: 4000, cacheCreation: 100 },
+        activeHours: 1.5,
+        linesAdded: 5,
+        linesRemoved: 2,
+        editAcceptance: { accepted: 2, rejected: 1, decisions: 3, ratio: 2 / 3 },
+    },
+    otherRepoSessions: 1,
+    sessionsWithoutHook: 1,
+    unattributedSessions: 4,
+    byUser: [],
+    series: { granularity: 'day', points: [] },
+    coverage: { from: null, to: null },
+} as unknown as TelemetryStats;
 
-const fakeTasks = {
-    navigation: null,
-    items: null,
-    nextCursor: null,
-    initial: true,
-    filters: { state: 'attention', q: null, repo: null, author: null, sort: 'newest' },
-} as unknown as UseTasks;
+const NO_TELEMETRY = {
+    totals: { sessions: 0 },
+    otherRepoSessions: 0,
+    sessionsWithoutHook: 0,
+    unattributedSessions: 0,
+    byUser: [],
+    series: { granularity: 'day', points: [] },
+    coverage: { from: null, to: null },
+} as unknown as TelemetryStats;
+
+const dist = (tasks: number) => ({ avg: null, p50: null, p95: null, tasks });
+const MEASURED_TASKS: TaskUsageStats = {
+    tokensPerTask: dist(7),
+    jobTurnsPerTask: dist(7),
+    agentTurnsPerTask: dist(7),
+    wallClockPerTask: dist(7),
+} as unknown as TaskUsageStats;
+const UNMEASURED_TASKS: TaskUsageStats = {
+    tokensPerTask: dist(0),
+    jobTurnsPerTask: dist(0),
+    agentTurnsPerTask: dist(0),
+    wallClockPerTask: dist(0),
+} as unknown as TaskUsageStats;
+
+const READY: StatsPayload = { telemetry: READY_TELEMETRY, tasks: MEASURED_TASKS, meta: META };
+const EMPTY: StatsPayload = { telemetry: NO_TELEMETRY, tasks: UNMEASURED_TASKS, meta: META };
+const PARTIAL: StatsPayload = { telemetry: NO_TELEMETRY, tasks: MEASURED_TASKS, meta: META };
+const DISABLED: StatsPayload = { telemetry: null, tasks: null, meta: META };
+
+const fakeTasks = { jobs: null, error: null } as unknown as UseJobs;
+
+const GITHUB_SESSION = { mode: 'github', user: { login: 'alice' } } as unknown as Session;
+
+interface RenderOpts {
+    range?: RangeSelection;
+    scope?: ScopeSelection;
+    session?: Session | null;
+    error?: string | null;
+    progress?: FetchState | null;
+}
 
 /** The shell context with the dashboard's range/scope/refresh wiring handed over. */
-function ShellStub({ data, refreshing }: { data: StatsPayload | null; refreshing: boolean }) {
+function ShellStub({
+    data,
+    refreshing = false,
+    opts = {},
+}: {
+    data: StatsPayload | null;
+    refreshing?: boolean;
+    opts?: RenderOpts;
+}) {
     return (
         <Outlet
             context={{
                 data,
-                range: {} as RangeSelection,
+                range: opts.range ?? DEFAULT_RANGE,
                 setRange: () => {},
-                scope: {} as ScopeSelection,
+                scope: opts.scope ?? DEFAULT_SCOPE,
                 setScope: () => {},
-                session: null,
+                session: opts.session ?? null,
                 refreshing,
-                progress: null,
-                error: null,
+                progress: opts.progress ?? null,
+                error: opts.error ?? null,
                 refresh: () => {},
                 tasks: fakeTasks,
             }}
@@ -75,11 +133,11 @@ function ShellStub({ data, refreshing }: { data: StatsPayload | null; refreshing
     );
 }
 
-const render = (data: StatsPayload | null, refreshing = false) =>
+const render = (data: StatsPayload | null, opts: RenderOpts & { refreshing?: boolean } = {}) =>
     renderToStaticMarkup(
         <MemoryRouter initialEntries={['/']}>
             <Routes>
-                <Route element={<ShellStub data={data} refreshing={refreshing} />}>
+                <Route element={<ShellStub data={data} refreshing={opts.refreshing ?? false} opts={opts} />}>
                     <Route path="*" element={<DashboardPage />} />
                 </Route>
             </Routes>
@@ -109,10 +167,10 @@ describe('describeRepos', () => {
     });
 });
 
-describe('dashboard telemetry', () => {
-    it('renders the repo coverage, the freshness timestamp and Refresh in the page header', () => {
-        const html = render(PAYLOAD);
-        // The page's one h1 is the header's (issue 159); the telemetry chrome rides beside it.
+describe('page header', () => {
+    it('renders exactly one h1 from the header primitive, naming the page and its repos', () => {
+        const html = render(READY);
+        // The page's one h1 is the header's (issue 159); the telemetry chrome rides in its slots.
         expect(html.match(/<h1/g)?.length).toBe(1);
         expect(html).toContain('<h1>Usage overview</h1>');
         expect(html).toContain('page-header-description');
@@ -120,13 +178,133 @@ describe('dashboard telemetry', () => {
         expect(html).toContain('page-header-actions');
         expect(html).toContain('bellows.ai');
         expect(html).toContain('AI usage telemetry');
-        expect(html).toContain('data as of');
         expect(html).toContain('>Refresh</button>');
     });
 
-    it('answers the cold read with loading, and the refresh action with its in-flight state', () => {
-        expect(render(null)).toContain('loading…');
-        expect(render(PAYLOAD, true)).toContain('Refreshing…');
-        expect(render(PAYLOAD, true)).toContain('disabled=""');
+    it('keeps the h1 and drops the loading text while the first read is cold', () => {
+        const html = render(null);
+        expect(html.match(/<h1/g)).toHaveLength(1);
+        expect(html).toContain('AI usage telemetry');
+        expect(html).not.toContain('loading…');
+    });
+});
+
+describe('analytics toolbar', () => {
+    it('labels the Range, Scope and Repositories groups in one compact row', () => {
+        const html = render(READY);
+        for (const label of ['Range', 'Scope', 'Repositories']) expect(html).toContain(label);
+        // Read-only coverage, exact count: one repo renders as the singular.
+        expect(html).toContain('1 repository');
+    });
+
+    it('renders a read-only Organization scope in open mode, never a dead Me option', () => {
+        const html = render(READY);
+        expect(html).toContain('Organization');
+        expect(html).not.toMatch(/Me<\/button>/);
+    });
+
+    it('renders the Org/Me toggle when the session carries a personal scope', () => {
+        const html = render(READY, { session: GITHUB_SESSION });
+        expect(html).toMatch(/Org<\/button>/);
+        expect(html).toMatch(/Me<\/button>/);
+    });
+});
+
+describe('rendered-data summary', () => {
+    it('describes the payload meta as one sentence in a polite live region', () => {
+        const html = render(READY);
+        expect(html).toContain('Aug 14–21 · Organization · 1 repository');
+        expect(html).toContain('aria-live="polite"');
+    });
+
+    it('keeps describing the payload and names what it is updating to on a pending change', () => {
+        // The requested range (30 days) differs from what rendered (Aug 14–21): the sentence
+        // stays about the visible figures and appends the destination.
+        const html = render(READY, { range: { preset: 'month', from: '', to: '' } });
+        expect(html).toContain('Aug 14–21 · Organization · 1 repository');
+        expect(html).toContain('Updating to');
+    });
+});
+
+describe('last updated and Refresh', () => {
+    it('renders relative copy with the precise stamp exposed through a time element', () => {
+        const html = render(READY);
+        expect(html).toContain('Updated');
+        expect(html).toContain('dateTime="2026-08-21T12:00:00.000Z"');
+        // The precise stamp is real text (focus-revealable), not a title-only secret.
+        expect(html).toContain('updated-at-full');
+    });
+
+    it('says Not updated yet before any successful read', () => {
+        expect(render(null)).toContain('Not updated yet');
+    });
+
+    it('disables Refresh and names the in-flight state while refreshing', () => {
+        const html = render(READY, { refreshing: true });
+        expect(html).toContain('Refreshing…');
+        expect(html).toContain('disabled=""');
+    });
+});
+
+describe('the shared state model', () => {
+    it('renders one status line and no metric shells on the initial load', () => {
+        const html = render(null, { progress: { state: 'loading', startedAt: null, finishedAt: null, error: null } });
+        expect(html).toContain('Preparing telemetry');
+        expect(html).not.toContain('usage-summary');
+        expect(html).not.toContain('class="card"');
+    });
+
+    it('renders one error region and no metric shells when a read fails with no data', () => {
+        const html = render(null, { error: 'connection refused' });
+        expect(html).toContain('connection refused');
+        expect(html).not.toContain('usage-summary');
+        expect(html).not.toContain('class="card"');
+    });
+
+    it('keeps the last good data visible and names it when a later read fails', () => {
+        const html = render(READY, { error: 'connection refused' });
+        expect(html).toContain('showing the last successful');
+        expect(html).toContain('Aug 14–21 · Organization · 1 repository');
+        expect(html).toContain('usage-summary');
+    });
+
+    it('replaces every telemetry section with one coherent empty state', () => {
+        const html = render(EMPTY);
+        expect(html.match(/usage-empty/g)).toHaveLength(1);
+        expect(html).not.toContain('Usage summary');
+        expect(html).not.toContain('AI token usage');
+        expect(html).not.toContain('Usage by user');
+        expect(html).not.toContain('Per-task usage');
+    });
+
+    it('keeps Per-task usage beside the compact empty state when tasks were measured', () => {
+        const html = render(PARTIAL);
+        expect(html.match(/usage-empty/g)).toHaveLength(1);
+        expect(html).toContain('Per-task usage');
+        expect(html).not.toContain('AI token usage');
+        expect(html).not.toContain('Usage by user');
+    });
+
+    it('omits telemetry analytics entirely when the feature is switched off', () => {
+        const html = render(DISABLED);
+        expect(html).not.toContain('usage-empty');
+        expect(html).not.toContain('usage-summary');
+        expect(html).not.toContain('Per-task usage');
+    });
+
+    it('renders the recent tasks outside the stats branch, in every state', () => {
+        // Board data independence: completed jobs poll their own endpoint, so the recent-tasks
+        // view renders even while the statistics read is cold or failing.
+        expect(render(null)).toContain('Task board');
+        expect(render(READY)).toContain('Task board');
+        expect(render(EMPTY)).toContain('Task board');
+    });
+
+    it('renders the full telemetry page when the selection is ready', () => {
+        const html = render(READY);
+        expect(html).toContain('Usage summary');
+        expect(html).toContain('AI token usage');
+        expect(html).toContain('Per-task usage');
+        expect(html).toContain('Usage by user');
     });
 });

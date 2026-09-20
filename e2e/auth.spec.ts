@@ -18,7 +18,7 @@ import { finishSignIn, throughSignIn } from './signin.js';
  * serializes.
  */
 
-const cards = (page: Page) => page.locator('.cards').first().locator('.card');
+const usageGroups = (page: Page) => page.locator('.usage-summary .usage-group');
 const gate = (page: Page) => page.locator('.login-gate');
 const signIn = (page: Page) => page.getByRole('link', { name: 'Sign in with GitHub' });
 const screen = (page: Page) => page.locator('.onboarding');
@@ -54,7 +54,7 @@ const trackOnlyFirst = async (page: Page): Promise<ReportedInstallation[]> => {
     await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
     await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(cards(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
     return reported;
 };
 
@@ -65,7 +65,7 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     await expect(signIn(page)).toBeVisible();
     // The point of gating above App rather than inside it: the panels are never mounted, so no
     // request for data is ever made by somebody who could not read the answer.
-    await expect(cards(page)).toHaveCount(0);
+    await expect(usageGroups(page)).toHaveCount(0);
 });
 
 test('the document itself is served without authentication', async ({ page }) => {
@@ -99,7 +99,7 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     const kept = reported[0]!;
     await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(cards(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
 
     const me = await page.request.get('/api/auth/me');
     const body = (await me.json()) as {
@@ -123,7 +123,7 @@ test('the next sign-in reuses the stored choice without the screen (issue 125)',
 
     // Straight through: the stored choice from the sign-in above is the choice, so no screen.
     await signIn(page).click();
-    await cards(page).first().waitFor({ timeout: 60_000 });
+    await usageGroups(page).first().waitFor({ timeout: 60_000 });
     await expect(screen(page)).toHaveCount(0);
 });
 
@@ -184,7 +184,7 @@ test('signing out returns to the gate', async ({ page }) => {
     // The Headless UI Menu renders each item in the menuitem role, overriding the button's.
     await page.getByRole('menuitem', { name: 'Sign out' }).click();
     await expect(gate(page)).toBeVisible();
-    await expect(cards(page)).toHaveCount(0);
+    await expect(usageGroups(page)).toHaveCount(0);
 
     // The old cookie no longer authenticates: /me answers "nobody".
     const me = await page.request.get('/api/auth/me');
@@ -209,7 +209,7 @@ test('the org/my toggle scopes the figures to the signed-in member', async ({ pa
 
     // The toggle exists only behind a session — this board signs in, so it is here. The
     // RadioGroup's aria-label is its accessible name, and each choice is a radio.
-    const toggle = page.getByRole('radiogroup', { name: 'Whose usage' });
+    const toggle = page.getByRole('radiogroup', { name: 'Scope' });
     await expect(toggle).toBeVisible();
     await expect(toggle.getByRole('radio', { name: 'Org' })).toHaveAttribute('aria-checked', 'true');
 
@@ -222,8 +222,10 @@ test('the org/my toggle scopes the figures to the signed-in member', async ({ pa
     expect(body.meta.scopeLogin).toBe('e2e-user');
 
     // This member's org holds no seeded rows (the seed plants under the local org only), so the
-    // per-task panel renders its explicit empty state rather than zeros.
-    await expect(page.getByText('No attributed tasks in this range yet.')).toBeVisible();
+    // analytics render the ONE empty state — not zeros, not dash cards — and no per-task figures
+    // render to masquerade as measurements.
+    await expect(page.locator('.usage-empty')).toBeVisible();
+    await expect(page.getByText('Per-task usage')).toHaveCount(0);
     await page.screenshot({ path: 'artifacts/ui/scope-mine.png', fullPage: true });
 
     // Back to org: the organization selection returns from the same snapshot. `scope=org` is not

@@ -19,7 +19,7 @@ import { throughSignIn } from './signin.js';
 
 const SHOTS = 'artifacts/ui';
 
-const cards = (page: Page) => page.locator('.cards').first().locator('.card');
+const usageGroups = (page: Page) => page.locator('.usage-summary .usage-group');
 
 async function signedIn(page: Page) {
     // The shared helper: through the selection screen on the run's first sign-in, straight in
@@ -61,7 +61,7 @@ test('the left nav is there and moves between sections', async ({ page }) => {
 
     await nav.getByRole('link', { name: 'Dashboard' }).click();
     await expect(page).toHaveURL(/\/$/);
-    await expect(cards(page)).toHaveCount(5);
+    await expect(usageGroups(page)).toHaveCount(4);
 });
 
 test('reloading /settings/workspace directly serves the app rather than a 404', async ({ page }) => {

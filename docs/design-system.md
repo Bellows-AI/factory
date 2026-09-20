@@ -141,7 +141,10 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
 | Popover | `popover`, `popover-option` | The shared floating surface for the anchored Headless UI panels — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
-| Range | `range-selector`, `range-presets`, `range-option.active`, `range-custom` | The date-range picker |
+| Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166): label above control, read-only values sunken like the inputs they echo |
+| Range | `range-presets`, `range-option.active`, `range-picker`, `range-popover-root`, `range-popover`, `range-draft`, `range-draft-actions` | The date-range presets and the Custom trigger; the dates live in the anchored popover (`--line-strong` edge, z-index 30), whose draft form commits only through Apply or Clear |
+| Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar groups — mono, muted, a polite live region |
+| Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
 | Org | `org-selector`, `org-select` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
 | Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
@@ -156,6 +159,8 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | --- | --- | --- |
 | Table | `table-wrap`, `data`, `sortable`, `align-end`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks — a named, keyboard-focusable `<section>` (the region role, implicitly), so a scrolled-off column stays reachable. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. `align-end` right-aligns a numeric column's header and cells. |
 | Key-values | `kv` | The dt/dd definition grid |
+| Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's five measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order |
+| Analytics empty state | `usage-empty` | The one "nothing measured in this selection" state that replaces the dash-card chorus, naming the selection and one next action |
 | Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
 | Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
 | Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
@@ -197,9 +202,9 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 ### One-offs
 
 `identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
-the dashboard's range/scope row under the page header, which carries the telemetry caption and
-Refresh that moved here from the old global topbar (issues 160 and 159). Everything else above
-is a family; these exist because
+the dashboard's control row under the page header: the analytics toolbar, then the freshness
+stamp and Refresh that moved here from the old global topbar (issues 160 and 159). Everything
+else above is a family; these exist because
 no family fits, and a new one-off needs a sentence here saying the same.
 
 ## Inventory
@@ -212,6 +217,7 @@ Components:
 
 | File | Primitives |
 | --- | --- |
+| `AnalyticsToolbar.tsx` | analytics toolbar, rendered-data summary, range |
 | `AppBar.tsx` | appbar, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
@@ -222,11 +228,11 @@ Components:
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
-| `RangeSelector.tsx` | range |
+| `RangeSelector.tsx` | analytics toolbar, range, range-draft |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
 | `RepoPickerDialog.tsx` | picker, pill, status |
 | `RepoStatus.tsx` | pill |
-| `ScopeToggle.tsx` | range-presets |
+| `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
@@ -236,7 +242,6 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | File | Primitives |
 | --- | --- |
 | `AccessTokensPanel.tsx` | panel, status |
-| `AiUsagePanel.tsx` | cards |
 | `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
@@ -249,6 +254,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TaskUsagePanel.tsx` | data, align-end, muted |
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, swatch |
+| `UsageSummaryPanel.tsx` | metric summary, badge |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
 | `WorkspaceReposPanel.tsx` | panel, table |
 | `env-raw.ts` | helper — no markup |

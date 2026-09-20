@@ -11,11 +11,13 @@ import { expect, type Page } from '@playwright/test';
  */
 export async function finishSignIn(page: Page): Promise<void> {
     // Either outcome of the callback: the selection screen, or the dashboard straight away.
-    await page.locator('.onboarding, .cards .card').first().waitFor({ timeout: 60_000 });
+    // The dashboard's answer is the analytics anchor — the metric summary when the selection
+    // is ready, the one empty state when it is not (issue 166).
+    await page.locator('.onboarding, .usage-summary, .usage-empty').first().waitFor({ timeout: 60_000 });
     if (await page.locator('.onboarding').isVisible()) {
         await page.getByRole('button', { name: 'Continue' }).click();
     }
-    await expect(page.locator('.cards .card').first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.usage-summary, .usage-empty').first()).toBeVisible({ timeout: 60_000 });
 }
 
 export async function throughSignIn(page: Page): Promise<void> {

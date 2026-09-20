@@ -1,5 +1,6 @@
 import type { RangePreset } from '@factory-ai/core';
-import { Radio, RadioGroup } from '@headlessui/react';
+import { Popover, PopoverButton, PopoverPanel, Radio, RadioGroup } from '@headlessui/react';
+import { useState } from 'react';
 
 export interface RangeSelection {
     preset: RangePreset;
@@ -12,11 +13,10 @@ export const DEFAULT_RANGE: RangeSelection = { preset: 'all', from: '', to: '' }
 
 const PRESET_LABELS: { preset: RangePreset; label: string }[] = [
     { preset: 'day', label: 'Today' },
-    { preset: 'week', label: 'This week' },
-    { preset: '2w', label: 'Two weeks' },
-    { preset: 'month', label: 'Month' },
+    { preset: 'week', label: '7 days' },
+    { preset: '2w', label: '14 days' },
+    { preset: 'month', label: '30 days' },
     { preset: 'all', label: 'All time' },
-    { preset: 'custom', label: 'Custom' },
 ];
 
 /**
@@ -47,6 +47,103 @@ export function statsQuery(range: RangeSelection, scope: ScopeSelection): string
     return scope === 'org' ? rangeQuery(range) : `${rangeQuery(range)}&scope=mine`;
 }
 
+/**
+ * The custom-draft validity rule, shared by the Apply button's disabled state and by
+ * `applyDraft`: both bounds empty is not a range, `from` may not cross `to`, and neither bound
+ * reaches past today. One bound on its own is a legitimate half-open range — the API takes it.
+ */
+export function draftValid(draft: { from: string; to: string }, today: string): boolean {
+    if (!draft.from && !draft.to) return false;
+    if (draft.from && draft.from > today) return false;
+    if (draft.to && draft.to > today) return false;
+    if (draft.from && draft.to && draft.from > draft.to) return false;
+    return true;
+}
+
+/**
+ * The draft-commit rule: a valid draft becomes the custom selection; an invalid draft commits
+ * nothing — null, and the caller keeps whatever is committed. Cancel, Escape and outside clicks
+ * commit nothing the same way: they simply never call this.
+ */
+export function applyDraft(draft: { from: string; to: string }, today: string): RangeSelection | null {
+    if (!draftValid(draft, today)) return null;
+    return { preset: 'custom', from: draft.from, to: draft.to };
+}
+
+/** Clear abandons the custom window entirely: back to All time. */
+export function clearRange(): RangeSelection {
+    return DEFAULT_RANGE;
+}
+
+/**
+ * The popover's draft form. Draft values are LOCAL state seeded from the last committed bounds
+ * at mount — the panel unmounts when the popover closes, so reopening re-seeds from what was
+ * committed and an abandoned draft is discarded. Typing here never issues a request; only Apply
+ * (a valid draft, committed once) and Clear (back to All time) commit, and both close.
+ */
+export function RangeDraft({
+    committed,
+    today,
+    onApply,
+    onClose,
+}: {
+    committed: { from: string; to: string };
+    today: string;
+    onApply: (next: RangeSelection) => void;
+    onClose: () => void;
+}) {
+    const [draft, setDraft] = useState(committed);
+    const apply = () => {
+        const next = applyDraft(draft, today);
+        if (next) onApply(next);
+        onClose();
+    };
+    return (
+        <div className="range-draft">
+            <label>
+                From
+                <input
+                    type="date"
+                    value={draft.from}
+                    max={draft.to || today}
+                    onChange={(e) => setDraft({ ...draft, from: e.target.value })}
+                />
+            </label>
+            <label>
+                To
+                <input
+                    type="date"
+                    value={draft.to}
+                    min={draft.from || undefined}
+                    max={today}
+                    onChange={(e) => setDraft({ ...draft, to: e.target.value })}
+                />
+            </label>
+            <div className="range-draft-actions">
+                <button type="button" onClick={apply} disabled={!draftValid(draft, today)}>
+                    Apply range
+                </button>
+                <button
+                    type="button"
+                    onClick={() => {
+                        onApply(clearRange());
+                        onClose();
+                    }}
+                >
+                    Clear
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * The Range group of the analytics toolbar. Common presets commit immediately; Custom opens a
+ * popover holding the draft (`RangeDraft`) instead of expanding the toolbar — opening it, typing
+ * in it, or dismissing it never issues a request. The trigger carries `aria-expanded` and
+ * restores focus on close (Headless UI's popover contract), and the group is labeled by the
+ * visible `Range` text every bit as much as by an invisible aria-label.
+ */
 export function RangeSelector({
     range,
     onChange,
@@ -57,50 +154,48 @@ export function RangeSelector({
     const today = new Date().toISOString().slice(0, 10);
 
     return (
-        <section className="range-selector">
-            <RadioGroup
-                value={range.preset}
-                onChange={(preset) => onChange({ ...range, preset })}
-                aria-label="Date range"
-                className="range-presets"
-            >
-                {PRESET_LABELS.map(({ preset, label }) => (
-                    <Radio
-                        key={preset}
+        <div className="toolbar-group">
+            <span className="toolbar-label" id="range-label">
+                Range
+            </span>
+            <div className="range-picker">
+                <RadioGroup
+                    value={range.preset}
+                    onChange={(preset) => onChange({ ...range, preset })}
+                    aria-labelledby="range-label"
+                    className="range-presets"
+                >
+                    {PRESET_LABELS.map(({ preset, label }) => (
+                        <Radio
+                            key={preset}
+                            as="button"
+                            value={preset}
+                            className={preset === range.preset ? 'range-option active' : 'range-option'}
+                        >
+                            {label}
+                        </Radio>
+                    ))}
+                </RadioGroup>
+                <Popover className="range-popover-root">
+                    <PopoverButton
                         as="button"
-                        value={preset}
-                        className={preset === range.preset ? 'range-option active' : 'range-option'}
+                        type="button"
+                        className={range.preset === 'custom' ? 'range-option active' : 'range-option'}
                     >
-                        {label}
-                    </Radio>
-                ))}
-            </RadioGroup>
-            {range.preset === 'custom' ? (
-                <div className="range-custom">
-                    <label>
-                        from
-                        <input
-                            type="date"
-                            value={range.from}
-                            max={range.to || today}
-                            onChange={(e) => onChange({ ...range, from: e.target.value })}
-                        />
-                    </label>
-                    <label>
-                        to
-                        <input
-                            type="date"
-                            value={range.to}
-                            min={range.from || undefined}
-                            max={today}
-                            onChange={(e) => onChange({ ...range, to: e.target.value })}
-                        />
-                    </label>
-                    {!range.from && !range.to ? (
-                        <span className="muted">pick a date — showing all time until then</span>
-                    ) : null}
-                </div>
-            ) : null}
-        </section>
+                        Custom
+                    </PopoverButton>
+                    <PopoverPanel className="range-popover">
+                        {({ close }) => (
+                            <RangeDraft
+                                committed={{ from: range.from, to: range.to }}
+                                today={today}
+                                onApply={onChange}
+                                onClose={() => close()}
+                            />
+                        )}
+                    </PopoverPanel>
+                </Popover>
+            </div>
+        </div>
     );
 }
