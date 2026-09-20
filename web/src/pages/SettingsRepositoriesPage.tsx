@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useRepos } from '../api/useRepos.js';
+import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
@@ -9,21 +10,21 @@ import { useSettingsPage } from './SettingsLayout.js';
  * reports, and the per-repository environment editor (issue 150).
  *
  * The page header carries the section sentence — what the list is and where selections land —
- * so the panels below name only themselves. The editor is the "Per repository" scope of the old
- * environment page, moved whole: org-wide and per-repository scopes are admin-written because
- * they reach other members' runners, and a member sees the editor read-only with the sentence
- * saying why — the `root: null` posture.
+ * so the panels below name only themselves. The per-repository editor is enabled for every role,
+ * because that is the server's contract: `PUT /api/env/repo` accepts any member of the
+ * installation, for repositories the installation can actually see (UNKNOWN_REPO otherwise,
+ * pinned by server/test/routes.env.test.ts). The disabled control a member used to see was not
+ * authorization; it was a false claim about the API (issue 180).
  *
  * `useRepos` is armed on mount here, where the installation list IS the page's content — the
  * arm-on-focus caution of the old environment page existed only because the list was incidental
  * there.
  */
 export function SettingsRepositoriesPage() {
-    const { env, session } = useSettingsPage();
+    const { env } = useSettingsPage();
     const repos = useRepos(true);
     const [selectedRepo, setSelectedRepo] = useState<{ owner: string; name: string } | null>(null);
 
-    const isAdmin = session?.role === 'admin';
     const repoScope = env.data?.repos.find(
         (scope) => selectedRepo && scope.owner === selectedRepo.owner && scope.name === selectedRepo.name
     );
@@ -94,11 +95,7 @@ export function SettingsRepositoriesPage() {
                             ))}
                     </select>
                 </div>
-                <p className="muted">
-                    {isAdmin
-                        ? 'Applies to every member\u2019s runs in the chosen repository.'
-                        : 'An admin configures repository environment; it is shown here read-only.'}
-                </p>
+                {selectedRepo ? <ConfigurationScope scope="repository" repository={selectedRepo} /> : null}
                 {env.error ? <p className="status">{env.error}</p> : null}
                 {selectedRepo ? (
                     env.loading && !env.data ? (
@@ -110,7 +107,6 @@ export function SettingsRepositoriesPage() {
                             hint=""
                             initialVars={repoScope?.vars ?? []}
                             onSave={(vars) => env.saveRepo(selectedRepo, vars)}
-                            disabled={!isAdmin}
                         />
                     ) : null
                 ) : null}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RepoPickerDialog } from '../components/RepoPickerDialog.js';
 import { WorkspaceReposPanel } from '../panels/WorkspaceReposPanel.js';
@@ -134,6 +135,8 @@ export function SettingsWorkspacePage() {
                     />
                 </>
             ) : null}
+
+            <ConfigurationScope scope="workspace" />
 
             {env.error ? <p className="status">{env.error}</p> : null}
             {/* Same data gate as the organization page: the editor mounts only when the scope's
