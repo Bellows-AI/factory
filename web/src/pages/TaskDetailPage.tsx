@@ -47,6 +47,13 @@ export function TaskDetailPage() {
         setStoppingId(null);
         setRemovingId(null);
         setDoneId(null);
+        // Leaving the route invalidates every in-flight action too: without this, a late
+        // remove could pass the generation check after unmount and redirect a page the reader
+        // has already left (React runs this cleanup before the next id's effect, so a route
+        // change invalidates twice — harmless; the counter is only compared, never read).
+        return () => {
+            generation.current += 1;
+        };
     }, [id]);
 
     const latest =
