@@ -96,7 +96,10 @@ uid 0. It once sat behind a compose profile so `docker compose up` could not sta
 it now starts with the stack by operator decision, which makes running this file on a shared host a
 deliberate act — and the socket is still never given to the dashboard, whose port is
 unauthenticated. Anything that can queue a job can already ask an agent to run commands; keeping
-the socket one process away is what stops that from being trivially root.
+the socket one process away is what stops that from being trivially root. Compose runs the driver
+from the bind-mounted tree (#174), so the container's `.env` — App key, session secret — is also in
+a uid-0 process environment; nothing new is reachable (the socket already was root), but the
+.env-holding dashboard and the socket-holding driver are now one stack rather than two postures.
 
 **The job board is a different class of risk from every other route here.** `POST /api/jobs` queues
 a shell command that a worker then runs against the organization's checkouts, with whatever

@@ -192,7 +192,8 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
 | Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose` | The message input and its row; `task-compose` is the full-page variant |
 | Outcome | `task-outcome`, `task-outcome-summary`, `task-outcome-body`, `task-outcome-label` | The task page's summary disclosure: result, execution, verification, published work, services — one `<details>`, expanded by default, whose grid area flips from above the conversation (narrow) to a bounded right column (≥1024px) without a second component |
-| Task head | `task-actions`, `task-layout`, `task-avatar` | The task's action row (now inside the page header), the outcome/conversation grid frame, attribution |
+| Task head | `task-actions`, `task-layout`, `task-avatar` | The task's action row (now inside the page header), the outcome/conversation grid frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
+| Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
 
 ### Environment panel
 
@@ -242,6 +243,7 @@ Components:
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
+| `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
 
 Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a helper, not a panel):
@@ -256,7 +258,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, task-conversation, panel-head, panel, composer, status, muted |
-| `TaskHeader.tsx` | page-header, pill, task head |
+| `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done |
 | `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
 | `TaskRun.tsx` | chat-exchange, run-label, run-summary, run-output, run-well, run-work, run-publish, msg-user, msg-meta, chat-runtime, chat-activity, chat-exit, chat-done, chat-stop, chat-gates, chat-gate-list, gate-passed, gate-failed, gate-running, chat-output, pill, muted, code |
 | `TaskUsagePanel.tsx` | data, align-end, muted |

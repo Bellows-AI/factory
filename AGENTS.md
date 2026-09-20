@@ -101,9 +101,11 @@ DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run seed
 
 # Compose is an infrastructure wrapper, not a shipping vehicle. It runs the same `npm run dev` as
 # above against the bind-mounted working tree: API on 127.0.0.1:8080 (tsx watch), Vite on 5173
-# (HMR), plus TimescaleDB and the OTEL collector. Edits are live with no rebuild — the image carries
-# no source. node_modules lives in named volumes, so a restart is ~10s and `down -v` forces a clean
-# reinstall. There is no `--build` to remember and no baked image to go stale.
+# (HMR), plus TimescaleDB and the OTEL collector. The job driver runs from the tree too (#174) —
+# all three long-running processes do, so no restart can serve code older than the checkout. Edits
+# are live with no rebuild — the image carries no source. node_modules lives in named volumes, so
+# a restart is ~10s and `down -v` forces a clean reinstall. There is no `--build` to remember and
+# no baked image to go stale.
 docker compose up
 
 # What deploys, and what compose does NOT run: the baked `runtime` stage, SPA and API on one port.

@@ -25,11 +25,16 @@ IMAGE_FAIL="factory-jobs-smoke-fail"
 IMAGE_SVC="factory-jobs-smoke-svc"
 IMAGE_RUN="factory-jobs-smoke-run"
 VOLUME="factory-jobs-smoke-workspaces"
+COMPOSE_DRIVER="factory-jobs-compose-driver"
+# The compose phase pins its own project name, so the volumes and network its `run` creates can be
+# torn down by name without touching the stack services the script itself started (timescale).
+COMPOSE_PROJECT="factory-jobs-smoke-compose"
 
 pass=0
 fail=0
 server_pid=""
 driver_pid=""
+compose_pid=""
 db_created=""
 work="$(mktemp -d)"
 
@@ -45,8 +50,12 @@ bad() {
 
 cleanup() {
     [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null
+    [ -n "$compose_pid" ] && kill "$compose_pid" 2>/dev/null
     [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
     wait 2>/dev/null
+    docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
+    # The compose phase's own project: its volumes and network, not the stack's timescale.
+    docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
     # Only ever drops a database this run created, and only one named *_test.
     if [ -n "$db_created" ]; then
         docker compose exec -T timescale psql -U factory -d postgres \
@@ -718,6 +727,66 @@ else
     bad 'the bounded edge rests the loop at its limit' "nodes: '$(thread_nodes "$wf3_id")'"
 fi
 expect_status 'a rested thread offers nothing more' 204 POST /api/jobs/claim '{"worker":"idle-walker"}'
+
+# --- The compose driver -----------------------------------------------------------------------
+#
+# Issue #174: this service used to build the baked `runtime` stage, so an `up` or restart without
+# `--build` served whatever publisher code was baked last — `/fix N` PRs went out without a
+# closing keyword and merged with the issue still open. Every phase above runs the driver from the
+# host, which is why the bug was invisible here; this phase runs the COMPOSE service against the
+# same board. The service bind-mounts the working tree (docker/driver.Dockerfile's `dev` stage),
+# so the container must see the checkout's driver source — under the old compose file there is no
+# source in the image at all and this phase fails — and a job must settle exactly as the
+# host-driven ones did.
+
+echo
+echo '# compose driver'
+
+docker compose -p "$COMPOSE_PROJECT" build driver >/dev/null 2>&1 || {
+    echo 'test-jobs: could not build the compose driver image'
+    exit 1
+}
+ok 'the compose driver image builds'
+
+# RUNNER_SERVICES=0 like every host-driven phase above: the services phase seeded a malformed
+# .bellows.yaml into the stand-in author's tree, and the services readout failing is a verdict of
+# "failed" — the lifecycle here must be settled by the driver itself, not by that leftover.
+docker compose -p "$COMPOSE_PROJECT" run --rm --name "$COMPOSE_DRIVER" --no-deps \
+    -e JOB_BOARD_URL="http://host.docker.internal:$PORT" \
+    -e EXECUTOR_IMAGE="$IMAGE_OK" \
+    -e WORKSPACE_VOLUME="$VOLUME" \
+    -e RUNNER_NETWORK=bridge \
+    -e RUNNER_SERVICES=0 \
+    driver >>"$work/compose-driver.log" 2>&1 &
+compose_pid=$!
+
+# The anti-stale discriminator: the running container must hold the checkout's driver SOURCE. The
+# first start pays `npm install`, so poll rather than assume; the grep target is the current
+# parser, so a container running a baked dist has nothing to grep and times out here.
+mounted=""
+for _ in $(seq 1 120); do
+    if docker exec "$COMPOSE_DRIVER" grep -q '/fix' /app/driver/src/publish.ts 2>/dev/null; then
+        mounted=1
+        break
+    fi
+    docker inspect -s "$COMPOSE_DRIVER" >/dev/null 2>&1 || break
+    sleep 1
+done
+if [ -n "$mounted" ]; then
+    ok 'the compose driver runs the checkout source'
+else
+    bad 'the compose driver runs the checkout source' "$(tail -3 "$work/compose-driver.log")"
+fi
+
+compose_job="$(create_job '/fix 987 compose driver lifecycle check')"
+expect_contains 'the compose driver runs its job' "$(await_settled "$compose_job" 180)" succeeded
+ran="$(body "$(api GET "/api/jobs/$compose_job")")"
+expect_contains 'the compose driver names itself' "$(field "$ran" claimedBy)" 'driver-'
+
+docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
+docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
+wait "$compose_pid" 2>/dev/null
+compose_pid=""
 
 # --- The same board, with auth on -------------------------------------------------------------
 #
