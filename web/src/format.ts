@@ -113,26 +113,6 @@ export function describeRepos(repos: { owner: string; name: string }[]): string 
 }
 
 /**
- * A task's age in words — "the row's activity stamp, rendered as the reader speaks it" — beside
- * the precise `<time>` value the row also carries, so the hover/assistive reading never loses
- * the exact stamp. Buckets: under a minute is "just now", then m/h/d, and past a week the date
- * itself, because "14d ago" is less legible than "2026-09-05". A stamp in the future is clock
- * skew between two honest clocks — "just now", never a negative age. Pure: the caller decides
- * what "now" is, the same rule `runDuration` and `wallClock` follow (the 3s poll is the ticker).
- */
-export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
-    if (!iso) return '—';
-    const at = new Date(iso);
-    if (Number.isNaN(at.getTime())) return '—';
-    const seconds = Math.round((now.getTime() - at.getTime()) / 1000);
-    if (seconds < 60) return 'just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
-    if (seconds < 7 * 86_400) return `${Math.floor(seconds / 86_400)}d ago`;
-    return at.toISOString().slice(0, 10);
-}
-
-/**
  * Rounded on purpose. The branch attribution behind these figures is a ~20s sample from a
  * hook that is allowed to fail, so "92.4k" is the honest precision and "92,431" is not.
  */
@@ -144,4 +124,22 @@ export function tokens(value: number | null | undefined): string {
     // rendered as the unreadable "4543.89M" before this branch existed.
     if (value < 1_000_000_000) return `${num(value / 1_000_000, 2)}M`;
     return `${num(value / 1_000_000_000, 2)}B`;
+}
+
+/**
+ * How long ago a stamp happened, relative to a caller-supplied `now` so it stays pure — the
+ * caller decides what "now" is and the render's poll cadence is the ticker. An absent or
+ * unparseable stamp is an em dash like every formatter here.
+ */
+export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
+    if (!iso) return '—';
+    const at = new Date(iso).getTime();
+    if (Number.isNaN(at)) return '—';
+    const seconds = Math.round((now.getTime() - at) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
 }

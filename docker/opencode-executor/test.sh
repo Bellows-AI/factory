@@ -80,6 +80,10 @@ expect_exact 'git merge is denied'              "$policy" 'permission.bash.git m
 expect_exact 'worktree list stays allowed'      "$policy" 'permission.bash.git worktree list' allow
 expect_exact 'rebase --abort stays allowed'     "$policy" 'permission.bash.git rebase --abort' allow
 expect_exact 'merge --quit stays allowed'       "$policy" 'permission.bash.git merge --quit' allow
+expect_exact 'merge --continue stays allowed'   "$policy" 'permission.bash.git merge --continue' allow
+expect_exact 'merging origin/main is allowed'   "$policy" 'permission.bash.git merge origin/main' allow
+expect_exact 'merging origin/main no-edit is allowed' "$policy" 'permission.bash.git merge --no-edit origin/main' allow
+expect_exact 'merging origin/main no-edit (flag last) is allowed' "$policy" 'permission.bash.git merge origin/main --no-edit' allow
 expect_exact 'external paths are denied by default' "$policy" 'permission.external_directory.*' deny
 expect_exact 'the runner scratch is reachable'  "$policy" 'permission.external_directory./tmp/*' allow
 expect_exact 'home scratch is reachable'        "$policy" 'permission.external_directory./home/node/*' allow

@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader.js';
+import { RelativeTime } from '../components/RelativeTime.js';
 import { useTasksPage } from './TasksLayout.js';
 import type { InboxFilters, TaskSummary } from '../api/useTasks.js';
-import { relativeTime, taskTime } from '../format.js';
 import { taskDotClass, taskStatusLabel, taskTitleFromCommand } from '../task-tree.js';
 
 /**
@@ -63,9 +63,10 @@ function Row({ task }: { task: TaskSummary }) {
             </span>
             <span className="inbox-repo">{task.repo ?? '—'}</span>
             <span className="inbox-author">{task.author?.login ?? 'unknown'}</span>
-            <time className="inbox-when" dateTime={task.activityAt} title={taskTime(task.activityAt)}>
-                {relativeTime(task.activityAt)}
-            </time>
+            {/* The shared stamp component: relative label, precise UTC stamp as its title. */}
+            <span className="inbox-when">
+                <RelativeTime at={task.activityAt} />
+            </span>
         </li>
     );
 }

@@ -46,7 +46,11 @@
             "git rebase --quit": "allow",
             "git rebase --continue": "allow",
             "git merge --abort": "allow",
-            "git merge --quit": "allow"
+            "git merge --quit": "allow",
+            "git merge --continue": "allow",
+            "git merge origin/main": "allow",
+            "git merge --no-edit origin/main": "allow",
+            "git merge origin/main --no-edit": "allow"
         },
         "external_directory": {
             "*": "deny",
