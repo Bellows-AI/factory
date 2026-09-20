@@ -81,13 +81,10 @@ function watchConsole(page: Page): string[] {
 }
 
 test.describe('the task detail page', () => {
-    const ROOT_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
-    const FOLLOW_ID = 'aaaaaaaa-0000-4000-8000-000000000002';
-
     test('a finished thread reads request, response, checks, published work, metadata', async ({ page }) => {
         const problems = watchConsole(page);
         await seedRun(orgId, {
-            id: ROOT_ID,
+            id: 'aaaaaaaa-0000-4000-8000-000000000001',
             command: 'fix #177 please',
             repo: 'acme/widgets',
             executor: 'main',
@@ -107,7 +104,7 @@ test.describe('the task detail page', () => {
             },
             wallClockMs: 1_800_000,
         }, '2026-09-01T12:00:00Z');
-        await page.goto(`/tasks/${ROOT_ID}`);
+        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000001');
 
         // The reading order the page exists for: request, then response, then the run's work.
         const conversation = page.locator('.task-conversation');
@@ -139,23 +136,23 @@ test.describe('the task detail page', () => {
 
     test('a follow-up thread labels its runs and attaches work to each', async ({ page }) => {
         await seedRun(orgId, {
-            id: ROOT_ID,
+            id: 'aaaaaaaa-0000-4000-8000-000000000011',
             command: 'root command',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000001',
+            sessionId: 'bbbbbbbb-0000-4000-8000-000000000011',
             exitCode: 0,
             summary: 'First pass done.',
             output: '[driver] published fix/1 — https://github.com/acme/widgets/pull/1',
         }, '2026-09-01T12:00:00Z');
         await seedRun(orgId, {
-            id: FOLLOW_ID,
-            parentJobId: ROOT_ID,
+            id: 'aaaaaaaa-0000-4000-8000-000000000012',
+            parentJobId: 'aaaaaaaa-0000-4000-8000-000000000011',
             command: 'follow-up command',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000002',
+            sessionId: 'bbbbbbbb-0000-4000-8000-000000000012',
             exitCode: 0,
             summary: 'Adjustment applied.',
             gates: [{ name: 'lint', status: 'failed', exitCode: 1, output: 'nope' }],
         }, '2026-09-01T12:30:00Z');
-        await page.goto(`/tasks/${FOLLOW_ID}`);
+        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000012');
 
         const conversation = page.locator('.task-conversation');
         await expect(conversation.getByText('Request', { exact: true })).toBeVisible();

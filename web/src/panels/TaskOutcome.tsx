@@ -32,10 +32,8 @@ const tokenCount = new Intl.NumberFormat('en-US');
 export function TaskOutcome({ jobs }: { jobs: Job[] }) {
     const root = jobs[0] as Job;
     const latest = jobs[jobs.length - 1] as Job;
-    // A run that is not going must not show a ticking clock: queued has no attempt yet, and a
-    // parked one would count wall-clock time while nothing runs.
+    // A run that is not going must not show a ticking clock: only a live attempt gets one.
     const running = latest.status === 'running';
-    const parked = latest.status === 'queued' || latest.status === 'standby';
     const closure = closureOf(jobs);
     const publish = threadPublish(jobs);
     const issue = threadIssue(jobs);
@@ -66,7 +64,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
             ),
         ],
         // The thread's whole banked clock, plus the newest run's live segment while it goes.
-        ['Wall clock', wallClock(latest.taskWallClockMs, running && !parked ? latest.startedAt : null)],
+        ['Wall clock', wallClock(latest.taskWallClockMs, running ? latest.startedAt : null)],
     ]);
 
     const executionPairs = pairs([

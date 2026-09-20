@@ -3,6 +3,30 @@ import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api
 import { runDuration, timestamp } from '../format.js';
 import { isHttpUrl, publicationForRun } from '../task-outcome.js';
 
+/**
+ * One output well: a clipped log a keyboard user can actually reach. The wrapping section is
+ * the named, focusable scroll region — the scrolled-off top of a clipped log is unreachable
+ * without it — and the text inside stays exactly what the run produced, in a `pre`.
+ */
+function OutputWell({
+    text,
+    labelled = false,
+    liveRef,
+}: {
+    text: string;
+    labelled?: boolean;
+    liveRef?: Ref<HTMLPreElement> | undefined;
+}) {
+    return (
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
+        <section className="run-well" tabIndex={0} aria-label={labelled ? 'Raw output' : undefined}>
+            <pre className="chat-output" ref={liveRef}>
+                {text}
+            </pre>
+        </section>
+    );
+}
+
 /** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
 const tokenCount = new Intl.NumberFormat('en-US');
 
@@ -34,7 +58,7 @@ function Checks({ gates }: { gates: GateCheck[] }) {
                                     <span className="chat-exit">exit {gate.exitCode}</span>
                                 ) : null}
                             </summary>
-                            {gate.output !== null ? <pre className="chat-output">{gate.output}</pre> : null}
+                            {gate.output !== null ? <OutputWell text={gate.output} /> : null}
                         </details>
                     </li>
                 ))}
@@ -92,7 +116,7 @@ export function TaskRun({
     const gates = job.gates ?? null;
     const publish = publicationForRun(job);
     return (
-        <article className="chat-exchange" key={job.id}>
+        <article className="chat-exchange">
             <p className="run-label">{index === 1 ? 'Request' : 'Follow-up'}</p>
             {/* The member's words are prose, not code: normal text with its line breaks kept. */}
             <p className="msg-user">{job.command}</p>
@@ -105,7 +129,7 @@ export function TaskRun({
                         {hasOutput ? (
                             <details className="run-output">
                                 <summary>View raw output</summary>
-                                <pre className="chat-output">{job.output}</pre>
+                                <OutputWell text={job.output!} labelled />
                             </details>
                         ) : null}
                     </>
@@ -114,7 +138,7 @@ export function TaskRun({
                         <p className="muted">No agent summary was captured.</p>
                         <details className="run-output" open>
                             <summary>View raw output</summary>
-                            <pre className="chat-output">{job.output}</pre>
+                            <OutputWell text={job.output!} labelled />
                         </details>
                     </>
                 ) : (
@@ -129,9 +153,7 @@ export function TaskRun({
                         <p className="chat-activity">{job.runtime.activity}</p>
                     ) : null}
                     {hasOutput ? (
-                        <pre ref={liveRef} className="chat-output">
-                            {job.output}
-                        </pre>
+                        <OutputWell text={job.output!} labelled liveRef={liveRef} />
                     ) : (
                         <p className="muted">Waiting for the executor…</p>
                     )}

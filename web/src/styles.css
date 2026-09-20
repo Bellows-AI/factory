@@ -1990,6 +1990,13 @@
         margin: 6px 0;
     }
 
+    /* One run's output well: the focusable named scroll region around the raw log — the same
+       keyboard contract as the data table's scroll wrap. */
+    .run-well:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+    }
+
     /* The checks-and-publication region: a focus target so the outcome's "View checks in run N"
        link lands keyboard focus here, not just the scroll position. */
     .run-work {

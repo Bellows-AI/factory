@@ -1237,6 +1237,9 @@ describe('TaskOutcome', () => {
         expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-conversation'));
         expect(html).toMatch(/<details[^>]*class="task-outcome[^"]*"[^>]*open/);
         expect(html).toContain('<h2>Outcome</h2>');
+        // The conversation names itself too: heading-by-heading navigation has to reach the
+        // page's dominant panel, not just the summary beside it.
+        expect(html).toMatch(/task-conversation[^>]*"[^>]*>[\s\S]{0,80}?<h2>Conversation<\/h2>/);
     });
 
     it('shows the current status, the closure attribution and the newest terminal exit', () => {
@@ -1668,6 +1671,30 @@ describe('TaskRun', () => {
         });
         expect(html).not.toContain('<script>');
         expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('output wells are keyboard scrollable, and the live well carries a label', () => {
+        // A clipped well nobody can focus is a log nobody can read: every output well is a
+        // focusable scroll region, and the live one — whose only visible label sits above it —
+        // names itself for assistive tech.
+        const live = renderDetail({
+            jobs: [job({ status: 'running', output: 'tail', runtime: runtime({ activity: 'working' }) })],
+        });
+        expect(live).toMatch(/<section[^>]*class="run-well"[^>]*aria-label="Raw output"/);
+
+        const finished = articleOf(
+            renderDetail({
+                jobs: [
+                    job({
+                        output: 'raw lines',
+                        gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'gate log' }],
+                    }),
+                ],
+            }),
+            'Agent response'
+        );
+        expect(finished).toContain('tabindex="0"');
+        expect(finished.match(/tabindex="0"/g)?.length).toBe(2);
     });
 });
 

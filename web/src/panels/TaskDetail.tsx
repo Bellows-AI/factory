@@ -90,6 +90,11 @@ export function TaskDetail({
                 DOM so a narrow screen reads it first (the grid moves it right from 1024px). */}
                 <TaskOutcome jobs={jobs} />
                 <section className="task-conversation panel">
+                    {/* The conversation names itself: heading-by-heading navigation must reach
+                    the page's dominant panel, not only the summary beside it. */}
+                    <div className="panel-head">
+                        <h2>Conversation</h2>
+                    </div>
                     {jobs.map((task, index) => (
                         <TaskRun
                             key={task.id}
