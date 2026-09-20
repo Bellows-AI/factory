@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
+import { Link } from 'react-router-dom';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     clampedWorkflow,
@@ -275,7 +276,13 @@ export function TaskComposer({
                     {actionError}
                 </p>
             ) : null}
-            <div className="composer">
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: the launch shortcut is a composer-wide keystroke surface — a member tabbed into any field of the guided form (prompt, selects, workflow inputs) presses Ctrl/⌘+Enter and gets exactly what the Start button would have given them, so the handler must sit above every control rather than on each one */}
+            <div
+                className="composer"
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) attemptStart();
+                }}
+            >
                 <div className="composer-field">
                     <label className="composer-label" htmlFor="composer-prompt">
                         What should the agent do?
@@ -290,9 +297,6 @@ export function TaskComposer({
                         placeholder={PROMPT_PLACEHOLDER}
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) attemptStart();
-                        }}
                     />
                 </div>
 
@@ -363,10 +367,10 @@ export function TaskComposer({
                 </div>
                 {repos.length === 0 ? (
                     <p className="muted">
-                        Select repositories in <a href="/settings/repositories">Settings</a> to run against a codebase
+                        Select repositories in <Link to="/settings/repositories">Settings</Link> to run against a
+                        codebase
                     </p>
                 ) : null}
-
                 {workflows !== null ? (
                     <div className="composer-field">
                         <h2 id="composer-workflow-label">Reusable workflow</h2>
@@ -429,7 +433,12 @@ export function TaskComposer({
                         {sending ? 'Starting…' : 'Start task'}
                     </button>
                     <kbd>Ctrl/⌘ + Enter</kbd>
-                    {blockerCopy !== null ? <span className="composer-blocker">{blockerCopy}</span> : null}
+                    {/* Mounted even when silent — a live region can only announce a change it
+                        survives — so the reason Start is dark reaches a screen reader the moment
+                        it appears. */}
+                    <span className="composer-blocker" role="status">
+                        {blockerCopy}
+                    </span>
                 </div>
             </div>
         </section>

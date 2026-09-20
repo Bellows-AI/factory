@@ -43,7 +43,7 @@ export function WorkflowParameterFields({
                     verdict.kind === 'mismatch' ||
                     verdict.kind === 'uncompilable';
                 const describedBy =
-                    [param.description !== undefined ? `${id}-helper` : null, failed ? `${id}-error` : null]
+                    [param.description ? `${id}-helper` : null, failed ? `${id}-error` : null]
                         .filter((part) => part !== null)
                         .join(' ') || undefined;
                 return (
@@ -51,7 +51,7 @@ export function WorkflowParameterFields({
                         <label className="composer-label" htmlFor={id}>
                             {humanizeParamName(param.name)}
                         </label>
-                        {param.description !== undefined ? (
+                        {param.description ? (
                             <p className="composer-helper" id={`${id}-helper`}>
                                 {param.description}
                             </p>
@@ -59,7 +59,7 @@ export function WorkflowParameterFields({
                         <input
                             id={id}
                             className="composer-select"
-                            placeholder={param.example !== undefined ? `Example: ${param.example}` : 'Required'}
+                            placeholder={param.example ? `Example: ${param.example}` : 'Required'}
                             maxLength={512}
                             aria-invalid={failed || undefined}
                             aria-describedby={describedBy}

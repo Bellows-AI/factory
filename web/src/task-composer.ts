@@ -160,7 +160,8 @@ export function paramFieldVerdict(
             return {
                 kind: 'mismatch',
                 message:
-                    param.description ??
+                    // Truthy, not merely present: an empty description is no guidance to reuse.
+                    param.description ||
                     `${label} does not match the required format. Open Format details for the technical rule.`,
             };
         }

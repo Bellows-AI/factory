@@ -92,17 +92,20 @@ const renderComposer = ({
     actionError = null,
     sending = false,
 }: ComposerArgs = {}) =>
+    // The Settings remediation is an SPA Link, so the panel needs a routing context to render.
     renderToStaticMarkup(
-        <TaskComposer
-            repos={repos}
-            workspaceError={workspaceError}
-            onRetryWorkspace={() => {}}
-            executors={executors}
-            workflows={workflows}
-            actionError={actionError}
-            sending={sending}
-            onSend={async () => null}
-        />
+        <MemoryRouter>
+            <TaskComposer
+                repos={repos}
+                workspaceError={workspaceError}
+                onRetryWorkspace={() => {}}
+                executors={executors}
+                workflows={workflows}
+                actionError={actionError}
+                sending={sending}
+                onSend={async () => null}
+            />
+        </MemoryRouter>
     );
 
 interface DetailArgs {
