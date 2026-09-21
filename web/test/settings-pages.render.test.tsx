@@ -133,7 +133,10 @@ describe('Settings organization page', () => {
                 },
             },
         });
-        expect(html).not.toContain('disabled=""');
+        // No INPUT is disabled for a member — the row's name and value stay editable. (The Save
+        // button itself may render disabled while the draft is clean, which is issue 182's
+        // save-state rule, not a role gate.)
+        expect(html.match(/<input [^>]*disabled/g) ?? []).toHaveLength(0);
         expect(html).not.toContain('shown here read-only');
     });
 
@@ -231,6 +234,42 @@ describe('Settings repositories page', () => {
         expect(html).toContain('The environment request failed');
         expect(html).not.toContain('No variables configured.');
         expect(html).not.toContain('Add variable');
+    });
+});
+
+describe('settings scope context (issue 182 invariants)', () => {
+    // Scope context stays BEFORE the controls: each page's own sentence names the scope, and the
+    // editor mounts under it. The guard dialog copy never appears in a clean render — it exists
+    // only when the coordinator has something pending, which a static render cannot be.
+    const envData = {
+        org: [{ name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' }],
+        workspace: [],
+        repos: [{ owner: 'octo', name: 'hooks', vars: [] }],
+    };
+
+    it('renders the org editor under its scope sentence, tabs counting the stored rows', () => {
+        const html = render('/settings/organization', { env: { loading: false, data: envData } });
+        expect(html).toContain('Injected into every runner in this deployment');
+        expect(html).toContain('Variables (0)');
+        expect(html).toContain('Secrets (1)');
+        expect(html).not.toContain('Discard unsaved changes?');
+    });
+
+    it('renders the workspace editor under its scope sentence', () => {
+        const html = render('/settings/workspace', {
+            workspace: { loading: false, data: { root: '/workspaces', repos: [], orphaned: [], executors: [] } },
+            env: { loading: false, data: envData },
+        });
+        expect(html).toContain('Your own defaults, on every task you queue.');
+        expect(html).toContain('No variables configured.');
+        expect(html).not.toContain('Discard unsaved changes?');
+    });
+
+    it('renders the per-repository editor with its select and no dialog while clean', () => {
+        const html = render('/settings/repos', { env: { loading: false, data: envData } });
+        expect(html).toContain('Choose a repository…');
+        expect(html).toContain('octo/hooks');
+        expect(html).not.toContain('Discard unsaved changes?');
     });
 });
 

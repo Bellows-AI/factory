@@ -183,30 +183,63 @@ each is answered in place:
 The three editors (Core, My workspace, Per repository) live in the settings tree (#150): Core at
 Settings → Organization, My workspace at Settings → Workspace, and Per repository at Settings →
 Repositories, each fed by `GET /api/env`
-on mount; the editor that saves adopts the stored rows its PUT echoes back (`{ vars }`), which is
-what blanks a typed secret and shows the stored truth — so the panels must NOT be remounted on
-save: a `key` bump there fires before the editor's own continuation and silently eats the "Saved."
-confirmation (that remount was the bug this paragraph replaces). The after-save GET stays for the
-repository select's options; the editors that did not save keep their drafts, so a concurrent
-write to another scope appears only on reload or repo switch — and that scope's next
-whole-list PUT clobbers it, the standing trade of draft survival. **No polling**, because the list
-only changes when somebody edits it, and a poll would race the editors' draft state. Whole-list
-PUTs, the repos/executors idiom. The
-Variables tab edits through a `raw` toggle: on, the table is replaced by a textarea holding the
-scope's non-secret variables one `NAME=value` per line, and toggling off parses it with the same
-strict rules the server enforces — valid text replaces the draft's variable rows (a deleted line
-deletes the variable), invalid text shows the line errors and stays in the editor. Save is the
-only write path. Secrets never round-trip through text: a secret row renders its input blank with
-placeholder "set — leave blank to keep". Every role edits every scope: `PUT /api/env/org` and
-`PUT /api/env/repo` accept any member of the installation — membership is the one trust level
-(#99), and there is no admin tier — and `PUT /api/env/workspace` writes the caller's own rows, so
-the browser gates nothing the server does not. Issue #180
-removed the earlier client-only `disabled` controls (a disabled browser control is not
-authorization, and these ones denied writes the server accepts) and had each editor state its
-scope truth first: what the scope applies to, who may edit it, and the
-organization < workspace < repository precedence (`ConfigurationScope`, echoed by the
-`/settings` overview's readiness items). If product policy ever narrows who writes, the server
-grows a tested `403` first, and only then does a page render a readable read-only view.
+on mount. **No polling**, because the list only changes when somebody edits it, and a poll would
+race the editors' draft state. Whole-list PUTs, the repos/executors idiom. Every role edits every
+scope: `PUT /api/env/org` and `PUT /api/env/repo` accept any member of the installation —
+membership is the one trust level (#99), and there is no admin tier — and `PUT /api/env/workspace`
+writes the caller's own rows, so the browser gates nothing the server does not. Issue #180 removed
+the earlier client-only `disabled` controls (a disabled browser control is not authorization, and
+these ones denied writes the server accepts) and had each editor state its scope truth first: what
+the scope applies to, who may edit it, and the organization < workspace < repository precedence
+(`ConfigurationScope`, echoed by the `/settings` overview's readiness items). If product policy
+ever narrows who writes, the server grows a tested `403` first, and only then does a page render a
+readable read-only view.
+
+Each editor is a draft over its scope (issue 182): one baseline, one local draft, and a canonical
+dirty comparison that looks only at the API payload shape — never React row ids, never row order
+(every read comes back `order by name asc`, so order is not a fact the store keeps). Variables and
+Secrets are real tabs with live counts; the tab a row is added in decides its type, and no control
+changes a row's type afterwards. Secrets are masked and write-only as above: a stored secret
+renders **Set** with a blank input ("Leave blank to keep the current secret" — a blank saves
+`null`, the keep marker), a typed value shows **Will replace when saved**, and a new row with
+nothing typed is **Not set** and cannot save until it is valid or removed. No stored value, length
+or clue is ever rendered, and secrets never appear in `.env` text.
+
+Removal is pending, not immediate: the row stays visible as "{name} will be removed when you save."
+with an Undo, is excluded from the counts and from the save payload (an omitted name is how the
+whole-list PUT deletes), and is deleted only when the save succeeds — a failed save keeps the
+pending state and the Undo. An untouched blank new row may still vanish without ceremony.
+
+Advanced editing replaces the old raw toggle: an **Edit variables as .env** disclosure inside the
+Variables tab. Opening seeds a textarea from the active variable rows and changes nothing; **Apply
+.env draft** parses the text with the same strict rules the server enforces (env-raw.ts mirrors
+`parseVars`, copied constants included) and — on success — replaces the variable draft only
+(secret rows, and their pending states, pass around untouched); on failure the text, the errors
+and the disclosure stay open and the table draft is untouched. **Cancel .env changes** closes and
+reseeds the textarea. Save changes stays disabled while the editor is clean, invalid, saving, or
+holding unapplied `.env` text.
+
+Save is the only write path, and its lifecycle keeps the draft honest: on success the editor
+adopts the stored rows its PUT echoes back (`{ vars }`) as its new baseline **without remounting**,
+which is what blanks a typed secret and shows the stored truth — and keeps the "Changes saved."
+confirmation alive (a `key` bump there was once the bug that ate it). On failure the draft is
+retained, the error renders as an alert that takes focus, and the inputs are untouched. The
+after-save GET stays for the repository select's options; the editors that did not save keep
+their drafts, so a concurrent write to another scope appears only on reload or repo switch — and
+that scope's next whole-list PUT clobbers it, the standing trade of draft survival.
+
+While an editor is dirty, the settings layout guards it (#182): a `beforeunload` warning for the
+browser, a React Router blocker for in-app navigation (which is why `main.tsx` mounts a data
+router — `useBlocker` refuses anything else), and the guarded repository select on the repos page.
+All three run one contract with one dialog owner, so nested blockers cannot duplicate dialogs:
+**Discard unsaved changes?** / "Your changes to {scope} have not been saved.", with **Continue
+editing** the safe, initially focused answer and Escape/backdrop agreeing with it, and **Discard
+changes** resetting the drafts and resuming what was asked. `window.confirm` is never used.
+
+Offline tests pin the pure decisions (env-draft.ts: dirty comparison, validation, secret states,
+tab and focus arithmetic), the reachable markup, and the guard's copy and listener lifetime;
+blocker interception, dialog focus, and the save/removal/apply interactions themselves are the
+browser suite's (`npm run verify:ui`), which is the same boundary every dialog in the app draws.
 
 ## Tests
 

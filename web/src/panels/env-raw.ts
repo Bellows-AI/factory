@@ -32,7 +32,8 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'RESTORE',
     'FACTORY_TRANSCRIPT_DIR',
     'FACTORY_STATS_URL',
-    'INGEST_TOKEN',
+    'RUNNER_JOB_ID',
+    'RUNNER_LEASE_TOKEN',
     'BELLOWS_SESSION_ID',
     'OPENCODE_CONFIG_CONTENT',
 ];

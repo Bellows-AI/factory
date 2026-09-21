@@ -1,4 +1,5 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { createRoutesFromElements, Navigate, Outlet, Route } from 'react-router-dom';
+import type { RouteObject } from 'react-router-dom';
 import { AppShell } from './components/AppShell.js';
 import { AccountPage } from './pages/AccountPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
@@ -30,41 +31,48 @@ import { TasksLayout } from './pages/TasksLayout.js';
  * non-`/api/` 404, and `requirementFor()` treats every path outside `/api/` as open, so
  * `GET /settings/workspace` is 200 HTML with no cookie. Both are pinned by tests rather than
  * assumed.
+ *
+ * The table is route OBJECTS rather than a `<Routes>` tree because the router is a data router
+ * (issue 182): `useBlocker`, which backs the settings area's unsaved-change guard, refuses to run
+ * outside one. `main.tsx` mounts these under the gate; `App` is the outlet they render through.
  */
-export function App() {
-    return (
-        <Routes>
-            {/* The sign-in selection screen (issue 125). Outside the shell: its caller holds no session
-                yet — the pending cookie, not a session cookie, is what the page stands on — so the
-                sidenav and the stats poll have nothing to stand on either. */}
-            <Route path="onboarding" element={<OnboardingPage />} />
-            <Route element={<AppShell />}>
-                <Route index element={<DashboardPage />} />
-                {/* The organization's settings tree (issues 150 and 180): one sidenav item — an
-                    overview index, then four sections. */}
-                <Route path="settings" element={<SettingsLayout />}>
-                    <Route index element={<SettingsOverviewPage />} />
-                    <Route path="organization" element={<SettingsOrganizationPage />} />
-                    <Route path="workspace" element={<SettingsWorkspacePage />} />
-                    <Route path="repos" element={<SettingsRepositoriesPage />} />
-                    <Route path="executors" element={<SettingsExecutorsPage />} />
-                </Route>
-                <Route path="tasks" element={<TasksLayout />}>
-                    {/* The inbox is the index (issue 158); the composer is its own address below it —
-                        `new` MUST come before `:id`, or the router would hand the word "new" to
-                        the detail page. */}
-                    <Route index element={<TaskInboxPage />} />
-                    <Route path="new" element={<TaskComposerPage />} />
-                    <Route path=":id" element={<TaskDetailPage />} />
-                </Route>
-                {/* The member's own account. Reached from the app bar's user menu, not the sidenav:
-                    it is personal, not a section of the dashboard — `/settings/*` is the
-                    organization's tree, so the personal page lives beside it at `/account`. */}
-                <Route path="account" element={<AccountPage />} />
-                {/* A mistyped path lands on the dashboard rather than on nothing. `replace` so the
-                    back button does not walk back into the 404. */}
-                <Route path="*" element={<Navigate to="/" replace />} />
+export const appRoutes: RouteObject[] = createRoutesFromElements(
+    <>
+        {/* The sign-in selection screen (issue 125). Outside the shell: its caller holds no session
+            yet — the pending cookie, not a session cookie, is what the page stands on — so the
+            sidenav and the stats poll have nothing to stand on either. */}
+        <Route path="onboarding" element={<OnboardingPage />} />
+        <Route element={<AppShell />}>
+            <Route index element={<DashboardPage />} />
+            {/* The organization's settings tree (issues 150 and 180): one sidenav item — an
+                overview index, then four sections. */}
+            <Route path="settings" element={<SettingsLayout />}>
+                <Route index element={<SettingsOverviewPage />} />
+                <Route path="organization" element={<SettingsOrganizationPage />} />
+                <Route path="workspace" element={<SettingsWorkspacePage />} />
+                <Route path="repos" element={<SettingsRepositoriesPage />} />
+                <Route path="executors" element={<SettingsExecutorsPage />} />
             </Route>
-        </Routes>
-    );
+            <Route path="tasks" element={<TasksLayout />}>
+                {/* The inbox is the index (issue 158); the composer is its own address below it —
+                    `new` MUST come before `:id`, or the router would hand the word "new" to
+                    the detail page. */}
+                <Route index element={<TaskInboxPage />} />
+                <Route path="new" element={<TaskComposerPage />} />
+                <Route path=":id" element={<TaskDetailPage />} />
+            </Route>
+            {/* The member's own account. Reached from the app bar's user menu, not the sidenav:
+                it is personal, not a section of the dashboard — `/settings/*` is the
+                organization's tree, so the personal page lives beside it at `/account`. */}
+            <Route path="account" element={<AccountPage />} />
+            {/* A mistyped path lands on the dashboard rather than on nothing. `replace` so the
+                back button does not walk back into the 404. */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+    </>
+);
+
+/** Renders the route table mounted in main.tsx — the gate's child, nothing more. */
+export function App() {
+    return <Outlet />;
 }

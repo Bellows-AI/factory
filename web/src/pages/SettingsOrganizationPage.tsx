@@ -57,6 +57,8 @@ export function SettingsOrganizationPage() {
                     hint="Injected into every runner in this deployment. The place for shared credentials — GITHUB_TOKEN, for one."
                     initialVars={env.data.org}
                     onSave={env.saveOrg}
+                    draftId="org"
+                    draftLabel="Core (organization)"
                 />
             ) : null}
         </>

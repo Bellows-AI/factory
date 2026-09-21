@@ -149,6 +149,8 @@ export function SettingsWorkspacePage() {
                     hint="Your own defaults, on every task you queue."
                     initialVars={env.data.workspace}
                     onSave={env.saveWorkspace}
+                    draftId="workspace"
+                    draftLabel="My workspace"
                 />
             ) : null}
         </>
