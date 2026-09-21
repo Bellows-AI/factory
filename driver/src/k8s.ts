@@ -1275,15 +1275,26 @@ export type K8sRequest = (method: K8sMethod, path: string, body?: unknown) => Pr
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */
 const SERVICE_ACCOUNT_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
 
+export interface InClusterRequestDeps {
+    env?: NodeJS.ProcessEnv;
+    readFile?: typeof readFileSync;
+    request?: typeof httpsRequest;
+    serviceAccountDir?: string;
+}
+
 /**
  * The real transport: the API server the pod's own environment points at. Built only for a driver
  * running IN a cluster; everything that can fail is made to fail at construction rather than on the
  * first claim — `KUBERNETES_SERVICE_HOST` missing, or a ServiceAccount volume not mounted, are
  * startup errors, not mid-run surprises.
  */
-export function inClusterRequest(): K8sRequest {
-    const host = process.env.KUBERNETES_SERVICE_HOST;
-    const port = process.env.KUBERNETES_SERVICE_PORT ?? '443';
+export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
+    const env = deps.env ?? process.env;
+    const readFile = deps.readFile ?? readFileSync;
+    const request = deps.request ?? httpsRequest;
+    const serviceAccountDir = deps.serviceAccountDir ?? SERVICE_ACCOUNT_DIR;
+    const host = env.KUBERNETES_SERVICE_HOST;
+    const port = env.KUBERNETES_SERVICE_PORT ?? '443';
     if (!host) {
         throw new Error(
             'KUBERNETES_SERVICE_HOST is not set: this driver is not running in a cluster. ' +
@@ -1292,11 +1303,11 @@ export function inClusterRequest(): K8sRequest {
     }
     // Read once: the CA does not rotate, and reading it here is what makes a pod without its
     // projected ServiceAccount volume fail at startup instead of on every claim.
-    const ca = readFileSync(`${SERVICE_ACCOUNT_DIR}/ca.crt`, 'utf8');
+    const ca = readFile(`${serviceAccountDir}/ca.crt`, 'utf8');
 
     return (method, path, body) =>
         new Promise<K8sResponse>((resolve, reject) => {
-            const req = httpsRequest(
+            const req = request(
                 {
                     host,
                     port: Number(port),
@@ -1306,7 +1317,7 @@ export function inClusterRequest(): K8sRequest {
                     timeout: REQUEST_TIMEOUT_MS,
                     headers: {
                         // Read per call: a rotated ServiceAccount token must not be remembered.
-                        authorization: `Bearer ${readFileSync(`${SERVICE_ACCOUNT_DIR}/token`, 'utf8').trim()}`,
+                        authorization: `Bearer ${readFile(`${serviceAccountDir}/token`, 'utf8').trim()}`,
                         'content-type': 'application/json',
                     },
                 },

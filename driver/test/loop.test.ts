@@ -942,6 +942,30 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // A network blink is not evidence that the lease moved. The next heartbeat remains the
+    // authority, while the in-flight runner keeps its checkout and can still report normally.
+    it('keeps running through a transient heartbeat failure and recovers on the next beat', async () => {
+        const board = stubBoard([job(1)]);
+        const rawHeartbeat = board.board.heartbeat.bind(board.board);
+        const logs: string[] = [];
+        let calls = 0;
+        board.board.heartbeat = async (claimed) => {
+            calls += 1;
+            if (calls === 1) throw new Error('board blink');
+            return rawHeartbeat(claimed);
+        };
+        const runner = stubRunner(async () => {
+            while (calls < 2) await sleep();
+            return ok();
+        });
+
+        await drive({ ...board, runner, log: (message) => logs.push(message) });
+
+        expect(runner.killed).toEqual([]);
+        expect(board.board.completed).toHaveLength(1);
+        expect(logs.filter((message) => message.includes('heartbeat failed, continuing'))).toHaveLength(1);
+    });
+
     // A Stop (issue #41) is a park, not an end: the board stamps the running row with the flag,
     // the heartbeat carries it back, and the container is killed so the run stops editing the
     // checkout — but the job goes back on the board, session intact, for a human to resume from

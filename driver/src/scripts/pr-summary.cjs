@@ -12,14 +12,15 @@
  *         back — a summary is decoration, never worth failing a publish that already pushed.
  *
  * The title is the branch's first commit subject — the commit that started the work names it —
- * truncated to 72 characters. The body lists the subjects (capped) and the shortstat of the
+ * truncated to 144 characters (twice the git subject convention: a commit that runs a little
+ * long must not lose its last word's final letters, PR #191). The body lists the subjects (capped) and the shortstat of the
  * whole branch diff. Every git read is execFileSync with an argv array: no shell, no
  * interpolation.
  */
 
 const { execFileSync } = require('node:child_process');
 
-const TITLE_MAX = 72;
+const TITLE_MAX = 144;
 const BODY_COMMIT_CAP = 30;
 
 function git(args) {

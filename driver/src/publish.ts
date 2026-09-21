@@ -76,7 +76,7 @@ const commandIssue = (command: string): number | null => {
  */
 export function publishPlan(job: BoardJob, now: Date = new Date()): PublishPlan {
     const issue = commandIssue(job.command);
-    const firstLine = (job.command.trim().split('\n')[0] ?? '').trim().slice(0, 72);
+    const firstLine = (job.command.trim().split('\n')[0] ?? '').trim().slice(0, 144);
     const title = issue ? `${firstLine} (#${issue})` : firstLine;
     const branch = issue ? `fix/${issue}` : `task/${now.toISOString().slice(0, 10).replace(/-/g, '')}`;
     return { branch, title, issueNumber: issue };

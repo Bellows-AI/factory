@@ -4275,78 +4275,39 @@ describe('the kubernetes runner', () => {
         expect(gets).toBe(3);
     });
 
-    // The bound exists because the failure mode it guards is an apiserver down for MINUTES: one
-    // more failed read than POLL_MAX_CONSECUTIVE_FAILURES abandons the run, whose deadline has
-    // all but certainly fired by then — polling on would hold a worker slot forever.
-    it('abandons the run after too many consecutive failed reads', async () => {
-        let gets = 0;
-        const serve = claimServer();
-        const request: K8sRequest = (method, path, body) => {
-            const claimAnswer = serve(method, path, body);
-            if (claimAnswer) return Promise.resolve(claimAnswer);
-            if (path === jobsPath(namespace) && method === 'POST') {
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            if (method === 'DELETE' && path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: '{}' });
-            }
-            if (path.startsWith(`${jobsPath(namespace)}?`)) {
-                return Promise.resolve({ status: 200, body: JSON.stringify({ items: [] }) });
-            }
-            if (path === jobPath(namespace, runnerJobName(job))) {
-                gets += 1;
-                return Promise.resolve({ status: 503, body: 'unavailable' });
-            }
-            // The close-time claude-code turn read: its Job status poll converges like the
-            // runner's own, so its aux Job is answered here before the fallthrough rejects.
-            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) {
-                return Promise.resolve(FAKE.job as K8sResponse);
-            }
-            {
-                const aux = auxRoutes(method, path);
-                if (aux) return Promise.resolve(aux);
-            }
-            // The per-attempt Secret — the runner's branch-ingest pair — is created for every
-            // attempt and deleted with it, so every fake answers it the same plain way.
-            if (path === `/api/v1/namespaces/${namespace}/secrets`) {
-                if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
-            }
-            return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
-        };
+    // HTTP failures and transport exceptions take separate branches, but have the same bound and
+    // cleanup contract. One table keeps that contract in one place instead of duplicating the
+    // whole attempt fixture for the Secret assertion.
+    it.each(['http', 'transport'] as const)(
+        'abandons after consecutive %s polling failures and reaps the attempt Secret',
+        async (failure) => {
+            const base = fakeRequest({ job: { status: 503, body: 'unavailable' } });
+            let failedReads = 0;
+            const request: K8sRequest = (method, path, body) => {
+                if (method === 'GET' && path === jobPath(namespace, runnerJobName(job))) {
+                    failedReads += 1;
+                    if (failure === 'transport') return Promise.reject(new Error('connection reset'));
+                }
+                return base.request(method, path, body);
+            };
+            const calls = base.calls;
+            const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
+            await expect(
+                createKubernetesRunner(
+                    loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
+                    request,
+                    async () => {}
+                ).run(envJob, { id: SESSION, resume: false })
+            ).rejects.toThrow(failure === 'http' ? /in a row/ : /connection reset/);
 
-        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/in a row/);
-        expect(gets).toBe(POLL_MAX_CONSECUTIVE_FAILURES + 1);
-    });
-
-    // Any throw after the Job was created — poll exhaustion, a vanished object — skips the
-    // verdict-path cleanup, and the loop's catch never calls kill(). Without a delete here the
-    // claim env's plaintext values stay in a Secret nobody will reap when the job retires dead.
-    // The run never touches a Secret before creating it (the name carries the lease token, so
-    // there is no pre-create sweep), so the proof is the LAST call being a delete — one the throw
-    // came after.
-    it('deletes the per-job Secret even when the run throws after creating it', async () => {
-        const { request, calls } = fakeRequest({
-            job: { status: 503, body: 'unavailable' },
-        });
-        const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
-        await expect(
-            createKubernetesRunner(
-                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' }),
-                request,
-                async () => {}
-            ).run(envJob, { id: SESSION, resume: false })
-        ).rejects.toThrow(/in a row/);
-
-        const last = calls[calls.length - 1]!;
-        expect(last.method).toBe('DELETE');
-        expect(last.path).toBe(`/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`);
-        // And it was the post-create cleanup: the Job create, its failed status polls and the
-        // delete all follow the Secret's creation.
-        const secretCreate = calls.findIndex((c) => c.method === 'POST' && c.path?.endsWith('/secrets'));
-        const lastDelete = calls.length - 1;
-        expect(lastDelete).toBeGreaterThan(secretCreate);
-    });
+            expect(failedReads).toBe(POLL_MAX_CONSECUTIVE_FAILURES + 1);
+            const last = calls[calls.length - 1]!;
+            expect(last.method).toBe('DELETE');
+            expect(last.path).toBe(`/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`);
+            const secretCreate = calls.findIndex((call) => call.method === 'POST' && call.path?.endsWith('/secrets'));
+            expect(calls.length - 1).toBeGreaterThan(secretCreate);
+        }
+    );
 
     // Two outages of 10 reads each would trip the bound if the count carried across them — it
     // must not. One good read in between proves the job is alive and observable again.

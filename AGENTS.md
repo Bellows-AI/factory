@@ -34,6 +34,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `config.ts`, compose env blocks, `.env.example` | [docs/configuration.md](docs/configuration.md) |
 | `server/src/workspace/*`, `011_user_workspace.sql`, `ORG_WORKSPACE_ROOT`, the `git` install in the runtime image | [docs/workspace.md](docs/workspace.md) |
 | `driver/src/k8s.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
+| Executor/runner tests, coverage gates, `scripts/test-jobs.sh`, `scripts/test-k8s.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
 | `server/src/routes/jobs.ts`, `db/job-store.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
 | `workflow`, `027_workflows.sql`, `db/workflow-*.ts`, `routes/workflows.ts`, the claim's `publish` flag | [docs/workflows.md](docs/workflows.md) |
@@ -72,6 +73,8 @@ npm start              # node --env-file-if-exists=.env server/dist/index.js (re
 npm run driver
 
 npm test               # vitest run — offline, no token, no quota, no database, no docker
+npm run test:executors # focused offline board/driver/runner/telemetry suites
+npm run test:coverage:executors # the same surface with executor-specific coverage thresholds
 npm run typecheck      # tsc -b across all four project references (plus server/tsconfig.test.json,
                        # which typechecks server/test-db and its harness — the suites drift quietly otherwise)
 npm run lint           # biome check — lint + format verification over the four packages, offline
