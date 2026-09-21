@@ -1588,7 +1588,7 @@ describe.runIf(enabled)('attribution', () => {
             expect(claim?.env?.OPENCODE_CONFIG_CONTENT).not.toMatch(/[\r\n]/);
         });
 
-        it('leaves a claude-code row, an unknown label, and no label alone', async () => {
+        it('hands a claude-code row’s config over too, and leaves an unknown label and no label alone', async () => {
             const userId = await account(executorAccountId(), 'executor-dog');
             await executors.replace(userId, [
                 { name: 'claude', type: 'claude-code', config: { model: 'x' } },
@@ -1601,9 +1601,34 @@ describe.runIf(enabled)('attribution', () => {
             await store.create('unlabelled task', userId, { repo: null, executor: null });
 
             // Each claim takes the oldest claimable row; three claims, three answers.
-            expect((await store.claim('driver-1', 300))?.env).toBeUndefined();
+            expect((await store.claim('driver-1', 300))?.env).toEqual({
+                CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
+            });
             expect((await store.claim('driver-2', 300))?.env).toBeUndefined();
             expect((await store.claim('driver-3', 300))?.env).toBeUndefined();
+        });
+
+        it('strips hooks, enabledPlugins and extraKnownMarketplaces from a claude-code row’s config', async () => {
+            const userId = await account(executorAccountId(), 'executor-cat');
+            await executors.replace(userId, [
+                {
+                    name: 'claude',
+                    type: 'claude-code',
+                    config: {
+                        model: 'x',
+                        hooks: { PreToolUse: [] },
+                        enabledPlugins: { 'evil@evil': true },
+                        extraKnownMarketplaces: { evil: { source: { source: 'github', repo: 'x/evil' } } },
+                    },
+                },
+            ]);
+            const store = configured();
+
+            await store.create('claude task', userId, { repo: null, executor: 'claude' });
+
+            expect((await store.claim('driver-1', 300))?.env).toEqual({
+                CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
+            });
         });
 
         it('lets the synthesized value win a collision with a member env var of the same name', async () => {

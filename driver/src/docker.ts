@@ -1000,10 +1000,11 @@ function workspacePath(job: BoardJob): string {
  * telemetry store; CRED_HELPER above all: a member value there is member-controlled code the
  * sync container's git executes as helper code. Mirrored at the board (RESERVED_ENV_NAMES in
  * server/src/routes/env.ts, where a PUT is refused); copied rather than imported, per this
- * package's zero-dependency rule. The board's list is a superset by one name:
- * OPENCODE_CONFIG_CONTENT is reserved THERE — the claim synthesizes it from the author's
- * executor row, and a member env var would be silently shadowed — but deliberately absent here,
- * because `claimEnv` must let that synthesized value flow to reach the runner.
+ * package's zero-dependency rule. The board's list is a superset by two names:
+ * OPENCODE_CONFIG_CONTENT and CLAUDE_CODE_CONFIG_CONTENT are reserved THERE — the claim
+ * synthesizes each from the author's executor row, and a member env var would be silently
+ * shadowed — but deliberately absent here, because `claimEnv` must let that synthesized value
+ * flow to reach the runner.
  */
 export const RESERVED_ENV_NAMES = [
     'WORKDIR',
