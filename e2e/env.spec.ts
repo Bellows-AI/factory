@@ -263,7 +263,13 @@ test.describe('environment editors', () => {
         await expect(page.getByRole('button', { name: 'Save repository selection' })).toBeDisabled();
         await expect(page.getByText('no workspace root')).toBeVisible();
 
-        await page.getByRole('link', { name: 'Workspace' }).click();
+        // Scoped to the availability panel: the settings nav also carries a link named
+        // Workspace, and an unscoped locator would be a strict-mode violation.
+        await page
+            .locator('section.panel')
+            .filter({ hasText: 'no workspace root' })
+            .getByRole('link', { name: 'Workspace', exact: true })
+            .click();
         await expect(page).toHaveURL(/\/settings\/workspace$/);
         expect(problems.join('\n')).toBe('');
         await page.screenshot({ path: `${SHOTS}/settings-repos-root-null.png`, fullPage: true });
