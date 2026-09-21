@@ -112,6 +112,82 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     expect(body.organizations).toEqual([{ id: kept.id, name: kept.account }]);
 });
 
+test('the screen explains itself, its identity, and the default choice (issue 187)', async ({ page }) => {
+    await page.goto('/api/auth/github?reselect=1');
+
+    await screen(page).waitFor({ timeout: 60_000 });
+    // The recomposed page: one heading, the setup context, the purpose, the person, the note.
+    await expect(page.getByRole('heading', { level: 1, name: 'Choose organizations and repositories' })).toHaveCount(1);
+    await expect(page.getByText('Setup · One step')).toBeVisible();
+    await expect(page.getByText('Track agent activity, start work, and keep repository setup visible in one place.')).toBeVisible();
+    await expect(page.getByText('Signed in as E2E User (@e2e-user)')).toBeVisible();
+    await expect(
+        page.getByText('GitHub sign-in provides your identity and organization membership.')
+    ).toBeVisible();
+
+    // The summary names every selected organization and its mode before the action — and the
+    // default arrives all current and future repositories, the stored or first-sign-in choice.
+    const reported = await pendingReport(page);
+    const summary = page.locator('.onboarding-summary');
+    await expect(summary).toBeVisible();
+    await expect(summary.getByText(`${reported.length} organizations selected`)).toBeVisible();
+    await expect(summary.getByText('All current and future repositories')).toHaveCount(reported.length);
+    await page.screenshot({ path: 'artifacts/ui/onboarding-explained.png', fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: 'artifacts/ui/onboarding-explained-narrow.png', fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    // Confirming the default still completes: the choice lands, the dashboard is reached.
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+});
+
+test('a choice of nothing refuses Continue and says what is missing (issue 187)', async ({ page }) => {
+    await page.goto('/api/auth/github?reselect=1');
+    await screen(page).waitFor({ timeout: 60_000 });
+    const reported = await pendingReport(page);
+    const orgs = screen(page).locator('.onboarding-org');
+    for (const install of reported) {
+        await orgs.filter({ hasText: install.account }).getByRole('checkbox').uncheck();
+    }
+
+    const cont = page.getByRole('button', { name: 'Continue' });
+    await expect(cont).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.getByText('Choose at least one organization to continue.')).toBeVisible();
+    // The attempted action is receivable — it cannot post, and the screen stands.
+    await cont.click();
+    await expect(screen(page)).toBeVisible();
+
+    // Choosing one organization re-enables the action and completes.
+    await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
+    await expect(cont).not.toHaveAttribute('aria-disabled', 'true');
+    await cont.click();
+    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+});
+
+test('an unavailable repository listing says so and keeps the choice completable (issue 187)', async ({ page }) => {
+    // The offline server has no App client, so every listing answers source none — this is the
+    // one listing failure a browser can reach deterministically, and the screen must neither
+    // render an empty checklist nor silently widen the org's mode.
+    await page.goto('/api/auth/github?reselect=1');
+    await screen(page).waitFor({ timeout: 60_000 });
+    const reported = await pendingReport(page);
+    const first = screen(page).locator('.onboarding-org').filter({ hasText: reported[0]!.account });
+
+    await first.locator('summary').click();
+    await expect(
+        first.getByText(
+            'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
+        )
+    ).toBeVisible();
+    await expect(first.getByRole('button', { name: 'Retry' })).toBeVisible();
+    await expect(first.locator('.onboarding-repos')).toHaveCount(0);
+
+    // All mode stands: the submission posts the org without a repos key and completes.
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+});
+
 test('the next sign-in reuses the stored choice without the screen (issue 125)', async ({ page }) => {
     // Establish the choice THIS test relies on: sign in once — through the screen when this is
     // the run's first sign-in, straight in when another test already stored one — then sign out,

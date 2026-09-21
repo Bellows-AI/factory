@@ -137,7 +137,9 @@ export const withMode = (draft: OrgDraft, mode: RepoMode): OrgDraft => {
     if (mode === 'all') return { ...draft, mode, chosen: new Set<string>(), widenedToAll: true };
     const listing = draft.listing;
     const chosen =
-        listing.kind === 'ready' ? standingRepos(draft.tracked, { repos: listing.repos, source: 'app' }) : new Set(draft.tracked ?? []);
+        listing.kind === 'ready'
+            ? standingRepos(draft.tracked, { repos: listing.repos, source: 'app' })
+            : new Set(draft.tracked ?? []);
     return { ...draft, mode, chosen, widenedToAll: false };
 };
 
@@ -260,5 +262,9 @@ export interface IdentityView {
 
 export const identityView = (identity: PendingSignInPayload['identity']): IdentityView => {
     const name = identity.displayName ? `${identity.displayName} (@${identity.login})` : identity.login;
-    return { name, initial: (identity.displayName ?? identity.login).charAt(0).toUpperCase(), avatarUrl: identity.avatarUrl };
+    return {
+        name,
+        initial: (identity.displayName ?? identity.login).charAt(0).toUpperCase(),
+        avatarUrl: identity.avatarUrl,
+    };
 };

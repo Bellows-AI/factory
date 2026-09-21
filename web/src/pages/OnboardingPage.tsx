@@ -278,8 +278,8 @@ export function OnboardingPage({
         return page(
             <>
                 <p className="status">
-                    No GitHub App installation is available for your account, so there is nothing to choose yet.
-                    Install the App for an organization, then start again.
+                    No GitHub App installation is available for your account, so there is nothing to choose yet. Install
+                    the App for an organization, then start again.
                 </p>
                 <a className="login-button" href={`/api/auth/github?returnTo=${encodeURIComponent(payload.returnTo)}`}>
                     Start again
@@ -337,7 +337,9 @@ export function OnboardingPage({
                         <li key={row.id} className="onboarding-summary-row">
                             <span>{row.account}</span>
                             <span>{row.label}</span>
-                            {row.active ? <span className="muted">You will enter Factory in this organization.</span> : null}
+                            {row.active ? (
+                                <span className="muted">You will enter Factory in this organization.</span>
+                            ) : null}
                         </li>
                     ))}
                 </ul>
@@ -348,12 +350,7 @@ export function OnboardingPage({
                     </p>
                 ) : null}
             </section>
-            <div
-                className="onboarding-actions"
-                ref={actionsRef}
-                tabIndex={-1}
-                aria-busy={submitting}
-            >
+            <div className="onboarding-actions" ref={actionsRef} tabIndex={-1} aria-busy={submitting}>
                 {error ? (
                     <p className="status" role="alert">
                         {error}

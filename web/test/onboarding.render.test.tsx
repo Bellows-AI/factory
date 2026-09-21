@@ -147,9 +147,7 @@ describe('OnboardingPage explicit repository mode (issue 187)', () => {
         expect(note).toBeGreaterThan(-1);
         expect(summary).toBeGreaterThan(note);
         expect(action).toBeGreaterThan(summary);
-        expect(html).toContain(
-            'This choice changes what Factory tracks, not your GitHub permissions.'
-        );
+        expect(html).toContain('This choice changes what Factory tracks, not your GitHub permissions.');
         // Every org is accounted for, by name and mode, and the requested org is the active one.
         expect(html).toContain('2 organizations selected');
         expect(html).toContain('All current and future repositories');
@@ -333,7 +331,9 @@ describe('explicit repository mode (issue 187)', () => {
         // Untouched all mode: no key — "track everything, future included" is the absence of a
         // narrowing, not today's list pinned as one.
         const fresh = one({ id: '888888', account: 'other-org', tracked: null });
-        expect(buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', fresh]])).repos).toEqual({});
+        expect(
+            buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', fresh]])).repos
+        ).toEqual({});
     });
 
     it('all checked in specific stays specific — the full name list is sent, never []', () => {
@@ -365,20 +365,28 @@ describe('explicit repository mode (issue 187)', () => {
         const draft = one({ id: '999999', account: 'acme', tracked: ['acme/web'] }, { repos: [], source: 'none' });
         expect(draft.mode).toBe('specific');
         expect(draft.chosen).toEqual(new Set(['acme/web']));
-        expect(buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', draft]])).repos).toEqual({});
+        expect(
+            buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', draft]])).repos
+        ).toEqual({});
         // Same for an all-mode org whose listing cannot be read: all mode stands, no key.
         const all = one({ id: '888888', account: 'other-org', tracked: null }, { repos: [], source: 'none' });
         expect(all.mode).toBe('all');
-        expect(buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', all]])).repos).toEqual({});
+        expect(
+            buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', all]])).repos
+        ).toEqual({});
     });
 
     it('a deselected organization contributes no org and no repo key, whatever its draft says', () => {
         const widened = withMode(one(INSTALLATIONS[1]!, LISTING), 'all');
         expect(
-            buildCompletionPayload(INSTALLATIONS, new Set(['888888']), new Map([
-                ['888888', one(INSTALLATIONS[0]!)],
-                ['999999', widened],
-            ]))
+            buildCompletionPayload(
+                INSTALLATIONS,
+                new Set(['888888']),
+                new Map([
+                    ['888888', one(INSTALLATIONS[0]!)],
+                    ['999999', widened],
+                ])
+            )
         ).toEqual({ orgs: ['888888'], repos: {} });
     });
 
@@ -387,7 +395,9 @@ describe('explicit repository mode (issue 187)', () => {
         expect(failed.listing).toEqual({ kind: 'failed' });
         expect(failed.mode).toBe('specific');
         expect(failed.chosen).toEqual(new Set(['acme/web']));
-        expect(buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', failed]])).repos).toEqual({});
+        expect(
+            buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', failed]])).repos
+        ).toEqual({});
     });
 
     it('reconciliation on a refreshed listing drops stale names but never the mode', () => {
@@ -400,20 +410,31 @@ describe('explicit repository mode (issue 187)', () => {
     });
 
     it('the first invalid group is a selected, ready, zero-chosen specific org — nothing else', () => {
-        const readyEmpty = withChosen(one({ id: '999999', account: 'acme', tracked: ['acme/web'] }, LISTING), 'acme/web');
+        const readyEmpty = withChosen(
+            one({ id: '999999', account: 'acme', tracked: ['acme/web'] }, LISTING),
+            'acme/web'
+        );
         expect(readyEmpty.chosen.size).toBe(0);
         expect(
-            firstInvalidOrg(INSTALLATIONS, new Set(['888888', '999999']), new Map([
-                ['888888', one(INSTALLATIONS[0]!)],
-                ['999999', readyEmpty],
-            ]))
+            firstInvalidOrg(
+                INSTALLATIONS,
+                new Set(['888888', '999999']),
+                new Map([
+                    ['888888', one(INSTALLATIONS[0]!)],
+                    ['999999', readyEmpty],
+                ])
+            )
         ).toBe('999999');
         // Unselected: the group is invisible to validation.
         expect(
-            firstInvalidOrg(INSTALLATIONS, new Set(['888888']), new Map([
-                ['888888', one(INSTALLATIONS[0]!)],
-                ['999999', readyEmpty],
-            ]))
+            firstInvalidOrg(
+                INSTALLATIONS,
+                new Set(['888888']),
+                new Map([
+                    ['888888', one(INSTALLATIONS[0]!)],
+                    ['999999', readyEmpty],
+                ])
+            )
         ).toBeNull();
         // Preserved-not-reviewable: a specific group without a listing is never "empty".
         const idleEmpty = one({ id: '999999', account: 'acme', tracked: [] });
@@ -440,9 +461,13 @@ describe('explicit repository mode (issue 187)', () => {
         expect(summaryRows(INSTALLATIONS, new Set(['999999']), new Map([['999999', two]]), null)[0]!.label).toBe(
             '2 specific repositories'
         );
-        const unavailable = one({ id: '888888', account: 'other-org', tracked: ['a/b'] }, { repos: [], source: 'none' });
-        expect(summaryRows([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', unavailable]]), null)[0]!
-            .label).toBe('Specific repositories (not reviewable right now)');
+        const unavailable = one(
+            { id: '888888', account: 'other-org', tracked: ['a/b'] },
+            { repos: [], source: 'none' }
+        );
+        expect(
+            summaryRows([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', unavailable]]), null)[0]!.label
+        ).toBe('Specific repositories (not reviewable right now)');
         // Nothing selected: no rows at all.
         expect(summaryRows(INSTALLATIONS, new Set(), drafts, null)).toEqual([]);
     });

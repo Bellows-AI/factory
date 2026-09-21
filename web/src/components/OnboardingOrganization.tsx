@@ -98,7 +98,9 @@ export function OnboardingOrganization({
                                     onChange={() => onModeChange('specific')}
                                     aria-describedby={`onboarding-mode-specific-help-${index}`}
                                 />
-                                <label htmlFor={`onboarding-mode-specific-${index}`}>Choose specific repositories</label>
+                                <label htmlFor={`onboarding-mode-specific-${index}`}>
+                                    Choose specific repositories
+                                </label>
                                 <p className="onboarding-mode-help" id={`onboarding-mode-specific-help-${index}`}>
                                     Only the repositories selected below are tracked; new repositories are not added
                                     automatically.
