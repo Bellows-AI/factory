@@ -1,13 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import {
-    OnboardingPage,
-    StartAgainPanel,
-    reconciled,
-    standingRepos,
-    type PendingSignInPayload,
-    type RepoListing,
-} from '../src/pages/OnboardingPage.js';
+import { reconciled, standingRepos, type PendingSignInPayload, type RepoListing } from '../src/onboarding.js';
+import { OnboardingPage, StartAgainPanel } from '../src/pages/OnboardingPage.js';
 
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
