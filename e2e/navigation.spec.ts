@@ -43,14 +43,27 @@ const MATRIX_WIDTHS = [1440, 768, 390, 320] as const;
 const NAMED_SCROLL_REGIONS = '.table-wrap, .chart-wrap, .chat-output, .run-well, .picker-list';
 
 /** Waits for the route's data anchor, so a measurement reads the settled layout and not the
-    shell the SPA paints first. */
+    shell the SPA paints first. Each mapped route waits for content that only exists once its
+    data (or its terminal error/empty state) has landed — never the loading skeleton. */
 async function settle(page: Page, path: string): Promise<void> {
     if (path === '/') {
         // The dashboard answers 202 while the first read runs (dashboard.spec.ts's open()).
         await page.locator('.usage-summary, .usage-empty').first().waitFor({ timeout: 60_000 });
         return;
     }
+    if (path === '/tasks') {
+        await page.locator('.inbox-row, .inbox-empty, .inbox-error').first().waitFor();
+        return;
+    }
+    if (path.startsWith('/tasks/')) {
+        // The detail grid mounts when the thread answers; the composer page is its own address.
+        await page.locator('.task-layout, .composer').first().waitFor();
+        return;
+    }
     await page.locator('main#main-content').waitFor();
+    // Every other routed page mounts its sections below the shell; a panel is the difference
+    // between a skeleton and the layout the route settles into.
+    await page.locator('main .composer, main section.panel').first().waitFor();
 }
 
 /** The matrix's route list with a live task detail appended. */
@@ -472,14 +485,20 @@ test.describe('the responsive shell', () => {
     });
 
     test('200% zoom keeps every primary route free of page-level overflow', async ({ page }) => {
-        // Browser-zoom semantics with a mechanism a test can own: zoom on the root scales every
-        // px dimension the stylesheet writes, so the 1440 viewport lays out at 720 CSS px — the
-        // shell's drawer regime, which is exactly the stress "everything reachable at 200%" asks
-        // for. Both projects run Chromium, where `zoom` is standardized.
+        // Real browser zoom does two things at once, and Playwright has no native lever for
+        // either: it scales every px dimension the stylesheet writes, and it shrinks the CSS-px
+        // viewport the media queries read. Neither mechanism alone reproduces it — zoom on the
+        // root leaves media queries at desktop (so the drawer regime never engages), and a
+        // narrow viewport leaves the px dimensions unscaled. The test applies both: a 720px
+        // viewport (1440 window at 200% is a 720 CSS-px viewport; the shell's drawer regime
+        // engages) with root zoom 2 (every px length renders doubled). The combined layout
+        // budget is 360 CSS px — strictly harder than the real thing, still above the 320px
+        // floor the shell promises — and both projects run Chromium, where `zoom` is
+        // standardized.
         await page.addInitScript(() => {
             document.documentElement.style.setProperty('zoom', '2');
         });
-        await page.setViewportSize({ width: 1440, height: 1000 });
+        await page.setViewportSize({ width: 720, height: 1000 });
         for (const path of await matrixRoutes(page)) {
             await page.goto(path);
             await settle(page, path);
