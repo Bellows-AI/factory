@@ -447,6 +447,11 @@ describe.skipIf(!enabled)('listTasks', () => {
             'repo',
             'status',
             'summary',
+            // The PR-wait fields (036) ride the summary contract; this thread never waited, so all
+            // three read null.
+            'waitReason',
+            'waitTerminalReason',
+            'waitingSince',
         ]);
         expect(JSON.stringify(page.items[0])).not.toContain('cpuPercent');
     });

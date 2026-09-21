@@ -218,6 +218,11 @@ describe('memoryTaskList', () => {
             author: { id: 'u1', login: 'cat', name: 'Cat', avatarUrl: null },
             activity: 'the live line',
             summary: null,
+            // The in-memory engine carries no PR-wait rows; the SQL engine's lateral join
+            // populates these for a thread that ever waited.
+            waitReason: null,
+            waitingSince: null,
+            waitTerminalReason: null,
             createdAt: at(60),
             activityAt: at(20),
         });

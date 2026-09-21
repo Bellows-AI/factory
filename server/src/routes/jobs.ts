@@ -58,6 +58,14 @@ function executorReason(value: string): string | null {
 }
 
 /**
+ * The publication a run reports (036): the PR identity a successful publish landed. The URL is
+ * validated to the one spelling the driver mints — it is not data, it is a protocol. Branch names
+ * are git refs truncated to the shape a ref can take, bounded far below scanner depth.
+ */
+const PR_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/;
+const BRANCH_LIMIT = 255;
+
+/**
  * Output is truncated here, not trusted from the worker. The body limit lets 128 KiB through and a
  * job's tail is for debugging, not archival — the OTLP pipeline is where logs belong.
  */
@@ -954,6 +962,59 @@ export const jobRoutes =
                 return bad(reply, 'BAD_SUMMARY', 'summary must be a string or null');
             }
 
+            // The publication the driver reports beside a successful publish (036): optional and
+            // null, and shape-validated rather than trusted — a forged report must not pin
+            // another org's repository onto this thread. The cross-check against the leased
+            // job's OWN repo label is the store's, inside the verdict's transaction.
+            let publication: {
+                repo: string;
+                prNumber: number;
+                prUrl: string;
+                headBranch: string;
+                baseBranch: string;
+            } | null = null;
+            const rawPublication = body(request.body).publication ?? null;
+            if (rawPublication !== null) {
+                if (typeof rawPublication !== 'object') {
+                    return bad(reply, 'BAD_PUBLICATION', 'publication must be an object or null');
+                }
+                const pub = rawPublication as Record<string, unknown>;
+                const { repo, prNumber, prUrl, headBranch, baseBranch } = pub;
+                if (typeof repo !== 'string' || repoReason(repo) !== null) {
+                    return bad(reply, 'BAD_PUBLICATION', 'publication.repo must be an owner/name');
+                }
+                if (!Number.isInteger(prNumber) || (prNumber as number) < 1) {
+                    return bad(reply, 'BAD_PUBLICATION', 'publication.prNumber must be a positive integer');
+                }
+                if (typeof prUrl !== 'string' || prUrl.length > 2048 || !PR_URL.test(prUrl)) {
+                    return bad(reply, 'BAD_PUBLICATION', 'publication.prUrl must be a github.com pull url');
+                }
+                for (const [key, value] of [
+                    ['headBranch', headBranch],
+                    ['baseBranch', baseBranch],
+                ] as const) {
+                    if (
+                        typeof value !== 'string' ||
+                        value.length < 1 ||
+                        value.length > BRANCH_LIMIT ||
+                        /[^\w./-]/.test(value)
+                    ) {
+                        return bad(
+                            reply,
+                            'BAD_PUBLICATION',
+                            `publication.${key} must be a branch name (1..${BRANCH_LIMIT})`
+                        );
+                    }
+                }
+                publication = {
+                    repo: repo as string,
+                    prNumber: prNumber as number,
+                    prUrl: prUrl as string,
+                    headBranch: headBranch as string,
+                    baseBranch: baseBranch as string,
+                };
+            }
+
             const result = await guard(
                 reply,
                 (e) => request.log.error({ err: e }, 'job complete failed'),
@@ -972,6 +1033,7 @@ export const jobRoutes =
                             typeof summary === 'string' && summary.trim()
                                 ? [...summary.trim()].slice(0, SUMMARY_LIMIT).join('')
                                 : null,
+                        publication,
                     })
             );
             if (!result.ok) return reply;
