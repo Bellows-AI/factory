@@ -2148,7 +2148,11 @@
     .repo-columns {
         display: grid;
         gap: 16px;
-        grid-template-columns: 1fr;
+        /* minmax(0, 1fr), not 1fr: the track's implicit minimum is the list table's min-content
+           (its cells are nowrap by design, scrolling inside the table wrap), which otherwise
+           widens the whole page on narrow screens — the same treatment the two-column layout
+           below already applies (issue 190). */
+        grid-template-columns: minmax(0, 1fr);
     }
 
     @media (min-width: 1100px) {
