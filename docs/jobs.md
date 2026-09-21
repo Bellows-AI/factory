@@ -37,7 +37,8 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
      user asked to park this run (see Stop) — the kill order of a different kind
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
   POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
-POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
+POST /api/jobs/:id/complete {leaseToken, status, exitCode, output,
+                             publication?}  (see Publishing and the verdict paragraph below)
   -> 200 {id, status, threadDone}   the verdict, plus whether EVERY job of the thread is
                                     terminal AND the user has closed it — the worktree-reclaim
                                     signal (see below)
@@ -1220,6 +1221,20 @@ env by a per-attempt Secret), because the worktree does not exist until somethin
 a refusal there would fail every claimed job. Under
 `AUTH_MODE=none` a board with no `GITHUB_TOKEN` in any env scope will fail the publish at push
 with the daemon's authentication error — the work stays local, loudly.
+
+**The verdict names who it published — the PR identity rides the completion report (036).** A
+publish is only real once it is recorded. `publishCheckout` answers the PR URL it created and the
+branch pair; the loop ships them to `complete` as the optional `publication` object — `repo`,
+`prNumber`, `prUrl`, `headBranch`, `baseBranch` — and the board, validating the shape (the repo an
+`owner/name`, the URL the github.com `.../pull/<n>` spelling, the branches bounded refs) and
+cross-checking `repo` against the leased job's OWN `repo` label inside the verdict's transaction,
+records the identity (`job_pr`). A no-op or a failed publish invents nothing: the field is absent
+and no row is written — only a run that actually published a PR names one. The identity is the
+durable anchor a later block layer keys its waits on, and it is already what the PR waits read:
+a waiting thread's `workflow_wait` row is addressed to that same `(repo, prNumber)`, GitHub's
+webhook deliveries fold into it and cancel it on PR close, and the task read model surfaces it as
+`waitReason` / `waitingSince` / `waitTerminalReason` (an open wait first, else the most recent
+terminal one).
 
 ## Decisions
 
