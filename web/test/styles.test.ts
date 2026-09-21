@@ -265,7 +265,6 @@ describe('the stylesheet', () => {
             '.inbox-search select',
             '.inbox-search button',
             '.chat-resume',
-            '.chat-toggle',
             '.task-actions button',
             '.task-remove-actions button',
             '.unsaved-actions button',

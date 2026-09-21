@@ -46,7 +46,9 @@ const setTheme = (page: Page, theme: 'dark' | 'light') =>
         : page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
 
 /** WCAG 2.2 contrast for one token pair, computed in the page from the browser-resolved
- * colors. Returns the pair with its measured ratio so failures can name it. */
+ * colors. Returns the pair with its measured ratio so failures can name it. The channel parse
+ * reads Chrome's `rgb()/rgba()` computed serialization — if a future Chrome serializes
+ * differently the ratios collapse toward 1 and this matrix fails loudly, never silently. */
 async function measure(page: Page, pair: Pair): Promise<{ pair: Pair; ratio: number }> {
     const ratio = await page.evaluate(([fgToken, bgToken]) => {
         const probe = document.createElement('div');
@@ -57,7 +59,8 @@ async function measure(page: Page, pair: Pair): Promise<{ pair: Pair; ratio: num
         const channels = (value: string) =>
             (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number).map((channel) => {
                 const s = channel / 255;
-                return s <= 0.035 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+                // The WCAG sRGB linearization cutoff.
+                return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
             });
         const luminance = (value: string) => {
             const [r, g, b] = channels(value);
