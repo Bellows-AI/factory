@@ -580,9 +580,10 @@ export const authRoutes =
         app.get('/api/auth/github/setup', async (request, reply) => {
             const query = request.query as { installation_id?: string };
             if (query.installation_id && INSTALLATION_ID.test(query.installation_id)) {
-                // The org rides along as the sign-in's preference, so the session lands in the
-                // installation that was JUST created rather than whichever GitHub reports first.
-                return reply.redirect(`/api/auth/github?org=${query.installation_id}`, 302);
+                // The org rides along as the sign-in's preference, and reselect makes an existing
+                // account reopen the choice instead of silently reusing the membership set from
+                // before this installation existed. Completion still decides what to materialize.
+                return reply.redirect(`/api/auth/github?org=${query.installation_id}&reselect=1`, 302);
             }
             return reply.redirect('/?auth_error=install_cancelled', 302);
         });

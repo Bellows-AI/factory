@@ -418,8 +418,10 @@ test.describe('the task detail page', () => {
         await expect(page.locator('.task-outcome')).toContainText('Verification');
         await expect(page.locator('.task-outcome')).toContainText('1 passed');
         await expect(page.locator('.task-outcome').getByText('all green')).not.toBeVisible();
-        await expect(page.locator('.task-outcome')).toContainText('Open pull request');
-        await expect(page.locator('.task-outcome')).toContainText('Open issue #177');
+        // The links are references, not CTAs: the labeled rows carry just the numbers.
+        await expect(page.locator('.task-outcome')).toContainText('#9');
+        await expect(page.locator('.task-outcome')).toContainText('#177');
+        await expect(conversation).toContainText('Pull request #9');
         for (const token of FORBIDDEN) expect(await page.locator('body').innerText(), token).not.toContain(token);
 
         // The outcome's checks link lands focus on the run's own verification region.
@@ -455,7 +457,8 @@ test.describe('the task detail page', () => {
         await expect(conversation.getByText('Follow-up', { exact: true })).toBeVisible();
         // Gates ride the run that produced them: lint failed on run 2, not run 1.
         await expect(page.locator('#run-2-checks')).toContainText('lint');
-        await expect(page.locator('#run-1-checks')).toContainText('Open pull request');
+        // The run's publication line has no label of its own, so the link says what it is.
+        await expect(page.locator('#run-1-checks')).toContainText('Pull request #1');
         await expect(page.getByRole('link', { name: 'View checks in run 2' })).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-thread.png`, fullPage: true });
     });
