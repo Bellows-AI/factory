@@ -224,7 +224,9 @@ function asThread(v: unknown): ReviewThread {
         isOutdated: bool(o.isOutdated),
         path: str(o.path),
         line: num(o.line),
-        comments: arr(o.comments).map(asThreadComment),
+        comments: arr(o.comments)
+            .map(asThreadComment)
+            .sort((a, b) => (a.databaseId ?? 0) - (b.databaseId ?? 0)),
     };
 }
 
