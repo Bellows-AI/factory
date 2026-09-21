@@ -71,6 +71,12 @@ export function validateExecutorPayload(raw: string, type: ExecutorType): Execut
     const trimmed = raw.trim();
     if (!trimmed) return { ok: false, error: 'Paste the executor config as JSON.' };
 
+    // Before the parse, on purpose: this validator runs on every keystroke, and an oversized
+    // paste should be refused for its size, not parsed first and rejected after.
+    if (new TextEncoder().encode(trimmed).length > MAX_CONFIG_BYTES) {
+        return { ok: false, error: 'The config is too large (limit 32 KiB).' };
+    }
+
     let parsed: unknown;
     try {
         parsed = JSON.parse(trimmed);
@@ -85,10 +91,6 @@ export function validateExecutorPayload(raw: string, type: ExecutorType): Execut
         if (!(field in parsed)) {
             return { ok: false, error: `The config for "${type}" must set "${field}".` };
         }
-    }
-
-    if (new TextEncoder().encode(trimmed).length > MAX_CONFIG_BYTES) {
-        return { ok: false, error: 'The config is too large (limit 32 KiB).' };
     }
 
     return { ok: true, value: parsed };
