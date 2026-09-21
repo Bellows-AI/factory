@@ -252,11 +252,13 @@ test.describe('the desktop shell', () => {
         expect(rows, 'preview rows across all sections').toBeLessThanOrEqual(15);
 
         // The cap only means something if it actually bit: with the board at 100+ tasks, some
-        // section's header must be speaking a count no preview could render. (The counts
-        // themselves are the 50-run poll window's — org-wide counts are the task-summary API's
-        // job, part 2 of the slice.)
+        // count must be speaking a number no preview could render. The count line packs its
+        // clauses into one element ("Running (1) · Need review (103)"), so read every
+        // parenthesized number, not just the first.
         const headers = await page.locator('.sidenav-section').allInnerTexts();
-        const counts = headers.map((text) => Number(/\((\d+)\)/.exec(text)?.[1]) || 0);
+        const counts = headers.flatMap((text) =>
+            [...text.matchAll(/\((\d+)\)/g)].map((match) => Number(match[1])),
+        );
         expect(counts.some((count) => count > 5), `one section counts past the cap: ${headers.join(', ')}`).toBe(true);
     });
 });
@@ -514,13 +516,11 @@ test.describe('the visual regression matrix', () => {
     // Issue 190's deterministic captures: route × theme × width, named so a reviewer can find
     // any cell. Not a full Cartesian product — one state per route here, the overlay states
     // below — and animations are disabled, because the one ambient motion would otherwise make
-    // two runs of the same page two different pictures. Light theme is the data-theme attribute
-    // until the appearance control lands (#188); these are palette captures, not feature checks.
+    // two runs of the same page two different pictures. Both themes are SET explicitly: the
+    // appearance bootstrap (#188) resolves System to the live OS palette, and headless cannot
+    // be trusted to prefer either.
     const themeAttr = (page: Page, theme: 'dark' | 'light') =>
-        page.evaluate((t) => {
-            if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
-            else document.documentElement.removeAttribute('data-theme');
-        }, theme);
+        page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
 
     const shotName = (path: string, theme: string, width: number) => {
         const slug = path === '/' ? 'dashboard' : path.slice(1).replaceAll('/', '-');
@@ -550,6 +550,7 @@ test.describe('the visual regression matrix', () => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto('/tasks');
         await settle(page, '/tasks');
+        await themeAttr(page, 'dark');
         await page.locator('.appbar-trigger').click();
         await expect(page.locator('.mobile-nav')).toBeVisible();
         await page.screenshot({
@@ -562,6 +563,7 @@ test.describe('the visual regression matrix', () => {
         await page.setViewportSize({ width: 1440, height: 1000 });
         await page.goto('/');
         await settle(page, '/');
+        await themeAttr(page, 'dark');
         await page.locator('.appbar .user-menu-button').click();
         await expect(page.locator('.user-menu-panel')).toBeVisible();
         await page.screenshot({
@@ -582,6 +584,7 @@ test.describe('the visual regression matrix', () => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto(`/tasks/${taskId}`);
         await settle(page, `/tasks/${taskId}`);
+        await themeAttr(page, 'dark');
         await page.locator('.page-header-actions').getByRole('button', { name: 'More task actions' }).click();
         await page.getByRole('menuitem', { name: 'Remove task' }).click();
         await expect(page.locator('.task-remove')).toBeVisible();

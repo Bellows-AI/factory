@@ -264,7 +264,12 @@
         background: var(--surface-raised);
         border-bottom: 1px solid var(--line);
         display: flex;
+        flex-wrap: wrap;
         gap: 12px;
+        /* Wrapping is the narrow-phone answer (issue 190): past the trigger+brand+actions sum
+           the actions drop to their own row instead of pushing the bar past the viewport — no
+           control is displaced or hidden, whatever the account login's length. */
+        row-gap: 2px;
         justify-content: space-between;
         min-height: 48px;
         padding: 8px 24px;

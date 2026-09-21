@@ -301,9 +301,7 @@ export function TaskComposer({
                 <h2>Execution context</h2>
                 <div className="composer-grid">
                     <div className="composer-field">
-                        <span className="composer-label" id="composer-repo-label">
-                            Repository
-                        </span>
+                        <span className="composer-label">Repository</span>
                         <p className="composer-helper">Run without a repository checkout.</p>
                         <Listbox
                             value={repo}
@@ -313,7 +311,7 @@ export function TaskComposer({
                                 // Reporting upward is the reporting effect's job — one path.
                             }}
                         >
-                            <ListboxButton className="composer-select" aria-labelledby="composer-repo-label">
+                            <ListboxButton className="composer-select" aria-label="Repository">
                                 {repo === '' ? 'No repository' : repo}
                             </ListboxButton>
                             <ListboxOptions anchor="bottom start" className="popover">
@@ -332,9 +330,7 @@ export function TaskComposer({
                         </Listbox>
                     </div>
                     <div className="composer-field">
-                        <span className="composer-label" id="composer-executor-label">
-                            Executor
-                        </span>
+                        <span className="composer-label">Executor</span>
                         <p className="composer-helper">Use the deployment&rsquo;s default runner.</p>
                         <Listbox
                             value={executor}
@@ -343,7 +339,7 @@ export function TaskComposer({
                                 setExecutor(next);
                             }}
                         >
-                            <ListboxButton className="composer-select" aria-labelledby="composer-executor-label">
+                            <ListboxButton className="composer-select" aria-label="Executor">
                                 {executor === '' ? 'Default executor' : executor}
                             </ListboxButton>
                             <ListboxOptions anchor="bottom start" className="popover">
@@ -371,7 +367,7 @@ export function TaskComposer({
                 ) : null}
                 {workflows !== null ? (
                     <div className="composer-field">
-                        <h2 id="composer-workflow-label">Reusable workflow</h2>
+                        <h2>Reusable workflow</h2>
                         <p className="composer-helper">
                             A workflow can turn this request into a repeatable multi-step process.
                         </p>
@@ -387,7 +383,7 @@ export function TaskComposer({
                                 // repo effect above.
                             }}
                         >
-                            <ListboxButton className="composer-select" aria-labelledby="composer-workflow-label">
+                            <ListboxButton className="composer-select" aria-label="Reusable workflow">
                                 {workflow === '' ? 'No workflow — run prompt as written' : workflow}
                             </ListboxButton>
                             <ListboxOptions anchor="bottom start" className="popover">

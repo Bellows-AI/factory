@@ -89,6 +89,9 @@ test('the gate holds a narrow phone inside the viewport, in both palettes (issue
         () => document.body.scrollWidth - document.body.clientWidth
     );
     expect(overflow, 'the gate overflows horizontally at 390px').toBeLessThanOrEqual(0);
+    // Dark is SET, not assumed: the appearance bootstrap (#188) maps a missing attribute to the
+    // live OS palette, which headless cannot be trusted to prefer.
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
     await page.screenshot({
         path: 'artifacts/ui/matrix/signin-gate_default_dark_390.png',
         animations: 'disabled',
@@ -133,6 +136,7 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
         page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await overflow(), 'onboarding overflows at 390px').toBeLessThanOrEqual(0);
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
     await page.screenshot({
         path: 'artifacts/ui/matrix/onboarding_default_dark_390.png',
         fullPage: true,

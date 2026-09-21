@@ -19,7 +19,6 @@ import { throughSignIn } from './signin.js';
 
 const SHOTS = 'artifacts/ui';
 
-const usageGroups = (page: Page) => page.locator('.usage-summary .usage-group');
 
 async function signedIn(page: Page) {
     // The shared helper: through the selection screen on the run's first sign-in, straight in
@@ -37,9 +36,9 @@ async function signedIn(page: Page) {
 async function workspacePage(page: Page) {
     await page.goto('/settings/workspace');
     const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
-    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('.picker')).toBeVisible();
     await page.getByRole('button', { name: 'Not now' }).click();
-    await expect(dialog).toBeHidden();
+    await expect(dialog).toHaveCount(0);
 }
 
 test('the left nav is there and moves between sections', async ({ page }) => {
@@ -60,12 +59,14 @@ test('the left nav is there and moves between sections', async ({ page }) => {
     // Nothing is selected yet, so the picker opens over the section on arrival — modal, so the
     // heading and the tree under the nav item are asserted after it is dismissed.
     await page.getByRole('button', { name: 'Not now' }).click();
-    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Repositories' })).toBeVisible();
 
     await nav.getByRole('link', { name: 'Dashboard' }).click();
     await expect(page).toHaveURL(/\/$/);
-    await expect(usageGroups(page)).toHaveCount(4);
+    // The analytics anchor, not a group count: this member's org holds no seeded rows, so the
+    // dashboard truthfully answers with the one empty state rather than four figures.
+    await expect(page.locator('.usage-summary, .usage-empty').first()).toBeVisible();
 });
 
 test('reloading /settings/workspace directly serves the app rather than a 404', async ({ page }) => {
@@ -85,7 +86,7 @@ test('reloading /settings/workspace directly serves the app rather than a 404', 
     // section is assertable. The 200 + shell is the deep-link contract; the heading proves the
     // route resolved to the workspace section and not the catch-all.
     await page.getByRole('button', { name: 'Not now' }).click();
-    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(page.locator('.sidenav')).toBeVisible();
 });
 
@@ -101,8 +102,12 @@ test('the picker opens by itself when nothing is selected, and is genuinely moda
     await signedIn(page);
     await page.goto('/settings/workspace');
 
+    // Visibility reads on the PANEL, not the dialog layer: `.dialog-layer` is a zero-height
+    // positioning shell over the viewport — its backdrop and positioner are `position: fixed` —
+    // so the container has no box to measure (the same convention navigation.spec pins).
     const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
-    await expect(dialog).toBeVisible();
+    const picker = dialog.locator('.picker');
+    await expect(picker).toBeVisible();
 
     /*
      * The offline entry runs with no GitHub App credential, and the stored fallback is scoped to
@@ -111,7 +116,7 @@ test('the picker opens by itself when nothing is selected, and is genuinely moda
      * — so this member's org has no repos to offer and the picker renders its empty state. That
      * is the honest reading of a credential-less org with no stored rows, not a failure to list.
      */
-    await expect(dialog).toContainText('This GitHub App is not installed on any repositories yet');
+    await expect(picker).toContainText('This GitHub App is not installed on any repositories yet');
 
     // `aria-modal` and the rest of the page going inert are what renderToStaticMarkup cannot
     // reach, and what everything else about the dialog depends on — focus trapping, Escape, the
@@ -139,13 +144,14 @@ test('Escape closes the picker and the page stays usable', async ({ page }) => {
     await page.goto('/settings/workspace');
 
     const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
-    await expect(dialog).toBeVisible();
+    const picker = dialog.locator('.picker');
+    await expect(picker).toBeVisible();
 
     await page.keyboard.press('Escape');
-    await expect(dialog).toBeHidden();
+    await expect(dialog).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Select repositories' }).click();
-    await expect(dialog).toBeVisible();
+    await expect(picker).toBeVisible();
 });
 
 test('an executor is added through the dialog, with bad JSON refused in place', async ({ page }) => {
@@ -159,7 +165,8 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
 
     await page.getByRole('button', { name: 'Add executor' }).click();
     const dialog = page.locator('[role="dialog"][aria-labelledby="executor-title"]');
-    await expect(dialog).toBeVisible();
+    const dialogPanel = dialog.locator('.picker');
+    await expect(dialogPanel).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
 
     // The Type note says what the field does NOT do — choosing a type describes the config, it
@@ -193,7 +200,7 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
 
     await dialog.getByPlaceholder('main').fill('main');
     await dialog.getByRole('button', { name: 'Add executor' }).click();
-    await expect(dialog).toBeHidden();
+    await expect(dialog).toHaveCount(0);
 
     // Focus went back to the trigger the dialog opened from — the Dialog restores it on close,
     // and the next keystroke must land where the member left it.
@@ -209,10 +216,10 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     // Editing is its own round trip: the save action reads "Save executor", and focus lands back
     // on the row's Edit button, not wherever the DOM happens to leave it.
     await panel.getByRole('button', { name: 'Edit' }).click();
-    await expect(dialog).toBeVisible();
+    await expect(dialogPanel).toBeVisible();
     await dialog.locator('textarea').fill('{ "model": "opus" }');
     await dialog.getByRole('button', { name: 'Save executor' }).click();
-    await expect(dialog).toBeHidden();
+    await expect(dialog).toHaveCount(0);
     await expect(panel.getByRole('button', { name: 'Edit' })).toBeFocused();
 
     await page.screenshot({ path: `${SHOTS}/settings-executors.png`, fullPage: true });
