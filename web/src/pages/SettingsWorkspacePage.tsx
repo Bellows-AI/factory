@@ -88,8 +88,6 @@ export function SettingsWorkspacePage() {
 
             <ConfigurationScope scope="workspace" />
 
-            <ConfigurationScope scope="workspace" />
-
             {env.error ? <p className="status">{env.error}</p> : null}
             {/* Same data gate as the organization page: the editor mounts only when the scope's
                 rows exist, never as an enabled empty draft over a failed read. */}

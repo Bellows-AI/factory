@@ -8,6 +8,7 @@ import {
     counts,
     isDirty,
     matchesSearch,
+    nextDraftAfterSeed,
     orderByRecency,
     repoKey,
     selectionPayload,
@@ -56,15 +57,20 @@ export function SettingsRepositoriesPage() {
     const seedKey = wsRepos ? wsRepos.map(repoKey).sort().join(',') : null;
 
     /*
-     * Seeded from the workspace poll's answer, and re-seeded only while the draft is clean — the
-     * same identity-key trick the old picker used: depending on the polled array directly would
-     * re-run this every tick and throw away whatever the person had just clicked.
+     * Seeded from the workspace poll's answer. The FIRST seed is adopted outright — an empty
+     * draft before the first answer is the initial state, not a member edit — and afterwards the
+     * draft survives a re-seed only when it is dirty against the PREVIOUS seed (nextDraftAfterSeed).
+     * The identity-key trick keeps the two-second poll from re-running this and throwing away
+     * whatever the person had just clicked.
      */
+    const seededRef = useRef<ReadonlySet<string> | null>(null);
     useEffect(() => {
         if (seedKey === null) return;
         const seeded = seedKey ? new Set(seedKey.split(',')) : new Set<string>();
+        const previous = seededRef.current;
+        seededRef.current = seeded;
         setBaseline(seeded);
-        setChosen((current) => (isDirty(current, seeded) ? current : seeded));
+        setChosen((current) => nextDraftAfterSeed(previous, current, seeded));
     }, [seedKey]);
 
     const dirty = baseline !== null && isDirty(chosen, baseline);

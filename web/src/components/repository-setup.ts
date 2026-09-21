@@ -52,6 +52,23 @@ export function isDirty(chosen: ReadonlySet<string>, baseline: ReadonlySet<strin
 }
 
 /**
+ * The draft after the workspace poll seeded a new server selection.
+ *
+ * The FIRST seed is always adopted: an empty draft before it is the page's initial state, not a
+ * member edit, and keeping it would present a pre-selected workspace as "Selection changed" —
+ * one save away from deselecting every checkout the member had. Afterwards, a draft dirty
+ * against the PREVIOUS seed is a member's work and survives the re-seed; a clean draft follows
+ * the server. Pure, so the offline suite pins the lifecycle the render cannot reach.
+ */
+export function nextDraftAfterSeed(
+    previousSeed: ReadonlySet<string> | null,
+    current: ReadonlySet<string>,
+    seeded: ReadonlySet<string>
+): ReadonlySet<string> {
+    return previousSeed !== null && isDirty(current, previousSeed) ? current : seeded;
+}
+
+/**
  * Fold one checkbox click into the draft. Removal is always allowed; an addition at the ceiling is
  * refused whole — the same set comes back, so the click changes nothing the row would have to
  * undo.

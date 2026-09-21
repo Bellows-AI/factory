@@ -10,6 +10,7 @@ import {
     isDirty,
     matchesSearch,
     MAX_SELECTED_REPOS,
+    nextDraftAfterSeed,
     orderByRecency,
     repoKey,
     selectionPayload,
@@ -131,6 +132,28 @@ describe('selection draft', () => {
             { owner: 'acme', name: 'api' },
             { owner: 'acme', name: 'web' },
         ]);
+    });
+});
+
+describe('nextDraftAfterSeed', () => {
+    const seeded = new Set(['acme/web', 'acme/api']);
+
+    it('adopts the FIRST seed over the untouched initial draft — a pre-selected workspace is not a change', () => {
+        // The regression: an empty draft before the first answer is the page's initial state, not
+        // a member edit. Keeping it read "Selection changed" on arrival and one save would have
+        // deselected every checkout the member had.
+        expect(nextDraftAfterSeed(null, new Set(), seeded)).toBe(seeded);
+    });
+
+    it('keeps a draft the member has touched since the previous seed', () => {
+        const previous = new Set(['acme/web']);
+        const edited = new Set(['acme/web', 'acme/api', 'acme/cli']);
+        expect(nextDraftAfterSeed(previous, edited, new Set(['acme/web', 'acme/api']))).toBe(edited);
+    });
+
+    it('follows the server again once the draft is clean against the previous seed', () => {
+        const previous = new Set(['acme/web']);
+        expect(nextDraftAfterSeed(previous, previous, seeded)).toBe(seeded);
     });
 });
 
