@@ -109,7 +109,9 @@
     --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
     --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
     --on-warn: color-mix(in oklab, black 88%, var(--lamp-wait));
-    --on-bad: color-mix(in oklab, white 92%, var(--lamp-stop));
+    /* Issue 189: the dark theme's lamp-stop is bright enough that near-plain foreground text on
+       it washed out below AA, so its on-fill ink mixes dark instead. */
+    --on-bad: color-mix(in oklab, black 88%, var(--lamp-stop));
     --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
     --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
@@ -131,17 +133,22 @@
 
     --accent: oklch(0.52 0.16 250);
 
-    --lamp-run: oklch(0.58 0.15 150);
-    --lamp-wait: oklch(0.70 0.15 75);
+    /* Issue 189: the run and wait lamps carry status text on raised and canvas, so the light
+       palette darkens both until those text pairs clear AA; the status borders derive in step. */
+    --lamp-run: oklch(0.52 0.15 150);
+    --lamp-wait: oklch(0.54 0.14 75);
     --lamp-stop: oklch(0.56 0.21 27);
     --lamp-done: oklch(0.58 0.03 250);
 
-    /* Derived — the same recipes as the dark block, over this theme's tokens. */
+    /* Derived — the dark block's recipes over this theme's tokens, except where a pair demands
+       this theme's own mix; the --on-* notes below say which. */
     --overlay: color-mix(in oklab, var(--ink) 60%, transparent);
     --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
     --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
     --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
-    --on-warn: color-mix(in oklab, black 88%, var(--lamp-wait));
+    /* Issue 189: this theme's deep amber cannot carry a darker ink at AA, so the on-fill color
+       is the inverse rather than a mix. */
+    --on-warn: var(--ink-inverse);
     --on-bad: color-mix(in oklab, white 92%, var(--lamp-stop));
     --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
@@ -233,6 +240,14 @@
     a {
         color: var(--accent);
         text-decoration: underline;
+    }
+
+    /* Inputs and selects have no global skin — the primitives that place them carry their own
+       padding — but the desktop control floor (issue 189) applies to every text-shaped control.
+       Checkboxes and radios paint their own box and are excluded. */
+    input:not([type='checkbox']):not([type='radio']),
+    select {
+        min-height: 36px;
     }
 }
 
@@ -335,6 +350,7 @@
     .inbox-sort {
         align-items: center;
         display: flex;
+        flex-wrap: wrap;
         gap: 4px;
     }
 
@@ -342,6 +358,10 @@
         border: 1px solid transparent;
         border-radius: var(--radius-lg);
         color: var(--ink-muted);
+        /* A link, so the desktop control floor (issue 189) needs the layout to center in. */
+        align-items: center;
+        display: inline-flex;
+        min-height: 36px;
         padding: 4px 10px;
         text-decoration: none;
     }
@@ -393,7 +413,9 @@
         border-bottom: 1px solid var(--line);
         column-gap: 12px;
         display: grid;
-        grid-template-columns: 170px minmax(200px, 1fr) 180px 110px 90px;
+        /* The metadata tracks cap where space is ample and shrink equally when the band
+           between the drawer and the desktop is tight — the cells ellipsize (issue 189). */
+        grid-template-columns: minmax(0, 170px) minmax(200px, 1fr) minmax(0, 180px) minmax(0, 110px) minmax(0, 90px);
         padding: 8px 4px;
         row-gap: 4px;
     }
@@ -548,6 +570,9 @@
         color: var(--ink);
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
+        /* Desktop control floor (issue 189): padding alone lands a 35px control; every button,
+           tab and verdict clears 36. The compact shell restates 44 for touch below. */
+        min-height: 36px;
         padding: 6px 12px;
         font: inherit;
         cursor: pointer;
@@ -612,7 +637,8 @@
 
     .toolbar-label {
         color: var(--ink-muted);
-        font-size: 11px;
+        /* Form-label floor (issue 189). */
+        font-size: 12px;
         letter-spacing: 0.04em;
         text-transform: uppercase;
     }
@@ -869,7 +895,8 @@
         background: var(--lamp-stop);
         border-radius: var(--radius-md);
         color: var(--on-bad);
-        font-size: 11px;
+        /* Status-marker floor (issue 189). */
+        font-size: 12px;
         font-weight: 600;
         letter-spacing: 0.04em;
         margin-left: 10px;
@@ -951,15 +978,17 @@
         stroke-dasharray: 2 4;
     }
 
+    /* The one documented exception to the 12px text floor (issue 189): the narrowest plot's mono
+       ticks sit at 11px, with collision covered by the overflow matrix. */
     .tick {
         fill: var(--ink-muted);
-        font-size: 10px;
+        font-size: 11px;
         font-family: var(--font-mono);
     }
 
     .axis-label {
         fill: var(--ink-muted);
-        font-size: 10px;
+        font-size: 12px;
     }
 
     .bar {
@@ -1088,7 +1117,8 @@
     .chart-tooltip {
         fill: var(--ink);
         font-family: var(--font-mono);
-        font-size: 11px;
+        /* Decision readout floor (issue 189). */
+        font-size: 12px;
         pointer-events: none;
     }
 
@@ -1453,9 +1483,9 @@
         color: var(--ink-muted);
         display: block;
         font-family: var(--font-mono);
-        font-size: 11px;
+        /* Task-information floor (issue 189); the token is the color — no extra opacity. */
+        font-size: 12px;
         margin-top: 2px;
-        opacity: 0.85;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -1466,7 +1496,8 @@
     .sidenav-task-author {
         color: var(--ink-muted);
         display: inline-block;
-        font-size: 10px;
+        /* Task-metadata floor (issue 189). */
+        font-size: 12px;
         margin-left: 6px;
         max-width: calc(100% - 10px);
         overflow: hidden;
@@ -1569,25 +1600,18 @@
         padding: 0 10px 0 24px;
     }
 
-    /* The task tree's section headers — Running, Need review, Past tasks. Static for the live
-       sections; a button for Past tasks, which folds the history away behind the same look. The
-       padding is what keeps the button a clickable target, not just an 11px line of text. */
+    /* The task tree's count line — Running / Need review clauses, zero-valued ones omitted. A
+       plain paragraph, so nothing here may claim a pointer or a press (issue 189). */
     .sidenav-section {
-        background: none;
-        border: none;
         color: var(--ink-muted);
-        cursor: pointer;
-        font-size: 11px;
+        /* Navigation-caption floor (issue 189). */
+        font-size: 12px;
         letter-spacing: 0.05em;
         margin: 4px 0 0;
         padding: 4px 10px;
         text-align: left;
         text-transform: uppercase;
         width: 100%;
-    }
-
-    .sidenav-section:hover {
-        color: var(--ink);
     }
 
     /* The New task action pinned above the Running rows — a link to the composer (/tasks), not a
@@ -1643,7 +1667,8 @@
         }
 
         /* Touch targets: 44px is the smallest reliable finger target, and every control of the
-            compact shell clears it. */
+            compact shell clears it — navigation and dashboard as before, plus the inbox
+            filters, task actions, dialog actions, editor tabs and composer controls (issue 189). */
         .appbar-trigger,
         .mobile-nav-close,
         .mobile-nav .sidenav-link,
@@ -1654,7 +1679,20 @@
         .range-option,
         .range-draft input,
         .range-draft-actions button,
-        .dashboard-controls button {
+        .page-header-actions button,
+        .inbox-tab,
+        .inbox-search input,
+        .inbox-search select,
+        .inbox-search button,
+        .chat-resume,
+        .chat-toggle,
+        .task-actions button,
+        .task-remove-actions button,
+        .unsaved-actions button,
+        .env-tab,
+        .composer-start button,
+        .composer-select,
+        .legend-button {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
@@ -1711,7 +1749,8 @@
     .pill-reason {
         color: var(--ink-muted);
         display: block;
-        font-size: 11px;
+        /* Status-reason floor (issue 189). */
+        font-size: 12px;
         max-width: 40ch;
         white-space: normal;
     }
@@ -2383,7 +2422,8 @@
         border-radius: var(--radius-md);
         color: var(--ink-muted);
         font-family: var(--font-mono);
-        font-size: 11px;
+        /* Helper-text floor (issue 189) — documentation of the button is still read. */
+        font-size: 12px;
         padding: 1px 5px;
         white-space: nowrap;
     }
@@ -2624,5 +2664,27 @@
         letter-spacing: 0.08em;
         margin: 0 0 4px;
         /* No text-transform: the repository label carries case-sensitive owner/name. */
+    }
+}
+
+/* ---------- Platform conditions (issue 189) ----------
+ * Not themes: both blocks sit unlayered so they outrank every layer above them. */
+
+@media (prefers-reduced-motion: reduce) {
+    /* The lamp is the one ambient motion, and this stills it at full strength — running and
+       stopping stay live through their text, the dot shape and the static halo. No transition
+       exists to quiet: every state change on the page is already instantaneous. */
+    .sidenav-dot-running,
+    .sidenav-dot-stopping {
+        animation: none;
+    }
+}
+
+@media (forced-colors: active) {
+    /* The system repaint recolors every token — borders, fills and text all survive it. What
+       would silently vanish is the accent ring, so keyboard focus is pinned to the system's
+       highlight color. */
+    :where(a, button, input, select, textarea, summary, .updated-at):focus-visible {
+        outline-color: Highlight;
     }
 }

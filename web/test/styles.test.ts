@@ -70,6 +70,18 @@ const walkFiles = (dir: string): string[] =>
 
 const lineAt = (text: string, index: number) => text.slice(0, index).split('\n').length;
 
+/** Every flat rule as [prelude, body]. Preludes are collected at any depth, so rules inside
+ * @layer/@media land too; wrappers (@layer, @media) drop out because their body holds no
+ * declaration. */
+const rules = (css: string): Array<[string, string]> => {
+    const parsed: Array<[string, string]> = [];
+    for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const [, prelude, body] = match;
+        if (/[a-zA-Z-]+\s*:/.test(body)) parsed.push([prelude.trim(), body]);
+    }
+    return parsed;
+};
+
 describe('the stylesheet', () => {
     it('keeps every color literal inside the token blocks', () => {
         // Comments are scanned too: prose in styles.css never quotes a raw color value —
@@ -169,6 +181,101 @@ describe('the stylesheet', () => {
         const text =
             readFileSync(join(webSrc, 'styles.css'), 'utf8') + readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
+    });
+
+    it('keeps every font size at or above the 12px floor (#189)', () => {
+        // Decision-bearing text never renders under 12px; buttons, inputs and tabs carry 14px
+        // through `font: inherit`. The chart tick is the one documented exception: the
+        // narrowest plot's mono ticks sit at 11px, with collision checked by the overflow
+        // matrix — it must stay exercised, not silently grow or shrink.
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const sizes = rules(css)
+            .map(([prelude, body]) => [prelude, body.match(/font-size:\s*(\d+(?:\.\d+)?)px/)?.[1]] as const)
+            .filter(([, size]) => size !== undefined)
+            .map(([prelude, size]) => [prelude, Number(size)] as const);
+        const under = sizes.filter(([prelude, size]) => (prelude === '.tick' ? size < 11 : size < 12));
+        expect(under.map(([prelude, size]) => `${prelude}: ${size}px`)).toEqual([]);
+        expect(sizes.find(([prelude]) => prelude === '.tick')?.[1], 'the chart tick exception').toBe(11);
+    });
+
+    it('holds the lamp still under prefers-reduced-motion (#189)', () => {
+        // The one ambient animation goes static when the platform asks for reduced motion;
+        // running/stopping stay live through their text, dot shape and static halo.
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const blocks = blockSpans(
+            css,
+            /@media \(prefers-reduced-motion: reduce\)\s*\{/g,
+            'reduced-motion block never closes'
+        );
+        expect(blocks.length, 'one reduced-motion block').toBe(1);
+        const block = css.slice(...blocks[0]!);
+        expect(block).toMatch(/\.sidenav-dot-running[\s\S]*\.sidenav-dot-stopping[\s\S]*animation:\s*none/);
+    });
+
+    it('survives forced-colors: active (#189)', () => {
+        // The system repaint recolors every token surface; what would silently vanish is the
+        // accent focus ring, so it is pinned to the system highlight color.
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const blocks = blockSpans(css, /@media \(forced-colors: active\)\s*\{/g, 'forced-colors block never closes');
+        expect(blocks.length, 'one forced-colors block').toBe(1);
+        const block = css.slice(...blocks[0]!);
+        expect(block).toMatch(/:focus-visible[\s\S]*outline-color:\s*Highlight/);
+    });
+
+    it('gives interactive controls a 36px desktop floor (#189)', () => {
+        // Padding alone lands the default button at 35px; the floor makes every button, tab,
+        // input and select clear 36. The compact shell restates 44 for touch in its media query.
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const flat = (prelude: string) => prelude.replace(/\s+/g, ' ');
+        for (const selector of ['button', "input:not([type='checkbox']):not([type='radio']), select", '.inbox-tab']) {
+            const bodies = rules(css)
+                .filter(([prelude]) => flat(prelude) === selector)
+                .map(([, body]) => body);
+            expect(
+                bodies.some((body) => /min-height:\s*36px/.test(body)),
+                `${selector} carries a 36px min-height`
+            ).toBe(true);
+        }
+    });
+
+    it('clears 44px touch targets across the compact shell (#189)', () => {
+        // The ≤900px rule lists every control the narrow shell must clear; new mobile-visible
+        // controls join the list, they do not get their own one-off rule.
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const blocks = blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, 'compact-shell media block never closes');
+        const rule = blocks
+            .map(([start, end]) => css.slice(start, end).match(/([^{}]+)\{[^{}]*min-height:\s*44px[^{}]*\}/))
+            .find(Boolean);
+        expect(rule, 'the 44px target rule').toBeTruthy();
+        const prelude = rule![1]!;
+        for (const selector of [
+            '.appbar-trigger',
+            '.mobile-nav-close',
+            '.mobile-nav .sidenav-link',
+            '.mobile-nav .sidenav-sublink',
+            '.mobile-nav .sidenav-newtask',
+            '.mobile-nav .org-select',
+            '.appbar .user-menu-button',
+            '.range-option',
+            '.range-draft input',
+            '.range-draft-actions button',
+            '.page-header-actions button',
+            '.inbox-tab',
+            '.inbox-search input',
+            '.inbox-search select',
+            '.inbox-search button',
+            '.chat-resume',
+            '.chat-toggle',
+            '.task-actions button',
+            '.task-remove-actions button',
+            '.unsaved-actions button',
+            '.env-tab',
+            '.composer-start button',
+            '.composer-select',
+            '.legend-button',
+        ]) {
+            expect(prelude.includes(selector), `${selector} in the 44px target list`).toBe(true);
+        }
     });
 });
 
