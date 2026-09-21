@@ -3,6 +3,7 @@ import type { StatsPayload } from '../api/useStats.js';
 import type { Session } from '../api/useSession.js';
 import { switchOrg } from '../api/org.js';
 import { OrgSelector } from './OrgSelector.js';
+import { ThemeSelector } from './ThemeSelector.js';
 import { UserMenu } from './UserMenu.js';
 
 /**
@@ -46,6 +47,9 @@ export function AppBar({
                 Factory
             </NavLink>
             <div className="appbar-actions">
+                {/* The appearance preference (issue 188) leads the actions: it has no async state,
+                    so unlike the selector and the account menu it never flashes an empty chip. */}
+                <ThemeSelector />
                 {meta ? (
                     <div className="appbar-org">
                         <OrgSelector organization={meta.organization} onSwitch={switchOrg} />

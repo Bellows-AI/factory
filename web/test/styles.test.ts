@@ -183,6 +183,7 @@ describe('the stylesheet', () => {
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
 
+<<<<<<< HEAD
     it('keeps every font size at or above the 12px floor (#189)', () => {
         // Decision-bearing text never renders under 12px; buttons, inputs and tabs carry 14px
         // through `font: inherit`. The chart tick is the one documented exception: the
@@ -275,6 +276,25 @@ describe('the stylesheet', () => {
         ]) {
             expect(prelude.includes(selector), `${selector} in the 44px target list`).toBe(true);
         }
+    });
+
+    it('bootstraps the theme before paint with no inline or remote script (CSP: script-src self)', () => {
+        const html = readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
+        // The external same-origin bootstrap must execute before the application entry, so the
+        // palette is on <html> before the first paint and React never flips it.
+        const bootstrapAt = html.indexOf('<script src="/theme-bootstrap.js">');
+        const entryAt = html.indexOf('src="/src/main.tsx"');
+        expect(bootstrapAt, 'index.html references the external bootstrap').toBeGreaterThanOrEqual(0);
+        expect(entryAt, 'the bootstrap precedes the application entry').toBeGreaterThan(bootstrapAt);
+        // Every script tag carries a src: no inline code exists to weaken `script-src 'self'`.
+        for (const tag of html.matchAll(/<script\b[^>]*>/g)) expect(tag[0], 'script tag').toContain('src=');
+        // And nothing loads from off-origin — the same self-hosting rule the fonts already follow.
+        expect(html).not.toMatch(/(src|href)="(https?:)?\/\//);
+    });
+
+    it('never transitions, so a theme flip cannot pass through an intermediate palette', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        expect(css.match(/transition\s*:[^;{}]*/gi) ?? []).toEqual([]);
     });
 });
 

@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { ThemeProvider } from '../src/theme.js';
 import {
     OnboardingPage,
     StartAgainPanel,
@@ -10,6 +11,14 @@ import {
 } from '../src/pages/OnboardingPage.js';
 
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
+
+/** The page carries the appearance control (issue 188), so every render rides the provider. */
+const renderPage = (props: { payload?: PendingSignInPayload; listings?: Record<string, RepoListing | 'loading'> }) =>
+    renderToStaticMarkup(
+        <ThemeProvider>
+            <OnboardingPage {...props} />
+        </ThemeProvider>
+    );
 
 const pending: PendingSignInPayload = {
     identity: { login: 'octocat', displayName: 'The Octocat', avatarUrl: null },
@@ -25,7 +34,7 @@ const pending: PendingSignInPayload = {
 
 describe('OnboardingPage', () => {
     it('renders one pre-checked checkbox per reported installation, and the continue button', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        const html = renderPage({ payload: pending });
         expect(html).toContain('The Octocat');
         expect(html).toContain('other-org');
         expect(html).toContain('acme');
@@ -35,9 +44,7 @@ describe('OnboardingPage', () => {
     });
 
     it('says the choice is pre-checked on a reselect, and marks the asked-for org', () => {
-        const html = renderToStaticMarkup(
-            <OnboardingPage payload={{ ...pending, selected: ['999999'], reselect: true, org: '999999' }} />
-        );
+        const html = renderPage({ payload: { ...pending, selected: ['999999'], reselect: true, org: '999999' } });
         expect(html).toContain('pre-checked');
         expect(html).toContain('(asked for)');
         // Only the stored choice arrives checked.
@@ -45,16 +52,14 @@ describe('OnboardingPage', () => {
     });
 
     it('never emits a placeholder value for an absent display name', () => {
-        const html = renderToStaticMarkup(
-            <OnboardingPage payload={{ ...pending, identity: { ...pending.identity, displayName: null } }} />
-        );
+        const html = renderPage({ payload: { ...pending, identity: { ...pending.identity, displayName: null } } });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
         expect(html).toContain('octocat');
     });
 
     it('renders the loading shell while the pending sign-in is being fetched, with no placeholder', () => {
         // No payload and no fetch under react-dom/server: the loading shell is all there is.
-        const html = renderToStaticMarkup(<OnboardingPage />);
+        const html = renderPage({});
         expect(html).toContain('Choose what to track');
         expect(html).toContain('Loading…');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
@@ -95,7 +100,7 @@ describe('seeding from a stored narrowing (#135 review)', () => {
     });
 
     it('renders a listed stored name checked, a listed unstored name unchecked, and no unlisted name', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={stale} listings={{ 999999: LISTING }} />);
+        const html = renderPage({ payload: stale, listings: { 999999: LISTING } });
         expect(html).toContain('acme/web');
         expect(html).toContain('acme/other');
         // The stale stored name has no checkbox anywhere — and no checkbox can carry it.

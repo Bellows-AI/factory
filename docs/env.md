@@ -224,13 +224,15 @@ adopts the stored rows its PUT echoes back (`{ vars }`) as its new baseline **wi
 which is what blanks a typed secret and shows the stored truth — and keeps the "Changes saved."
 confirmation alive (a `key` bump there was once the bug that ate it). On failure the draft is
 retained, the error renders as an alert that takes focus, and the inputs are untouched. The
-after-save GET stays for the repository select's options; the editors that did not save keep
-their drafts, so a concurrent write to another scope appears only on reload or repo switch — and
-that scope's next whole-list PUT clobbers it, the standing trade of draft survival.
+after-save GET keeps the configured repository editor's rows tracking the store; the editors that
+did not save keep their drafts, so a concurrent write to another scope appears only on reload or
+repository switch — and that scope's next whole-list PUT clobbers it, the standing trade of draft
+survival.
 
 While an editor is dirty, the settings layout guards it (#182): a `beforeunload` warning for the
 browser, a React Router blocker for in-app navigation (which is why `main.tsx` mounts a data
-router — `useBlocker` refuses anything else), and the guarded repository select on the repos page.
+router — `useBlocker` refuses anything else), and the guarded repository switch on the repos page
+— choosing Configure on another repository while the detail editor holds unsaved edits (#181).
 All three run one contract with one dialog owner, so nested blockers cannot duplicate dialogs:
 **Discard unsaved changes?** / "Your changes to {scope} have not been saved.", with **Continue
 editing** the safe, initially focused answer and Escape/backdrop agreeing with it, and **Discard

@@ -3,7 +3,8 @@
  * utility engine; the theme below is the andon-board design from issue 148 — blue-graphite
  * steel, status rendered as signal lamps in the green / amber / red trio, the one blue reserved
  * for "a human is needed here". Dark is the default; the light palette rides `data-theme="light"` on <html>
- * (the toggle itself stays in issue 117). Every color in web/src is a token defined in one of
+ * (set before paint by web/public/theme-bootstrap.js and owned at runtime by the provider in
+ * web/src/theme.tsx — issue 188). Every color in web/src is a token defined in one of
  * the two :root blocks and nowhere else — web/test/styles.test.ts holds that line, and the two
  * blocks are the only legal homes for color literals; the @theme blocks reference tokens, they
  * hold none. The primitives in @layer components keep their names — components participate by
@@ -1307,6 +1308,53 @@
         border-color: var(--accent);
     }
 
+    /* The public header row (issue 188): the appearance control rides the top edge of both public
+       pages — gate and onboarding — end-aligned, until the shared header of issue 187 absorbs
+       the placement. `align-self` beats the gate's centered column; onboarding stretches anyway. */
+    .public-header {
+        align-self: stretch;
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    /* The appearance control (issue 188): the one System/Light/Dark preference select, worn by
+       the app bar and the public header row alike. Sunken like every other form control; the
+       focus ring comes from the global `:focus-visible` rule, and `color-scheme` in the theme
+       blocks paints the native popup without a rule of its own. */
+    .theme-field {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+    }
+
+    .theme-label {
+        color: var(--ink-muted);
+        font-size: 13px;
+    }
+
+    .theme-select {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        height: 36px;
+        padding: 0 8px;
+    }
+
+    /* Narrow screens drop the visible label — the select keeps its accessible name, and the
+       clip pattern stays in the accessibility tree where `display: none` would not. */
+    @media (max-width: 640px) {
+        .theme-label {
+            clip-path: inset(50%);
+            height: 1px;
+            overflow: hidden;
+            position: absolute;
+            white-space: nowrap;
+            width: 1px;
+        }
+    }
+
     /* --- Sign-in onboarding ------------------------------------------------------------------- */
 
     /* The selection screen (issue 125): a centered column, narrower than the shell, because it renders
@@ -1698,6 +1746,12 @@
             min-width: 44px;
         }
 
+        /* The appearance select is a replaced element, not a flex box — it clears the same
+            44px target through height alone, on both surfaces it mounts in. */
+        .theme-select {
+            min-height: 44px;
+        }
+
         /* The token group's two-up measures need the width more than the split at this size. */
         .usage-tokens {
             grid-column: auto;
@@ -1725,33 +1779,6 @@
         font-size: 12px;
         padding: 1px 9px;
         white-space: nowrap;
-    }
-
-    .pill-ready {
-        border-color: var(--ok-border);
-        color: var(--lamp-run);
-    }
-
-    .pill-cloning,
-    .pill-queued {
-        border-color: var(--warn-border);
-        color: var(--lamp-wait);
-    }
-
-    .pill-failed {
-        border-color: var(--bad-border);
-        color: var(--lamp-stop);
-    }
-
-    /* The reason travels with the pill rather than in a tooltip: "failed" on its own sends somebody to
-       the server logs for a sentence this row already has. */
-    .pill-reason {
-        color: var(--ink-muted);
-        display: block;
-        /* Status-reason floor (issue 189). */
-        font-size: 12px;
-        max-width: 40ch;
-        white-space: normal;
     }
 
     /* --- The repository picker ---------------------------------------------------------------- */
@@ -1884,6 +1911,46 @@
     .picker-name {
         font-family: var(--font-mono);
         font-size: 12px;
+    }
+
+    /* The repository setup page (issue 181): a labeled search row above the list, and the
+       summary/list/detail stack that becomes master/detail beside itself once a wide window can
+       hold both — below 1100px the DOM order (summary, list, detail) is the reading order. */
+    .repo-search {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 12px 0;
+    }
+
+    .repo-search label {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .repo-search input {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        flex: 1;
+        font: inherit;
+        min-width: 12ch;
+        padding: 6px 10px;
+    }
+
+    .repo-columns {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: 1fr;
+    }
+
+    @media (min-width: 1100px) {
+        .repo-columns {
+            align-items: start;
+            grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+        }
     }
 
     .picker-actions {

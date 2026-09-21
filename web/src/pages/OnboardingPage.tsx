@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ThemeSelector } from '../components/ThemeSelector.js';
 
 /** What GET /api/auth/github/pending answers for a parked sign-in (issue 125). */
 export interface PendingSignInPayload {
@@ -97,6 +98,15 @@ export function OnboardingPage({
     const [narrowed, setNarrowed] = useState<Set<string>>(new Set());
     const [repoChecked, setRepoChecked] = useState<Record<string, Set<string>>>({});
 
+    // The public header row renders on every branch of this page — expired, loading, and full —
+    // so the appearance preference (issue 188) is reachable throughout. The shared header of
+    // issue 187 will absorb this placement.
+    const header = (
+        <div className="public-header">
+            <ThemeSelector />
+        </div>
+    );
+
     useEffect(() => {
         // The `payload` prop is the render-test seam; a real mount fetches its own sign-in.
         if (initial) return;
@@ -128,6 +138,7 @@ export function OnboardingPage({
     if (expired) {
         return (
             <main className="onboarding">
+                {header}
                 <section className="panel">
                     <div className="panel-head">
                         <h2>Choose what to track</h2>
@@ -141,6 +152,7 @@ export function OnboardingPage({
     if (!payload) {
         return (
             <main className="onboarding">
+                {header}
                 <section className="panel">
                     <div className="panel-head">
                         <h2>Choose what to track</h2>
@@ -299,6 +311,7 @@ export function OnboardingPage({
 
     return (
         <main className="onboarding">
+            {header}
             <section className="panel">
                 <div className="panel-head">
                     <h2>Choose what to track</h2>

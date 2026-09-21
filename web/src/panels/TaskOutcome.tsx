@@ -8,6 +8,7 @@ import {
     isHttpUrl,
     issueUrl,
     newestTerminalExit,
+    prNumber,
     threadContextTokens,
     threadCostUsd,
     threadIssue,
@@ -43,6 +44,10 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
     const counts = gateCounts(latest.gates);
     const services = latest.runtime?.services ?? null;
     const issueLink = issueUrl(latest.repo, issue);
+    // A row's link is a reference, not a command: the row's label already says what it is, so
+    // the value names only WHICH one — the number.
+    const prLink = publish !== null && publish.url !== null && isHttpUrl(publish.url) ? publish.url : null;
+    const prNr = prLink !== null ? prNumber(prLink) : null;
 
     /** A row the board cannot fill is no row: empty values are filtered, not rendered blank. */
     const pairs = (list: [string, ReactNode][]): [string, ReactNode][] => list.filter(([, value]) => value !== null);
@@ -135,12 +140,12 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                                 ['Branch', publish !== null ? <code>{publish.branch}</code> : null],
                                 [
                                     'Pull request',
-                                    publish !== null && publish.url !== null && isHttpUrl(publish.url) ? (
+                                    prLink !== null ? (
                                         // A new window, not a navigation over the dashboard, and
                                         // rel=noopener/noreferrer so the opened PR cannot reach
                                         // back into this tab.
-                                        <a href={publish.url} target="_blank" rel="noopener noreferrer">
-                                            Open pull request
+                                        <a href={prLink} target="_blank" rel="noopener noreferrer">
+                                            {prNr !== null ? `#${prNr}` : 'Pull request'}
                                         </a>
                                     ) : null,
                                 ],
@@ -148,7 +153,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                                     'Issue',
                                     issue !== null && issueLink !== null ? (
                                         <a href={issueLink} target="_blank" rel="noopener noreferrer">
-                                            Open issue #{issue}
+                                            #{issue}
                                         </a>
                                     ) : issue !== null ? (
                                         `#${issue}`

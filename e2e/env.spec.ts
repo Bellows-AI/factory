@@ -77,7 +77,10 @@ test.describe('environment editors', () => {
         await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
 
         await page.goto('/settings/repos');
-        await expect(page.getByRole('heading', { name: 'Per repository' })).toBeVisible({ timeout: 60_000 });
+        // The per-repository editor (#150) moved behind a row's Configure action (#181), and the
+        // open board's missing root keeps the checkout offer off — the dedicated root-null test
+        // below pins that posture. This leg pins only that the page renders cleanly.
+        await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
         const reposText = await page.locator('main').innerText();
         for (const token of FORBIDDEN) expect(reposText, `repos section contains ${token}`).not.toContain(token);
         await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
@@ -242,36 +245,34 @@ test.describe('environment editors', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('a dirty editor guards the repository switch with the same dialog', async ({ page }) => {
+    test('the repositories page offers no checkout without a workspace root, though rows stay readable', async ({
+        page,
+    }) => {
         const problems = watchConsole(page);
         await page.goto('/settings/repos');
-        await expect(page.getByRole('heading', { name: 'Per repository' })).toBeVisible({ timeout: 60_000 });
+        // The open board runs without ORG_WORKSPACE_ROOT (issue 181's root-null posture):
+        // availability and status stay readable — the seeded repository is named, its cached
+        // checkout status renders — while every checkout control is off, with the reason and the
+        // Workspace link beside the summary. The dirty-draft dialog and the guarded Configure
+        // switch drive on the auth project's board, where a root exists (workspace.spec.ts).
+        await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
+        await expect(page.getByText('Bellows-AI/bellows.ai')).toBeVisible();
+        await expect(page.getByText('0 of 1 repositories enabled')).toBeVisible();
+        const checkbox = page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' });
+        await expect(checkbox).toBeDisabled();
+        await expect(page.getByRole('button', { name: 'Save repository selection' })).toBeDisabled();
+        await expect(page.getByText('no workspace root')).toBeVisible();
 
-        const select = page.locator('select[aria-label="Repository"]');
-        await select.selectOption('Bellows-AI/bellows.ai');
-        // The editor panel nests INSIDE the Per repository panel, which the heading filter
-        // therefore matches twice — the innermost section is the editor.
-        const panel = page
-            .locator('section.panel', { has: page.getByRole('heading', { name: 'Bellows-AI/bellows.ai' }) })
-            .last();
-        await expect(panel).toBeVisible({ timeout: 15_000 });
-
-        await panel.getByRole('button', { name: 'Add variable' }).click();
-        await panel.getByLabel('Variable 1 name').fill('E2E_REPO_VAR');
-
-        await select.selectOption('');
-        await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
-        await page.getByRole('button', { name: 'Continue editing' }).click();
-        await expect(page.getByText('Discard unsaved changes?')).toBeHidden();
-        await expect(panel.getByLabel('Variable 1 name')).toHaveValue('E2E_REPO_VAR');
-        await expect(select).toHaveValue('Bellows-AI/bellows.ai');
-
-        await select.selectOption('');
-        await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
-        await page.getByRole('button', { name: 'Discard changes' }).click();
-        await expect(select).toHaveValue('');
-        await expect(panel).toBeHidden();
+        // Scoped to the availability panel: the settings nav also carries a link named
+        // Workspace, and an unscoped locator would be a strict-mode violation.
+        await page
+            .locator('section.panel')
+            .filter({ hasText: 'no workspace root' })
+            .getByRole('link', { name: 'Workspace', exact: true })
+            .click();
+        await expect(page).toHaveURL(/\/settings\/workspace$/);
         expect(problems.join('\n')).toBe('');
+        await page.screenshot({ path: `${SHOTS}/settings-repos-root-null.png`, fullPage: true });
     });
 
     test('the browser tab guard arms only while dirty', async ({ page }) => {

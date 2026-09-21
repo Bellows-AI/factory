@@ -19,9 +19,8 @@ document (the inventory cannot silently rot).
   token machinery and the build.
 - **`@theme inline` is what makes the runtime theme switch work.** The `--color-*` rows point at
   `var(--surface)`-style tokens, so a utility's value is the variable itself: flipping
-  `data-theme="light"` on `<html>` swaps the palette with no CSS regeneration. The toggle,
-  persistence and `prefers-color-scheme` handling are issue 117; the light palette shipped with
-  the theme (#148).
+  `data-theme="light"` on `<html>` swaps the palette with no CSS regeneration. The preference
+  that drives the attribute is the appearance control (#188, below).
 - **`color-scheme` lives in each theme block** (`:root` dark, `:root[data-theme="light"]`
   light), so native controls — date-input popups, scrollbars — follow the page.
 - **Fonts are self-hosted** under `web/public/fonts/` with `@font-face` at the top of the
@@ -175,6 +174,23 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 ### Controls
 
+#### Appearance (issue 188)
+
+The System/Light/Dark preference is a client-only display setting, never a server one: it lives
+in `localStorage['factory.theme']`, which stores only `light` or `dark` and is removed entirely
+for System — missing, invalid, or inaccessible storage reads as System, silently. The control
+shows the **preference**, not the resolved palette: System stays selected while the OS resolves
+dark. The resolved palette is `data-theme="light"|"dark"` on `<html>`, the one attribute the
+token blocks read. `web/public/theme-bootstrap.js` sets it before first paint — a plain
+same-origin script from `<head>`, the shape `script-src 'self'` already permits (no inline code,
+no remote dependency). The provider in `web/src/theme.tsx` owns the attribute from React's side:
+it follows OS changes while System is selected, syncs across tabs through the `storage` event,
+and switches immediately — no reload, no refetch, no transition, no sign-out clearing.
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Appearance | `public-header`, `theme-field`, `theme-label`, `theme-select` | The one System/Light/Dark select (native, keyboard-complete), worn by the app bar and the public header rows; the label is clipped below 640px while the accessible name stays |
+
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
@@ -188,7 +204,8 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
 | User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar's identity disclosure (Headless UI Menu) |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
-| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox repo/executor pickers; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay` |
+| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox executor picker; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay`. The `dialog-*` shell is shared with the dialogs below |
+| Repository setup | `repo-search`, `repo-columns` | The repositories page's visibly labeled search row, and the summary/list/detail stack that becomes master/detail at ≥1100px; below that the DOM order — summary, list, detail — is the reading order (issue 181) |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
 | Keyboard mark | `kbd` (element) | The shortcut text beside the composer's launch button — documentation of the button, never an affordance |
 
@@ -203,7 +220,7 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
 | Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
 | Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
-| Pills | `pill`, `pill-ready`, `pill-cloning`, `pill-queued`, `pill-failed`, `pill-reason` | Repo/workspace state chips; the reason travels in the pill |
+| Pills | `pill` | State/type chips — task statuses, executor types, the private repo mark; a pill's text is the whole message, never a color |
 
 ### Charts
 
@@ -273,24 +290,25 @@ Components:
 | File | Primitives |
 | --- | --- |
 | `AnalyticsToolbar.tsx` | analytics toolbar, rendered-data summary, range |
-| `AppBar.tsx` | appbar, org, user-menu-button |
+| `AppBar.tsx` | appbar, appearance, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
 | `ExecutorDialog.tsx` | picker, status, muted |
 | `KeyValues.tsx` | kv |
-| `LoginGate.tsx` | login |
+| `LoginGate.tsx` | login, appearance, public-header |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
 | `ConfigurationScope.tsx` | scope-context |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
-| `RepoPickerDialog.tsx` | picker, pill, status |
-| `RepoStatus.tsx` | pill |
+| `RepositorySetup.tsx` | panel, panel-head, table-wrap, data, pill, repo-search, scope-context, status, muted, primary |
+| `repository-setup.ts` | helper — no markup |
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
+| `ThemeSelector.tsx` | appearance |
 | `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
 | `UnsavedChangesDialog.tsx` | picker (dialog shell), unsaved, chat-resume, chat-remove |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
@@ -316,7 +334,6 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
-| `WorkspaceReposPanel.tsx` | panel, table |
 | `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |
 
@@ -326,13 +343,13 @@ Pages:
 | --- | --- |
 | `AccountPage.tsx` | page-header, panel |
 | `DashboardPage.tsx` | page-header, dashboard-controls |
-| `OnboardingPage.tsx` | onboarding, panel, status, muted |
+| `OnboardingPage.tsx` | onboarding, appearance, public-header, panel, status, muted |
 | `SettingsExecutorsPage.tsx` | page-header, panel, status, muted |
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
 | `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |
-| `SettingsRepositoriesPage.tsx` | page-header, scope-context, panel |
-| `SettingsWorkspacePage.tsx` | page-header, scope-context, panel |
+| `SettingsRepositoriesPage.tsx` | page-header, repo-columns, scope-context, status, muted |
+| `SettingsWorkspacePage.tsx` | page-header, scope-context, panel, status, muted |
 | `TaskComposerPage.tsx` | page-header, status |
 | `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
