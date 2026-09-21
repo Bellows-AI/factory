@@ -9,7 +9,11 @@ import type { Locator, Page } from '@playwright/test';
  * Runs on the open board (AUTH_MODE=none, seeded offline server) beside navigation.spec.ts.
  */
 
-type Pair = readonly [fg: string, bg: string, threshold: number];
+type Pair = readonly [fg: string, bg: string];
+
+/** The WCAG 2.2 AA thresholds: one per matrix, so no pair can silently omit its own. */
+const TEXT_THRESHOLD = 4.5;
+const BOUNDARY_THRESHOLD = 3;
 
 /** Text pairs at the 4.5:1 normal-text threshold: every token that ever carries text, on every
  * surface it sits on — including the lamp colors, which pills and status lines render as text. */
@@ -40,15 +44,17 @@ const BOUNDARY_PAIRS: readonly Pair[] = [
     ['--accent', '--surface-sunken'],
 ] as const;
 
+/** Flips the palette by attribute — the light theme rides `data-theme="light"` on <html>, so
+ * both themes render from the same server without touching persistence. */
 const setTheme = (page: Page, theme: 'dark' | 'light') =>
     theme === 'light'
         ? page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
         : page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
 
-/** WCAG 2.2 contrast for one token pair, computed in the page from the browser-resolved
- * colors. Returns the pair with its measured ratio so failures can name it. The channel parse
- * reads Chrome's `rgb()/rgba()` computed serialization — if a future Chrome serializes
- * differently the ratios collapse toward 1 and this matrix fails loudly, never silently. */
+/** WCAG 2.2 contrast for one token pair, computed in the page. Chrome serializes computed
+ * colors in whatever space the token was written in (`oklch(…)`), so each color is rasterized
+ * through a one-pixel canvas — the browser's own conversion to sRGB bytes, not a Node-side or
+ * hand-rolled reimplementation of the token recipes. */
 async function measure(page: Page, pair: Pair): Promise<{ pair: Pair; ratio: number }> {
     const ratio = await page.evaluate(([fgToken, bgToken]) => {
         const probe = document.createElement('div');
@@ -56,14 +62,19 @@ async function measure(page: Page, pair: Pair): Promise<{ pair: Pair; ratio: num
         probe.style.backgroundColor = `var(${bgToken})`;
         document.body.appendChild(probe);
         const styles = getComputedStyle(probe);
-        const channels = (value: string) =>
-            (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number).map((channel) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const context = canvas.getContext('2d', { willReadFrequently: true })!;
+        const luminance = (cssColor: string) => {
+            context.fillStyle = cssColor;
+            context.fillRect(0, 0, 1, 1);
+            const channels = context.getImageData(0, 0, 1, 1).data;
+            const [r, g, b] = [channels[0]!, channels[1]!, channels[2]!].map((channel) => {
                 const s = channel / 255;
                 // The WCAG sRGB linearization cutoff.
                 return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
             });
-        const luminance = (value: string) => {
-            const [r, g, b] = channels(value);
             return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
         };
         const fg = luminance(styles.color);
@@ -71,7 +82,7 @@ async function measure(page: Page, pair: Pair): Promise<{ pair: Pair; ratio: num
         probe.remove();
         const [hi, lo] = fg > bg ? [fg, bg] : [bg, fg];
         return (hi + 0.05) / (lo + 0.05);
-    }, pair as unknown as [string, string]);
+    }, pair);
     return { pair, ratio };
 }
 
@@ -109,11 +120,15 @@ test.describe('polish (issue 189)', () => {
             await page.goto('/');
             await setTheme(page, theme);
             const failures: string[] = [];
-            for (const pair of [...TEXT_PAIRS, ...BOUNDARY_PAIRS]) {
-                const { ratio } = await measure(page, pair);
-                const threshold = pair[2];
-                if (ratio < threshold) {
-                    failures.push(`${pair[0]} on ${pair[1]} = ${ratio.toFixed(2)}:1, needs ${threshold}:1`);
+            for (const [pairs, threshold] of [
+                [TEXT_PAIRS, TEXT_THRESHOLD],
+                [BOUNDARY_PAIRS, BOUNDARY_THRESHOLD],
+            ] as const) {
+                for (const pair of pairs) {
+                    const { ratio } = await measure(page, pair);
+                    if (ratio < threshold) {
+                        failures.push(`${pair[0]} on ${pair[1]} = ${ratio.toFixed(2)}:1, needs ${threshold}:1`);
+                    }
                 }
             }
             expect(failures, `${theme} theme contrast failures`).toEqual([]);
