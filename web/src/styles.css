@@ -279,6 +279,7 @@
         background: var(--surface-raised);
         border-bottom: 1px solid var(--line);
         display: flex;
+        flex-wrap: wrap;
         gap: 12px;
         justify-content: space-between;
         min-height: 48px;
