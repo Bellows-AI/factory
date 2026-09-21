@@ -2212,6 +2212,32 @@
         margin-top: 16px;
     }
 
+    /* The unsaved-changes confirmation (issue 182): the one dialog the settings area raises before
+        a navigation or a repository switch can drop a dirty draft. It wears the remove dialog's
+        floating shape — raised, the picker's harder hairline — because it answers the same kind of
+        question: three sentences, two answers, one of them destructive. */
+    .unsaved {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        max-width: 440px;
+        padding: 16px;
+        width: 90vw;
+    }
+
+    .unsaved-title {
+        font-size: 15px;
+        margin: 0 0 8px;
+    }
+
+    .unsaved-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+    }
+
     .composer {
         border-top: 1px solid var(--line);
         margin-top: 16px;
@@ -2429,7 +2455,8 @@
         font-weight: 600;
     }
 
-    /* The environment panel's Variables | Secrets tab strip and the raw editor. */
+    /* The environment panel's Variables | Secrets tabs, the draft editor's states (issue 182),
+       and the advanced .env editor. */
 
     .panel-actions {
         display: flex;
@@ -2442,9 +2469,30 @@
         margin-bottom: 8px;
     }
 
-    .env-tab.active {
+    /* The selected tab is the one carrying aria-selected — the attribute the roving focus moves
+        with the keyboard, so state and semantics cannot drift apart. */
+    .env-tab[aria-selected='true'] {
         border-color: var(--accent);
         color: var(--accent);
+    }
+
+    /* A pending removal stays visible until the save that deletes it: compact, warning-edged,
+        the row's name and its sentence beside an Undo. */
+    .env-pending {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--warn-border);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px 10px;
+    }
+
+    /* The advanced editor's warning line: what Apply will replace, and what can never appear. */
+    .env-advanced-note {
+        color: var(--ink-muted);
+        margin: 0;
     }
 
     .env-raw {
@@ -2468,5 +2516,38 @@
 
     .env-errors {
         white-space: pre-wrap;
+    }
+
+    /* A cell's input fills its column, with a floor that keeps the stored-secret instruction —
+        "Leave blank to keep the current secret" — readable instead of clipped to a sliver. */
+    .env-vars td input {
+        min-width: 140px;
+        width: 100%;
+    }
+
+    /* Narrow widths reflow an env row into a labeled group instead of compressing Name/Value
+        unusably: the header row steps aside and each cell names itself via data-label. */
+    @media (max-width: 640px) {
+        .env-vars thead {
+            display: none;
+        }
+
+        .env-vars tr {
+            border-bottom: 1px solid var(--line);
+            display: block;
+            padding: 8px 0;
+        }
+
+        .env-vars td {
+            display: block;
+            padding: 2px 0;
+        }
+
+        .env-vars td[data-label]::before {
+            color: var(--ink-muted);
+            content: attr(data-label);
+            display: block;
+            font-size: 12px;
+        }
     }
 }
