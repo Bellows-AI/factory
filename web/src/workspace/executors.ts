@@ -17,6 +17,36 @@ export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
     opencode: [],
 };
 
+/**
+ * What each type's config actually does, in the words the dialog and the list show.
+ *
+ * The copy is contractual, not decorative (issue 183): claude-code configs are stored-only today —
+ * no consumer reads them — and opencode configs are merged over the deployment's baked
+ * configuration with `permission` stripped board-side to preserve the runner fence (see
+ * docs/workspace.md). The `Record` shape is the same exhaustiveness guard REQUIRED_FIELDS uses: a
+ * new EXECUTOR_TYPES entry cannot compile until it declares its own truth.
+ */
+export const EXECUTOR_TYPE_META: Record<ExecutorType, { label: string; configHelp: string; example: string }> = {
+    'claude-code': {
+        label: 'Claude Code',
+        configHelp:
+            'This JSON is stored with the executor but is not consumed by the current Claude Code runner. Use {} unless your deployment documents another consumer.',
+        example: '{}',
+    },
+    opencode: {
+        label: 'OpenCode',
+        configHelp:
+            'When the deployment runs OpenCode, this object is merged over its baked configuration. Model and provider settings apply; permission rules are ignored to preserve the runner fence.',
+        example:
+            '{ "model": "<provider-id>/<model-id>", "provider": { "api_key": "<from your provider, not stored here>" } }',
+    },
+};
+
+/** The human label for a row's stored type; the raw string falls through for an unknown wire value. */
+export function executorTypeLabel(type: string): string {
+    return EXECUTOR_TYPE_META[type as ExecutorType]?.label ?? type;
+}
+
 /** Half the 64 KiB body budget, so the serialized envelope cannot blow the server limit. */
 export const MAX_CONFIG_BYTES = 32 * 1024;
 
@@ -28,9 +58,24 @@ export type ValidExecutor = {
 
 export type ExecutorValidation = { ok: true; value: ValidExecutor } | { ok: false; error: string };
 
-export function validateExecutorConfig(raw: string, name: string, type: ExecutorType): ExecutorValidation {
+/**
+ * The config half of the validation, on its own: JSON that parses to an object, whatever the type
+ * requires inside it, under the size limit. The dialog's LIVE error under the textarea is this —
+ * and only this — so a missing name can never arrive attributed to the config field (issue 183
+ * review): the name is a different field with its own problem, and Save still runs the full
+ * `validateExecutorConfig` regardless.
+ */
+export type ExecutorPayloadValidation = { ok: true; value: object } | { ok: false; error: string };
+
+export function validateExecutorPayload(raw: string, type: ExecutorType): ExecutorPayloadValidation {
     const trimmed = raw.trim();
     if (!trimmed) return { ok: false, error: 'Paste the executor config as JSON.' };
+
+    // Before the parse, on purpose: this validator runs on every keystroke, and an oversized
+    // paste should be refused for its size, not parsed first and rejected after.
+    if (new TextEncoder().encode(trimmed).length > MAX_CONFIG_BYTES) {
+        return { ok: false, error: 'The config is too large (limit 32 KiB).' };
+    }
 
     let parsed: unknown;
     try {
@@ -42,22 +87,25 @@ export function validateExecutorConfig(raw: string, name: string, type: Executor
         return { ok: false, error: 'The config must be a JSON object, not a list or a scalar.' };
     }
 
-    const trimmedName = name.trim();
-    if (!trimmedName) return { ok: false, error: 'Give the executor a name.' };
-    if (/[/\\]/.test(trimmedName)) return { ok: false, error: 'The name cannot contain "/" or "\\".' };
-    if (/^[-.]/.test(trimmedName)) return { ok: false, error: 'The name cannot start with "-" or ".".' };
-
     for (const field of REQUIRED_FIELDS[type]) {
         if (!(field in parsed)) {
             return { ok: false, error: `The config for "${type}" must set "${field}".` };
         }
     }
 
-    if (new TextEncoder().encode(trimmed).length > MAX_CONFIG_BYTES) {
-        return { ok: false, error: 'The config is too large (limit 32 KiB).' };
-    }
+    return { ok: true, value: parsed };
+}
 
-    return { ok: true, value: { name: trimmedName, type, config: parsed } };
+export function validateExecutorConfig(raw: string, name: string, type: ExecutorType): ExecutorValidation {
+    const payload = validateExecutorPayload(raw, type);
+    if (!payload.ok) return payload;
+
+    const trimmedName = name.trim();
+    if (!trimmedName) return { ok: false, error: 'Give the executor a name.' };
+    if (/[/\\]/.test(trimmedName)) return { ok: false, error: 'The name cannot contain "/" or "\\".' };
+    if (/^[-.]/.test(trimmedName)) return { ok: false, error: 'The name cannot start with "-" or ".".' };
+
+    return { ok: true, value: { name: trimmedName, type, config: payload.value } };
 }
 
 /**

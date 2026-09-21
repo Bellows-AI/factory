@@ -19,9 +19,8 @@ document (the inventory cannot silently rot).
   token machinery and the build.
 - **`@theme inline` is what makes the runtime theme switch work.** The `--color-*` rows point at
   `var(--surface)`-style tokens, so a utility's value is the variable itself: flipping
-  `data-theme="light"` on `<html>` swaps the palette with no CSS regeneration. The toggle,
-  persistence and `prefers-color-scheme` handling are issue 117; the light palette shipped with
-  the theme (#148).
+  `data-theme="light"` on `<html>` swaps the palette with no CSS regeneration. The preference
+  that drives the attribute is the appearance control (#188, below).
 - **`color-scheme` lives in each theme block** (`:root` dark, `:root[data-theme="light"]`
   light), so native controls — date-input popups, scrollbars — follow the page.
 - **Fonts are self-hosted** under `web/public/fonts/` with `@font-face` at the top of the
@@ -137,6 +136,23 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 ### Controls
 
+#### Appearance (issue 188)
+
+The System/Light/Dark preference is a client-only display setting, never a server one: it lives
+in `localStorage['factory.theme']`, which stores only `light` or `dark` and is removed entirely
+for System — missing, invalid, or inaccessible storage reads as System, silently. The control
+shows the **preference**, not the resolved palette: System stays selected while the OS resolves
+dark. The resolved palette is `data-theme="light"|"dark"` on `<html>`, the one attribute the
+token blocks read. `web/public/theme-bootstrap.js` sets it before first paint — a plain
+same-origin script from `<head>`, the shape `script-src 'self'` already permits (no inline code,
+no remote dependency). The provider in `web/src/theme.tsx` owns the attribute from React's side:
+it follows OS changes while System is selected, syncs across tabs through the `storage` event,
+and switches immediately — no reload, no refetch, no transition, no sign-out clearing.
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Appearance | `public-header`, `theme-field`, `theme-label`, `theme-select` | The one System/Light/Dark select (native, keyboard-complete), worn by the app bar and the public header rows; the label is clipped below 640px while the accessible name stays |
+
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
@@ -236,13 +252,13 @@ Components:
 | File | Primitives |
 | --- | --- |
 | `AnalyticsToolbar.tsx` | analytics toolbar, rendered-data summary, range |
-| `AppBar.tsx` | appbar, org, user-menu-button |
+| `AppBar.tsx` | appbar, appearance, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
-| `ExecutorDialog.tsx` | picker, status |
+| `ExecutorDialog.tsx` | picker, status, muted |
 | `KeyValues.tsx` | kv |
-| `LoginGate.tsx` | login |
+| `LoginGate.tsx` | login, appearance, public-header |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
@@ -254,6 +270,7 @@ Components:
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
+| `ThemeSelector.tsx` | appearance |
 | `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
 | `UnsavedChangesDialog.tsx` | picker (dialog shell), unsaved, chat-resume, chat-remove |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
@@ -278,7 +295,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
-| `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
+| `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 | `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |
 
@@ -288,8 +305,8 @@ Pages:
 | --- | --- |
 | `AccountPage.tsx` | page-header, panel |
 | `DashboardPage.tsx` | page-header, dashboard-controls |
-| `OnboardingPage.tsx` | onboarding, panel, status, muted |
-| `SettingsExecutorsPage.tsx` | page-header, panel |
+| `OnboardingPage.tsx` | onboarding, appearance, public-header, panel, status, muted |
+| `SettingsExecutorsPage.tsx` | page-header, panel, status, muted |
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
 | `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |

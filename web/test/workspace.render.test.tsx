@@ -15,34 +15,75 @@ const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
  */
 
 describe('the executors panel', () => {
-    // The panel's own heading and Add button moved to the executors page header (#159); what
-    // stays here is the list itself and each row's Edit action.
-    it('says "No executors configured" when the list is empty', () => {
-        const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
-        expect(html).toContain('No executors configured');
-        expect(html).not.toContain('<h2>Executors</h2>');
+    // The panel is the list itself plus the scope context (#183): the "My workspace" heading, the
+    // guidance that says what an executor does and does not control, and the rows.
+    const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z') => ({
+        name,
+        type,
+        createdAt,
     });
 
-    it('renders a row per executor with its type, and never a placeholder value', () => {
+    it('scopes the list under "My workspace" and carries the deployment guidance', () => {
+        const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
+        expect(html).toContain('<h2>My workspace</h2>');
+        expect(html).toContain('The deployment chooses the runner CLI and image');
+        expect(html).toContain('does not switch the deployment between Claude Code and OpenCode');
+    });
+
+    it('says new tasks use the image default when the list is empty', () => {
+        const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
+        expect(html).toContain('No personal executors configured');
+        expect(html).toContain('use the deployment&#x27;s image default');
+        expect(html).not.toContain('No executors configured');
+    });
+
+    it('renders a row per executor with its HUMAN type label, and never a placeholder value', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
-                executors={[{ name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' }]}
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
                 onEdit={() => {}}
             />
         );
-        expect(html).toContain('main');
-        expect(html).toContain('claude-code');
-        expect(html).not.toContain('No executors configured');
+        expect(html).toContain('Claude Code');
+        expect(html).toContain('OpenCode');
+        // The stored union value is for the API, not for the member.
+        expect(html).not.toContain('claude-code');
+        expect(html).not.toContain('No personal executors configured');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('marks only the first row as selected first — a fact about the composer, not a default', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                onEdit={() => {}}
+            />
+        );
+        expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
+    });
+
+    it('never carries a row config — the poll payload has none, and the type enforces it', () => {
+        // WorkspaceExecutor has no config field; an excess property is a compile error, and the
+        // render proves the summary path cannot leak one either.
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel executors={[executor('main', 'claude-code')]} onEdit={() => {}} />
+        );
+        expect(html).not.toContain('{');
+    });
+
+    it('uses the real table primitives, focusable wrapper included', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel executors={[executor('main', 'claude-code')]} onEdit={() => {}} />
+        );
+        expect(html).toContain('table-wrap');
+        expect(html).toContain('<table class="data"');
+        expect(html).toContain('scope="col"');
     });
 
     it('renders an Edit action per executor row', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
-                executors={[
-                    { name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' },
-                    { name: 'oc', type: 'opencode', createdAt: '2026-09-02T00:00:00.000Z' },
-                ]}
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
                 onEdit={() => {}}
             />
         );

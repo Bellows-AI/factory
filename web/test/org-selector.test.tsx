@@ -6,6 +6,7 @@ import { OrgSelector } from '../src/components/OrgSelector.js';
 import { AppBar } from '../src/components/AppBar.js';
 import type { Session } from '../src/api/useSession.js';
 import type { StatsPayload } from '../src/api/useStats.js';
+import { ThemeProvider } from '../src/theme.js';
 
 const CONFIG: OrganizationMeta = {
     mode: 'config',
@@ -88,8 +89,11 @@ describe('AppBar', () => {
     const html = (meta: StatsPayload['meta'] | null = payload.meta, session: Session | null = null) =>
         renderToStaticMarkup(
             <MemoryRouter>
-                {/* The brand is a NavLink and the menu holds one, so the bar needs a router. */}
-                <AppBar meta={meta} session={session} navOpen={false} onOpenNav={() => {}} />
+                {/* The brand is a NavLink and the menu holds one, so the bar needs a router, and
+                    the appearance control (issue 188) needs the theme provider. */}
+                <ThemeProvider>
+                    <AppBar meta={meta} session={session} navOpen={false} onOpenNav={() => {}} />
+                </ThemeProvider>
             </MemoryRouter>
         );
 

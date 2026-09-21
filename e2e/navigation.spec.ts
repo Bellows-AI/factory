@@ -47,6 +47,94 @@ async function noHorizontalOverflow(page: Page): Promise<void> {
     expect(overflow.body, 'body overflows horizontally').toBeLessThanOrEqual(0);
 }
 
+test.describe('appearance', () => {
+    /**
+     * The persisted System/Light/Dark preference (issue 188), in the browser: the bootstrap's
+     * before-paint resolution, the control's immediate switches, persistence, and the cross-tab
+     * sync. The OS palette is always read from the page itself — headless defaults are never
+     * written down here.
+     */
+    const systemTheme = (page: Page) =>
+        page.evaluate(() => (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+    const stored = (page: Page) => page.evaluate(() => localStorage.getItem('factory.theme'));
+
+    test('the control carries the three options and switches immediately without a reload', async ({ page }) => {
+        await page.goto('/');
+        const select = page.getByLabel('Appearance');
+        await select.waitFor({ state: 'attached' });
+
+        expect(await select.locator('option').allInnerTexts()).toEqual(['System', 'Light', 'Dark']);
+        // The factory state is System with no stored key, resolved to the live OS palette.
+        expect(await stored(page)).toBeNull();
+        expect(await page.locator('html').getAttribute('data-theme')).toBe(await systemTheme(page));
+
+        await page.evaluate(() => ((window as { __probe?: number }).__probe = 1));
+        await select.selectOption('dark');
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+        expect(await stored(page)).toBe('dark');
+        // The probe surviving is the no-reload/no-refetch proof.
+        expect(await page.evaluate(() => (window as { __probe?: number }).__probe)).toBe(1);
+        await page.screenshot({ path: `${SHOTS}/appearance-dark.png` });
+
+        // The stored choice, not the OS, survives a reload.
+        await page.reload();
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+        await expect(page.getByLabel('Appearance')).toHaveValue('dark');
+    });
+
+    test('System removes the stored key and resolves the live OS palette', async ({ page }) => {
+        await page.goto('/');
+        const select = page.getByLabel('Appearance');
+        await select.waitFor({ state: 'attached' });
+        await select.selectOption('light');
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+        await select.selectOption('system');
+        expect(await stored(page)).toBeNull();
+        await expect(page.locator('html')).toHaveAttribute('data-theme', await systemTheme(page));
+        await expect(select).toHaveValue('system');
+    });
+
+    test('a second tab follows the first', async ({ page, context }) => {
+        await page.goto('/');
+        const select = page.getByLabel('Appearance');
+        await select.waitFor({ state: 'attached' });
+        const other = await context.newPage();
+        await other.goto('/');
+        await other.getByLabel('Appearance').waitFor({ state: 'attached' });
+
+        await select.selectOption('light');
+        await expect(other.locator('html')).toHaveAttribute('data-theme', 'light');
+        await expect(other.getByLabel('Appearance')).toHaveValue('light');
+
+        // A removal from the other tab reads as System again here.
+        await other.evaluate(() => localStorage.removeItem('factory.theme'));
+        await expect(page.getByLabel('Appearance')).toHaveValue('system');
+        await other.close();
+    });
+
+    test('the selector clears its narrow-screen target and the bar holds', async ({ page }) => {
+        await page.setViewportSize({ width: 360, height: 1000 });
+        await page.goto('/');
+        await page.getByLabel('Appearance').waitFor({ state: 'attached' });
+        expect((await page.locator('.theme-select').boundingBox())?.height).toBeGreaterThanOrEqual(44);
+        await expect
+            .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth))
+            .toBeLessThanOrEqual(0);
+    });
+
+    test('paired dark and light screenshots at 1440', async ({ page }) => {
+        await page.goto('/');
+        const select = page.getByLabel('Appearance');
+        await select.waitFor({ state: 'attached' });
+        await select.selectOption('light');
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+        await page.screenshot({ path: `${SHOTS}/appearance-light-1440.png`, fullPage: true });
+        await select.selectOption('dark');
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+        await page.screenshot({ path: `${SHOTS}/appearance-dark-1440.png`, fullPage: true });
+    });
+});
+
 test.describe('the desktop shell', () => {
     test('the seeded board holds at least a hundred tasks', async ({ page }) => {
         const body = (await page.request.get('/api/jobs?limit=200').then((r) => r.json())) as {

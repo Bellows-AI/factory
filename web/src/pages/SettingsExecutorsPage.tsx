@@ -1,15 +1,18 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useWorkspace, type WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
-import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
+import { EXECUTOR_GUIDANCE, WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
  * The Executors section of the settings tree: the member's configured executors and the add/edit
- * dialog (issue 150), moved off the workspace page — executors configure what a runner runs with and
- * have nothing to do with checkouts. The page header owns the section's one action, "Add
- * executor"; the panel below is the list itself.
+ * dialog (issue 150), moved off the workspace page — executors configure what a runner runs with
+ * and have nothing to do with checkouts. The page header owns the section's one action, "Add
+ * executor"; the panel below is the list itself. Issue 183 adds the honest framing: what the
+ * page's sentence says an executor controls (label and config) versus what the deployment
+ * controls (runner CLI and image).
  */
 
 /** The executor dialog's state: adding, or editing the row that had this name when it opened. */
@@ -45,10 +48,19 @@ export function SettingsExecutorsPage() {
         setExecutorDialog(editing === null ? { mode: 'add' } : { mode: 'edit', name: editing });
     };
 
+    // A deliberate configuration, not a failure (same posture as the workspace page): with no
+    // root the executor routes answer 409 WORKSPACE_DISABLED, so the page refuses before any
+    // dialog — the action simply never renders, and the sentence points at workspace setup.
+    const noRoot = data !== null && data.root === null;
+
     if (loading && !data) {
         return (
             <>
-                <PageHeader eyebrow="Settings" title="Executors" />
+                <PageHeader
+                    eyebrow="Settings"
+                    title="Executors"
+                    description="Name the personal runner configuration offered when you start a task."
+                />
                 <p className="status">Loading your workspace…</p>
             </>
         );
@@ -59,18 +71,32 @@ export function SettingsExecutorsPage() {
             <PageHeader
                 eyebrow="Settings"
                 title="Executors"
+                description="Name the personal runner configuration offered when you start a task."
                 actions={
-                    <button type="button" className="primary" onClick={() => void openExecutorDialog(null)}>
-                        Add executor
-                    </button>
+                    data && !noRoot ? (
+                        <button type="button" className="primary" onClick={() => void openExecutorDialog(null)}>
+                            Add executor
+                        </button>
+                    ) : undefined
                 }
             />
             {error ? <p className="status">{error}</p> : null}
 
-            <WorkspaceExecutorsPanel
-                executors={data?.executors ?? []}
-                onEdit={(name) => void openExecutorDialog(name)}
-            />
+            {/* Requiring `data` keeps the failed-poll state honest: with no response there is no
+                list to reason about, and the empty sentence beside the error would claim
+                "nothing configured" as a fact about the workspace rather than the request. */}
+            {data && noRoot ? (
+                <section className="panel">
+                    <h2>My workspace</h2>
+                    <p className="muted">{EXECUTOR_GUIDANCE}</p>
+                    <p className="status">
+                        Personal executors are unavailable because this deployment has no workspace root. Tasks cannot
+                        run until <Link to="/settings/workspace">workspace setup</Link> is complete.
+                    </p>
+                </section>
+            ) : data ? (
+                <WorkspaceExecutorsPanel executors={data.executors} onEdit={(name) => void openExecutorDialog(name)} />
+            ) : null}
 
             {executorDialogError ? <p className="status">{executorDialogError}</p> : null}
             <ExecutorDialog

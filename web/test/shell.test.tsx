@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { AppShell } from '../src/components/AppShell.js';
+import { ThemeProvider } from '../src/theme.js';
 
 /**
  * The shell's markup contracts, pinned the only way an offline suite can: a static render. The
@@ -13,11 +14,14 @@ import { AppShell } from '../src/components/AppShell.js';
 function renderShell(path: string): string {
     return renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
-            <Routes>
-                <Route element={<AppShell />}>
-                    <Route path="*" element={<p>page</p>} />
-                </Route>
-            </Routes>
+            {/* The app bar's appearance control (issue 188) needs the theme provider. */}
+            <ThemeProvider>
+                <Routes>
+                    <Route element={<AppShell />}>
+                        <Route path="*" element={<p>page</p>} />
+                    </Route>
+                </Routes>
+            </ThemeProvider>
         </MemoryRouter>
     );
 }

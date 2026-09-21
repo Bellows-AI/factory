@@ -79,6 +79,19 @@ export function threadPublish(jobs: Job[]): ThreadPublish | null {
 export const isHttpUrl = (url: string): boolean => url.startsWith('https://') || url.startsWith('http://');
 
 /**
+ * The pull request a publish url names — `.../pull/<n>`, the shape `gh pr view/create` prints —
+ * read back out because the board carries no structured PR field, only the url. Null when the
+ * url names no number; the panel then links it by name alone. The same bound as an issue
+ * reference: positive and within the safe-integer range.
+ */
+export const prNumber = (url: string): number | null => {
+    const match = /\/pull\/(\d+)/.exec(url);
+    if (match === null) return null;
+    const number = Number(match[1]);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+};
+
+/**
  * The thread's context: the newest CLOSED turn's scrape — a follow-up resumes the same session,
  * so the last closed turn's count IS the conversation's final context, and summing per-turn
  * counts would double-count the shared prefix. A running turn carries no scrape, so scanning

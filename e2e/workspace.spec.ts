@@ -149,29 +149,68 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     await signedIn(page);
     await page.goto('/settings/executors');
 
+    // The panel is scoped by its scope heading now — "My workspace" — with the guidance sentence
+    // that separates what the row stores from what the deployment controls (#183).
+    const panel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'My workspace' }) });
+    await expect(panel).toContainText('The deployment chooses the runner CLI and image');
+
     await page.getByRole('button', { name: 'Add executor' }).click();
     const dialog = page.locator('[role="dialog"][aria-labelledby="executor-title"]');
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
 
-    // Not valid JSON: the message appears under the field, and Save stays disabled.
+    // The Type note says what the field does NOT do — choosing a type describes the config, it
+    // does not switch the deployment's runner CLI — and the config help opens on the Claude Code
+    // truth: stored with the executor, not consumed by the current runner.
+    await expect(dialog.locator('#executor-type-help')).toContainText("does not change the deployment's runner CLI");
+    await expect(dialog.locator('#executor-config-help')).toContainText('not consumed by the current Claude Code runner');
+    await page.screenshot({ path: `${SHOTS}/settings-executor-help.png` });
+
+    // Switching type swaps the help for the OpenCode truth: the deployment's CLI merges the
+    // object over its baked configuration, and the permission fence holds.
+    await dialog.getByRole('combobox').selectOption({ label: 'OpenCode' });
+    await expect(dialog.locator('#executor-config-help')).toContainText('merged over its baked configuration');
+    await expect(dialog.locator('#executor-config-help')).toContainText('permission rules are ignored');
+    await dialog.getByRole('combobox').selectOption({ label: 'Claude Code' });
+
+    // Not valid JSON: the message appears under the field, Save stays disabled, and what was
+    // typed is still there — an error never costs the member their paste.
     await dialog.getByPlaceholder('main').fill('main');
     await dialog.locator('textarea').fill('{ model: }');
-    await expect(dialog.getByRole('button', { name: 'Add' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Add executor' })).toBeDisabled();
+    await expect(dialog.locator('textarea')).toHaveValue('{ model: }');
+    await expect(dialog.locator('textarea')).toHaveAttribute('aria-invalid', 'true');
 
-    await dialog.locator('textarea').fill('{ "model": "sonnet" }');
-    await dialog.getByRole('button', { name: 'Add' }).click();
+    // A name problem is not a config problem: with parseable JSON but no name, Save stays
+    // disabled and the textarea announces nothing — the error belongs to the name field.
+    await dialog.getByPlaceholder('main').fill('');
+    await dialog.locator('textarea').fill('{}');
+    await expect(dialog.getByRole('button', { name: 'Add executor' })).toBeDisabled();
+    await expect(dialog.locator('textarea')).not.toHaveAttribute('aria-invalid');
+
+    await dialog.getByPlaceholder('main').fill('main');
+    await dialog.getByRole('button', { name: 'Add executor' }).click();
     await expect(dialog).toBeHidden();
 
     // Focus went back to the trigger the dialog opened from — the Dialog restores it on close,
     // and the next keystroke must land where the member left it.
     await expect(page.getByRole('button', { name: 'Add executor' })).toBeFocused();
 
-    // The row comes back through the poll, with its type — and the panel no longer says none.
-    const panel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'Executors' }) });
+    // The row comes back through the poll, under its human label — and the first row is marked
+    // as the one the composer picks first: a fact about the draft, not a stored default.
     await expect(panel.getByText('main')).toBeVisible();
-    await expect(panel.locator('.pill')).toHaveText('claude-code');
-    await expect(panel).not.toContainText('No executors configured');
+    await expect(panel.locator('.pill')).toHaveText('Claude Code');
+    await expect(panel).not.toContainText('No personal executors configured');
+    await expect(panel.getByText('Selected first on new tasks')).toHaveCount(1);
+
+    // Editing is its own round trip: the save action reads "Save executor", and focus lands back
+    // on the row's Edit button, not wherever the DOM happens to leave it.
+    await panel.getByRole('button', { name: 'Edit' }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.locator('textarea').fill('{ "model": "opus" }');
+    await dialog.getByRole('button', { name: 'Save executor' }).click();
+    await expect(dialog).toBeHidden();
+    await expect(panel.getByRole('button', { name: 'Edit' })).toBeFocused();
 
     await page.screenshot({ path: `${SHOTS}/settings-executors.png`, fullPage: true });
 });
