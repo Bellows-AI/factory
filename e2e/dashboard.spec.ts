@@ -192,6 +192,7 @@ test.describe('date range selector', () => {
     });
 
     test('the chart tooltip stays inside the viewport when a bucket is focused', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 1000 });
         await open(page);
 
         // The last bucket of the all-time chart: the readout clamps inside the SVG, but the SVG

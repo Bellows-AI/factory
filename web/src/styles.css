@@ -403,10 +403,11 @@
         /* Fluid fixed tracks: each metadata column keeps its desktop width while space allows
            and gives some back around the shell's 900–1024 stretch, where the persistent nav
            leaves too little for the old all-fixed sum — the columns shrank, the page did not
-           scroll (issue 190). */
+           scroll (issue 190). The minimums stay under what the 901px floor leaves after the
+           nav, paddings and gaps. */
         grid-template-columns:
-            minmax(120px, 170px) minmax(200px, 1fr) minmax(120px, 180px) minmax(80px, 110px) minmax(
-                60px,
+            minmax(100px, 170px) minmax(180px, 1fr) minmax(100px, 180px) minmax(70px, 110px) minmax(
+                50px,
                 90px
             );
         padding: 8px 4px;

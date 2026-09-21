@@ -99,7 +99,9 @@ async function controlsInsideViewport(page: Page, width: number): Promise<void> 
     );
     expect(outside, 'controls pushed outside the viewport').toEqual([]);
 }
-test.describe('appearance', () => {    /**
+
+test.describe('appearance', () => {
+    /**
      * The persisted System/Light/Dark preference (issue 188), in the browser: the bootstrap's
      * before-paint resolution, the control's immediate switches, persistence, and the cross-tab
      * sync. The OS palette is always read from the page itself — headless defaults are never
