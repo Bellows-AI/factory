@@ -1042,4 +1042,27 @@ describe('the selection screen (#125)', () => {
         expect(widened.statusCode).toBe(200);
         expect(await auth.trackedRepos(ORG)).toEqual([]);
     });
+
+    it('a reselect completion without a repos key leaves the stored narrowing standing (issue 187)', async () => {
+        // The screen's preserved-not-reviewable rule: a specific org whose listing cannot be
+        // read posts its org id and NO repos key, and the store must read that omission as "no
+        // change" — never as a widening. Contrast the test above, where an explicit [] IS the
+        // widening move.
+        const listing: Record<string, InstallationRepo[] | null> = {
+            [ORG]: [{ owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null }],
+            '888888': null,
+        };
+        const { app, auth } = await setup({
+            installations: TWO,
+            installationListing: async (id) => listing[id] ?? null,
+        });
+        const first = await beginOnboarding(app);
+        await finishOnboarding(app, first, { orgs: [ORG], repos: { [ORG]: ['acme/web'] } });
+        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+
+        const second = await beginOnboarding(app, '/', undefined, true);
+        const preserved = await finishOnboarding(app, second, { orgs: [ORG] });
+        expect(preserved.statusCode).toBe(200);
+        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+    });
 });
