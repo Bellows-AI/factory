@@ -42,9 +42,11 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
     pullRequest(number: $number) {
       reviewDecision
       reviewThreads(first: ${THREADS_LIMIT}) {
+        totalCount
         nodes {
           id isResolved isOutdated path line
           comments(first: ${THREAD_COMMENTS_LIMIT}) {
+            totalCount
             nodes { id databaseId author { login } body createdAt }
           }
         }
@@ -189,9 +191,9 @@ function collect() {
             'graphql',
             '-f',
             `query=${THREADS_QUERY}`,
-            '-F',
+            '-f',
             `owner=${ref.owner}`,
-            '-F',
+            '-f',
             `repo=${ref.repo}`,
             '-F',
             `number=${ref.number}`,
@@ -212,8 +214,9 @@ function collect() {
                 createdAt: str(c.createdAt),
             }))
             .sort(sortComment);
-        if (comments.length > THREAD_COMMENTS_LIMIT) {
-            comments.length = THREAD_COMMENTS_LIMIT;
+        const totalComments = num(node.comments && node.comments.totalCount);
+        if (comments.length > THREAD_COMMENTS_LIMIT || (totalComments !== null && totalComments > comments.length)) {
+            if (comments.length > THREAD_COMMENTS_LIMIT) comments.length = THREAD_COMMENTS_LIMIT;
             counts.threads += 1;
         }
         threads.push({
@@ -225,8 +228,9 @@ function collect() {
             comments,
         });
     }
-    if (threads.length > THREADS_LIMIT) {
-        threads.length = THREADS_LIMIT;
+    const totalThreads = pr && pr.reviewThreads ? num(pr.reviewThreads.totalCount) : null;
+    if (threads.length > THREADS_LIMIT || (totalThreads !== null && totalThreads > threads.length)) {
+        if (threads.length > THREADS_LIMIT) threads.length = THREADS_LIMIT;
         ts.sections.push('threads');
     }
     if (counts.threads > 0) ts.sections.push('thread-comments');

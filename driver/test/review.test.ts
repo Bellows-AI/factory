@@ -382,7 +382,7 @@ describe('the review collection script', () => {
         expect(args[4]!.slice(0, 2)).toEqual(['api', 'graphql']);
         expect(args[4]![2]).toBe('-f');
         expect(args[4]![3]!.startsWith('query=query($owner: String!')).toBe(true);
-        expect(args[4]!.slice(4)).toEqual(['-F', 'owner=octo', '-F', 'repo=factory', '-F', 'number=7']);
+        expect(args[4]!.slice(4)).toEqual(['-f', 'owner=octo', '-f', 'repo=factory', '-F', 'number=7']);
         expect(args[4]!.join(' ')).toContain('reviewDecision');
         expect(args[4]!.join(' ')).toContain('isResolved');
     });
@@ -499,6 +499,51 @@ describe('the review collection script', () => {
         expect(verdict.threads[0]!.comments[0]!.databaseId).toBe(600);
         expect(verdict.truncated.sections).toContain('thread-comments');
         expect(verdict.truncated.threads).toBe(1);
+    });
+
+    it('reports thread truncation from the server totalCount, not just the client-side cap', async () => {
+        const file = writeFixture({
+            general: [],
+            reviews: [],
+            inline: [],
+            requested: { users: [], teams: [] },
+            threads: {
+                data: {
+                    repository: {
+                        pullRequest: {
+                            reviewDecision: 'REVIEW_REQUIRED',
+                            reviewThreads: {
+                                totalCount: 150,
+                                nodes: [
+                                    {
+                                        id: 'T_skinny',
+                                        isResolved: false,
+                                        isOutdated: false,
+                                        path: 'src/a.ts',
+                                        line: 1,
+                                        comments: { totalCount: 12, nodes: [] },
+                                    },
+                                    {
+                                        id: 'T_even',
+                                        isResolved: false,
+                                        isOutdated: false,
+                                        path: 'src/b.ts',
+                                        line: 2,
+                                        comments: { totalCount: 1, nodes: [{ id: 'IC_e1' }] },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const { stdout } = await runScript('review-collect.cjs', { REPO: 'octo/factory', PR: '7', GH_FIXTURES: file });
+        const verdict = JSON.parse(stdout.trim()) as ReviewCollection;
+        expect(verdict.threads).toHaveLength(2);
+        expect(verdict.truncated.threads).toBe(1);
+        expect(verdict.truncated.sections).toContain('thread-comments');
+        expect(verdict.truncated.sections).toContain('threads');
     });
 
     it('collapses the whole verdict to the bounded shell when the payload outgrows the byte cap', async () => {
