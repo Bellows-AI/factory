@@ -176,7 +176,9 @@ Plus `GET /api/auth/github/setup` (the App's Setup URL target), `POST /api/auth/
   and cached for the process's life. Offline (no App client) or on a slug failure it reports
   `?auth_error=install` instead of dead-ending on a redirect to nowhere. The App's **Setup URL**
   must be configured to `<publicUrl>/api/auth/github/setup`: an install returns there and the flow
-  restarts; a return without an installation id reports `install_cancelled` on the sign-in screen.
+  restarts with the new installation preferred and selection forced open, so an existing stored
+  choice cannot hide the organization that was just installed. A return without an installation id
+  reports `install_cancelled` on the sign-in screen.
 - **The selection screen survives the single-use code in a row, not a cookie payload (#125).** The
   OAuth `code` is spent by the time the installations report is in hand, and the person then spends
   seconds-to-minutes choosing — so the identity and report ride a `pending_sign_in` row keyed by
@@ -192,8 +194,9 @@ Plus `GET /api/auth/github/setup` (the App's Setup URL target), `POST /api/auth/
   sign-in would be hostile. There is deliberately no in-place editor on the settings page: the
   GitHub user token that enumerated the installations is discarded at sign-in, so the list cannot
   be re-asked outside an OAuth round trip. The settings surface is a link that restarts the flow
-  with `?reselect=1`, which reopens the screen pre-checked with the stored choice. One
-  installation is never a screen — there is nothing to choose, whatever was asked.
+  with `?reselect=1`, which reopens the screen pre-checked with the stored choice. An App install
+  return does the same automatically so the new organization is visible before the choice is
+  materialized. An ordinary first sign-in with one installation still signs straight in.
 - **The completion route is the one auth route that answers JSON instead of redirecting.** The
   callback is a top-level navigation, so its failures carry `?auth_error=`; the completion route is
   reached by the onboarding page's `fetch`, which would swallow a 302 — so it answers
