@@ -1,5 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { EnvSaveResult } from '../api/useEnv.js';
+import { useGuardedDraft } from '../components/UnsavedChangesDialog.js';
+import {
+    advancedUnapplied,
+    countActive,
+    envPayload,
+    hasErrors,
+    isDirty,
+    nextTabIndex,
+    rowErrors,
+    scopeError,
+    SECRET_STATE_LABEL,
+    secretState,
+    seedRows,
+} from './env-draft.js';
+import type { EnvRowState } from './env-draft.js';
 import { parseEnvRaw, serializeEnv } from './env-raw.js';
 
 /**
@@ -22,336 +38,582 @@ export interface EnvVarsPanelProps {
     onSave: (vars: { name: string; value: string | null; isSecret: boolean }[]) => Promise<EnvSaveResult>;
     /** Rendered read-only while the PUT is in flight or the scope is not the caller's to edit. */
     disabled?: boolean;
-    /**
-     * Reports whether the draft holds unsaved edits — the hook the settings area's unsaved-change
-     * registry needs (issue 181). Fires from an effect, so a static render reports nothing.
-     */
+    /** The scope's stable id in the settings area's unsaved-change guard — set when editable. */
+    draftId?: string;
+    /** The scope's label in the guard dialog's body sentence. */
+    draftLabel?: string;
+    /** Dirty mirror for a page that must ask before swapping the editor (the repository select). */
     onDirtyChange?: (dirty: boolean) => void;
 }
+
+type TabKey = 'variables' | 'secrets';
 
 /**
  * The editor for one environment scope: org ("core"), the member's workspace, or one repository.
  *
- * Two tabs split the scope's rows by `isSecret`. Variables edits through a `raw` toggle: on, the
- * table is replaced by a textarea holding the scope's non-secret variables one `NAME=value` per
- * line (env-raw.ts), and toggling off parses it with the same strict rules the server enforces —
- * valid text replaces the draft's variable rows (a deleted line deletes the variable), invalid
- * text shows the line errors and stays in the editor. Secrets keeps the old masked flow verbatim:
- * no raw editor, blank means keep what is stored, and the flag of a stored secret stays locked
- * because its value was never sent here. Draft state spans tabs; Save submits one merged list
- * exactly as before — and is disabled while raw mode holds text that has not been applied to the
- * draft, since saving then would PUT the stale rows under a false "Saved.".
+ * One baseline and one local draft for the scope (env-draft.ts holds the pure decisions): rows
+ * carry stable ids for React only, and dirty state compares the API payload shape — additions and
+ * effective edits included, pending-removed rows excluded, order ignored, because the store reads
+ * back ordered by name. Variables and Secrets are a real tablist with live counts; the tab a row
+ * is added in decides its type, and there is deliberately NO control that changes a row's type —
+ * a stored secret's value was never here, so the only ways out of the scope's secret set are a
+ * typed replacement value or a pending removal. Removal is pending until the whole-list save:
+ * the row stays visible as "{name} will be removed when you save." with an Undo, and deletion
+ * happens only when the PUT succeeds. Advanced .env editing (env-raw.ts) replaces the variable
+ * draft only, explicitly, through Apply; secrets never round-trip through text.
  *
- * The whole list is the unit of save — the PUT replaces the scope's rows, so a retried request
- * changes nothing. A row whose name is cleared is dropped from the payload entirely, which is how
- * a deletion looks; a secret left blank keeps whatever is stored, because the panel never had the
- * value to send back.
+ * Save submits one merged list from both mounted tabs — the PUT replaces the scope's rows, so a
+ * retried request changes nothing. A secret left blank saves `null` (keep what is stored); an
+ * omitted name deletes. On success the panel adopts the echoed rows as its new baseline WITHOUT
+ * remounting, so the "Changes saved." confirmation survives; on failure the draft is retained,
+ * the error is an alert that takes focus, and the inputs are untouched. While dirty, the editor
+ * is registered with the settings area's guard (useGuardedDraft), which blocks navigation and
+ * repository switches behind the one discard confirmation.
  *
  * Both tab panels always render (the inactive one carries `hidden`), because the page is
- * server-render-tested by markup assertions, not by clicking.
+ * server-render-tested by markup assertions; the interaction states unreachable from props are
+ * decided by the pure layer and pinned there and in the browser suite.
  *
  * No `<form>`: the CSP sends `form-action 'none'`, so a submit would be blocked at the browser —
  * the same trap that makes LoginGate an anchor.
  */
-export function EnvVarsPanel({ title, hint, initialVars, onSave, disabled = false, onDirtyChange }: EnvVarsPanelProps) {
-    const [rows, setRows] = useState<EnvVarDraft[]>(() => initialVars.map((row) => ({ ...row })));
-    const [error, setError] = useState<string | null>(null);
-    const [saved, setSaved] = useState(false);
+export function EnvVarsPanel({
+    title,
+    hint,
+    initialVars,
+    onSave,
+    disabled = false,
+    draftId,
+    draftLabel,
+    onDirtyChange,
+}: EnvVarsPanelProps) {
+    // The seed is captured once per mount — initialVars may arrive as a new array on every parent
+    // render (an after-save refetch), and adopting one would silently wipe a typing hand's draft.
+    const [baseline, setBaseline] = useState<EnvRowState[]>(() => seedRows(initialVars));
+    const [rows, setRows] = useState<EnvRowState[]>(() => seedRows(initialVars));
+    const [tab, setTab] = useState<TabKey>('variables');
     const [saving, setSaving] = useState(false);
-    const [dirty, setDirty] = useState(false);
-    const [tab, setTab] = useState<'variables' | 'secrets'>('variables');
-    const [rawOpen, setRawOpen] = useState(false);
-    const [rawText, setRawText] = useState('');
+    const [statusText, setStatusText] = useState('');
+    const [saveError, setSaveError] = useState<string | null>(null);
+    const [advancedOpen, setAdvancedOpen] = useState(false);
+    const [advancedText, setAdvancedText] = useState('');
+    const [advancedErrors, setAdvancedErrors] = useState<string[]>([]);
+    const nextIdCounter = useRef(0);
+    const uid = useId();
+
+    const nextId = () => {
+        nextIdCounter.current += 1;
+        return `r${nextIdCounter.current}`;
+    };
+
+    const dirty = useMemo(() => isDirty(baseline, rows), [baseline, rows]);
+    const errors = useMemo(() => rowErrors(rows), [rows]);
+    const scopeMsg = useMemo(() => scopeError(rows), [rows]);
+    const invalid = hasErrors(errors, scopeMsg);
+    const unapplied = advancedOpen && advancedUnapplied(advancedText, rows);
+    const locked = disabled || saving;
+    const canSave = !disabled && !saving && dirty && !invalid && !unapplied;
+
+    // Focus routing after add/remove/undo: requests recorded during the state update, resolved
+    // once the rows (and their inputs) exist. A no-op on the server, where effects never run.
+    const pendingFocus = useRef<{ id: string; kind: 'name' | 'undo' | 'add' } | null>(null);
+    const nameRefs = useRef(new Map<string, HTMLInputElement | null>());
+    const undoRefs = useRef(new Map<string, HTMLButtonElement | null>());
+    const addRefs = useRef<{ variables: HTMLButtonElement | null; secrets: HTMLButtonElement | null }>({
+        variables: null,
+        secrets: null,
+    });
+    const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+    const saveErrorRef = useRef<HTMLParagraphElement | null>(null);
+    const advancedRef = useRef<HTMLDivElement | null>(null);
+    const advancedToggleRef = useRef<HTMLButtonElement | null>(null);
+
+    useEffect(() => {
+        const request = pendingFocus.current;
+        if (!request) return;
+        pendingFocus.current = null;
+        if (request.kind === 'add') {
+            addRefs.current[request.id as 'variables' | 'secrets']?.focus();
+        } else if (request.kind === 'name') {
+            nameRefs.current.get(request.id)?.focus();
+        } else {
+            undoRefs.current.get(request.id)?.focus();
+        }
+    }, [rows]);
+
+    useEffect(() => {
+        if (saveError) saveErrorRef.current?.focus();
+    }, [saveError]);
 
     useEffect(() => {
         onDirtyChange?.(dirty);
-    }, [dirty, onDirtyChange]);
+    }, [onDirtyChange, dirty]);
 
-    const update = (index: number, patch: Partial<EnvVarDraft>) => {
-        setSaved(false);
-        setDirty(true);
-        setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+    const clearConfirmation = () => {
+        setStatusText('');
+        setSaveError(null);
+    };
+
+    const updateRow = (id: string, patch: Partial<EnvRowState>) => {
+        clearConfirmation();
+        setRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
     };
 
     const addRow = (isSecret: boolean) => {
-        setSaved(false);
-        setDirty(true);
-        setRows((current) => [...current, { name: '', value: '', isSecret }]);
+        clearConfirmation();
+        const id = nextId();
+        setRows((current) => [...current, { id, name: '', value: '', isSecret, isNew: true, pendingRemove: false }]);
+        pendingFocus.current = { id, kind: 'name' };
     };
 
-    const removeRow = (index: number) => {
-        setSaved(false);
-        setDirty(true);
-        setRows((current) => current.filter((_, i) => i !== index));
-    };
-
-    /** Raw on: seed the editor from the draft. Raw off: parse, and replace the draft or report. */
-    const toggleRaw = () => {
-        if (!rawOpen) {
-            // Entering the editor is a context switch: seed once from the current draft and clear
-            // a stale error, exactly as the old cancel did. Secrets are never serialized — their
-            // values are write-only and cannot round-trip through text.
-            setError(null);
-            setRawText(serializeEnv(rows));
-            setRawOpen(true);
+    const removeRow = (row: EnvRowState) => {
+        clearConfirmation();
+        if (row.isNew && row.name.trim() === '' && (row.value === '' || row.value === null)) {
+            // An untouched blank addition never made it into the draft's meaning: it may vanish
+            // without ceremony, and focus returns to the Add button that created it.
+            setRows((current) => current.filter((candidate) => candidate.id !== row.id));
+            pendingFocus.current = { id: row.isSecret ? 'secrets' : 'variables', kind: 'add' };
             return;
         }
-        const result = parseEnvRaw(
-            rawText,
-            rows.filter((row) => row.isSecret).map((row) => row.name)
+        setRows((current) =>
+            current.map((candidate) => (candidate.id === row.id ? { ...candidate, pendingRemove: true } : candidate))
         );
+        pendingFocus.current = { id: row.id, kind: 'undo' };
+    };
+
+    const undoRemove = (row: EnvRowState) => {
+        clearConfirmation();
+        setRows((current) =>
+            current.map((candidate) => (candidate.id === row.id ? { ...candidate, pendingRemove: false } : candidate))
+        );
+        pendingFocus.current = { id: row.id, kind: 'name' };
+    };
+
+    const closeAdvanced = () => {
+        // Closing unmounts the disclosure's own controls; when the dismissal came from inside
+        // (Apply, Cancel), focus returns to the disclosure's toggle instead of dropping to the
+        // document. A dismissal from outside — the save button adopting the echo — leaves focus
+        // where it is.
+        const active = typeof document === 'undefined' ? null : document.activeElement;
+        const fromInside = advancedRef.current !== null && active !== null && advancedRef.current.contains(active);
+        setAdvancedOpen(false);
+        setAdvancedText('');
+        setAdvancedErrors([]);
+        if (fromInside) advancedToggleRef.current?.focus();
+    };
+
+    const openAdvanced = () => {
+        // Entering is a context switch: seed once from the active variable rows and clear a stale
+        // error. Secrets are never serialized — their values are write-only and cannot round-trip
+        // through text — and pending-removed variables stay out of the seed: applying the
+        // untouched text must not resurrect a row the reader is deleting.
+        setAdvancedErrors([]);
+        setAdvancedText(serializeEnv(rows.filter((row) => !row.isSecret && !row.pendingRemove)));
+        setAdvancedOpen(true);
+    };
+
+    const applyAdvanced = () => {
+        const secretNames = rows.filter((row) => row.isSecret && !row.pendingRemove).map((row) => row.name);
+        const result = parseEnvRaw(advancedText, secretNames);
         if (!result.ok) {
-            // Invalid text is never silently discarded: the errors render and the panel stays in
-            // raw mode with the entered text intact.
-            setError(result.errors.join('\n'));
+            // Invalid text is never silently discarded: the errors render, the text and the
+            // disclosure stay open, and the table draft is untouched.
+            setAdvancedErrors(result.errors);
             return;
         }
-        setSaved(false);
-        setDirty(true);
-        setError(null);
-        setRows([...result.vars, ...rows.filter((row) => row.isSecret)]);
-        setRawOpen(false);
-        setRawText('');
+        clearConfirmation();
+        const applied: EnvRowState[] = result.vars.map((row) => ({
+            id: nextId(),
+            name: row.name,
+            value: row.value,
+            isSecret: false,
+            isNew: false,
+            pendingRemove: false,
+        }));
+        // The text is the WHOLE truth for variables — a pending-removal of a variable dissolves
+        // here, superseded by the explicit list; secret rows (and their pending states) pass
+        // around untouched.
+        setRows([...applied, ...rows.filter((row) => row.isSecret)]);
+        closeAdvanced();
+        setStatusText('Variables applied from .env.');
     };
 
     const save = async () => {
+        if (!canSave) return;
         setSaving(true);
-        setError(null);
+        setSaveError(null);
         try {
-            // A blank name is a row somebody added and never filled in — dropped, not saved.
-            const payload = rows
-                .filter((row) => row.name.trim() !== '')
-                .map((row) => ({
-                    name: row.name.trim(),
-                    // Blank on a secret is the keep marker — and so is the untouched null the
-                    // write-only echo delivered: either way the panel never held a value to send
-                    // back, and a '' here would overwrite the stored credential. Blank on a
-                    // readable value is an honest empty string.
-                    value: row.isSecret && (row.value === '' || row.value === null) ? null : (row.value ?? ''),
-                    isSecret: row.isSecret,
-                }));
-            const result = await onSave(payload);
+            const result = await onSave(envPayload(rows));
             if (result.error) {
-                setError(result.error);
+                setStatusText('');
+                setSaveError(result.error);
             } else {
                 // Adopt the stored rows the PUT echoed back — a typed secret value becomes the
-                // blank "set — leave blank to keep" input, and the draft is exactly the store.
-                // The confirmation survives because nothing remounts to deliver it.
-                setRows(result.vars.map((row) => ({ ...row })));
-                setSaved(true);
-                setDirty(false);
+                // blank "leave blank to keep" input, and the draft is exactly the store. The
+                // confirmation survives because nothing remounts to deliver it.
+                const adopted = seedRows(result.vars);
+                setBaseline(adopted);
+                setRows(adopted);
+                closeAdvanced();
+                setStatusText('Changes saved.');
             }
         } finally {
             setSaving(false);
         }
     };
 
-    const locked = disabled || saving;
-    const variableRows = rows.filter((row) => !row.isSecret);
-    const secretRows = rows.filter((row) => row.isSecret);
+    const discard = useCallback(() => setRows(baseline), [baseline]);
+    const guarded = !disabled && draftId !== undefined && draftLabel !== undefined;
+    const guardedDraft = useMemo(
+        () =>
+            guarded && draftId !== undefined && draftLabel !== undefined
+                ? { id: draftId, label: draftLabel, dirty, discard }
+                : null,
+        [guarded, draftId, draftLabel, dirty, discard]
+    );
+    useGuardedDraft(guardedDraft);
+
+    const selectTab = (key: TabKey) => setTab(key);
+    const onTabKeyDown = (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+        const next = nextTabIndex(index, 2, event.key);
+        if (next === null) return;
+        event.preventDefault();
+        selectTab(next === 0 ? 'variables' : 'secrets');
+        tabRefs.current[next]?.focus();
+    };
+
+    // Ordinals count active rows only — a pending-removed row keeps its position but is no longer
+    // one of "the N variables" its inputs would otherwise be numbered among.
+    let variableOrdinal = 0;
+    let secretOrdinal = 0;
 
     return (
         <section className="panel">
             <div className="panel-head">
                 <h2>{title}</h2>
                 <div className="panel-actions">
-                    {tab === 'variables' ? (
-                        <>
-                            <button type="button" aria-pressed={rawOpen} onClick={() => toggleRaw()} disabled={locked}>
-                                raw
-                            </button>
-                            {!rawOpen ? (
-                                <button
-                                    type="button"
-                                    className="primary"
-                                    onClick={() => addRow(false)}
-                                    disabled={locked}
-                                >
-                                    Add variable
-                                </button>
-                            ) : null}
-                        </>
-                    ) : (
-                        <button type="button" className="primary" onClick={() => addRow(true)} disabled={locked}>
-                            Add secret
-                        </button>
-                    )}
+                    <button type="button" className="primary" onClick={() => void save()} disabled={!canSave}>
+                        {saving ? 'Saving changes…' : 'Save changes'}
+                    </button>
                 </div>
             </div>
             {hint ? <p className="muted">{hint}</p> : null}
-            {error ? <p className="status env-errors">{error}</p> : null}
-            {saved ? <p className="muted">Saved.</p> : null}
+            {scopeMsg ? (
+                <p className="status env-errors" role="alert">
+                    {scopeMsg}
+                </p>
+            ) : null}
+            {saveError ? (
+                <p ref={saveErrorRef} tabIndex={-1} className="status env-errors" role="alert">
+                    {saveError}
+                </p>
+            ) : null}
+            <p className="muted" role="status">
+                {statusText}
+            </p>
 
-            <div className="env-tabs">
-                <button
-                    type="button"
-                    className={tab === 'variables' ? 'env-tab active' : 'env-tab'}
-                    aria-pressed={tab === 'variables'}
-                    onClick={() => setTab('variables')}
-                >
-                    Variables
-                </button>
-                <button
-                    type="button"
-                    className={tab === 'secrets' ? 'env-tab active' : 'env-tab'}
-                    aria-pressed={tab === 'secrets'}
-                    onClick={() => setTab('secrets')}
-                >
-                    Secrets
-                </button>
+            <div role="tablist" aria-label="Environment variable categories" className="env-tabs">
+                {(['variables', 'secrets'] as const).map((key, index) => (
+                    <button
+                        key={key}
+                        type="button"
+                        role="tab"
+                        id={`${uid}-tab-${key}`}
+                        aria-selected={tab === key}
+                        aria-controls={`${uid}-panel-${key}`}
+                        tabIndex={tab === key ? 0 : -1}
+                        className="env-tab"
+                        ref={(el) => {
+                            tabRefs.current[index] = el;
+                        }}
+                        onClick={() => selectTab(key)}
+                        onKeyDown={(event) => onTabKeyDown(index, event)}
+                    >
+                        {key === 'variables'
+                            ? `Variables (${countActive(rows, false)})`
+                            : `Secrets (${countActive(rows, true)})`}
+                    </button>
+                ))}
             </div>
 
-            <div hidden={tab !== 'variables'}>
-                {rawOpen ? (
-                    <div className="env-raw">
+            <div
+                role="tabpanel"
+                id={`${uid}-panel-variables`}
+                aria-labelledby={`${uid}-tab-variables`}
+                hidden={tab !== 'variables'}
+            >
+                <div className="panel-actions">
+                    <button
+                        type="button"
+                        className="primary"
+                        onClick={() => addRow(false)}
+                        disabled={locked}
+                        ref={(el) => {
+                            addRefs.current.variables = el;
+                        }}
+                    >
+                        Add variable
+                    </button>
+                    <button
+                        type="button"
+                        aria-expanded={advancedOpen}
+                        aria-controls={`${uid}-advanced`}
+                        onClick={() => (advancedOpen ? closeAdvanced() : openAdvanced())}
+                        disabled={locked}
+                        ref={(el) => {
+                            advancedToggleRef.current = el;
+                        }}
+                    >
+                        Edit variables as .env
+                    </button>
+                </div>
+                {advancedOpen ? (
+                    <div
+                        className="env-raw"
+                        id={`${uid}-advanced`}
+                        ref={(el) => {
+                            advancedRef.current = el;
+                        }}
+                    >
+                        <p className="env-advanced-note">
+                            This replaces the variable draft for this scope. Secrets are never shown here.
+                        </p>
                         <textarea
-                            aria-label="Raw .env editor"
-                            placeholder={'KEY=value\n# one pair per line; a deleted line deletes the variable'}
-                            value={rawText}
+                            aria-label="Variables in .env format"
+                            placeholder={'NAME=value\n# one pair per line; a deleted line deletes the variable'}
+                            value={advancedText}
                             disabled={locked}
-                            onChange={(e) => {
-                                setSaved(false);
-                                setDirty(true);
-                                setRawText(e.target.value);
-                            }}
+                            onChange={(event) => setAdvancedText(event.target.value)}
                         />
-                    </div>
-                ) : (
-                    <>
-                        {variableRows.length === 0 ? <p className="muted">No variables configured.</p> : null}
-                        {variableRows.length > 0 ? (
-                            <table className="env-vars">
-                                <thead>
-                                    <tr>
-                                        <th scope="col">Name</th>
-                                        <th scope="col">Value</th>
-                                        <th scope="col">
-                                            <span className="visually-hidden">Remove</span>
-                                        </th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {rows.map((row, index) =>
-                                        row.isSecret ? null : (
-                                            <tr key={index}>
-                                                <td>
-                                                    <input
-                                                        aria-label="Variable name"
-                                                        value={row.name}
-                                                        disabled={locked}
-                                                        onChange={(e) => update(index, { name: e.target.value })}
-                                                    />
-                                                </td>
-                                                <td>
-                                                    <input
-                                                        aria-label="Value"
-                                                        type="text"
-                                                        value={row.value ?? ''}
-                                                        disabled={locked}
-                                                        onChange={(e) => update(index, { value: e.target.value })}
-                                                    />
-                                                </td>
-                                                <td>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => removeRow(index)}
-                                                        disabled={locked}
-                                                        aria-label={`Remove ${row.name || 'variable'}`}
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        )
-                                    )}
-                                </tbody>
-                            </table>
+                        <p className="muted">
+                            Strict parser: one NAME=value per line, surrounding quotes stripped, no escapes.
+                        </p>
+                        {advancedErrors.length > 0 ? (
+                            <p className="status env-errors" role="alert">
+                                {advancedErrors.join('\n')}
+                            </p>
                         ) : null}
-                    </>
-                )}
-            </div>
-
-            <div hidden={tab !== 'secrets'}>
-                {secretRows.length === 0 ? <p className="muted">No secrets configured.</p> : null}
-                {secretRows.length > 0 ? (
+                        <div className="panel-actions">
+                            <button type="button" className="primary" onClick={() => applyAdvanced()} disabled={locked}>
+                                Apply .env draft
+                            </button>
+                            <button type="button" onClick={() => closeAdvanced()} disabled={locked}>
+                                Cancel .env changes
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+                {/* The table holds the pending-removal strips too, so it renders while ANY row of
+                    this type exists — removing the last active row must leave its strip and Undo
+                    visible, not an empty scope claiming nothing is configured. */}
+                {!rows.some((row) => !row.isSecret) ? <p className="muted">No variables configured.</p> : null}
+                {rows.some((row) => !row.isSecret) ? (
                     <table className="env-vars">
                         <thead>
                             <tr>
                                 <th scope="col">Name</th>
                                 <th scope="col">Value</th>
-                                <th scope="col">Secret</th>
-                                <th scope="col">
-                                    <span className="visually-hidden">Remove</span>
-                                </th>
+                                <th scope="col">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {rows.map((row, index) =>
-                                row.isSecret ? (
-                                    <tr key={index}>
-                                        <td>
+                            {rows.map((row) => {
+                                if (row.isSecret) return null;
+                                if (row.pendingRemove) {
+                                    return (
+                                        <tr key={row.id}>
+                                            <td colSpan={3}>
+                                                <div className="env-pending">
+                                                    <span>
+                                                        {row.name.trim() || 'Row'} will be removed when you save.
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => undoRemove(row)}
+                                                        disabled={locked}
+                                                        ref={(el) => {
+                                                            undoRefs.current.set(row.id, el);
+                                                        }}
+                                                    >
+                                                        Undo
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                }
+                                variableOrdinal += 1;
+                                const ordinal = variableOrdinal;
+                                const rowErrorList = errors.get(row.id) ?? [];
+                                return (
+                                    <tr key={row.id}>
+                                        <td data-label="Name">
                                             <input
-                                                aria-label="Variable name"
+                                                aria-label={`Variable ${ordinal} name`}
                                                 value={row.name}
                                                 disabled={locked}
-                                                onChange={(e) => update(index, { name: e.target.value })}
+                                                aria-invalid={rowErrorList.length > 0}
+                                                aria-describedby={
+                                                    rowErrorList.length > 0 ? `${row.id}-errors` : undefined
+                                                }
+                                                ref={(el) => {
+                                                    nameRefs.current.set(row.id, el);
+                                                }}
+                                                onChange={(event) => updateRow(row.id, { name: event.target.value })}
                                             />
                                         </td>
-                                        <td>
+                                        <td data-label="Value">
                                             <input
-                                                aria-label="Secret value"
-                                                type="password"
-                                                autoComplete="off"
+                                                aria-label={`Variable ${ordinal} value`}
+                                                type="text"
                                                 value={row.value ?? ''}
-                                                placeholder="set — leave blank to keep"
                                                 disabled={locked}
-                                                onChange={(e) => update(index, { value: e.target.value })}
+                                                aria-invalid={rowErrorList.length > 0}
+                                                aria-describedby={
+                                                    rowErrorList.length > 0 ? `${row.id}-errors` : undefined
+                                                }
+                                                onChange={(event) => updateRow(row.id, { value: event.target.value })}
                                             />
+                                            {rowErrorList.length > 0 ? (
+                                                <p id={`${row.id}-errors`} className="env-errors">
+                                                    {rowErrorList.join(' ')}
+                                                </p>
+                                            ) : null}
                                         </td>
-                                        <td>
-                                            <label>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={row.isSecret}
-                                                    // A stored secret's value was never sent here, so
-                                                    // unchecking would save an empty string over a
-                                                    // credential nobody can see. Re-entering the value
-                                                    // unlocks the flag.
-                                                    disabled={locked || (row.isSecret && row.value === null)}
-                                                    title={
-                                                        row.isSecret && row.value === null
-                                                            ? 'The stored value is hidden; type a new value to change this'
-                                                            : undefined
-                                                    }
-                                                    onChange={(e) => update(index, { isSecret: e.target.checked })}
-                                                />{' '}
-                                                secret
-                                            </label>
-                                        </td>
-                                        <td>
+                                        <td data-label="Actions">
                                             <button
                                                 type="button"
-                                                onClick={() => removeRow(index)}
+                                                onClick={() => removeRow(row)}
                                                 disabled={locked}
-                                                aria-label={`Remove ${row.name || 'secret'}`}
+                                                aria-label={`Remove ${row.name.trim() || 'variable'}`}
                                             >
                                                 ✕
                                             </button>
                                         </td>
                                     </tr>
-                                ) : null
-                            )}
+                                );
+                            })}
                         </tbody>
                     </table>
                 ) : null}
             </div>
 
-            {rawOpen ? (
-                <p className="muted">Raw editor open — the text becomes the draft when you toggle raw off.</p>
-            ) : null}
-            <button type="button" onClick={() => void save()} disabled={locked || rawOpen}>
-                {saving ? 'Saving…' : 'Save'}
-            </button>
+            <div
+                role="tabpanel"
+                id={`${uid}-panel-secrets`}
+                aria-labelledby={`${uid}-tab-secrets`}
+                hidden={tab !== 'secrets'}
+            >
+                <div className="panel-actions">
+                    <button
+                        type="button"
+                        className="primary"
+                        onClick={() => addRow(true)}
+                        disabled={locked}
+                        ref={(el) => {
+                            addRefs.current.secrets = el;
+                        }}
+                    >
+                        Add secret
+                    </button>
+                </div>
+                {!rows.some((row) => row.isSecret) ? <p className="muted">No secrets configured.</p> : null}
+                {rows.some((row) => row.isSecret) ? (
+                    <table className="env-vars">
+                        <thead>
+                            <tr>
+                                <th scope="col">Name</th>
+                                <th scope="col">State / new value</th>
+                                <th scope="col">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows.map((row) => {
+                                if (!row.isSecret) return null;
+                                if (row.pendingRemove) {
+                                    return (
+                                        <tr key={row.id}>
+                                            <td colSpan={3}>
+                                                <div className="env-pending">
+                                                    <span>
+                                                        {row.name.trim() || 'Row'} will be removed when you save.
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => undoRemove(row)}
+                                                        disabled={locked}
+                                                        ref={(el) => {
+                                                            undoRefs.current.set(row.id, el);
+                                                        }}
+                                                    >
+                                                        Undo
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                }
+                                secretOrdinal += 1;
+                                const ordinal = secretOrdinal;
+                                const state = secretState(row);
+                                const rowErrorList = errors.get(row.id) ?? [];
+                                return (
+                                    <tr key={row.id}>
+                                        <td data-label="Name">
+                                            <input
+                                                aria-label={`Secret ${ordinal} name`}
+                                                value={row.name}
+                                                disabled={locked}
+                                                aria-invalid={rowErrorList.length > 0}
+                                                aria-describedby={
+                                                    rowErrorList.length > 0 ? `${row.id}-errors` : undefined
+                                                }
+                                                ref={(el) => {
+                                                    nameRefs.current.set(row.id, el);
+                                                }}
+                                                onChange={(event) => updateRow(row.id, { name: event.target.value })}
+                                            />
+                                        </td>
+                                        <td data-label="State / new value">
+                                            <input
+                                                aria-label={`Secret ${ordinal} new value`}
+                                                type="password"
+                                                autoComplete="off"
+                                                value={row.value ?? ''}
+                                                placeholder="Leave blank to keep the current secret"
+                                                disabled={locked}
+                                                aria-invalid={rowErrorList.length > 0}
+                                                aria-describedby={
+                                                    rowErrorList.length > 0 ? `${row.id}-errors` : undefined
+                                                }
+                                                onChange={(event) => updateRow(row.id, { value: event.target.value })}
+                                            />
+                                            <p className="muted">{SECRET_STATE_LABEL[state]}</p>
+                                            {rowErrorList.length > 0 ? (
+                                                <p id={`${row.id}-errors`} className="env-errors">
+                                                    {rowErrorList.join(' ')}
+                                                </p>
+                                            ) : null}
+                                        </td>
+                                        <td data-label="Actions">
+                                            <button
+                                                type="button"
+                                                onClick={() => removeRow(row)}
+                                                disabled={locked}
+                                                aria-label={`Remove ${row.name.trim() || 'secret'}`}
+                                            >
+                                                ✕
+                                            </button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                ) : null}
+            </div>
+
+            {invalid && !scopeMsg ? <p className="env-errors">Fix the highlighted rows to save.</p> : null}
         </section>
     );
 }

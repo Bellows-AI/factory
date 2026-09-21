@@ -196,12 +196,13 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | Outcome | `task-outcome`, `task-outcome-summary`, `task-outcome-body`, `task-outcome-label` | The task page's summary disclosure: result, execution, verification, published work, services — one `<details>`, expanded by default, whose grid area flips from above the conversation (narrow) to a bounded right column (≥1024px) without a second component |
 | Task head | `task-actions`, `task-layout`, `task-avatar` | The task's action row (now inside the page header), the outcome/conversation grid frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
 | Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
+| Unsaved-changes dialog | `unsaved`, `unsaved-title`, `unsaved-actions` | The settings area's discard confirmation (issue 182), one instance raised by the dirty-draft coordinator before a blocked navigation or a repository switch: the remove dialog's floating shape, Continue editing safe-focused, Discard changes destructive |
 
 ### Environment panel
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Env | `env-tab`, `env-tabs`, `env-raw`, `env-errors` | The Variables/Secrets tab strip and the `.env` raw editor |
+| Env | `env-tab`, `env-tabs`, `env-vars`, `env-pending`, `env-advanced-note`, `env-raw`, `env-errors` | The draft editor (issue 182): a real `tablist` of Variables/Secrets tabs whose selected tab is the `aria-selected` one, the scope's editable table, a pending-removal row that waits with its Undo until the whole-list save, the advanced `.env` disclosure's warning line, the textarea editor, and the row/scope validation lines. At ≤640px an `env-vars` row reflows into labeled groups via each cell's `data-label` |
 
 ### Mobile navigation
 
@@ -246,6 +247,7 @@ Components:
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
 | `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
+| `UnsavedChangesDialog.tsx` | picker (dialog shell), unsaved, chat-resume, chat-remove |
 | `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
 | `WorkflowParameterFields.tsx` | composer-field, composer-fields, composer-label, composer-select, composer-helper, composer-param-error, composer-param-details |
 
@@ -269,6 +271,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
+| `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |
 
 Pages:

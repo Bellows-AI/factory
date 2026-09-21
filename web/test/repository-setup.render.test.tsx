@@ -77,6 +77,7 @@ const list = (overrides: Record<string, unknown> = {}) =>
             configured={null}
             onConfigure={() => {}}
             loadingCheckouts={false}
+            rootNull={false}
             saving={false}
             absent={[]}
             onDeselectAbsent={() => {}}
@@ -272,23 +273,24 @@ describe('RepositorySetupList', () => {
         const html = list({ absent: ['acme/gone'], saving: true });
         expect(html).toMatch(/aria-label="Deselect acme\/gone"[^>]*disabled/);
     });
+
+    it('disables every checkbox when no workspace root exists, though the row stays readable', () => {
+        const html = list({ rootNull: true });
+        expect(html).toMatch(/aria-label="Enable acme\/web in my workspace"[^>]*disabled/);
+        // The name and its facts remain — availability is readable; only the checkout offer is off.
+        expect(html).toContain('acme/web');
+        expect(html).toContain('Ready');
+    });
 });
 
 describe('RepositoryConfigDetail', () => {
     it('renders nothing before a repository is chosen — no empty panel', () => {
-        expect(
-            render(<RepositoryConfigDetail repo={null} checkout="Ready" blockedReason={null} headingRef={undefined} />)
-        ).toBe('');
+        expect(render(<RepositoryConfigDetail repo={null} checkout="Ready" headingRef={undefined} />)).toBe('');
     });
 
     it('heads with the environment, scopes it to the repository, and states impact and precedence', () => {
         const html = render(
-            <RepositoryConfigDetail
-                repo={{ owner: 'acme', name: 'web' }}
-                checkout="Ready"
-                blockedReason={null}
-                headingRef={undefined}
-            />
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" headingRef={undefined} />
         );
         expect(html).toContain('Environment for acme/web');
         expect(html).toContain('Repository · acme/web');
@@ -298,25 +300,18 @@ describe('RepositoryConfigDetail', () => {
 
     it('gives the checkout status as context', () => {
         const html = render(
-            <RepositoryConfigDetail
-                repo={{ owner: 'acme', name: 'web' }}
-                checkout="Cloning"
-                blockedReason={null}
-                headingRef={undefined}
-            />
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Cloning" headingRef={undefined} />
         );
         expect(html).toContain('Cloning');
     });
 
-    it('renders the switch blocker beside the detail, named by its reason', () => {
+    it("carries no switch blocker of its own — the guarded switch is the area dialog's (issue 182)", () => {
+        // The dirty detail guards its switch through the settings area's ONE discard confirmation;
+        // a blocker line here would be a second dialog contract.
         const html = render(
-            <RepositoryConfigDetail
-                repo={{ owner: 'acme', name: 'web' }}
-                checkout="Ready"
-                blockedReason="Repository environment has unsaved changes."
-                headingRef={undefined}
-            />
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" headingRef={undefined} />
         );
-        expect(html).toContain('Repository environment has unsaved changes.');
+        expect(html).not.toContain('unsaved');
+        expect(html).not.toContain('Discard');
     });
 });

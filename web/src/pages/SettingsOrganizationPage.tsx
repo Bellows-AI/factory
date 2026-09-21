@@ -44,6 +44,8 @@ export function SettingsOrganizationPage() {
                     initialVars={env.data.org}
                     onSave={env.saveOrg}
                     disabled={!isAdmin}
+                    draftId="org"
+                    draftLabel="Core (organization)"
                 />
             ) : null}
         </>

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRepos } from '../api/useRepos.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { useGuardedDraft, useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
 import { RepositoryConfigDetail, RepositorySetupList, RepositorySetupSummary } from '../components/RepositorySetup.js';
 import {
     absentSelection,
@@ -17,7 +18,6 @@ import {
 import type { WorkspaceState } from '../components/repository-setup.js';
 import { checkoutCell, checkoutText } from '../components/repository-setup.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
-import { leaveReason } from '../unsaved.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
@@ -28,20 +28,16 @@ import { useSettingsPage } from './SettingsLayout.js';
  * The page owns the whole-selection draft. It seeds once from the workspace poll's answer and
  * re-seeds only while the member has not touched it, so the two-second poll never clobbers a
  * click; the save PUTs the WHOLE selection and adopts the draft as the new baseline on the 202,
- * while a failure keeps both the draft and the last-good statuses. The dirty selection and the
- * dirty configuration detail register against the area's shared unsaved-change registry; the
- * detail's dirty guard is what stops one repository's environment being swapped for another's
- * without a word.
+ * while a failure keeps both the draft and the last-good statuses. The dirty selection registers
+ * with the area's unsaved-change guard (issue 182), so leaving the page with an unsaved draft
+ * meets the one discard confirmation; discarding reseeds the draft from the baseline.
  *
  * Configuration does not require personal checkout enablement: the repository env scope is
  * organization-wide and any member edits it — the server validates installation visibility. The
  * removed role gate here was web-only decoration over that contract.
  */
 export function SettingsRepositoriesPage() {
-    const { workspace, env, unsaved } = useSettingsPage();
-    // The page's guard effects bind to `setGuard` alone — the coordinator object's identity moves
-    // with every guard change, and an effect keyed on it would chase its own writes forever.
-    const { setGuard } = unsaved;
+    const { workspace, env } = useSettingsPage();
     const repos = useRepos(true);
     const [search, setSearch] = useState('');
     const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set());
@@ -50,9 +46,11 @@ export function SettingsRepositoriesPage() {
     const [configured, setConfigured] = useState<string | null>(null);
     const [savedNote, setSavedNote] = useState(false);
     const [failure, setFailure] = useState<string | null>(null);
+    /** The configured editor's dirty flag, mirrored by the panel's onDirtyChange: the switch
+     * question must be asked BEFORE the panel unmounts and its draft dies with it. */
     const [detailDirty, setDetailDirty] = useState(false);
-    const [blockedReason, setBlockedReason] = useState<string | null>(null);
     const headingRef = useRef<HTMLHeadingElement | null>(null);
+    const guard = useUnsavedChanges();
 
     const wsRepos = workspace.data?.repos;
     const seedKey = wsRepos ? wsRepos.map(repoKey).sort().join(',') : null;
@@ -71,20 +69,15 @@ export function SettingsRepositoriesPage() {
 
     const dirty = baseline !== null && isDirty(chosen, baseline);
 
-    useEffect(() => {
-        setGuard('workspace.repos', dirty ? 'Selection changed — save to update your workspace' : null);
-        return () => setGuard('workspace.repos', null);
-    }, [dirty, setGuard]);
+    /** The guard's reset: the draft goes back to the server's last known selection. */
+    const discardSelection = useCallback(() => {
+        if (baseline) setChosen(new Set(baseline));
+        setSavedNote(false);
+        setFailure(null);
+    }, [baseline]);
+    useGuardedDraft({ id: 'workspace.repos', label: 'the repository selection', dirty, discard: discardSelection });
 
-    useEffect(() => {
-        if (!configured) return;
-        const id = `repo-env:${configured}`;
-        if (detailDirty) setGuard(id, 'Repository environment has unsaved changes.');
-        else setGuard(id, null);
-        return () => setGuard(id, null);
-    }, [configured, detailDirty, setGuard]);
-
-    // The narrow-widths handoff:Configure moved the reader to the detail, so the focus follows —
+    // The narrow-widths handoff: Configure moved the reader to the detail, so the focus follows —
     // only where the detail is not already beside the list.
     useEffect(() => {
         if (!configured) return;
@@ -138,16 +131,23 @@ export function SettingsRepositoriesPage() {
         });
     };
 
-    const configure = (key: string) => {
-        if (configured && configured !== key) {
-            const reason = leaveReason(unsaved.guards, `repo-env:${configured}`);
-            if (reason) {
-                setBlockedReason(reason);
-                return;
-            }
+    /**
+     * Configure is a guarded detail switch (issue 182): swapping the editor while its draft is
+     * dirty runs the same discard confirmation the route blocker runs. Continue editing changes
+     * nothing; Discard lets the switch through, and the key-bumped panel starts fresh, which IS
+     * the reset — so the draft it hands the dialog discards nothing itself.
+     */
+    const configure = async (key: string) => {
+        if (configured && configured !== key && detailDirty && guard) {
+            const discardConfirmed = await guard.confirmDiscard({
+                id: `repo:${configured}`,
+                label: configured,
+                dirty: true,
+                discard: () => {},
+            });
+            if (!discardConfirmed) return;
         }
         setConfigured(key);
-        setBlockedReason(null);
         setDetailDirty(false);
     };
 
@@ -210,8 +210,9 @@ export function SettingsRepositoriesPage() {
                         workspaceState={workspaceState}
                         rows={rowsByKey}
                         configured={configured}
-                        onConfigure={configure}
+                        onConfigure={(key) => void configure(key)}
                         loadingCheckouts={loadingCheckouts}
+                        rootNull={rootNull}
                         saving={workspace.saving}
                         absent={absent}
                         onDeselectAbsent={onDeselectAbsent}
@@ -222,7 +223,6 @@ export function SettingsRepositoriesPage() {
                     <RepositoryConfigDetail
                         repo={configured ? { owner: configuredOwner!, name: configuredName! } : null}
                         checkout={configuredCheckout}
-                        blockedReason={blockedReason}
                         headingRef={headingRef}
                     >
                         {configured && configuredOwner !== undefined ? (
@@ -237,11 +237,9 @@ export function SettingsRepositoriesPage() {
                                     onSave={(vars) =>
                                         env.saveRepo({ owner: configuredOwner, name: configuredName! }, vars)
                                     }
-                                    onDirtyChange={(dirtyNow) => {
-                                        setDetailDirty(dirtyNow);
-                                        // A saved or reverted detail releases the switch blocker too.
-                                        if (!dirtyNow) setBlockedReason(null);
-                                    }}
+                                    draftId={`repo:${configured}`}
+                                    draftLabel={configured}
+                                    onDirtyChange={setDetailDirty}
                                 />
                             ) : null
                         ) : null}

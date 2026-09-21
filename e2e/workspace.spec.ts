@@ -12,12 +12,11 @@ import { throughSignIn } from './signin.js';
  *
  * The auth server runs with a real ORG_WORKSPACE_ROOT under artifacts/, so this drives real
  * provisioning: a directory is created on disk by the sign-in callback. It does NOT drive a clone —
- * the server here is the offline entry, with no GitHub App credential, and the stored fallback is
- * scoped to the caller's org (stored-repos.ts) while the seed plants rows only under the local org.
- * This member's installation org holds no repos, so the repositories page pins its explicit empty
- * state and the workspace page its empty-checkout sentence. Populated selection rows, checkout
- * statuses and the configuration detail need a credential to be honest, and stay with the e2e
- * suites of a credentialed run.
+ * the server here is the offline entry, with no GitHub App credential; the stored fallback reports
+ * the seed's one repository (SEED_REPO, scoped to the caller's org) but nothing is selected, so
+ * the repositories page pins its offered-but-disabled nothing-enabled state and the workspace
+ * page its empty-checkout sentence. Cloning, checkout statuses and the dirty-detail switch
+ * dialog need a credential or a second seeded repository, and stay with a credentialed run.
  */
 
 const SHOTS = 'artifacts/ui';
@@ -94,23 +93,50 @@ test('the workspace page links to the repositories page for checkout management'
     await page.screenshot({ path: `${SHOTS}/settings-workspace.png`, fullPage: true });
 });
 
-test('the repositories page carries the selection surface, its empty state named', async ({ page }) => {
+test('the repositories page carries the selection surface, and its draft meets the guard', async ({ page }) => {
     await signedIn(page);
     await page.goto('/settings/repos');
 
     /*
-     * Both sources settle here: the installation reports nothing for this credential-less org
-     * (the stored fallback is scoped to it), and the workspace poll answers with no checkouts.
-     * The zero-list sentence is the honest reading of an org with no rows, not a failure to list
-     * — and only once both answered does the enabled count state its zero.
+     * The seed plants one stored repository for this org (the offline entry's stored fallback)
+     * and the workspace poll answers with no checkouts: one row, offered, nothing enabled — and
+     * only once both answered does the enabled count state its zero.
      */
-    await expect(page.getByText('This GitHub App is not installed on any repositories yet')).toBeVisible({
-        timeout: 60_000,
-    });
-    await expect(page.getByText('0 of 0 repositories enabled')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
+    const checkbox = page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' });
+    await expect(checkbox).toBeVisible();
+    await expect(page.getByText('0 of 1 repositories enabled')).toBeVisible();
     await expect(page.getByLabel('Search repositories')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Save repository selection' })).toBeVisible();
     await expect(page.getByText('Selections are limited to 20 repositories.')).toBeVisible();
+
+    // A toggle makes the whole-selection draft dirty, and leaving meets the area's ONE discard
+    // confirmation (issue 182) — the selection is guarded like every other settings draft.
+    await checkbox.click();
+    await expect(page.getByText('Selection changed — save to update your workspace')).toBeVisible();
+    await page.getByRole('link', { name: 'Dashboard' }).click();
+    await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
+    await expect(page.getByText('Your changes to the repository selection have not been saved.')).toBeVisible();
+
+    // The safe answer unblocks nothing: we are still here, and the draft survived.
+    await page.getByRole('button', { name: 'Continue editing' }).click();
+    await expect(page).toHaveURL(/\/settings\/repos$/);
+    await expect(checkbox).toBeChecked();
+
+    // Discard reverts the draft to the server's answer and resumes the navigation.
+    await page.getByRole('link', { name: 'Dashboard' }).click();
+    await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
+    await page.getByRole('button', { name: 'Discard changes' }).click();
+    await expect(page).toHaveURL(/\/$/);
+
+    await page.goto('/settings/repos');
+    await expect(page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' })).not.toBeChecked();
+
+    // Configuration is independent of personal checkout enablement: the editor mounts behind
+    // Configure with the checkbox still off, and a clean area raises no dialog.
+    await page.getByRole('button', { name: 'Configure' }).click();
+    await expect(page.getByRole('heading', { name: 'Environment for Bellows-AI/bellows.ai' })).toBeVisible();
+    await expect(page.getByText('Repository · Bellows-AI/bellows.ai')).toBeVisible();
+    await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
 
     await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
 });

@@ -124,6 +124,8 @@ export interface RepositorySetupListProps {
     onConfigure: (key: string) => void;
     /** The workspace poll has not answered: no checkbox may state a selection as fact. */
     loadingCheckouts: boolean;
+    /** No workspace root: checkouts cannot run, so no checkbox offers one. */
+    rootNull: boolean;
     saving: boolean;
     /** Selected keys GitHub stopped reporting — deselectable, never silently dropped. */
     absent: readonly string[];
@@ -144,6 +146,7 @@ export function RepositorySetupList({
     configured,
     onConfigure,
     loadingCheckouts,
+    rootNull,
     saving,
     absent,
     onDeselectAbsent,
@@ -207,7 +210,7 @@ export function RepositorySetupList({
                                                     type="checkbox"
                                                     aria-label={`Enable ${key} in my workspace`}
                                                     checked={selected}
-                                                    disabled={saving || (!selected && atCeiling)}
+                                                    disabled={rootNull || saving || (!selected && atCeiling)}
                                                     onChange={() => onToggle(key)}
                                                 />
                                             )}
@@ -277,7 +280,6 @@ export interface RepositoryConfigDetailProps {
     repo: { owner: string; name: string } | null;
     /** The repository's checkout status, as sentence text. */
     checkout: string;
-    blockedReason: string | null;
     /** Focus target for the narrow-widths handoff; the page moves focus, never the component. */
     headingRef?: RefObject<HTMLHeadingElement | null>;
     children?: ReactNode;
@@ -290,13 +292,7 @@ export interface RepositoryConfigDetailProps {
  * its confirmation survive. Configuration does not require personal checkout enablement; the
  * checkout status is context, not a gate.
  */
-export function RepositoryConfigDetail({
-    repo,
-    checkout,
-    blockedReason,
-    headingRef,
-    children,
-}: RepositoryConfigDetailProps) {
+export function RepositoryConfigDetail({ repo, checkout, headingRef, children }: RepositoryConfigDetailProps) {
     if (!repo) return null;
     const key = repoKey(repo);
     return (
@@ -313,7 +309,6 @@ export function RepositoryConfigDetail({
                 scope overrides a broader one.
             </p>
             <p className="muted">Checkout status: {checkout}</p>
-            {blockedReason ? <p className="status">{blockedReason}</p> : null}
             {children}
         </section>
     );
