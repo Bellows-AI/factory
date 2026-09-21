@@ -131,7 +131,7 @@ export async function buildApp({
         // The installation webhook exists exactly when its secret does — its credential IS the
         // HMAC signature, so without one there is nothing to verify and no route may answer.
         if (config.webhookSecret) {
-            await app.register(webhookRoutes({ store: auth, secret: config.webhookSecret }));
+            await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
     }
     await app.register(statsRoutes(config, orgs, auth, now));

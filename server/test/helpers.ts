@@ -19,6 +19,7 @@ import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { WorkflowStore } from '../src/db/workflow-store.js';
+import type { DeliveryOutcome, PrLifecycleStore, WaitState } from '../src/db/pr-lifecycle-store.js';
 import type { CloneStatus, UserRepo, UserRepoStore } from '../src/db/user-repo-store.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -467,6 +468,115 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
     }
 
     return store;
+}
+
+/**
+ * An in-memory PrLifecycleStore for the webhook route tests: it keeps the offline suite a
+ * no-database suite while still exercising the fold/cancel routing and the delivery-GUID dedupe —
+ * the whole of what a webhook does. Bound to the org runtime like the SQL store, seeded with the
+ * waits a test wants the delivery addressed to; the SQL behind it is covered by server/test-db.
+ */
+export interface MemoryPrLifecycleStore extends PrLifecycleStore {
+    seedWait(repo: string, prNumber: number): void;
+    /** The seeded waits that still answer — the asserts the webhook's writes land on. */
+    waits(): { repo: string; prNumber: number; pending: number }[];
+    deliveries(): {
+        deliveryId: string;
+        event: string;
+        action: string;
+        repo: string;
+        prNumber: number;
+        outcome: DeliveryOutcome;
+    }[];
+    cancellations(): { repo: string; prNumber: number; terminalReason: string }[];
+}
+
+export function memoryPrLifecycleStore(): MemoryPrLifecycleStore {
+    interface Wait {
+        repo: string;
+        prNumber: number;
+        pending: number;
+        cancelled: boolean;
+    }
+    interface Delivery {
+        deliveryId: string;
+        event: string;
+        action: string;
+        repo: string;
+        prNumber: number;
+        outcome: DeliveryOutcome;
+    }
+    const waits: Wait[] = [];
+    const deliveries: Delivery[] = [];
+    const cancellations: { repo: string; prNumber: number; terminalReason: string }[] = [];
+    const at = (): string => new Date().toISOString();
+    const openWaits = (repo: string, prNumber: number): Wait[] =>
+        waits.filter((w) => !w.cancelled && w.repo === repo && w.prNumber === prNumber);
+
+    return {
+        seedWait(repo, prNumber) {
+            waits.push({ repo, prNumber, pending: 0, cancelled: false });
+        },
+
+        waits: () => waits.map((w) => ({ repo: w.repo, prNumber: w.prNumber, pending: w.pending })),
+
+        deliveries: () => deliveries.map((d) => ({ ...d })),
+
+        cancellations: () => cancellations.map((c) => ({ ...c })),
+
+        async recordPublication() {
+            throw new Error('memory pr lifecycle: recordPublication is not exercised by route tests');
+        },
+        async publicationOf() {
+            throw new Error('memory pr lifecycle: publicationOf is not exercised by route tests');
+        },
+        async enterWait(input) {
+            if (openWaits(input.repo, input.prNumber).length === 0) {
+                waits.push({ repo: input.repo, prNumber: input.prNumber, pending: 0, cancelled: false });
+            }
+            return {
+                reason: input.reason,
+                repo: input.repo,
+                prNumber: input.prNumber,
+                pending: 0,
+                lastDeliveryId: null,
+                activeAt: at(),
+                completedAt: null,
+                cancelledAt: null,
+                terminalReason: null,
+                lastEventAt: null,
+            };
+        },
+        async finishWait() {
+            throw new Error('memory pr lifecycle: finishWait is not exercised by route tests');
+        },
+        async cancelWait() {
+            throw new Error('memory pr lifecycle: cancelWait is not exercised by route tests');
+        },
+        async cancelWaitsForRoot() {
+            throw new Error('memory pr lifecycle: cancelWaitsForRoot is not exercised by route tests');
+        },
+        async cancelForRepoPr(repo, prNumber, terminalReason = 'pr closed') {
+            const hit = openWaits(repo, prNumber);
+            for (const wait of hit) wait.cancelled = true;
+            cancellations.push({ repo, prNumber, terminalReason });
+            return hit.length;
+        },
+        async recordDelivery(delivery) {
+            if (deliveries.some((d) => d.deliveryId === delivery.deliveryId)) return 'duplicate';
+            const hit = openWaits(delivery.repo, delivery.prNumber);
+            for (const wait of hit) wait.pending += 1;
+            const outcome: DeliveryOutcome = hit.length > 0 ? 'folded' : 'unmatched';
+            deliveries.push({ ...delivery, outcome });
+            return outcome;
+        },
+        async claimReview() {
+            throw new Error('memory pr lifecycle: claimReview is not exercised by route tests');
+        },
+        async waitOf() {
+            throw new Error('memory pr lifecycle: waitOf is not exercised by route tests');
+        },
+    };
 }
 
 export interface MemoryAuthStore extends AuthStore {
@@ -1118,6 +1228,7 @@ export function staticRegistry(
         service?: ReturnType<typeof createStatsService>;
         jobs?: OrgRuntime['jobs'];
         workflows?: OrgRuntime['workflows'];
+        prs?: OrgRuntime['prs'];
         envVars?: OrgRuntime['envVars'];
         userRepos?: OrgRuntime['userRepos'];
         userExecutors?: OrgRuntime['userExecutors'];
@@ -1136,6 +1247,7 @@ export function staticRegistry(
         service: parts.service ?? createStatsService({ config, repos, telemetry }),
         jobs: parts.jobs,
         workflows: parts.workflows,
+        prs: parts.prs,
         envVars: parts.envVars,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
