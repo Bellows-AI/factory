@@ -1,7 +1,7 @@
 import type { Ref } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { runDuration, timestamp } from '../format.js';
-import { isHttpUrl, publicationForRun } from '../task-outcome.js';
+import { isHttpUrl, prNumber, publicationForRun } from '../task-outcome.js';
 
 /**
  * One output well: a clipped log a keyboard user can actually reach. The wrapping section names
@@ -202,16 +202,22 @@ export function TaskRun({
     );
 }
 
-/** One run's publish line: the branch code-styled, the PR linked only when its url is safe. */
+/**
+ * One run's publish line: the branch code-styled, the PR linked only when its url is safe. The
+ * line carries no label of its own, so the link says what it is — `Pull request #<n>`, a
+ * reference, never a CTA verbatim.
+ */
 function Publication({ publish }: { publish: { branch: string; url: string | null } }) {
+    const url = publish.url !== null && isHttpUrl(publish.url) ? publish.url : null;
+    const number = url !== null ? prNumber(url) : null;
     return (
         <p className="run-publish">
             <code>{publish.branch}</code>
-            {publish.url !== null && isHttpUrl(publish.url) ? (
+            {url !== null ? (
                 // A new window, not a navigation over the dashboard, and rel=noopener/noreferrer
                 // so the opened PR cannot reach back into this tab.
-                <a href={publish.url} target="_blank" rel="noopener noreferrer">
-                    Open pull request
+                <a href={url} target="_blank" rel="noopener noreferrer">
+                    {number !== null ? `Pull request #${number}` : 'Pull request'}
                 </a>
             ) : null}
         </p>

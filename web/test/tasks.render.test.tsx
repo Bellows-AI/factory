@@ -12,6 +12,7 @@ import {
     gateCounts,
     issueUrl,
     newestTerminalExit,
+    prNumber,
     publicationForRun,
     threadContextTokens,
     threadCostUsd,
@@ -1303,6 +1304,20 @@ describe('task outcome derivations', () => {
         });
     });
 
+    describe('prNumber', () => {
+        it('reads the number a pull url names', () => {
+            expect(prNumber('https://github.com/o/r/pull/9')).toBe(9);
+            expect(prNumber('https://github.example.com/acme/widgets/pull/177')).toBe(177);
+        });
+
+        it('answers null for a url that names no pull request, or an impossible one', () => {
+            expect(prNumber('https://github.com/o/r/pulls')).toBeNull();
+            expect(prNumber('https://example.com/pr/9')).toBeNull();
+            expect(prNumber('https://github.com/o/r/pull/0')).toBeNull();
+            expect(prNumber('https://github.com/o/r/pull/99999999999999999999')).toBeNull();
+        });
+    });
+
     describe('threadContextTokens', () => {
         it('returns the newest closed turn count, never a sum', () => {
             // A follow-up resumes the same session: the last closed turn's count IS the
@@ -1549,7 +1564,12 @@ describe('TaskOutcome', () => {
             jobs: [job({ output: '[driver] published fix/44 — https://github.com/o/r/pull/9' })],
         });
         expect(linked).toContain('<code>fix/44</code>');
-        expect(linked).toContain('Open pull request');
+        // The link is a reference, not a command: the outcome's labeled row carries just the
+        // number, the run's label-less publication line carries the full name.
+        const outcome = linked.slice(linked.indexOf('task-outcome'), linked.indexOf('task-conversation'));
+        expect(outcome).toContain('>#9</a>');
+        expect(linked).toContain('Pull request #9');
+        expect(linked).not.toContain('Open pull request');
         expect(linked).toContain('rel="noopener noreferrer"');
         expect(linked).not.toContain('PR state');
 
@@ -1560,16 +1580,27 @@ describe('TaskOutcome', () => {
         expect(unsafe).not.toContain('<a href="javascript:');
     });
 
-    it('shows a branch without a url as the branch alone', () => {
-        const html = renderDetail({ jobs: [job({ output: '[driver] published task/20260910' })] });
-        expect(html).toContain('<code>task/20260910</code>');
+    it('links a publish url that names no number as Pull request, never a CTA verbatim', () => {
+        const html = renderDetail({
+            jobs: [job({ output: '[driver] published fix/6 — https://github.com/o/r/compare/main...fix/6' })],
+        });
+        expect(html).toContain('<a href="https://github.com/o/r/compare/main...fix/6"');
+        expect(html).toContain('>Pull request</a>');
+        expect(html).not.toContain('Pull request #');
         expect(html).not.toContain('Open pull request');
     });
 
-    it('links Open issue only when the repository makes the url constructible', () => {
+    it('shows a branch without a url as the branch alone', () => {
+        const html = renderDetail({ jobs: [job({ output: '[driver] published task/20260910' })] });
+        expect(html).toContain('<code>task/20260910</code>');
+        expect(html).not.toContain('Pull request');
+    });
+
+    it('links the issue only when the repository makes the url constructible', () => {
         const linked = renderDetail({ jobs: [job({ repo: 'acme/web', command: 'fix #44 please' })] });
-        expect(linked).toContain('Open issue #44');
+        expect(linked).not.toContain('Open issue');
         expect(linked).toContain('href="https://github.com/acme/web/issues/44"');
+        expect(linked).toContain('>#44</a>');
         const unlinked = renderDetail({ jobs: [job({ command: 'fix #44 please' })] });
         expect(unlinked).not.toContain('Open issue');
         expect(unlinked).toContain('#44');
@@ -1776,6 +1807,9 @@ describe('TaskRun', () => {
         expect(second).toContain('tabindex="-1"');
         expect(second).toContain('run-publish');
         expect(second).toContain('<code>fix/2</code>');
+        // The run's publication line has no label of its own, so the link says what it is.
+        expect(second).toContain('Pull request #2');
+        expect(second).toContain('<a href="https://github.com/o/r/pull/2"');
     });
 
     it('the outcome links View checks in run N only when the newest run has gates', () => {

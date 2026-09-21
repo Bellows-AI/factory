@@ -255,17 +255,46 @@ describe('installations are the membership decision', () => {
 });
 
 describe('the setup callback', () => {
-    it('restarts sign-in after an installation was created, naming it as the org preference', async () => {
+    it('restarts sign-in after an installation was created, naming it and reopening selection', async () => {
         const { app } = await setup();
         const response = await app.inject({
             method: 'GET',
             url: '/api/auth/github/setup?setup_action=install&installation_id=999999',
         });
         expect(response.statusCode).toBe(302);
-        // The id rides along: the sign-in that follows lands the session in the installation
-        // that was JUST created, not whichever GitHub happens to report first.
-        expect(response.headers.location).toBe('/api/auth/github?org=999999');
+        // The id rides along, and an existing stored choice must not hide the installation that
+        // was JUST created. The callback will park on onboarding before materializing anything.
+        expect(response.headers.location).toBe('/api/auth/github?org=999999&reselect=1');
         // The restart is a fresh login entry, which sets its own state cookie when followed.
+    });
+
+    it('shows a newly installed organization to an account with an existing selection', async () => {
+        const { app, identity } = await setup();
+        await signIn(app);
+        identity.installationsAnswer = [
+            { id: ORG, account: 'acme' },
+            { id: '888888', account: 'new-org' },
+        ];
+
+        const installed = await app.inject({
+            method: 'GET',
+            url: '/api/auth/github/setup?setup_action=install&installation_id=888888',
+        });
+        const restarted = await app.inject({ method: 'GET', url: installed.headers.location as string });
+        const state = restarted.cookies.find((cookie) => cookie.name === OAUTH_COOKIE)!.value;
+        const parked = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
+
+        expect(parked.headers.location).toBe('/onboarding');
+        const pending = parked.cookies.find((cookie) => cookie.name === PENDING_COOKIE)!.value;
+        expect((await pendingRoute(app, pending)).json()).toMatchObject({
+            installations: [
+                { id: ORG, account: 'acme' },
+                { id: '888888', account: 'new-org' },
+            ],
+            selected: [ORG],
+            org: '888888',
+            reselect: true,
+        });
     });
 
     it('reports install_cancelled when the person came back without installing', async () => {

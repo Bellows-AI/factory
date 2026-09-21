@@ -66,6 +66,11 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     // The point of gating above App rather than inside it: the panels are never mounted, so no
     // request for data is ever made by somebody who could not read the answer.
     await expect(usageGroups(page)).toHaveCount(0);
+
+    // The appearance preference (issue 188) is on the public surface too, before any session.
+    const appearance = page.getByLabel('Appearance');
+    await expect(appearance).toBeVisible();
+    await expect(appearance.locator('option')).toHaveText(['System', 'Light', 'Dark']);
 });
 
 test('the document itself is served without authentication', async ({ page }) => {
@@ -275,6 +280,14 @@ test('signing out returns to the gate', async ({ page }) => {
     // The old cookie no longer authenticates: /me answers "nobody".
     const me = await page.request.get('/api/auth/me');
     expect(await me.json()).toMatchObject({ authenticated: false });
+
+    // The appearance preference (issue 188) is local, not session state: the choice outlives the
+    // sign-out, on the gate as anywhere.
+    await page.getByLabel('Appearance').selectOption('dark');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.reload();
+    await expect(gate(page)).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 
     // Idempotent: signing out again, or with an already-dead session, is a 204 — never an error.
     const response = await page.request.post('/api/auth/logout');

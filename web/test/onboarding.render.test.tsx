@@ -17,7 +17,19 @@ import {
     type PendingSignInPayload,
     type RepoListing,
 } from '../src/onboarding.js';
+import { ThemeProvider } from '../src/theme.js';
 import { OnboardingPage, StartAgainPanel } from '../src/pages/OnboardingPage.js';
+
+/**
+ * The page carries the appearance control (issue 188) in the public header's actions cell, and
+ * the selector reads the theme context — so every page render rides the provider.
+ */
+const renderPage = (props: { payload?: PendingSignInPayload; listings?: Record<string, RepoListing | 'loading'> }) =>
+    renderToStaticMarkup(
+        <ThemeProvider>
+            <OnboardingPage {...props} />
+        </ThemeProvider>
+    );
 
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
@@ -39,7 +51,7 @@ const checkedRadios = (html: string) => html.match(/type="radio"[^>]*checked=""/
 
 describe('OnboardingPage', () => {
     it('renders the setup decision: brand, context, one h1, purpose, identity, and the orgs', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        const html = renderPage({ payload: pending });
         expect(html).toContain('public-brand');
         expect(html).toContain('Factory');
         expect(html).toContain('Setup · One step');
@@ -56,9 +68,7 @@ describe('OnboardingPage', () => {
     });
 
     it('marks the requested organization and renders the reselect context line', () => {
-        const html = renderToStaticMarkup(
-            <OnboardingPage payload={{ ...pending, selected: ['999999'], reselect: true, org: '999999' }} />
-        );
+        const html = renderPage({ payload: { ...pending, selected: ['999999'], reselect: true, org: '999999' } });
         expect(html).toContain('Requested for this sign-in');
         expect(html).toContain(
             'This replaces which organizations you enter Factory with. Repository modes change only where shown above.'
@@ -68,16 +78,14 @@ describe('OnboardingPage', () => {
     });
 
     it('never emits a placeholder value for an absent display name', () => {
-        const html = renderToStaticMarkup(
-            <OnboardingPage payload={{ ...pending, identity: { ...pending.identity, displayName: null } }} />
-        );
+        const html = renderPage({ payload: { ...pending, identity: { ...pending.identity, displayName: null } } });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
         expect(html).toContain('octocat');
     });
 
     it('renders the loading shell while the pending sign-in is being fetched', () => {
         // No payload and no fetch under react-dom/server: the loading shell is all there is.
-        const html = renderToStaticMarkup(<OnboardingPage />);
+        const html = renderPage({});
         expect(html).toContain('Choose organizations and repositories');
         expect(html).toContain('onboarding-loading');
         // A placeholder enables no action and invents no rows.
@@ -101,7 +109,7 @@ describe('OnboardingPage state recovery (issue 187)', () => {
     });
 
     it('a defensive zero-installation payload explains itself and offers Start again', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={{ ...pending, installations: [], selected: [] }} />);
+        const html = renderPage({ payload: { ...pending, installations: [], selected: [] } });
         expect(html).toContain('No GitHub App installation');
         expect(html).toContain('Start again');
         expect(html).toContain('href="/api/auth/github?returnTo=%2F"');
@@ -111,7 +119,7 @@ describe('OnboardingPage state recovery (issue 187)', () => {
 
 describe('OnboardingPage explicit repository mode (issue 187)', () => {
     it('renders the mode radios with their pinned helpers inside every selected organization', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        const html = renderPage({ payload: pending });
         expect(html).toContain('Repository tracking');
         expect(html).toContain('All current and future repositories');
         expect(html).toContain('Automatically include repositories this GitHub App installation reports later.');
@@ -124,22 +132,20 @@ describe('OnboardingPage explicit repository mode (issue 187)', () => {
     });
 
     it('a deselected organization reveals no mode radios', () => {
-        const html = renderToStaticMarkup(
-            <OnboardingPage payload={{ ...pending, selected: ['999999'], org: '999999' }} />
-        );
+        const html = renderPage({ payload: { ...pending, selected: ['999999'], org: '999999' } });
         expect(checkedRadios(html)).toBe(1);
         expect(html.match(/type="radio"/g)?.length).toBe(2);
     });
 
     it('carries no installation id in the markup and never renders a form', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        const html = renderPage({ payload: pending });
         expect(html).not.toContain('888888');
         expect(html).not.toContain('999999');
         expect(html).not.toContain('<form');
     });
 
     it('renders the access note and the selection summary between the orgs and the action', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        const html = renderPage({ payload: pending });
         // DOM order: access note before summary before the action region.
         const note = html.indexOf('GitHub sign-in provides your identity and organization membership.');
         const summary = html.indexOf('Your selection');
@@ -154,14 +160,14 @@ describe('OnboardingPage explicit repository mode (issue 187)', () => {
     });
 
     it('the zero-organizations state disables Continue with its visible reason', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={{ ...pending, selected: [] }} />);
+        const html = renderPage({ payload: { ...pending, selected: [] } });
         expect(html).toContain('Choose at least one organization to continue.');
         expect(html).toContain('aria-disabled="true"');
         expect(html).toContain('Continue');
     });
 
     it('the ready state enables Continue and the summary names the exact payload', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        const html = renderPage({ payload: pending });
         expect(html).not.toContain('aria-disabled="true"');
         expect(html).toContain('Continue');
     });
@@ -176,7 +182,7 @@ describe('OnboardingPage listings (issue 187)', () => {
             installations: [{ id: '999999', account: 'acme', tracked: ['acme/gone', 'acme/web'] }],
             selected: ['999999'],
         };
-        const html = renderToStaticMarkup(<OnboardingPage payload={stale} listings={{ 999999: LISTING }} />);
+        const html = renderPage({ payload: stale, listings: { 999999: LISTING } });
         expect(html).toContain('acme/web');
         expect(html).toContain('acme/other');
         // The stale stored name has no checkbox anywhere — and no checkbox can carry it.
@@ -196,7 +202,7 @@ describe('OnboardingPage listings (issue 187)', () => {
             installations: [{ id: '999999', account: 'acme', tracked: ['acme/gone'] }],
             selected: ['999999'],
         };
-        const html = renderToStaticMarkup(<OnboardingPage payload={stale} listings={{ 999999: LISTING }} />);
+        const html = renderPage({ payload: stale, listings: { 999999: LISTING } });
         expect(html).not.toContain('acme/gone');
         expect(html).toContain('Select at least one repository, switch to all repositories, or deselect');
         expect(html).toContain('aria-disabled="true"');
@@ -204,19 +210,17 @@ describe('OnboardingPage listings (issue 187)', () => {
 
     it('an unavailable listing never renders an empty checklist, in either mode', () => {
         const NONE: RepoListing = { repos: [], source: 'none' };
-        const html = renderToStaticMarkup(
-            <OnboardingPage
-                payload={{
-                    ...pending,
-                    installations: [
-                        { id: '888888', account: 'other-org', tracked: null },
-                        { id: '999999', account: 'acme', tracked: ['acme/web'] },
-                    ],
-                    selected: ['888888', '999999'],
-                }}
-                listings={{ 888888: NONE, 999999: NONE }}
-            />
-        );
+        const html = renderPage({
+            payload: {
+                ...pending,
+                installations: [
+                    { id: '888888', account: 'other-org', tracked: null },
+                    { id: '999999', account: 'acme', tracked: ['acme/web'] },
+                ],
+                selected: ['888888', '999999'],
+            },
+            listings: { 888888: NONE, 999999: NONE },
+        });
         expect(html).toContain(
             'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
         );
@@ -250,7 +254,7 @@ describe('seeding from a stored narrowing (#135 review)', () => {
     });
 
     it('renders a listed stored name checked, a listed unstored name unchecked, and no unlisted name', () => {
-        const html = renderToStaticMarkup(<OnboardingPage payload={stale} listings={{ 999999: LISTING }} />);
+        const html = renderPage({ payload: stale, listings: { 999999: LISTING } });
         expect(html).toContain('acme/web');
         expect(html).toContain('acme/other');
         // The stale stored name has no checkbox anywhere — and no checkbox can carry it.

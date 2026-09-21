@@ -18,6 +18,7 @@ import {
 } from '../onboarding.js';
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
+import { ThemeSelector } from '../components/ThemeSelector.js';
 
 /**
  * The expired-pending state: the one recovery is restarting the OAuth round trip. Rendered
@@ -253,7 +254,10 @@ export function OnboardingPage({
 
     const page = (children: ReactNode) => (
         <>
-            <PublicPageHeader context="Setup · One step" />
+            {/* The appearance control (issue 188) rides the header's actions cell on every branch
+                of this page — expired, loading, and full — so the preference is reachable
+                throughout. This is the placement the shared header was built to hold. */}
+            <PublicPageHeader context="Setup · One step" actions={<ThemeSelector />} />
             <main className="onboarding">
                 <h1>Choose organizations and repositories</h1>
                 <p className="onboarding-purpose">

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
 import { PublicPageHeader } from './PublicPageHeader.js';
+import { ThemeSelector } from './ThemeSelector.js';
 
 /** What the callback redirects back with when it could not sign somebody in. */
 const REASONS: Record<string, string> = {
@@ -40,9 +41,10 @@ export function LoginGate({ children }: { children: ReactNode }) {
 
     return (
         <>
-            {/* The same compact chrome onboarding carries: one public product, two public pages
-                (issue 187). The actions cell stays empty here — the theme control lands in it later. */}
-            <PublicPageHeader />
+            {/* The shared public header (issue 187), with the appearance control (issue 188) in
+                its actions cell — the placement the interim header row held before this
+                absorbed it. */}
+            <PublicPageHeader actions={<ThemeSelector />} />
             <main className="login-gate">
                 <h1>Factory Stats</h1>
                 {error ? (
