@@ -1378,7 +1378,16 @@ describe('publishing the produced work', () => {
         ]);
         const result = await runner(request).publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(posted.map((call) => (call.body as { metadata?: { name?: string } }).metadata?.name)).toEqual(
             [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => publishStepJobName(ISSUE_JOB, n))
@@ -1500,6 +1509,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'the checkout has not been cloned yet',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
@@ -1531,6 +1543,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'no uncommitted changes and nothing unpushed',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(
             calls.filter(
@@ -1560,7 +1575,16 @@ describe('publishing the produced work', () => {
         ]);
         const result = await runner(request).publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(3);
     });
 

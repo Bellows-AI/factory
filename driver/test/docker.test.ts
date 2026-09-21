@@ -3735,7 +3735,16 @@ describe('publishing the produced work', () => {
         });
         const result = await runner.publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         expect(shapesOf(calls)).toEqual([
             'probe',
             'switch',
@@ -3785,7 +3794,16 @@ describe('publishing the produced work', () => {
         );
         const result = await runner.publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         // On a task branch already: no switch, no commit (clean tree), push of the unpushed
         // commit, PR found and reused — and no summarizer step, which only a NEW PR gets.
         expect(shapesOf(calls)).toEqual(['probe', 'push', 'pr-view']);
@@ -3799,6 +3817,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'no uncommitted changes and nothing unpushed',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(clean.calls).toHaveLength(1);
 
@@ -3809,6 +3830,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'the checkout has not been cloned yet',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(uncloned.calls).toHaveLength(1);
     });
@@ -3856,7 +3880,16 @@ describe('publishing the produced work', () => {
         });
         const result = await runner.publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
         expect(create?.[create.indexOf('--title') + 1]).toBe(
             '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)'

@@ -21,7 +21,19 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
 });
 
 interface BoardStub extends Board {
-    completed: { id: string; status: string; exitCode: number | null; output: string }[];
+    completed: {
+        id: string;
+        status: string;
+        exitCode: number | null;
+        output: string;
+        publication?: {
+            repo: string;
+            prNumber: number;
+            prUrl: string;
+            headBranch: string;
+            baseBranch: string;
+        } | null;
+    }[];
     sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
@@ -182,7 +194,18 @@ function stubRunner(
         async publishGit(publishedJob: BoardJob, publishToken?: string) {
             runner.published.push(publishedJob);
             runner.publishTokens.push(publishToken);
-            return publish ?? { ok: true, published: false, branch: null, prUrl: null, reason: null };
+            return (
+                publish ?? {
+                    ok: true,
+                    published: false,
+                    branch: null,
+                    prUrl: null,
+                    reason: null,
+                    repository: null,
+                    baseBranch: null,
+                    prNumber: null,
+                }
+            );
         },
         async syncCheckout(syncedJob: BoardJob) {
             runner.synced.push(syncedJob);
@@ -478,6 +501,9 @@ describe('the poll loop', () => {
             branch: 'fix/10',
             prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
             reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
         });
 
         await drive({ ...board, runner });
@@ -487,6 +513,36 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain(
             '[driver] published fix/10 — https://github.com/Bellows-AI/factory/pull/42'
         );
+        // The structured identity of the publication rides the verdict — the board records what
+        // a thread shipped, and review traffic and the thread's wait key on it.
+        expect(board.board.completed[0]?.publication).toEqual({
+            repo: 'Bellows-AI/factory',
+            prNumber: 42,
+            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+            headBranch: 'fix/10',
+            baseBranch: 'main',
+        });
+    });
+
+    // A no-op publish — clean tree, nothing unpushed — invents no publication: the board must
+    // not record a thread as having shipped a PR it did not.
+    it('reports no publication when the publish is a no-op', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok(), null, null, {
+            ok: true,
+            published: false,
+            branch: null,
+            prUrl: null,
+            reason: 'no uncommitted changes and nothing unpushed',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(board.board.completed[0]?.publication).toBeUndefined();
     });
 
     it('fails the verdict when the publish does not land', async () => {
@@ -519,6 +575,9 @@ describe('the poll loop', () => {
             branch: 'fix/10',
             prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
             reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
         });
 
         await drive({ ...board, runner });
