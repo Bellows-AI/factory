@@ -183,7 +183,6 @@ describe('the stylesheet', () => {
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
 
-<<<<<<< HEAD
     it('keeps every font size at or above the 12px floor (#189)', () => {
         // Decision-bearing text never renders under 12px; buttons, inputs and tabs carry 14px
         // through `font: inherit`. The chart tick is the one documented exception: the
