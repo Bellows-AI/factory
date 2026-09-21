@@ -502,15 +502,10 @@ describe('the review collection script', () => {
     });
 
     it('collapses the whole verdict to the bounded shell when the payload outgrows the byte cap', async () => {
-        const general = Array.from({ length: 60 }, (_, i) => ({
-            id: 500 + i,
-            user: { login: 'bulk' },
-            body: 'z'.repeat(BODY_MAX),
-            created_at: '2026-09-03T10:00:00Z',
-        }));
-        // Per-comment bodies are already capped at BODY_MAX, so the section cap alone can never
-        // outgrow the byte cap — the bulk has to ride the thread comments: 60 threads x 10 kept
-        // comments each is ~1.3 MiB, far past TOTAL_OUTPUT_BYTES with every section still capped.
+        // Multi-byte bodies pin the BYTE metric: 600 kept thread comments x 240 CJK chars each is
+        // ~222 KiB of UTF-16 length but ~503 KiB of bytes — under TOTAL_OUTPUT_BYTES by length,
+        // over it by bytes, so only the Buffer.byteLength check (vs the old string .length one)
+        // collapses the verdict. A general key present would mean the bound did not trigger.
         const threads = Array.from({ length: 60 }, (_, i) => ({
             id: `T_bulk${i}`,
             isResolved: false,
@@ -522,13 +517,13 @@ describe('the review collection script', () => {
                     id: `C${i}_${j}`,
                     databaseId: 700 + i * 20 + j,
                     author: { login: 'bulk' },
-                    body: 'z'.repeat(BODY_MAX),
+                    body: '\u6c49'.repeat(240),
                     createdAt: '2026-09-03T10:00:00Z',
                 })),
             },
         }));
         const file = writeFixture({
-            general,
+            general: [],
             reviews: [],
             inline: [],
             requested: { users: [], teams: [] },
@@ -615,6 +610,19 @@ describe('the review reply script', () => {
         expect(args[2]!.slice(0, 2)).toEqual(['api', 'graphql']);
         expect(args[2]!.join(' ')).toContain('resolveReviewThread');
         expect(args[2]!.at(-1)).toBe('threadId=T_a');
+    });
+
+    it('refuses a malformed target even when one before it is valid, without executing anything', async () => {
+        const plan = replyPlan([
+            replyTarget({ id: '401', kind: 'general', reply: 'added a test' }),
+            replyTarget({ id: '112', kind: 'inline' }),
+        ]);
+        const { stdout, args } = await runScript('review-reply.cjs', { ...base, REPLY_PLAN: plan });
+        expect(JSON.parse(stdout.trim())).toMatchObject({
+            ok: false,
+            error: expect.stringContaining('no reply body'),
+        });
+        expect(args).toEqual([]);
     });
 
     it('treats an already-resolved thread as an idempotent no-op, never re-resolving', async () => {
