@@ -17,6 +17,7 @@ const PAGES: ReadonlyArray<[string, string]> = [
     ['/', 'page-dashboard'],
     ['/tasks', 'page-inbox'],
     ['/tasks/new', 'page-composer'],
+    ['/settings', 'page-settings-overview'],
     ['/settings/workspace', 'page-settings-workspace'],
     ['/settings/repos', 'page-settings-repos'],
     ['/settings/executors', 'page-settings-executors'],
@@ -25,7 +26,7 @@ const PAGES: ReadonlyArray<[string, string]> = [
 ];
 
 /** The routes the overflow matrix walks. */
-const OVERFLOW_ROUTES = ['/', '/tasks', '/settings/workspace', '/account'] as const;
+const OVERFLOW_ROUTES = ['/', '/tasks', '/settings', '/settings/workspace', '/account'] as const;
 
 async function someTaskId(page: Page): Promise<string> {
     // Any thread root: the detail route is the same view whatever the id.

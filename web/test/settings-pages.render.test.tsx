@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -10,7 +12,7 @@ import { SettingsRepositoriesPage } from '../src/pages/SettingsRepositoriesPage.
 import { SettingsWorkspacePage } from '../src/pages/SettingsWorkspacePage.js';
 
 /**
- * The four pages of the settings tree, rendered through a real route tree so the layout's outlet
+ * The pages of the settings tree, rendered through a real route tree so the layout's outlet
  * context exists. Under `renderToStaticMarkup` effects never fire, so hooks normally sit in their
  * initial (loading) state — which the first tests pin. The harness also takes OVERRIDES for the
  * published context, which is how the failure postures get reached: a page whose poll already
@@ -20,6 +22,10 @@ import { SettingsWorkspacePage } from '../src/pages/SettingsWorkspacePage.js';
 
 /** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
+
+/** Source inspection, the `window.confirm` idiom: some contracts are about the file, not the render. */
+const sourceOf = (name: string): string =>
+    readFileSync(fileURLToPath(new URL(`../src/pages/${name}`, import.meta.url)), 'utf8');
 
 const session: Session = {
     authenticated: true,
@@ -98,14 +104,47 @@ const render = (
 };
 
 describe('Settings organization page', () => {
-    it('renders the stub, and holds the core editor back until the environment arrives', () => {
+    it('renders identity and scope context, and holds the core editor back until the environment arrives', () => {
+        // The stub is gone (issue 180): the page answers "who am I and what is this scope" before
+        // any editor. The editor still mounts only on data: its draft is seeded from initialVars
+        // in a state initializer, so an early mount would freeze empty rows over the stored ones.
         const html = render('/settings/organization');
-        expect(html).toContain('Organization settings are not built yet.');
+        expect(html).toContain('Bellows AI');
+        expect(html).toContain('Your role');
+        expect(html).toContain('Admin');
+        expect(html).not.toContain('bellows');
+        expect(html).toContain('Any member can edit.');
         expect(html).toContain('Loading environment…');
-        // The editor mounts only on data: its draft is seeded from initialVars in a state
-        // initializer, so an early mount would freeze empty rows over the stored ones.
         expect(html).not.toContain('No variables configured.');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('leaves the editor enabled for a member — the server route is the authorization', () => {
+        // `PUT /api/env/org` accepts any member of the installation (routes.env.test.ts), so a
+        // disabled browser control was never authorization — it was a false claim about the API.
+        const html = render('/settings/organization', {
+            session: { ...session, role: 'member' },
+            env: {
+                loading: false,
+                data: {
+                    org: [{ name: 'SHARED', value: '1', isSecret: false, updatedAt: '2026-01-01T00:00:00Z' }],
+                    workspace: [],
+                    repos: [],
+                },
+            },
+        });
+        // No INPUT is disabled for a member — the row's name and value stay editable. (The Save
+        // button itself may render disabled while the draft is clean, which is issue 182's
+        // save-state rule, not a role gate.)
+        expect(html.match(/<input [^>]*disabled/g) ?? []).toHaveLength(0);
+        expect(html).not.toContain('shown here read-only');
+    });
+
+    it('carries no client-only admin gate in its source', () => {
+        for (const page of ['SettingsOrganizationPage.tsx', 'SettingsRepositoriesPage.tsx']) {
+            const source = sourceOf(page);
+            expect(source, page).not.toContain('isAdmin');
+        }
     });
 
     it('renders no editor after a failed environment read — the error is the whole story', () => {
@@ -125,6 +164,17 @@ describe('Settings workspace page', () => {
         const html = render('/settings/workspace');
         expect(html).toContain('Loading your workspace…');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('states the workspace scope before its editor', () => {
+        // The workspace poll must have settled for the page to reach its env section at all —
+        // the loading posture early-returns with the header and the status line only.
+        const html = render('/settings/workspace', {
+            workspace: { loading: false, data: { root: '/workspaces', repos: [], orphaned: [], executors: [] } },
+        });
+        expect(html).toContain('My workspace');
+        expect(html).toContain('Applies only to tasks the current member starts.');
+        expect(html).toContain('Edited only by that member.');
     });
 
     it('offers no picker after a failed workspace read — unavailable data is not an empty selection', () => {
@@ -165,6 +215,16 @@ describe('Settings repositories page', () => {
         expect(html).toContain('Choose a repository…');
         expect(html).not.toContain('No variables configured.');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('keeps no role-conditional sentence — scope context replaces the read-only claim', () => {
+        // The old page told members the editor was read-only; the server route never was
+        // (routes.env.test.ts accepts a member). The scope block now renders with the editor,
+        // once a repository is chosen — a static render has none chosen, but the old sentence
+        // must be gone either way.
+        const html = render('/settings/repos', { session: { ...session, role: 'member' } });
+        expect(html).not.toContain('shown here read-only');
+        expect(html).not.toContain('An admin configures repository environment');
     });
 
     it('renders no repository editor after a failed environment read', () => {

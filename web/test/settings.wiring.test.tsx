@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createMemoryRouter, Outlet, RouterProvider } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -74,6 +76,27 @@ describe('settings area wiring', () => {
         expect(seen.workspace as UseWorkspace | undefined).toBeTruthy();
     });
 
+    it('keeps the layout the one owner of both configuration polls', () => {
+        // Exactly one useWorkspace() and one useEnv() call: a second instance would double the
+        // request rate and fork the pages' view of the data.
+        const source = readFileSync(fileURLToPath(new URL('../src/pages/SettingsLayout.tsx', import.meta.url)), 'utf8');
+        expect(source.match(/useWorkspace\(/g) ?? []).toHaveLength(1);
+        expect(source.match(/useEnv\(/g) ?? []).toHaveLength(1);
+    });
+
+    it('starts no repository or executor-config request from the overview (#180)', () => {
+        // The overview derives everything from the polls the layout already owns: repository
+        // facts come from the workspace payload, and the executor-config read carries
+        // credentials — it belongs to the dialog that opens with it, never to a page render.
+        const source = readFileSync(
+            fileURLToPath(new URL('../src/pages/SettingsOverviewPage.tsx', import.meta.url)),
+            'utf8'
+        );
+        expect(source).not.toContain('useRepos');
+        expect(source).not.toContain('listExecutorConfigs');
+        expect(source).not.toContain('fetch(');
+    });
+
     it('publishes the unsaved-change guard beside the polls, with both of its verbs', () => {
         // The guard is the layout's own context, deliberately NOT on the outlet context: the
         // polls keep the shape they always had (issue 182). The layout must be mounted inside a
@@ -89,7 +112,7 @@ describe('settings area wiring', () => {
 describe('the route table', () => {
     it('builds the routes the data router serves, settings tree intact', () => {
         // The conversion to route objects (issue 182) must not move an address: the settings tree
-        // keeps its four sections and its workspace redirect, the shell layout route stays
+        // keeps its four sections and its overview index (#180), the shell layout route stays
         // pathless above everything, the detail route survives, and the catch-all stands.
         const paths = (routes: typeof appRoutes, prefix = ''): string[] =>
             routes.flatMap((route) => {
@@ -108,8 +131,8 @@ describe('the route table', () => {
         expect(all).toContain('tasks/:id');
         expect(all).toContain('account');
         expect(all).toContain('*');
-        // The settings index is a redirect, not a page of its own. The settings route sits under
-        // the pathless shell layout, so the search walks the whole tree.
+        // The settings index is the configuration overview (issue 180). The settings route sits
+        // under the pathless shell layout, so the search walks the whole tree.
         const findRoute = (routes: typeof appRoutes, path: string): (typeof appRoutes)[number] | undefined => {
             for (const route of routes) {
                 if (route.path === path) return route;
