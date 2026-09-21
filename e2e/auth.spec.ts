@@ -125,9 +125,16 @@ test('the screen explains itself, its identity, and the default choice (issue 18
         page.getByText('GitHub sign-in provides your identity and organization membership.')
     ).toBeVisible();
 
-    // The summary names every selected organization and its mode before the action — and the
-    // default arrives all current and future repositories, the stored or first-sign-in choice.
+    // Whatever a previous test stored arrives pre-checked; normalize to every reported
+    // installation selected, so what this test confirms is what this test chose — every stored
+    // narrowing here is null, so every org stands at all current and future repositories.
     const reported = await pendingReport(page);
+    const orgs = screen(page).locator('.onboarding-org');
+    for (const install of reported) {
+        await orgs.filter({ hasText: install.account }).getByRole('checkbox').check();
+    }
+
+    // The summary names every selected organization and its mode before the action.
     const summary = page.locator('.onboarding-summary');
     await expect(summary).toBeVisible();
     await expect(summary.getByText(`${reported.length} organizations selected`)).toBeVisible();
@@ -173,6 +180,9 @@ test('an unavailable repository listing says so and keeps the choice completable
     await screen(page).waitFor({ timeout: 60_000 });
     const reported = await pendingReport(page);
     const first = screen(page).locator('.onboarding-org').filter({ hasText: reported[0]!.account });
+    // Whatever a previous test stored arrives pre-checked; this test decides: the first
+    // reported org, selected, its disclosure opened.
+    await first.getByRole('checkbox').check();
 
     await first.locator('summary').click();
     await expect(
