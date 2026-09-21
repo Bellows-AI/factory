@@ -40,20 +40,24 @@ if (env.GH_HTTP_STATUS) {
 
 const fixtures = JSON.parse(fs.readFileSync(env.GH_FIXTURES, 'utf8'));
 const joined = argv.join(' ');
-const emit = (key) => {
-    process.stdout.write(JSON.stringify(fixtures[key]));
-    process.exit(0);
-};
 
-if (joined.includes('graphql')) {
-    const query = argv.find((a) => a.startsWith('query=')) ?? '';
-    if (query.includes('resolveReviewThread')) emit('resolve');
-    emit('threads');
+let key = null;
+const query = argv.find((a) => a.startsWith('query=')) ?? '';
+if (joined.includes('graphql')) key = query.includes('resolveReviewThread') ? 'resolve' : 'threads';
+if (joined.includes('requested_reviewers')) key = 'requested';
+if (/issues\/\d+\/comments/.test(joined)) key = 'general';
+if (/\/reviews(\s|$)/.test(joined)) key = 'reviews';
+if (/comments\/\d+\/replies/.test(joined)) key = 'reply';
+if (/pulls\/\d+\/comments(\s|$)/.test(joined)) key = 'inline';
+
+if (key === null) {
+    process.stderr.write(`gh: no fixture for ${joined}\n`);
+    process.exit(127);
 }
-if (joined.includes('requested_reviewers')) emit('requested');
-if (/issues\/\d+\/comments/.test(joined)) emit('general');
-if (/\/reviews(\s|$)/.test(joined)) emit('reviews');
-if (/comments\/\d+\/replies/.test(joined)) emit('reply');
-if (/pulls\/\d+\/comments(\s|$)/.test(joined)) emit('inline');
-process.stderr.write(`gh: no fixture for ${joined}\n`);
-process.exit(127);
+
+const data = JSON.stringify(fixtures[key]);
+const done = () => process.exit(0);
+// A large payload (~300 KiB in the boundedness runs) outgrows the 64 KiB pipe buffer, so an
+// eager exit truncates it — wait for the drain instead.
+if (process.stdout.write(data)) done();
+else process.stdout.once('drain', done);

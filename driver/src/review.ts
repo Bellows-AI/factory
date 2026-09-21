@@ -226,7 +226,14 @@ function asThread(v: unknown): ReviewThread {
         line: num(o.line),
         comments: arr(o.comments)
             .map(asThreadComment)
-            .sort((a, b) => (a.databaseId ?? 0) - (b.databaseId ?? 0)),
+            .sort((a, b) => {
+                // Mirror the collection script's sortComment: null databaseIds sink last, so the
+                // planner's comments[0] anchor is exactly the script's oldest real comment.
+                if (a.databaseId === null && b.databaseId === null) return a.id.localeCompare(b.id);
+                if (a.databaseId === null) return 1;
+                if (b.databaseId === null) return -1;
+                return a.databaseId - b.databaseId || a.id.localeCompare(b.id);
+            }),
     };
 }
 

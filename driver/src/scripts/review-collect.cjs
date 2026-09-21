@@ -256,7 +256,7 @@ function collect() {
     };
 
     let serialized = JSON.stringify(out);
-    if (serialized.length > TOTAL_OUTPUT_BYTES) {
+    if (Buffer.byteLength(serialized, 'utf8') > TOTAL_OUTPUT_BYTES) {
         serialized = JSON.stringify({
             version: VERSION,
             schema: SCHEMA,

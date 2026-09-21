@@ -36,6 +36,7 @@ import {
     PLAN_TARGETS_MAX,
     REVIEWS_LIMIT,
     THREADS_LIMIT,
+    THREAD_COMMENTS_LIMIT,
     TOTAL_OUTPUT_BYTES,
     TRUNCATED_MARKER,
     reviewCollectScript,
@@ -176,6 +177,7 @@ describe('the container scripts', () => {
             ['INLINE_LIMIT', INLINE_LIMIT],
             ['REVIEWS_LIMIT', REVIEWS_LIMIT],
             ['THREADS_LIMIT', THREADS_LIMIT],
+            ['THREAD_COMMENTS_LIMIT', THREAD_COMMENTS_LIMIT],
             ['TOTAL_OUTPUT_BYTES', TOTAL_OUTPUT_BYTES],
         ];
         const replyOnly: Array<[string, unknown]> = [
@@ -197,6 +199,11 @@ describe('the container scripts', () => {
             check(reply, name, value, 'reply');
         }
         expect(collect['TOTAL_OUTPUT_BYTES']).toBe('256 * 1024');
+        // The GraphQL thread pagination is untyped in the scripts: the collect script interpolates
+        // the constant into its query, the reply script writes the resolved number; pin both to
+        // THREADS_LIMIT (the collect file text is 'first: ${THREADS_LIMIT}', not the number).
+        expect(readFileSync(pathOf('review-collect.cjs'), 'utf8')).toContain(`first: \${THREADS_LIMIT}`);
+        expect(readFileSync(pathOf('review-reply.cjs'), 'utf8')).toContain(`first: ${THREADS_LIMIT}`);
     });
 
     // The credential helper runs exactly as git spawns it (gitcredentials(7)): a `!`-prefixed

@@ -16,6 +16,7 @@ import {
     REPLY_BODY_MAX,
     REVIEWS_LIMIT,
     THREADS_LIMIT,
+    THREAD_COMMENTS_LIMIT,
     TOTAL_OUTPUT_BYTES,
     TRUNCATED_MARKER,
     buildReviewReply,
@@ -225,6 +226,15 @@ const runScript = async (
 
 const collectRef = { owner: 'octo', repo: 'factory', number: 7 };
 
+/** A disposable extra gh fixture for the boundedness runs that outgrow the canned one. */
+const writeFixture = (body: Record<string, unknown>): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'review-fixture-'));
+    tempDirs.add(dir);
+    const file = join(dir, 'responses.json');
+    writeFileSync(file, JSON.stringify(body));
+    return file;
+};
+
 describe('the review collection script', () => {
     const body114 = String(GH_RESPONSES.inline[2]?.body ?? '');
     const hunk114 = String(GH_RESPONSES.inline[2]?.diff_hunk ?? '');
@@ -377,11 +387,6 @@ describe('the review collection script', () => {
         expect(args[4]!.join(' ')).toContain('isResolved');
     });
 
-    it('emits the duplicate comment once', () => {
-        const verdict = expectedVerdict();
-        expect(verdict.general.map((c) => c.id)).toEqual([401, 402]);
-    });
-
     it('is byte-stable for the same upstream state', async () => {
         const first = (await runScript('review-collect.cjs', { REPO: 'octo/factory', PR: '7' })).stdout;
         const second = (await runScript('review-collect.cjs', { REPO: 'octo/factory', PR: '7' })).stdout;
@@ -428,6 +433,124 @@ describe('the review collection script', () => {
         const { stdout, stderr, args } = await runScript('review-collect.cjs', { REPO: 'octo/factory', PR: '7' });
         const everything = [stdout, stderr, ...args.flat()].join('\n');
         expect(everything).not.toContain(TEST_TOKEN);
+    });
+
+    it('caps a section at its limit and reports the truncation', async () => {
+        const general = Array.from({ length: 60 }, (_, i) => ({
+            id: 500 + i,
+            user: { login: 'bulk' },
+            body: 'short',
+            created_at: '2026-09-03T10:00:00Z',
+        }));
+        const file = writeFixture({
+            general,
+            reviews: [],
+            inline: [],
+            requested: { users: [], teams: [] },
+            threads: { data: { repository: { pullRequest: null } } },
+        });
+        const { stdout } = await runScript('review-collect.cjs', { REPO: 'octo/factory', PR: '7', GH_FIXTURES: file });
+        const verdict = JSON.parse(stdout.trim()) as ReviewCollection;
+        expect(verdict.general).toHaveLength(GENERAL_LIMIT);
+        expect(verdict.general.map((c) => c.id)).toEqual(Array.from({ length: 50 }, (_, i) => 500 + i));
+        expect(verdict.truncated.sections).toContain('general');
+        expect(verdict.truncated.total).toBe(false);
+    });
+
+    it('caps a thread at its comment limit and reports the truncation', async () => {
+        const comments = Array.from({ length: 12 }, (_, i) => ({
+            id: `C${i}`,
+            databaseId: 600 + i,
+            author: { login: 'bulk' },
+            body: 'short',
+            createdAt: '2026-09-03T10:00:00Z',
+        }));
+        const file = writeFixture({
+            general: [],
+            reviews: [],
+            inline: [],
+            requested: { users: [], teams: [] },
+            threads: {
+                data: {
+                    repository: {
+                        pullRequest: {
+                            reviewDecision: 'REVIEW_REQUIRED',
+                            reviewThreads: {
+                                nodes: [
+                                    {
+                                        id: 'T_big',
+                                        isResolved: false,
+                                        isOutdated: false,
+                                        path: 'src/a.ts',
+                                        line: 1,
+                                        comments: { nodes: comments },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const { stdout } = await runScript('review-collect.cjs', { REPO: 'octo/factory', PR: '7', GH_FIXTURES: file });
+        const verdict = JSON.parse(stdout.trim()) as ReviewCollection;
+        expect(verdict.threads).toHaveLength(1);
+        expect(verdict.threads[0]!.comments).toHaveLength(THREAD_COMMENTS_LIMIT);
+        expect(verdict.threads[0]!.comments[0]!.databaseId).toBe(600);
+        expect(verdict.truncated.sections).toContain('thread-comments');
+        expect(verdict.truncated.threads).toBe(1);
+    });
+
+    it('collapses the whole verdict to the bounded shell when the payload outgrows the byte cap', async () => {
+        const general = Array.from({ length: 60 }, (_, i) => ({
+            id: 500 + i,
+            user: { login: 'bulk' },
+            body: 'z'.repeat(BODY_MAX),
+            created_at: '2026-09-03T10:00:00Z',
+        }));
+        // Per-comment bodies are already capped at BODY_MAX, so the section cap alone can never
+        // outgrow the byte cap — the bulk has to ride the thread comments: 60 threads x 10 kept
+        // comments each is ~1.3 MiB, far past TOTAL_OUTPUT_BYTES with every section still capped.
+        const threads = Array.from({ length: 60 }, (_, i) => ({
+            id: `T_bulk${i}`,
+            isResolved: false,
+            isOutdated: false,
+            path: 'src/a.ts',
+            line: 1,
+            comments: {
+                nodes: Array.from({ length: 20 }, (_, j) => ({
+                    id: `C${i}_${j}`,
+                    databaseId: 700 + i * 20 + j,
+                    author: { login: 'bulk' },
+                    body: 'z'.repeat(BODY_MAX),
+                    createdAt: '2026-09-03T10:00:00Z',
+                })),
+            },
+        }));
+        const file = writeFixture({
+            general,
+            reviews: [],
+            inline: [],
+            requested: { users: [], teams: [] },
+            threads: {
+                data: {
+                    repository: {
+                        pullRequest: { reviewDecision: 'REVIEW_REQUIRED', reviewThreads: { nodes: threads } },
+                    },
+                },
+            },
+        });
+        const { stdout, args } = await runScript('review-collect.cjs', {
+            REPO: 'octo/factory',
+            PR: '7',
+            GH_FIXTURES: file,
+        });
+        const verdict = JSON.parse(stdout.trim()) as ReviewCollection;
+        expect('general' in verdict).toBe(false);
+        expect(verdict.truncated.total).toBe(true);
+        expect(verdict.error).toBeNull();
+        expect(verdict.ref).toEqual(collectRef);
+        expect(args).toHaveLength(5);
     });
 });
 
@@ -503,6 +626,24 @@ describe('the review reply script', () => {
         expect(args).toHaveLength(1);
         expect(args[0]!.join(' ')).toContain('reviewThreads');
         expect(args[0]!.join(' ')).not.toContain('resolveReviewThread');
+    });
+
+    it('refuses a resolve plan whose preflight cannot see thread state, before any mutation', async () => {
+        const plan = replyPlan([
+            replyTarget({ id: 'T_a', kind: 'general', reply: 'hi' }),
+            replyTarget({ id: 'T_a', kind: 'resolve', resolve: true }),
+        ]);
+        const { stdout, args } = await runScript('review-reply.cjs', {
+            ...base,
+            REPLY_PLAN: plan,
+            GH_HTTP_STATUS: '401',
+        });
+        expect(JSON.parse(stdout.trim())).toMatchObject({
+            ok: false,
+            error: expect.stringContaining('HTTP 401'),
+        });
+        expect(args).toHaveLength(1);
+        expect(args[0]!.join(' ')).toContain('reviewThreads');
     });
 
     it('treats a deleted comment as an idempotent no-op, not a failure', async () => {
