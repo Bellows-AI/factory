@@ -168,6 +168,44 @@ test.describe('date range selector', () => {
         expect(problems.join('\n')).toBe('');
     });
 
+    test('the custom range popover stays inside the viewport and restores its trigger on a narrow phone', async ({
+        page,
+    }) => {
+        await open(page);
+        await page.setViewportSize({ width: 360, height: 844 });
+
+        // The popover anchors left of its trigger with no flip logic; a trigger sitting in the
+        // wrapped toolbar's right half would push the dates off-screen — the containment the
+        // closeout audit (issue 190) demands of every floating surface.
+        const custom = page.getByRole('button', { name: 'Custom', exact: true });
+        await custom.click();
+        const popover = page.locator('.range-popover');
+        await expect(popover).toBeVisible();
+        const box = (await popover.boundingBox())!;
+        expect(box.x, 'range popover left edge').toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, 'range popover right edge').toBeLessThanOrEqual(361);
+        await page.screenshot({ path: `${SHOTS}/matrix/dashboard_range-popover-open_dark_360.png` });
+
+        await page.keyboard.press('Escape');
+        await expect(popover).toHaveCount(0);
+        await expect(custom, 'escape hands focus back to the Custom trigger').toBeFocused();
+    });
+
+    test('the chart tooltip stays inside the viewport when a bucket is focused', async ({ page }) => {
+        await open(page);
+
+        // The last bucket of the all-time chart: the readout clamps inside the SVG, but the SVG
+        // rides the chart wrap's horizontal scroll — focusing the far end must still leave the
+        // tooltip inside what the reader can see.
+        const bucket = page.locator('.bucket-hit').last();
+        await bucket.focus();
+        const tooltip = page.locator('.chart-tooltip').last();
+        await expect(tooltip).toBeVisible();
+        const box = (await tooltip.boundingBox())!;
+        expect(box.x, 'chart tooltip left edge').toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, 'chart tooltip right edge').toBeLessThanOrEqual(1441);
+    });
+
     test('a range with almost no data renders empty or ready, never broken', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
@@ -189,7 +227,7 @@ test.describe('date range selector', () => {
 
     test('the page carries no pull-request vocabulary', async ({ page }) => {
         await open(page);
-        const text = (await page.locator('main').innerText()) + (await page.locator('header').innerText());
+        const text = (await page.locator('main').innerText()) + (await page.locator('.appbar').innerText());
         expect(text).not.toMatch(/pull requests?/i);
         expect(text).not.toMatch(/revert rate/i);
         expect(text).not.toMatch(/merged into/i);
@@ -201,15 +239,17 @@ test.describe('date range selector', () => {
         const problems = watchConsole(page);
         await open(page);
 
-        // The month preset spans 30 days: day buckets, and the blurb says so.
+        // The month preset spans 30 days: day buckets, and the caption says so.
         await selectPreset(page, '30 days', 'month');
-        await expect(page.getByText('tokens per day')).toBeVisible();
+        await expect(page.getByText('Input and output tokens by day')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/daily-month.png`, fullPage: true });
 
-        // All-time spans the seeded half-year: the weekly fallback, named as such.
+        // All-time spans the seeded half-year: the weekly fallback, named as such — in the
+        // caption, and by the calculation disclosure once it is opened.
         await selectPreset(page, 'All time', 'all');
-        await expect(page.getByText('per ISO week')).toBeVisible();
-        await expect(page.getByText('too long for daily bars')).toBeVisible();
+        await expect(page.getByText('Input and output tokens by ISO week')).toBeVisible();
+        await page.locator('section.panel', { hasText: 'AI token usage' }).locator('.chart-disclosure summary').click();
+        await expect(page.getByText('longer windows render ISO weeks')).toBeVisible();
 
         // The per-task panel: one table now, every row labeled with its kind, each figure under
         // its Average/Median/P95 header with its measured count beside it.
