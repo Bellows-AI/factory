@@ -291,7 +291,7 @@ Pages:
 | --- | --- |
 | `AccountPage.tsx` | page-header, panel |
 | `DashboardPage.tsx` | page-header, dashboard-controls |
-| `OnboardingPage.tsx` | onboarding, public-header, status, muted, avatar |
+| `OnboardingPage.tsx` | onboarding, public-header, status, muted, avatar, login-button, primary |
 | `SettingsExecutorsPage.tsx` | page-header, panel, status, muted |
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |

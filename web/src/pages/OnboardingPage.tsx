@@ -184,21 +184,39 @@ export function OnboardingPage({
                     // body carried at least one name that no longer exists, and re-posting it
                     // verbatim would loop forever. Re-fetch what this submission relied on, let
                     // `withListing` re-narrow each choice to the fresh names, and point the
-                    // person at the first reconciled organization.
+                    // person at the first reconciled organization — there, not at the action
+                    // region: the refocused row is the thing that needs reviewing.
                     let firstReconciled: string | null = null;
+                    let expiredDuringReconcile = false;
                     for (const orgId of Object.keys(body.repos)) {
                         const fresh = await fetch(`/api/auth/github/pending/installations/${orgId}/repos`)
-                            .then((r) => (r.ok ? (r.json() as Promise<RepoListing>) : null))
+                            .then((r) => {
+                                // An expired pending row is the expiry, not a listing failure —
+                                // the recovery is the same Start-again panel as everywhere else,
+                                // so the rest of the reconcile would be doomed requests.
+                                if (r.status === 401) {
+                                    expiredDuringReconcile = true;
+                                    setExpired(true);
+                                    return null;
+                                }
+                                return r.ok ? (r.json() as Promise<RepoListing>) : null;
+                            })
                             .catch(() => null);
-                        if (!fresh) continue;
+                        if (!fresh) {
+                            if (expiredDuringReconcile) break;
+                            continue;
+                        }
                         setDrafts((prev) => new Map(prev).set(orgId, withListing(prev.get(orgId)!, fresh)));
                         firstReconciled ??= orgId;
                     }
+                    if (expiredDuringReconcile) return;
                     setError(
                         'The repositories of an organization changed while you were choosing. The lists were refreshed — review your selection and try again.'
                     );
                     focusOrg(firstReconciled);
-                } else if (problem?.code === 'REPOS_UNAVAILABLE') {
+                    return;
+                }
+                if (problem?.code === 'REPOS_UNAVAILABLE') {
                     setError(
                         'The repositories of one of the chosen organizations could not be listed, so its narrowing was refused. Try again.'
                     );

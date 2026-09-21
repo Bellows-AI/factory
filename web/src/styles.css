@@ -1493,16 +1493,14 @@
     }
 
     /* The action region: global error, disabled reason, and Continue — the last thing on the
-       page in both reading and focus order. */
+       page in both reading and focus order. It is a programmatic focus target after a refused
+       submission, so it keeps the browser's focus ring: keyboard users must see where focus
+       was placed. */
     .onboarding-actions {
         display: flex;
         flex-direction: column;
         align-items: flex-start;
         gap: 8px;
-    }
-
-    .onboarding-actions:focus-visible {
-        outline: none;
     }
 
     .onboarding-actions button {
