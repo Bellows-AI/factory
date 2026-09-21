@@ -65,8 +65,9 @@ export type ListingState =
     | { kind: 'unavailable' }
     | { kind: 'failed' };
 
-/** One organization's in-memory draft: mode, specific-mode choice, listing state, and whether
- * the person actively widened to all (the only move that posts an empty list). */
+/** One organization's in-memory draft: mode, specific-mode choice, listing state, whether the
+ * person actively widened to all (the only move that posts an empty list), and whether the
+ * specific choice is still waiting for the listing that will seed it. */
 export interface OrgDraft {
     /** The stored narrowing as the payload reported it — raw, so the draft can show what would change. */
     readonly tracked: string[] | null;
@@ -74,6 +75,13 @@ export interface OrgDraft {
     readonly chosen: ReadonlySet<string>;
     readonly listing: ListingState;
     readonly widenedToAll: boolean;
+    /**
+     * True while a specific choice has never been derived from a listing — a stored narrowing
+     * nobody has reviewed, or a mode switch made before the listing resolved. The listing's
+     * arrival seeds the standing set; a checkbox touch makes the choice the person's own, and
+     * from then on a listing only narrows it.
+     */
+    readonly seeding: boolean;
 }
 
 /**
@@ -96,6 +104,7 @@ export const initialDrafts = (
             chosen: new Set(installation.tracked ?? []),
             listing: { kind: 'idle' },
             widenedToAll: false,
+            seeding: installation.tracked !== null,
         };
         const seam = listings?.[installation.id];
         if (seam === 'loading') draft = { ...draft, listing: { kind: 'loading' } };
@@ -108,19 +117,21 @@ export const initialDrafts = (
 /**
  * A listing landing on a draft. A `source: 'none'` answer is not an empty list — it is no
  * readable list at all, so the draft goes to `unavailable` with its choice preserved (a stored
- * specific selection survives, not reviewable, never widened). A ready list intersects a
- * specific choice with the live names — a stored name the listing cannot render neither
- * displays nor rides into the POST — while all mode has no choice to intersect and simply
- * carries the names for the checklist ahead.
+ * specific selection survives, not reviewable, never widened). A ready list seeds a still-
+ * seeding specific choice from its standing set — the same place a mode switch after the
+ * listing would have started from — and otherwise intersects the choice with the live names,
+ * so a stored or checked name the listing cannot render neither displays nor rides into the
+ * POST. All mode has no choice to seed and simply carries the names for the checklist ahead.
  */
-export const withListing = (draft: OrgDraft, listing: RepoListing): OrgDraft =>
-    listing.source === 'none'
-        ? { ...draft, listing: { kind: 'unavailable' } }
-        : {
-              ...draft,
-              listing: { kind: 'ready', repos: listing.repos },
-              chosen: draft.mode === 'specific' ? reconciled(draft.chosen, listing) : new Set<string>(),
-          };
+export const withListing = (draft: OrgDraft, listing: RepoListing): OrgDraft => {
+    if (listing.source === 'none') return { ...draft, listing: { kind: 'unavailable' } };
+    if (draft.mode !== 'specific')
+        return { ...draft, listing: { kind: 'ready', repos: listing.repos }, chosen: new Set<string>() };
+    const chosen = draft.seeding
+        ? standingRepos(draft.tracked, { repos: listing.repos, source: 'app' })
+        : reconciled(draft.chosen, listing);
+    return { ...draft, listing: { kind: 'ready', repos: listing.repos }, chosen, seeding: false };
+};
 
 /** A refused or dead listing fetch: the draft stands untouched, the row offers a local Retry. */
 export const withFailedListing = (draft: OrgDraft): OrgDraft => ({ ...draft, listing: { kind: 'failed' } });
@@ -129,26 +140,27 @@ export const withFailedListing = (draft: OrgDraft): OrgDraft => ({ ...draft, lis
  * An explicit mode choice. Choosing all is the widening move — it posts an empty list, which
  * clears any stored narrowing. Choosing specific seeds the choice from the org's standing
  * set (its stored narrowing intersected with a ready listing) so the checklist opens showing
- * what the org already tracks; with no readable listing it seeds the raw stored narrowing,
- * preserved but not reviewable.
+ * what the org already tracks; with no readable listing it holds the raw stored narrowing and
+ * stays `seeding` — the listing's arrival will seed it the same way a later switch would have.
  */
 export const withMode = (draft: OrgDraft, mode: RepoMode): OrgDraft => {
     if (mode === draft.mode) return draft;
-    if (mode === 'all') return { ...draft, mode, chosen: new Set<string>(), widenedToAll: true };
+    if (mode === 'all') return { ...draft, mode, chosen: new Set<string>(), widenedToAll: true, seeding: false };
     const listing = draft.listing;
     const chosen =
         listing.kind === 'ready'
             ? standingRepos(draft.tracked, { repos: listing.repos, source: 'app' })
             : new Set(draft.tracked ?? []);
-    return { ...draft, mode, chosen, widenedToAll: false };
+    return { ...draft, mode, chosen, widenedToAll: false, seeding: listing.kind !== 'ready' };
 };
 
-/** One repository checkbox in specific mode: toggle a name in the draft's choice. */
+/** One repository checkbox in specific mode: toggle a name in the draft's choice. A touch makes
+ * the choice the person's own — a later listing narrows it, never reseeds it. */
 export const withChosen = (draft: OrgDraft, repo: string): OrgDraft => {
     const chosen = new Set(draft.chosen);
     if (chosen.has(repo)) chosen.delete(repo);
     else chosen.add(repo);
-    return { ...draft, chosen };
+    return { ...draft, chosen, seeding: false };
 };
 
 /** Re-narrow an already-touched choice to a listing's live names — the UNKNOWN_REPO recovery. */

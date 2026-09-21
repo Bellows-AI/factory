@@ -365,6 +365,20 @@ describe('explicit repository mode (issue 187)', () => {
         ).toEqual(['acme/web']);
     });
 
+    it('a specific choice made before the listing resolves seeds the standing set when it lands', () => {
+        // The radios are visible while the listing is in flight. Choosing specific then must land
+        // in the same place as choosing it after — the standing set — not in an empty checklist
+        // that reads as "track nothing" (#197 review).
+        const early = withMode(one({ id: '999999', account: 'acme', tracked: null }), 'specific');
+        expect(early.chosen.size).toBe(0);
+        const landed = withListing(early, LISTING);
+        expect(landed.mode).toBe('specific');
+        expect(landed.chosen).toEqual(new Set(['acme/web', 'acme/other']));
+        // A touch makes the choice the person's own: a later listing narrows it, never reseeds it.
+        const touched = withChosen(early, 'acme/web');
+        expect(withListing(touched, LISTING).chosen).toEqual(new Set(['acme/web']));
+    });
+
     it('an unavailable listing preserves a stored specific selection and never widens it', () => {
         const draft = one({ id: '999999', account: 'acme', tracked: ['acme/web'] }, { repos: [], source: 'none' });
         expect(draft.mode).toBe('specific');

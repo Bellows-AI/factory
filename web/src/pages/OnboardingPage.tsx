@@ -279,7 +279,15 @@ export function OnboardingPage({
                     <p className="status" role="alert">
                         Could not load setup. Try again.
                     </p>
-                    <button type="button" onClick={() => setReload((n) => n + 1)}>
+                    {/* Clearing the failure here is what lets the placeholders back in while
+                        the retry runs — otherwise the panel cannot change until the answer lands. */}
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setLoadFailed(false);
+                            setReload((n) => n + 1);
+                        }}
+                    >
                         Retry
                     </button>
                 </>
