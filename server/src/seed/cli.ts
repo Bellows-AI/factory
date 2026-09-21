@@ -78,8 +78,16 @@ const sql = postgres(config.databaseUrl, { max: 4 });
 try {
     // Seeding is an AUTH_MODE=none affair: one local organization, no GitHub anything. The
     // browser check's github-mode board signs in against the stub IdP and materializes its own
-    // installation org, so nothing to plant here for it either (#99).
+    // installation org, so nothing to plant here for it either (#99) — unless SEED_ORGS names
+    // those orgs: the auth-project server then needs one stored session_branch row per stub
+    // org so the stored fallback (stored-repos.ts, org-scoped) offers the seeded repository to
+    // the signed-in member. Only the branch side channel is planted — no metric points and no
+    // jobs — so those orgs' dashboards still truthfully read empty.
     console.log(`[seed] organization ${LOCAL_ORG_ID} (local)`);
+    const seedOrgs = (process.env.SEED_ORGS ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => /^[\w-]+$/.test(id));
     await migrate(sql, {
         localUser: true,
         attempts: 5,
@@ -117,6 +125,16 @@ try {
         }));
         await sql`insert into metric_point ${sql(rows)} on conflict do nothing`;
     }
+
+    for (const org of seedOrgs) {
+        await sql`
+            insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
+            values (${org}, 'claude-code', ${`seed-${org}`}, ${repo}, 'main', null,
+                    ${new Date(now.getTime() - 86_400_000)}, ${now}, 1)
+            on conflict (org_id, agent, session_id, repo, branch) do nothing
+        `;
+    }
+    if (seedOrgs.length > 0) console.log(`[seed] stored repos for orgs: ${seedOrgs.join(', ')}`);
 
     // Board rows: the synthetic members and the job threads that attribute a subset of the
     // sessions to them. This is the half that makes the attribution join, the per-task panel

@@ -155,14 +155,14 @@ export function RangeSelector({
 
     return (
         <div className="toolbar-group">
-            <span className="toolbar-label" id="range-label">
-                Range
-            </span>
+            <span className="toolbar-label">Range</span>
             <div className="range-picker">
+                {/* aria-label, not aria-labelledby: the RadioGroup's own label context overrides
+                    a labelledby that points outside it, and the name never reached the DOM. */}
                 <RadioGroup
                     value={range.preset}
                     onChange={(preset) => onChange({ ...range, preset })}
-                    aria-labelledby="range-label"
+                    aria-label="Range"
                     className="range-presets"
                 >
                     {PRESET_LABELS.map(({ preset, label }) => (

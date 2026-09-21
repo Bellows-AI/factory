@@ -292,6 +292,16 @@ describe('TaskComposer', () => {
         expect(html).toContain('Select repositories in');
         expect(html).toContain('href="/settings/repositories"');
         expect(html).toContain('to run against a codebase');
+        // aria-label, not aria-labelledby: the ListboxButton's label context overrides a
+        // labelledby that points outside it, so each select carries its name directly (issue 190).
+        // The workflow select renders only once a workflows list exists, so this render carries one.
+        const withWorkflows = renderComposer({
+            repos: [],
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
+        });
+        expect(withWorkflows).toContain('aria-label="Repository"');
+        expect(withWorkflows).toContain('aria-label="Executor"');
+        expect(withWorkflows).toContain('aria-label="Reusable workflow"');
     });
 
     it('asks what the agent should do, and shows the example without prefilling it', () => {

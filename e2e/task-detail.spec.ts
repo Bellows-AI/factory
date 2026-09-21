@@ -266,6 +266,39 @@ test.describe('the task detail actions', () => {
         expect(real.join('\n')).toBe('');
     });
 
+    test('the remove dialog contains itself and restores its trigger at a narrow phone width', async ({
+        page,
+    }) => {
+        const taskId = await seededTaskId(page);
+        await page.setViewportSize({ width: 360, height: 844 });
+        await page.goto(`/tasks/${taskId}`);
+
+        const trigger = header(page).getByRole('button', { name: 'More task actions' });
+        await trigger.click();
+        await page.getByRole('menuitem', { name: 'Remove task' }).click();
+
+        // The floating dialog must fit the phone viewport whole — clipped actions are the
+        // failure the closeout audit (issue 190) is about — and the page behind it must not
+        // grow a second scrollbar because a modal opened.
+        const dialog = page.locator('.task-remove');
+        await expect(dialog).toBeVisible();
+        const box = (await dialog.boundingBox())!;
+        expect(box.x, 'dialog left edge').toBeGreaterThanOrEqual(0);
+        expect(box.y, 'dialog top edge').toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, 'dialog right edge').toBeLessThanOrEqual(361);
+        expect(box.y + box.height, 'dialog bottom edge').toBeLessThanOrEqual(845);
+        await page.screenshot({ path: `${SHOTS}/matrix/task-detail_remove-dialog-open_dark_360.png` });
+
+        const overflow = await page.evaluate(
+            () => document.body.scrollWidth - document.body.clientWidth
+        );
+        expect(overflow, 'page overflows while the dialog is open').toBeLessThanOrEqual(0);
+
+        await page.keyboard.press('Escape');
+        await expect(dialog).toBeHidden();
+        await expect(trigger).toBeFocused();
+    });
+
     test('no page-level horizontal overflow at any target width', async ({ page }) => {
         const problems = watchConsole(page);
         const detail = `/tasks/${await seededTaskId(page)}`;

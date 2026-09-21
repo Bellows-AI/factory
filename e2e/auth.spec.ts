@@ -19,6 +19,10 @@ import { finishSignIn, throughSignIn } from './signin.js';
  */
 
 const usageGroups = (page: Page) => page.locator('.usage-summary .usage-group');
+/** The analytics anchor: the metric summary when the selection has data, the one empty state
+    when it has none — which is every fresh github-mode member, since the seed plants under the
+    local org only (issue 166). The auth board's "the dashboard answered" is this anchor. */
+const analyticsAnchor = (page: Page) => page.locator('.usage-summary, .usage-empty').first();
 const gate = (page: Page) => page.locator('.login-gate');
 const signIn = (page: Page) => page.getByRole('link', { name: 'Sign in with GitHub' });
 const screen = (page: Page) => page.locator('.onboarding');
@@ -54,7 +58,7 @@ const trackOnlyFirst = async (page: Page): Promise<ReportedInstallation[]> => {
     await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
     await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
     return reported;
 };
 
@@ -71,6 +75,33 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     const appearance = page.getByLabel('Appearance');
     await expect(appearance).toBeVisible();
     await expect(appearance.locator('option')).toHaveText(['System', 'Light', 'Dark']);
+});
+
+test('the gate holds a narrow phone inside the viewport, in both palettes (issue 190)', async ({
+    page,
+}) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+
+    await expect(gate(page)).toBeVisible();
+    await expect(signIn(page)).toBeVisible();
+    const overflow = await page.evaluate(
+        () => document.body.scrollWidth - document.body.clientWidth
+    );
+    expect(overflow, 'the gate overflows horizontally at 390px').toBeLessThanOrEqual(0);
+    // Dark is SET, not assumed: the appearance bootstrap (#188) maps a missing attribute to the
+    // live OS palette, which headless cannot be trusted to prefer.
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/signin-gate_default_dark_390.png',
+        animations: 'disabled',
+    });
+
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/signin-gate_default_light_390.png',
+        animations: 'disabled',
+    });
 });
 
 test('the document itself is served without authentication', async ({ page }) => {
@@ -99,12 +130,33 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     }
     await page.screenshot({ path: 'artifacts/ui/onboarding.png', fullPage: true });
 
+    // The same screen at phone width, both palettes: the closeout's onboarding captures. The
+    // column must reflow to one column and never widen the body (issue 190).
+    const overflow = () =>
+        page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await overflow(), 'onboarding overflows at 390px').toBeLessThanOrEqual(0);
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/onboarding_default_dark_390.png',
+        fullPage: true,
+        animations: 'disabled',
+    });
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/onboarding_default_light_390.png',
+        fullPage: true,
+        animations: 'disabled',
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+
     // Deselect the second reported installation and confirm: the session lands, and only the
     // still-checked org was materialized — the choice, nothing else from the report.
     const kept = reported[0]!;
     await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 
     const me = await page.request.get('/api/auth/me');
     const body = (await me.json()) as {
@@ -151,7 +203,7 @@ test('the screen explains itself, its identity, and the default choice (issue 18
 
     // Confirming the default still completes: the choice lands, the dashboard is reached.
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('a choice of nothing refuses Continue and says what is missing (issue 187)', async ({ page }) => {
@@ -174,7 +226,7 @@ test('a choice of nothing refuses Continue and says what is missing (issue 187)'
     await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
     await expect(cont).not.toHaveAttribute('aria-disabled', 'true');
     await cont.click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('an unavailable repository listing says so and keeps the choice completable (issue 187)', async ({ page }) => {
@@ -200,7 +252,7 @@ test('an unavailable repository listing says so and keeps the choice completable
 
     // All mode stands: the submission posts the org without a repos key and completes.
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('the next sign-in reuses the stored choice without the screen (issue 125)', async ({ page }) => {
@@ -214,7 +266,7 @@ test('the next sign-in reuses the stored choice without the screen (issue 125)',
 
     // Straight through: the stored choice from the sign-in above is the choice, so no screen.
     await signIn(page).click();
-    await usageGroups(page).first().waitFor({ timeout: 60_000 });
+    await analyticsAnchor(page).waitFor({ timeout: 60_000 });
     await expect(screen(page)).toHaveCount(0);
 });
 

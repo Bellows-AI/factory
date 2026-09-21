@@ -21,8 +21,6 @@ import { throughSignIn } from './signin.js';
 
 const SHOTS = 'artifacts/ui';
 
-const usageGroups = (page: Page) => page.locator('.usage-summary .usage-group');
-
 async function signedIn(page: Page) {
     // The shared helper: through the selection screen on the run's first sign-in, straight in
     // after it (the stored choice is the choice).
@@ -43,12 +41,14 @@ test('the left nav is there and moves between sections', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Configuration overview' })).toBeVisible();
     await nav.getByRole('link', { name: 'Workspace' }).click();
     await expect(page).toHaveURL(/\/settings\/workspace$/);
-    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Repositories' })).toBeVisible();
 
     await nav.getByRole('link', { name: 'Dashboard' }).click();
     await expect(page).toHaveURL(/\/$/);
-    await expect(usageGroups(page)).toHaveCount(4);
+    // The analytics anchor, not a group count: this member's org holds no seeded rows, so the
+    // dashboard truthfully answers with the one empty state rather than four figures.
+    await expect(page.locator('.usage-summary, .usage-empty').first()).toBeVisible();
 });
 
 test('reloading /settings/workspace directly serves the app rather than a 404', async ({ page }) => {
@@ -65,8 +65,9 @@ test('reloading /settings/workspace directly serves the app rather than a 404', 
     const response = await page.goto('/settings/workspace');
     expect(response?.status()).toBe(200);
     // The 200 + shell is the deep-link contract; the heading proves the route resolved to the
-    // workspace section and not the catch-all.
-    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    // workspace section and not the catch-all. exact: the section's own h2 ("My workspace")
+    // would otherwise match alongside the page h1 (issue 190).
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(page.locator('.sidenav')).toBeVisible();
 });
 
@@ -156,7 +157,8 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
 
     await page.getByRole('button', { name: 'Add executor' }).click();
     const dialog = page.locator('[role="dialog"][aria-labelledby="executor-title"]');
-    await expect(dialog).toBeVisible();
+    const dialogPanel = dialog.locator('.picker');
+    await expect(dialogPanel).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
 
     // The Type note says what the field does NOT do — choosing a type describes the config, it
@@ -190,7 +192,7 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
 
     await dialog.getByPlaceholder('main').fill('main');
     await dialog.getByRole('button', { name: 'Add executor' }).click();
-    await expect(dialog).toBeHidden();
+    await expect(dialog).toHaveCount(0);
 
     // Focus went back to the trigger the dialog opened from — the Dialog restores it on close,
     // and the next keystroke must land where the member left it.
@@ -206,10 +208,10 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     // Editing is its own round trip: the save action reads "Save executor", and focus lands back
     // on the row's Edit button, not wherever the DOM happens to leave it.
     await panel.getByRole('button', { name: 'Edit' }).click();
-    await expect(dialog).toBeVisible();
+    await expect(dialogPanel).toBeVisible();
     await dialog.locator('textarea').fill('{ "model": "opus" }');
     await dialog.getByRole('button', { name: 'Save executor' }).click();
-    await expect(dialog).toBeHidden();
+    await expect(dialog).toHaveCount(0);
     await expect(panel.getByRole('button', { name: 'Edit' })).toBeFocused();
 
     await page.screenshot({ path: `${SHOTS}/settings-executors.png`, fullPage: true });
@@ -227,7 +229,7 @@ test('the workspace section renders nothing malformed', async ({ page }) => {
 
     await signedIn(page);
     await page.goto('/settings/workspace');
-    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
 
     const text = (await page.locator('main').innerText()) || '';
     for (const token of ['NaN', 'undefined', 'Infinity', '[object Object]']) {

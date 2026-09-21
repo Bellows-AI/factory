@@ -154,6 +154,10 @@ export default defineConfig({
                 // keeps work. The open board above deliberately has none, which is what keeps a
                 // picker from ever appearing in the visual check.
                 ORG_WORKSPACE_ROOT: `${root}artifacts/e2e-workspaces`,
+                // The seed's stored-repo rows land under these orgs (same ids the stub IdP
+                // reports as installations), so the repositories page's org-scoped stored
+                // fallback offers the seeded repository to the signed-in member.
+                SEED_ORGS: '999999,888888',
             },
             timeout: 180_000,
             reuseExistingServer: false,

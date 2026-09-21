@@ -61,10 +61,11 @@ test.describe('the guided task composer', () => {
         await issue.fill('not an issue reference');
         await issue.blur();
 
-        // The refusal names the field and the way out, and never the regex source: the raw rule
-        // lives only under the field's Format details.
+        // The refusal speaks the declaration's own words first — the seeded `issue` param
+        // describes the shape it wants — and never the regex source: the raw rule lives only
+        // under the field's Format details.
         await expect(
-            composer.getByText('Issue does not match the required format. Open Format details for the technical rule.')
+            composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })
         ).toBeVisible();
         await expect(composer.getByText('Format details')).toBeVisible();
         const visible = await composer.innerText();
@@ -131,7 +132,7 @@ test.describe('the guided task composer', () => {
         // focuses it, and sends nothing — the member is still on the composer.
         await issue.press('ControlOrMeta+Enter');
         await expect(
-            composer.getByText('Issue does not match the required format. Open Format details for the technical rule.')
+            composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })
         ).toBeVisible();
         await expect(issue).toBeFocused();
         expect(page.url()).toContain('/tasks/new');
@@ -142,5 +143,11 @@ test.describe('the guided task composer', () => {
         await issue.press('ControlOrMeta+Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(problems.join('\n')).toBe('');
+
+        // Leave no claimable task behind: the task-detail spec claims against the same seeded
+        // board and its "own queued task is the only one claimable" invariant is what keeps that
+        // deterministic. Stop this one — the page's own primary action for a queued task.
+        await page.locator('.page-header-actions').getByRole('button', { name: 'Stop run' }).click();
+        await expect(page.locator('.page-header-meta')).toContainText('stopped', { timeout: 10_000 });
     });
 });

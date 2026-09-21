@@ -46,6 +46,9 @@ describe('RangeSelector', () => {
         }
         expect(html).toContain('range-option active');
         expect(html).toContain('aria-checked="true"');
+        // aria-label, not aria-labelledby: the RadioGroup's label context overrides a labelledby
+        // that points outside it, so the group must carry its name directly (issue 190).
+        expect(html).toContain('aria-label="Range"');
     });
 
     it('keeps the custom dates in a popover, not the toolbar row', () => {
