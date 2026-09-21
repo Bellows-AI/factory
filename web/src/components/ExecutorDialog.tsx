@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import { EXECUTOR_TYPES, type ExecutorType } from '@factory-ai/core';
-import { mergeExecutors, validateExecutorConfig, type ExecutorRow } from '../workspace/executors.js';
+import {
+    EXECUTOR_TYPE_META,
+    executorTypeLabel,
+    mergeExecutors,
+    validateExecutorConfig,
+    validateExecutorPayload,
+    type ExecutorRow,
+} from '../workspace/executors.js';
 
 /**
  * Add an executor, or edit an existing one.
@@ -10,12 +17,28 @@ import { mergeExecutors, validateExecutorConfig, type ExecutorRow } from '../wor
  * trapping, focus restoration, the backdrop and Escape without a hand-rolled trap; no `<form>`
  * submits because CSP sends `form-action 'none'`. The one difference in body is a textarea for
  * the pasted JSON, re-validated on every keystroke by the pure validator — cheap, and the message
- * under the field is what makes raw JSON pasteable at all.
+ * under the field is what makes raw JSON pasteable at all. Issue 183 makes the help tell the
+ * truth per type (EXECUTOR_TYPE_META): what the config is stored for, what actually consumes it,
+ * and what the type does NOT do — the note under the Type select says the field describes the
+ * config, it does not switch the deployment's runner CLI. Both helps are tied to their fields
+ * with `aria-describedby`, and the textarea's parse error is `aria-invalid` plus a described-by
+ * error, the content itself retained.
  *
  * The dialog receives the whole list as it opened — configs included, fetched on demand — because
  * the PUT is a whole-list replace: add appends to it, edit folds the changed row back in
- * (`mergeExecutors`), and the untouched rows travel through unchanged.
+ * (`mergeExecutors`), and the untouched rows travel through unchanged. A failed save keeps the
+ * dialog and everything typed in it; a successful one closes and Headless restores focus to the
+ * trigger (the page-header Add or the row's Edit — an edit that renames the row unmounts that
+ * trigger mid-save, where restore no-ops, the same cosmetic edge any dialog-over-a-list has).
  */
+
+/** The save action's copy — "Add executor" on add, "Save executor" on edit (issue 183). */
+export const ADD_LABEL = 'Add executor';
+export const SAVE_LABEL = 'Save executor';
+
+/** What choosing a Type does and does not do; tied to the select with aria-describedby. */
+export const TYPE_CONFIG_NOTE =
+    "The selected Type describes this config. It does not change the deployment's runner CLI.";
 
 export interface ExecutorDialogProps {
     open: boolean;
@@ -48,7 +71,11 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
         // while the dialog is up, and re-seeding the fields mid-edit would discard typing.
     }, [open, editing]);
 
+    const payload = validateExecutorPayload(config, type);
     const validation = validateExecutorConfig(config, name, type);
+    // The textarea's live error is the payload's — parse, object, size — never the name's: a
+    // blank name is announced against the name field, not as the config field's problem.
+    const parseError: string | null = config.trim() && !payload.ok ? payload.error : null;
 
     const save = async () => {
         if (!validation.ok) {
@@ -79,15 +106,22 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
 
                     <label className="picker-search">
                         <span className="muted">type</span>
-                        <select value={type} onChange={(event) => setType(event.target.value as ExecutorType)}>
+                        <select
+                            value={type}
+                            aria-describedby="executor-type-help"
+                            onChange={(event) => setType(event.target.value as ExecutorType)}
+                        >
                             {/* Rendered from the shared list, so a future type needs no JSX change. */}
                             {EXECUTOR_TYPES.map((value) => (
                                 <option key={value} value={value}>
-                                    {value}
+                                    {executorTypeLabel(value)}
                                 </option>
                             ))}
                         </select>
                     </label>
+                    <p className="muted" id="executor-type-help">
+                        {TYPE_CONFIG_NOTE}
+                    </p>
 
                     <label className="picker-search">
                         <span className="muted">name</span>
@@ -104,14 +138,30 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                         <textarea
                             rows={8}
                             value={config}
-                            placeholder='{ "model": "sonnet" }'
+                            placeholder={EXECUTOR_TYPE_META[type].example}
+                            aria-invalid={parseError ? true : undefined}
+                            aria-describedby={['executor-config-help', parseError ? 'executor-config-error' : null]
+                                .filter(Boolean)
+                                .join(' ')}
                             onChange={(event) => setConfig(event.target.value)}
                         />
                     </label>
-                    {/* Re-validated per keystroke; rendered live, before Save is even pressed. */}
-                    {config.trim() && !validation.ok ? <p className="status">{validation.error}</p> : null}
+                    <p className="muted" id="executor-config-help">
+                        {EXECUTOR_TYPE_META[type].configHelp}
+                    </p>
+                    {/* Re-validated per keystroke; rendered live, before Save is even pressed, and
+                        tied back to the textarea so a screen reader hears it as its error. */}
+                    {parseError ? (
+                        <p className="status" id="executor-config-error">
+                            {parseError}
+                        </p>
+                    ) : null}
 
-                    {failure ? <p className="status">{failure}</p> : null}
+                    {failure ? (
+                        <p className="status" role="alert">
+                            {failure}
+                        </p>
+                    ) : null}
 
                     {/* type="button" throughout: a submitting form would be blocked by form-action 'none'. */}
                     <div className="picker-actions">
@@ -124,7 +174,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                             onClick={() => void save()}
                             disabled={saving || !validation.ok}
                         >
-                            {saving ? 'Saving…' : editing ? 'Save' : 'Add'}
+                            {saving ? 'Saving…' : editing ? SAVE_LABEL : ADD_LABEL}
                         </button>
                     </div>
                 </DialogPanel>

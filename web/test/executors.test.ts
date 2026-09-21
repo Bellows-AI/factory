@@ -1,14 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import { EXECUTOR_TYPES } from '@factory-ai/core';
 import {
+    EXECUTOR_TYPE_META,
     MAX_CONFIG_BYTES,
     REQUIRED_FIELDS,
+    executorTypeLabel,
     mergeExecutors,
     validateExecutorConfig,
+    validateExecutorPayload,
     type ValidExecutor,
 } from '../src/workspace/executors.js';
 
 const valid = () => validateExecutorConfig('{ "model": "sonnet" }', 'main', 'claude-code');
+
+describe('validateExecutorPayload', () => {
+    // The dialog's live textarea error is the payload's — parse, object, per-type fields, size —
+    // and never the name's: a blank name must not arrive as the config field's problem.
+    it('accepts a JSON object regardless of the name', () => {
+        expect(validateExecutorPayload('{ "model": "sonnet" }', 'claude-code')).toEqual({
+            ok: true,
+            value: { model: 'sonnet' },
+        });
+    });
+
+    it('rejects paste that is not JSON, an empty paste, or a non-object', () => {
+        expect(validateExecutorPayload('{ model: }', 'claude-code').ok).toBe(false);
+        expect(validateExecutorPayload('   ', 'claude-code').ok).toBe(false);
+        expect(validateExecutorPayload('[]', 'opencode').ok).toBe(false);
+        expect(validateExecutorPayload('null', 'opencode').ok).toBe(false);
+    });
+
+    it('rejects a payload over the size limit', () => {
+        const big = JSON.stringify({ padding: 'x'.repeat(MAX_CONFIG_BYTES) });
+        expect(validateExecutorPayload(big, 'claude-code').ok).toBe(false);
+    });
+
+    it('stays name-agnostic: "{}" with no name anywhere is a valid payload', () => {
+        const result = validateExecutorPayload('{}', 'opencode');
+        expect(result).toEqual({ ok: true, value: {} });
+    });
+});
 
 describe('validateExecutorConfig', () => {
     it('accepts a plain object with a name and a known type', () => {
@@ -77,6 +108,41 @@ describe('validateExecutorConfig', () => {
         // Same raw-JSON contract as claude-code: field rules wait for a consumer that can be
         // wrong about them.
         expect(REQUIRED_FIELDS['opencode']).toEqual([]);
+    });
+});
+
+describe('EXECUTOR_TYPE_META', () => {
+    // The exhaustiveness guard, same shape as the REQUIRED_FIELDS one: a new EXECUTOR_TYPES entry
+    // must declare its label, help and example, or this record stops compiling.
+    it('covers every executor type', () => {
+        for (const type of EXECUTOR_TYPES) expect(type in EXECUTOR_TYPE_META).toBe(true);
+    });
+
+    it('labels claude-code as stored-but-not-consumed, with an empty-object example', () => {
+        const meta = EXECUTOR_TYPE_META['claude-code'];
+        expect(meta.label).toBe('Claude Code');
+        expect(meta.configHelp).toMatch(/stored/);
+        expect(meta.configHelp).toMatch(/not consumed by the current Claude Code runner/);
+        expect(JSON.parse(meta.example)).toEqual({});
+    });
+
+    it('tells the opencode truth: the deployment CLI is authoritative and permission is ignored', () => {
+        const meta = EXECUTOR_TYPE_META.opencode;
+        expect(meta.label).toBe('OpenCode');
+        expect(meta.configHelp).toMatch(/merged over its baked configuration/);
+        expect(meta.configHelp).toMatch(/permission rules are ignored/);
+        // The example illustrates the keys that do apply, and carries nothing that looks like a
+        // live credential.
+        const example = JSON.parse(meta.example) as Record<string, unknown>;
+        expect(example).toHaveProperty('model');
+        expect(example).toHaveProperty('provider');
+        expect(meta.example).not.toMatch(/sk-[a-zA-Z0-9]{8,}/);
+    });
+
+    it('maps wire types to human labels and never undefined for an unknown one', () => {
+        expect(executorTypeLabel('claude-code')).toBe('Claude Code');
+        expect(executorTypeLabel('opencode')).toBe('OpenCode');
+        expect(executorTypeLabel('weird')).toBe('weird');
     });
 });
 

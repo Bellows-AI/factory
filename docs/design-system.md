@@ -239,7 +239,7 @@ Components:
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
-| `ExecutorDialog.tsx` | picker, status |
+| `ExecutorDialog.tsx` | picker, status, muted |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
@@ -277,7 +277,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
-| `WorkspaceExecutorsPanel.tsx` | panel, pill, table |
+| `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 | `WorkspaceReposPanel.tsx` | panel, table |
 | `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |
@@ -289,7 +289,7 @@ Pages:
 | `AccountPage.tsx` | page-header, panel |
 | `DashboardPage.tsx` | page-header, dashboard-controls |
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
-| `SettingsExecutorsPage.tsx` | page-header, panel |
+| `SettingsExecutorsPage.tsx` | page-header, panel, status, muted |
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
 | `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |
