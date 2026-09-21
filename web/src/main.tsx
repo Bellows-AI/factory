@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { App, appRoutes } from './App.js';
 import { LoginGate } from './components/LoginGate.js';
+import { ThemeProvider } from './theme.js';
 import './styles.css';
 
 // The gate wraps App rather than living inside it, so that App is never mounted for a caller who is
@@ -30,6 +31,10 @@ const router = createBrowserRouter([
 
 createRoot(document.getElementById('root') as HTMLElement).render(
     <StrictMode>
-        <RouterProvider router={router} />
+        {/* Above the router, so the appearance preference (issue 188) covers the public pages —
+            the gate and onboarding — and the authenticated shell alike. */}
+        <ThemeProvider>
+            <RouterProvider router={router} />
+        </ThemeProvider>
     </StrictMode>
 );

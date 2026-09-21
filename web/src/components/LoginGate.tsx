@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
+import { ThemeSelector } from './ThemeSelector.js';
 
 /** What the callback redirects back with when it could not sign somebody in. */
 const REASONS: Record<string, string> = {
@@ -39,6 +40,11 @@ export function LoginGate({ children }: { children: ReactNode }) {
 
     return (
         <main className="login-gate">
+            {/* The public header row (issue 188); the shared header of issue 187 will absorb
+                this placement. */}
+            <div className="public-header">
+                <ThemeSelector />
+            </div>
             <h1>Factory Stats</h1>
             {error ? (
                 <p className="login-error">{error}</p>
