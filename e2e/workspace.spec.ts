@@ -3,8 +3,8 @@ import type { Page } from '@playwright/test';
 import { throughSignIn } from './signin.js';
 
 /**
- * The workspace section of Settings, the left nav, and the one failure that shows up only in
- * production.
+ * The workspace section of Settings, the repositories section its selection moved to (#181), the
+ * left nav, and the one failure that shows up only in production.
  *
  * On the `auth` project, because every route here needs a signed-in member — and because the
  * `chromium` project is the visual regression check for the dashboard and should not churn over
@@ -12,33 +12,19 @@ import { throughSignIn } from './signin.js';
  *
  * The auth server runs with a real ORG_WORKSPACE_ROOT under artifacts/, so this drives real
  * provisioning: a directory is created on disk by the sign-in callback. It does NOT drive a clone —
- * the server here is the offline entry, with no GitHub App credential, and the stored fallback is
- * scoped to the caller's org (stored-repos.ts) while the seed plants rows only under the local org.
- * This member's installation org holds no repos, so the picker pins its explicit empty state.
+ * the server here is the offline entry, with no GitHub App credential; the stored fallback reports
+ * the seed's one repository (SEED_REPO, scoped to the caller's org) but nothing is selected, so
+ * the repositories page pins its offered-but-disabled nothing-enabled state and the workspace
+ * page its empty-checkout sentence. Cloning, checkout statuses and the dirty-detail switch
+ * dialog need a credential or a second seeded repository, and stay with a credentialed run.
  */
 
 const SHOTS = 'artifacts/ui';
-
 
 async function signedIn(page: Page) {
     // The shared helper: through the selection screen on the run's first sign-in, straight in
     // after it (the stored choice is the choice).
     await throughSignIn(page);
-}
-
-/**
- * Opens the workspace section of Settings and dismisses the picker it offers.
- *
- * The dialog opens by itself the first time, because nothing is selected — that is the onboarding,
- * and it is genuinely modal, so anything behind it is unclickable until it is closed. A test that
- * wants the page rather than the dialog has to say so.
- */
-async function workspacePage(page: Page) {
-    await page.goto('/settings/workspace');
-    const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
-    await expect(dialog.locator('.picker')).toBeVisible();
-    await page.getByRole('button', { name: 'Not now' }).click();
-    await expect(dialog).toHaveCount(0);
 }
 
 test('the left nav is there and moves between sections', async ({ page }) => {
@@ -55,10 +41,6 @@ test('the left nav is there and moves between sections', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Configuration overview' })).toBeVisible();
     await nav.getByRole('link', { name: 'Workspace' }).click();
     await expect(page).toHaveURL(/\/settings\/workspace$/);
-
-    // Nothing is selected yet, so the picker opens over the section on arrival — modal, so the
-    // heading and the tree under the nav item are asserted after it is dismissed.
-    await page.getByRole('button', { name: 'Not now' }).click();
     await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Repositories' })).toBeVisible();
 
@@ -82,10 +64,9 @@ test('reloading /settings/workspace directly serves the app rather than a 404', 
 
     const response = await page.goto('/settings/workspace');
     expect(response?.status()).toBe(200);
-    // The first visit with nothing selected opens the picker over the section; dismiss it and the
-    // section is assertable. The 200 + shell is the deep-link contract; the heading proves the
-    // route resolved to the workspace section and not the catch-all.
-    await page.getByRole('button', { name: 'Not now' }).click();
+    // The 200 + shell is the deep-link contract; the heading proves the route resolved to the
+    // workspace section and not the catch-all. exact: the section's own h2 ("My workspace")
+    // would otherwise match alongside the page h1 (issue 190).
     await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(page.locator('.sidenav')).toBeVisible();
 });
@@ -98,60 +79,71 @@ test('a signed-out visitor deep-linking to the settings tree gets the gate, not 
     await expect(page.locator('.login-gate')).toBeVisible();
 });
 
-test('the picker opens by itself when nothing is selected, and is genuinely modal', async ({ page }) => {
+test('the workspace page links to the repositories page for checkout management', async ({ page }) => {
     await signedIn(page);
     await page.goto('/settings/workspace');
 
-    // Visibility reads on the PANEL, not the dialog layer: `.dialog-layer` is a zero-height
-    // positioning shell over the viewport — its backdrop and positioner are `position: fixed` —
-    // so the container has no box to measure (the same convention navigation.spec pins).
-    const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
-    const picker = dialog.locator('.picker');
-    await expect(picker).toBeVisible();
+    // Root provisioning happens at sign-in, so the management link is present — a deployment with
+    // no ORG_WORKSPACE_ROOT drops it and states the operator copy instead, which the open board
+    // renders in its screenshots.
+    const link = page.getByRole('link', { name: 'Manage repository checkouts' });
+    await expect(link).toBeVisible();
+    await expect(page.getByText('Nothing checked out yet')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Select repositories' })).toHaveCount(0);
 
-    /*
-     * The offline entry runs with no GitHub App credential, and the stored fallback is scoped to
-     * the caller's organization (stored-repos.ts). The seed deliberately plants rows only under
-     * the local org — a github-mode board materializes its own installation org at sign-in (#99)
-     * — so this member's org has no repos to offer and the picker renders its empty state. That
-     * is the honest reading of a credential-less org with no stored rows, not a failure to list.
-     */
-    await expect(picker).toContainText('This GitHub App is not installed on any repositories yet');
+    // The link IS the way in: selection lives on the repositories page now, not in a modal here.
+    await link.click();
+    await expect(page).toHaveURL(/\/settings\/repos$/);
 
-    // `aria-modal` and the rest of the page going inert are what renderToStaticMarkup cannot
-    // reach, and what everything else about the dialog depends on — focus trapping, Escape, the
-    // backdrop. A click on the nav must land nowhere while the dialog is up. Headless marks the
-    // application root (the main tree beside its portal), not each descendant, so the assertion
-    // is on the one inert root that contains the nav, not on the nav itself.
-    await expect(dialog).toHaveAttribute('aria-modal', 'true');
-    const nav = page.locator('.sidenav');
-    const inertRoot = page.locator('[inert][aria-hidden="true"]', { has: nav });
-    await expect(inertRoot).toHaveCount(1);
-
-    // The CSP sends form-action 'none', so no submitting form may ever appear in here — the same
-    // trap that makes LoginGate an anchor rather than a form.
-    expect(await dialog.locator('form').count()).toBe(0);
-
-    // A passing assertion says the DOM was right; only the image says the layout was.
-    await page.screenshot({ path: `${SHOTS}/workspace-picker.png` });
+    await page.screenshot({ path: `${SHOTS}/settings-workspace.png`, fullPage: true });
 });
 
-test('Escape closes the picker and the page stays usable', async ({ page }) => {
-    // Escape closes the Dialog — Headless hands it to `onClose`, so the parent's state moves with
-    // it and the button below can reopen it. Under the native dialog this was the desync trap the
-    // `close` listener existed to catch; here a missed sync would fail this test.
+test('the repositories page carries the selection surface, and its draft meets the guard', async ({ page }) => {
     await signedIn(page);
-    await page.goto('/settings/workspace');
+    await page.goto('/settings/repos');
 
-    const dialog = page.locator('[role="dialog"][aria-labelledby="picker-title"]');
-    const picker = dialog.locator('.picker');
-    await expect(picker).toBeVisible();
+    /*
+     * The seed plants one stored repository for this org (the offline entry's stored fallback)
+     * and the workspace poll answers with no checkouts: one row, offered, nothing enabled — and
+     * only once both answered does the enabled count state its zero.
+     */
+    await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
+    const checkbox = page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' });
+    await expect(checkbox).toBeVisible();
+    await expect(page.getByText('0 of 1 repositories enabled')).toBeVisible();
+    await expect(page.getByLabel('Search repositories')).toBeVisible();
+    await expect(page.getByText('Selections are limited to 20 repositories.')).toBeVisible();
 
-    await page.keyboard.press('Escape');
-    await expect(dialog).toHaveCount(0);
+    // A toggle makes the whole-selection draft dirty, and leaving meets the area's ONE discard
+    // confirmation (issue 182) — the selection is guarded like every other settings draft.
+    await checkbox.click();
+    await expect(page.getByText('Selection changed — save to update your workspace')).toBeVisible();
+    await page.getByRole('link', { name: 'Dashboard' }).click();
+    await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
+    await expect(page.getByText('Your changes to the repository selection have not been saved.')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Select repositories' }).click();
-    await expect(picker).toBeVisible();
+    // The safe answer unblocks nothing: we are still here, and the draft survived.
+    await page.getByRole('button', { name: 'Continue editing' }).click();
+    await expect(page).toHaveURL(/\/settings\/repos$/);
+    await expect(checkbox).toBeChecked();
+
+    // Discard reverts the draft to the server's answer and resumes the navigation.
+    await page.getByRole('link', { name: 'Dashboard' }).click();
+    await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
+    await page.getByRole('button', { name: 'Discard changes' }).click();
+    await expect(page).toHaveURL(/\/$/);
+
+    await page.goto('/settings/repos');
+    await expect(page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' })).not.toBeChecked();
+
+    // Configuration is independent of personal checkout enablement: the editor mounts behind
+    // Configure with the checkbox still off, and a clean area raises no dialog.
+    await page.getByRole('button', { name: 'Configure' }).click();
+    await expect(page.getByRole('heading', { name: 'Environment for Bellows-AI/bellows.ai' })).toBeVisible();
+    await expect(page.getByText('Repository · Bellows-AI/bellows.ai')).toBeVisible();
+    await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
+
+    await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
 });
 
 test('an executor is added through the dialog, with bad JSON refused in place', async ({ page }) => {
@@ -236,7 +228,8 @@ test('the workspace section renders nothing malformed', async ({ page }) => {
     });
 
     await signedIn(page);
-    await workspacePage(page);
+    await page.goto('/settings/workspace');
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
 
     const text = (await page.locator('main').innerText()) || '';
     for (const token of ['NaN', 'undefined', 'Infinity', '[object Object]']) {
@@ -244,5 +237,5 @@ test('the workspace section renders nothing malformed', async ({ page }) => {
     }
     expect(errors).toEqual([]);
 
-    await page.screenshot({ path: `${SHOTS}/settings-workspace.png`, fullPage: true });
+    await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
 });

@@ -8,7 +8,7 @@ import type { StatsPayload } from '../src/api/useStats.js';
 /**
  * The mobile drawer (issue 160) is a Headless UI Dialog, so it portals — and
  * `renderToStaticMarkup` does not render portals: an open drawer server-renders as Headless'
- * placeholder span, exactly like the RepoPickerDialog. The in-dialog contracts (focus trap,
+ * placeholder span. The in-dialog contracts (focus trap,
  * Escape, backdrop, the labels themselves) are therefore a real browser's to assert, and
  * e2e/navigation.spec.ts owns them. What a static render CAN pin is the boundary — the
  * component server-renders without crashing whatever it mounts to — and the labels it will

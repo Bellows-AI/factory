@@ -451,10 +451,15 @@ describe('placements', () => {
     });
 
     it('both public pages place the shared control in a public header row', () => {
+        // Both pages hand the selector to the shared PublicPageHeader (issue 187), whose actions
+        // cell is the one placement — the gate no longer owns a header row of its own.
+        const header = src('components/PublicPageHeader.tsx');
+        expect(header).toContain('public-header');
+        expect(header).toContain('public-header-actions');
         for (const file of ['components/LoginGate.tsx', 'pages/OnboardingPage.tsx']) {
             const source = src(file);
             expect(source, file).toContain('<ThemeSelector />');
-            expect(source, file).toContain('public-header');
+            expect(source, file).toContain('<PublicPageHeader');
         }
     });
 

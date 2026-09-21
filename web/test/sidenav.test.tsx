@@ -1,7 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { RepoPickerDialog } from '../src/components/RepoPickerDialog.js';
 import { SideNav } from '../src/components/SideNav.js';
 import type { TaskNavigation, TaskSummary } from '../src/api/useTasks.js';
 
@@ -265,30 +264,5 @@ describe('SideNav task authorship', () => {
 
         const anonymous = render('/tasks', navigation([], [summary()]));
         expect(anonymous).toContain('unknown');
-    });
-});
-
-describe('RepoPickerDialog', () => {
-    /*
-     * The Headless UI Dialog portals its content, and renderToStaticMarkup does not render
-     * portals — an open dialog server-renders as Headless' placeholder span, nothing more.
-     * The in-dialog contracts therefore moved rather than died: the selection logic is the pure
-     * `nextChosen` and the disabled-until-loaded guard the pure `saveDisabled`, both in
-     * repo-picker.test.ts, and the empty state, the way out and the form-action 'none' trap are
-     * e2e/workspace.spec.ts's, where a real browser mounts the portal. What is left to assert
-     * here is that boundary itself: the component still server-renders without crashing, whatever
-     * it mounts to.
-     */
-    const render = (open: boolean) =>
-        renderToStaticMarkup(
-            <RepoPickerDialog open={open} selected={[]} onClose={() => {}} onSave={async () => null} saving={false} />
-        );
-
-    it('renders a placeholder until the client mounts, open or closed', () => {
-        // Portal content is a client-only concern: SSR emits the presence span, and the browser
-        // fills the rest in after mount.
-        for (const open of [false, true]) {
-            expect(render(open)).toContain('<span hidden');
-        }
     });
 });
