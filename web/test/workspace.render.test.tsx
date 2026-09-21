@@ -1,59 +1,18 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { WorkspaceRepo } from '../src/api/useWorkspace.js';
 import { pollDelay } from '../src/api/useWorkspace.js';
 import { bytes, commitDate } from '../src/format.js';
 import { WorkspaceExecutorsPanel } from '../src/panels/WorkspaceExecutorsPanel.js';
-import { WorkspaceReposPanel } from '../src/panels/WorkspaceReposPanel.js';
 
 /** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
-function repo(overrides: Partial<WorkspaceRepo> = {}): WorkspaceRepo {
-    return {
-        owner: 'acme',
-        name: 'web',
-        status: 'ready',
-        error: null,
-        selectedAt: '2026-08-01T00:00:00.000Z',
-        readyAt: '2026-08-01T00:05:00.000Z',
-        branch: 'main',
-        lastCommit: { sha: 'abc1234', at: '2026-08-20T09:00:00.000Z', headline: 'feat: x' },
-        sizeBytes: 45_000_000,
-        ...overrides,
-    };
-}
-
-const render = (repos: WorkspaceRepo[]) => renderToStaticMarkup(<WorkspaceReposPanel repos={repos} />);
-
-describe('the workspace panel', () => {
-    it('never emits a placeholder value for an absent metric', () => {
-        const html = render([
-            repo(),
-            repo({ name: 'api', status: 'cloning', branch: null, lastCommit: null, sizeBytes: null }),
-        ]);
-        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
-    });
-
-    it('renders a cloning repo with dashes, never with zeroes', () => {
-        // A repository that has not cloned has no size and no branch. `0 B` would be a claim about
-        // an empty repository rather than an absence of measurement.
-        const html = render([repo({ status: 'cloning', branch: null, lastCommit: null, sizeBytes: null })]);
-        expect(html).toContain('—');
-        expect(html).not.toContain('0 B');
-    });
-
-    it('carries a failed clone\'s reason inline rather than only saying "failed"', () => {
-        const html = render([repo({ status: 'failed', error: 'fatal: repository not found' })]);
-        expect(html).toContain('failed');
-        expect(html).toContain('fatal: repository not found');
-    });
-
-    it('renders one row per selected repository', () => {
-        const html = render([repo(), repo({ name: 'api' })]);
-        expect(html.match(/<tr/g)?.length).toBe(3); // header + two rows
-    });
-});
+/*
+ * The checked-out-repository rows moved to the repositories page (issue 181); their contracts —
+ * dashes for unmeasured facts, the failed reason inline, the checking posture — are pinned in
+ * repository-setup.test.ts and repository-setup.render.test.tsx against the components that
+ * render them now. What stays here is the executors panel and the workspace poll's own math.
+ */
 
 describe('the executors panel', () => {
     // The panel is the list itself plus the scope context (#183): the "My workspace" heading, the
