@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
@@ -84,6 +85,10 @@ export function SettingsWorkspacePage() {
                     </ul>
                 </section>
             ) : null}
+
+            <ConfigurationScope scope="workspace" />
+
+            <ConfigurationScope scope="workspace" />
 
             {env.error ? <p className="status">{env.error}</p> : null}
             {/* Same data gate as the organization page: the editor mounts only when the scope's

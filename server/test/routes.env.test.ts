@@ -32,7 +32,8 @@ afterEach(async () => {
 
 async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
     const auth = memoryAuthStore();
-    // The stand-in admin writes core and repository env; a plain member may write only their own.
+    // Roles are one trust level: any member may write the org and repository scopes, and the
+    // workspace scope rows are the caller's own — the tests below pin that per route.
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
     const envVars = options.envVars ?? memoryEnvVarStore();

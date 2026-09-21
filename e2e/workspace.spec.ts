@@ -35,9 +35,13 @@ test('the left nav is there and moves between sections', async ({ page }) => {
     const nav = page.locator('.sidenav');
     await expect(nav).toBeVisible();
 
-    // The Settings item opens the org-level tree; its index route lands on the workspace section,
-    // the area's default pane, with the four section links visible under the item (#150).
+    // The Settings item opens the tree at the configuration overview, the area's index (#180);
+    // the workspace section is one click below it, with the four section links under the item
+    // (#150).
     await nav.getByRole('link', { name: 'Settings' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole('heading', { name: 'Configuration overview' })).toBeVisible();
+    await nav.getByRole('link', { name: 'Workspace' }).click();
     await expect(page).toHaveURL(/\/settings\/workspace$/);
     await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Repositories' })).toBeVisible();

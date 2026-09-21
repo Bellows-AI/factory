@@ -217,7 +217,7 @@ docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
 # disposable database name. It drives the whole lease protocol with no credential anywhere.
 
 echo "starting the board on $BASE"
-env DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
+env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
     ORG_WORKSPACE_ROOT="$work/workspaces" \
     node server/dist/offline.js >"$work/server.log" 2>&1 &
 server_pid=$!
@@ -382,15 +382,25 @@ fu_claim="$(body "$(api POST /api/jobs/claim '{"worker":"follows","leaseSeconds"
 expect_field  'the follow-up claim comes back' "$fu_claim" id "$fu_id"
 # The per-member workspace, ready-made by the board: `<org>/<user id>`. The driver refuses anything
 # that is not exactly that before interpolating it into a `docker run`.
-case "$(field "$fu_claim" workspacePath)" in
+workspace_path="$(field "$fu_claim" workspacePath)"
+case "$workspace_path" in
 default/????????-????-????-????-????????????) ok 'the claim carries a workspace path' ;;
-*) bad 'the claim carries a workspace path' "got '$(field "$fu_claim" workspacePath)'" ;;
+*) bad 'the claim carries a workspace path' "got '$workspace_path'" ;;
 esac
 expect_field  'the claim carries the session' "$fu_claim" resumeSessionId "$PARKED_SESSION"
 expect_field  'the claim says it is a follow-up' "$fu_claim" followUp true
 expect_field  'the follow-up starts at attempt 1' "$fu_claim" attempts 1
 api POST "/api/jobs/$fu_id/complete" \
     "{\"leaseToken\":\"$(field "$fu_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
+
+# Production provisioning creates this subtree in the same volume the driver mounts. The harness's
+# board uses a host tempdir while the driver uses a named volume, so bridge that boundary explicitly;
+# volume-subpath refuses a missing target instead of silently mounting a broader parent.
+docker volume create "$VOLUME" >/dev/null &&
+    docker run --rm -v "$VOLUME:/workspaces" alpine:3 mkdir -p "/workspaces/$workspace_path" || {
+    echo 'test-jobs: could not provision the member workspace in the driver volume'
+    exit 1
+}
 
 # --- The driver ------------------------------------------------------------------------------
 

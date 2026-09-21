@@ -2564,4 +2564,79 @@
             font-size: 12px;
         }
     }
+
+    /* The configuration overview's readiness items (issue 180) and the scope context block every
+       environment editor opens with. Status text carries the meaning; the tone class only tints
+       the item's edge, so no state is ever color alone. */
+
+    .readiness {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .readiness-item {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        min-width: 0;
+        padding: 14px 16px;
+    }
+
+    .readiness-item.is-ok {
+        border-color: var(--ok-border);
+    }
+
+    .readiness-item.is-attention {
+        border-color: var(--bad-border);
+    }
+
+    .readiness-item.is-pending {
+        border-color: var(--warn-border);
+    }
+
+    .readiness-status {
+        font-weight: 600;
+        margin: 0 0 6px;
+    }
+
+    .readiness-fact {
+        color: var(--ink-muted);
+        font-size: 13px;
+        margin: 0;
+        /* Root paths and git errors are long; a word that cannot wrap must not widen the page. */
+        overflow-wrap: anywhere;
+    }
+
+    .readiness-action {
+        display: inline-block;
+        margin-top: 10px;
+    }
+
+    @media (min-width: 701px) {
+        .readiness {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    .scope-context {
+        margin: 0 0 12px;
+        max-width: 68ch;
+    }
+
+    .scope-context p {
+        margin: 0 0 2px;
+    }
+
+    .scope-context-label {
+        color: var(--ink-muted);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        margin: 0 0 4px;
+        /* No text-transform: the repository label carries case-sensitive owner/name. */
+    }
 }

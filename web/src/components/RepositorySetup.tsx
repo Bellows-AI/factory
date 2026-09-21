@@ -2,6 +2,7 @@ import type { ReactNode, RefObject } from 'react';
 import { Link } from 'react-router-dom';
 import type { InstallationRepo } from '../api/useRepos.js';
 import type { WorkspaceRepo } from '../api/useWorkspace.js';
+import { ConfigurationScope } from './ConfigurationScope.js';
 import { bytes, commitDate } from '../format.js';
 import { canSelect, checkoutCell, checkoutText, MAX_SELECTED_REPOS, repoKey } from './repository-setup.js';
 import type { SelectionCounts, SelectionSaveState, WorkspaceState } from './repository-setup.js';
@@ -286,11 +287,11 @@ export interface RepositoryConfigDetailProps {
 }
 
 /**
- * The configuration detail: the repository's environment scope opened on the same page. It states
- * the scope the way Slice D words it — organization-wide impact, member editability, and the
- * precedence order — and renders the mounted editor as its children, so a save's echoed rows and
- * its confirmation survive. Configuration does not require personal checkout enablement; the
- * checkout status is context, not a gate.
+ * The configuration detail: the repository's environment scope opened on the same page. The scope
+ * truth — what it applies to, who may edit it, the precedence order — is the shared
+ * ConfigurationScope (issue 180), the same copy every editor states; the mounted editor renders
+ * as children, so a save's echoed rows and its confirmation survive. Configuration does not
+ * require personal checkout enablement; the checkout status is context, not a gate.
  */
 export function RepositoryConfigDetail({ repo, checkout, headingRef, children }: RepositoryConfigDetailProps) {
     if (!repo) return null;
@@ -300,14 +301,7 @@ export function RepositoryConfigDetail({ repo, checkout, headingRef, children }:
             <h2 ref={headingRef} tabIndex={-1}>
                 Environment for {key}
             </h2>
-            <p className="muted">Repository · {key}</p>
-            <p className="muted">
-                Applies to every task using the repository in the organization; any member can edit.
-            </p>
-            <p className="muted">
-                Environment values combine in order: organization, then workspace, then repository — a more specific
-                scope overrides a broader one.
-            </p>
+            <ConfigurationScope scope="repository" repository={repo} />
             <p className="muted">Checkout status: {checkout}</p>
             {children}
         </section>

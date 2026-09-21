@@ -47,6 +47,23 @@ function git(cwd: string, ...args: string[]): string {
     return execFileSync('git', [...GIT_FIXTURE_CONFIG, ...args], { cwd, encoding: 'utf8' }).trim();
 }
 
+/** Builds a long, empty history in one process; one `git commit` spawn per row made the cap test the suite's slowest. */
+function importEmptyCommits(cwd: string, branch: string, count: number): void {
+    let stream = '';
+    for (let i = 0; i < count; i += 1) {
+        const message = `commit ${i}`;
+        const timestamp = 1_700_000_000 + i;
+        stream +=
+            `commit refs/heads/${branch}\n` +
+            `mark :${i + 1}\n` +
+            `author Test <test@example.com> ${timestamp} +0000\n` +
+            `committer Test <test@example.com> ${timestamp} +0000\n` +
+            `data ${Buffer.byteLength(message)}\n${message}\n` +
+            `from ${i === 0 ? 'refs/heads/main' : `:${i}`}\n\n`;
+    }
+    execFileSync('git', ['fast-import', '--quiet'], { cwd, input: `${stream}done\n` });
+}
+
 const runScript = (env: Record<string, string>): { ok: boolean; reason: string | null } => {
     // The script FILE itself, not a -e wrap: the artifact the sync container runs is what is
     // under test.
@@ -511,24 +528,29 @@ describe.skipIf(!hasGit())('the PR summary script', () => {
     });
 
     it('caps the commit list', () => {
-        git(repo, 'switch', '-c', 'factory/root');
-        for (let i = 0; i < 35; i += 1) {
-            writeFileSync(join(repo, `f${i}.txt`), `${i}\n`);
-            git(repo, 'add', `f${i}.txt`);
-            git(repo, 'commit', '-m', `commit ${i}`);
-        }
+        importEmptyCommits(repo, 'factory/root', 35);
+        git(repo, 'switch', 'factory/root');
 
         const summary = summarize();
         expect(summary.body).toContain('- ... and 5 more');
         expect((summary.body!.match(/^- /gm) ?? []).length).toBe(31);
     });
 
-    it('truncates the title to 72 characters', () => {
+    it('truncates the title to 144 characters', () => {
         git(repo, 'switch', '-c', 'factory/root');
         writeFileSync(join(repo, 'x.txt'), 'x\n');
         git(repo, 'add', 'x.txt');
-        git(repo, 'commit', '-m', 'x'.repeat(100));
+        git(repo, 'commit', '-m', 'x'.repeat(200));
 
-        expect(summarize().title).toBe('x'.repeat(72));
+        expect(summarize().title).toBe('x'.repeat(144));
+    });
+
+    it('keeps a 73-character subject whole (PR #191 lost the last letter at the old 72 cap)', () => {
+        git(repo, 'switch', '-c', 'factory/root');
+        writeFileSync(join(repo, 'y.txt'), 'y\n');
+        git(repo, 'add', 'y.txt');
+        git(repo, 'commit', '-m', 'Web: task-outcome derivations as pure data, moved out of the task sidebar');
+
+        expect(summarize().title).toBe('Web: task-outcome derivations as pure data, moved out of the task sidebar');
     });
 });

@@ -3027,6 +3027,12 @@ describe('publishing the produced work', () => {
         expect(plain.title).toBe('tidy the docs');
     });
 
+    it('caps the fallback title at 144 characters', () => {
+        const capped = publishPlan({ ...job, command: 'y'.repeat(200) }, NOW);
+        expect(capped.title).toBe('y'.repeat(144));
+        expect(capped.issueNumber).toBeNull();
+    });
+
     it('plans the same branch and closure from the bare /fix <number> form', () => {
         expect(publishPlan({ ...job, command: '/fix 100' }, NOW)).toEqual({
             branch: 'fix/100',

@@ -1,27 +1,45 @@
+import { ConfigurationScope } from '../components/ConfigurationScope.js';
+import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
- * The Organization section of the settings tree: a stub, with the one org-level editor that
- * already exists mounted under it (issue 150).
+ * The Organization section of the settings tree (issue 180): who is signed in, what the org
+ * environment scope is, and the one org-level editor. The old "not built yet" stub is gone.
  *
- * The page header says the section is a stub — the sentence is the description slot, and no
- * panel repeats it. The core (organization) environment is admin-written — it reaches every
- * member's runners — and a member sees it read-only with the sentence saying why. The rest of
- * the section is a stub on purpose: organization settings beyond the environment are not built,
- * and a sentence saying so is the honest placeholder, not a silent empty page.
+ * The editor is enabled for every role, because that is the server's contract — `PUT /api/env/org`
+ * accepts any member of the installation (membership is the one trust level, #99, pinned by
+ * server/test/routes.env.test.ts). The disabled control this page used to show a member was not
+ * authorization; it was a false claim about the API. If product policy ever changes, the server
+ * grows a tested 403 first, and THEN a page renders a readable read-only view.
  */
 export function SettingsOrganizationPage() {
     const { env, session } = useSettingsPage();
-    const isAdmin = session?.role === 'admin';
     return (
         <>
             <PageHeader
                 eyebrow="Settings"
                 title="Organization"
-                description="Organization settings are not built yet."
+                description="Identity and the environment values injected into every runner in the organization."
             />
+
+            {session ? (
+                <section className="panel">
+                    {/* Identity, not authority: the display name and the role title. No internal id,
+                        and no powers inferred beyond what the API grants. */}
+                    <KeyValues
+                        pairs={[
+                            ['Organization', session.organization.name],
+                            ['Your role', session.role === 'admin' ? 'Admin' : 'Member'],
+                        ]}
+                    />
+                </section>
+            ) : (
+                <p className="muted">Checking your session…</p>
+            )}
+
+            <ConfigurationScope scope="organization" />
 
             {env.error ? <p className="status">{env.error}</p> : null}
             {/*
@@ -36,14 +54,9 @@ export function SettingsOrganizationPage() {
             ) : env.data ? (
                 <EnvVarsPanel
                     title="Core (organization)"
-                    hint={
-                        isAdmin
-                            ? 'Injected into every runner in this deployment. The place for shared credentials — GITHUB_TOKEN, for one.'
-                            : 'An admin configures the core environment; it is shown here read-only.'
-                    }
+                    hint="Injected into every runner in this deployment. The place for shared credentials — GITHUB_TOKEN, for one."
                     initialVars={env.data.org}
                     onSave={env.saveOrg}
-                    disabled={!isAdmin}
                     draftId="org"
                     draftLabel="Core (organization)"
                 />

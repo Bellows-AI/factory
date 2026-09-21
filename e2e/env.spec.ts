@@ -62,8 +62,10 @@ test.describe('environment editors', () => {
         const problems = watchConsole(page);
 
         await open(page);
-        // The Organization section is a stub with the one org-level editor under it (#150).
-        await expect(page.getByText('Organization settings are not built yet.')).toBeVisible();
+        // The Organization section answers who and what scope before any editor (#180) — no
+        // "not built yet" stub anymore.
+        await expect(page.getByText('Your role')).toBeVisible();
+        await expect(page.getByText('Any member can edit.')).toBeVisible();
         const text = await page.locator('main').innerText();
         for (const token of FORBIDDEN) expect(text, `organization section contains ${token}`).not.toContain(token);
         await page.screenshot({ path: `${SHOTS}/settings-organization.png`, fullPage: true });

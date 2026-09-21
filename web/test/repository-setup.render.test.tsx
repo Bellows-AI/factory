@@ -288,14 +288,16 @@ describe('RepositoryConfigDetail', () => {
         expect(render(<RepositoryConfigDetail repo={null} checkout="Ready" headingRef={undefined} />)).toBe('');
     });
 
-    it('heads with the environment, scopes it to the repository, and states impact and precedence', () => {
+    it('heads with the environment and states the shared scope truth (issue 180)', () => {
         const html = render(
             <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" headingRef={undefined} />
         );
         expect(html).toContain('Environment for acme/web');
+        // The scope copy is ConfigurationScope's — the same table every editor states.
         expect(html).toContain('Repository · acme/web');
-        expect(html).toContain('any member can edit');
-        expect(html).toContain('organization, then workspace, then repository');
+        expect(html).toContain('Applies to every task using acme/web in the organization.');
+        expect(html).toContain('Any member can edit.');
+        expect(html).toContain('organization &lt; workspace &lt; repository');
     });
 
     it('gives the checkout status as context', () => {

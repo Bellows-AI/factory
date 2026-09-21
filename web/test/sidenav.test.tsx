@@ -99,6 +99,17 @@ describe('SideNav', () => {
         expect(render('/settings/workspace')).toContain('aria-current="page"');
     });
 
+    it('marks exactly the parent Settings link on the overview itself (#180)', () => {
+        // /settings is a real page now: the parent is current, no section is, and the tree still
+        // expands so every section is one click away.
+        const html = render('/settings');
+        expect(html.match(/aria-current="page"/g) ?? []).toHaveLength(1);
+        expect(html).toContain('sidenav-link is-active');
+        expect(html).not.toContain('sidenav-sublink is-active');
+        expect(html).toContain('href="/settings/organization"');
+        expect(html).toContain('href="/settings/executors"');
+    });
+
     it('marks the current section visually on both levels, but only the leaf as the page', () => {
         // Tree semantics: the Settings link and the current section's link both LIGHT UP (two
         // is-active markers, parent first), while aria-current="page" belongs to the leaf alone —

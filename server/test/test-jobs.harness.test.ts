@@ -16,6 +16,10 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
 
 describe('the test-jobs harness', () => {
+    it('pins the open board mode instead of inheriting a developer or compose auth mode', () => {
+        expect(SCRIPT).toContain('env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1');
+    });
+
     // The route is gone from the board (404 Route not found); the claim's resumeSessionId has no
     // slash, so the legitimate field assertion cannot trip this.
     it('scripts/ holds no reference to the removed /resume route', () => {
@@ -68,6 +72,15 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain("echo 'test-jobs: could not truncate job, workflow'");
         // No bare statement: the truncate line must carry the guard, not end there.
         expect(SCRIPT).not.toMatch(/'truncate job, workflow' >\/dev\/null 2>&1\n/);
+    });
+
+    it('provisions the board-issued member subpath in the named driver volume', () => {
+        expect(SCRIPT).toContain('workspace_path="$(field "$fu_claim" workspacePath)"');
+        expect(SCRIPT).toContain('docker volume create "$VOLUME"');
+        expect(SCRIPT).toContain('mkdir -p "/workspaces/$workspace_path"');
+        expect(SCRIPT.indexOf('docker volume create "$VOLUME"')).toBeLessThan(
+            SCRIPT.indexOf('start_driver "$IMAGE_OK"')
+        );
     });
 
     it('the leftover checks are scoped to the jobs this run created', () => {

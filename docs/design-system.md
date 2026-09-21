@@ -204,6 +204,13 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 | --- | --- | --- |
 | Env | `env-tab`, `env-tabs`, `env-vars`, `env-pending`, `env-advanced-note`, `env-raw`, `env-errors` | The draft editor (issue 182): a real `tablist` of Variables/Secrets tabs whose selected tab is the `aria-selected` one, the scope's editable table, a pending-removal row that waits with its Undo until the whole-list save, the advanced `.env` disclosure's warning line, the textarea editor, and the row/scope validation lines. At ≤640px an `env-vars` row reflows into labeled groups via each cell's `data-label` |
 
+### Configuration readiness
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Readiness | `readiness`, `readiness-item`, `readiness-item.is-ok`, `readiness-item.is-attention`, `readiness-item.is-pending`, `readiness-status`, `readiness-fact`, `readiness-action` | The configuration overview's five ordered items (#180): raised cards in a grid — two columns above 700px, one at and below it; the tone modifiers tint the item's edge through the status-border tokens while the status text carries the meaning (never color alone), and `overflow-wrap` keeps long paths from widening the page |
+| Scope context | `scope-context`, `scope-context-label` | The readable scope/impact/editability block every environment editor renders before its controls (#180); the label is a small uppercase caption, the precedence sentence `muted` |
+
 ### Mobile navigation
 
 | Primitive | Classes | Use for |
@@ -240,8 +247,9 @@ Components:
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
+| `ConfigurationScope.tsx` | scope-context |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
-| `RepositorySetup.tsx` | panel, panel-head, table-wrap, data, pill, repo-search, status, muted, primary |
+| `RepositorySetup.tsx` | panel, panel-head, table-wrap, data, pill, repo-search, scope-context, status, muted, primary |
 | `repository-setup.ts` | helper — no markup |
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
@@ -283,9 +291,10 @@ Pages:
 | `OnboardingPage.tsx` | onboarding, panel, status, muted |
 | `SettingsExecutorsPage.tsx` | page-header, panel |
 | `SettingsLayout.tsx` | none — renders the outlet |
-| `SettingsOrganizationPage.tsx` | page-header, panel |
-| `SettingsRepositoriesPage.tsx` | page-header, repo-columns, status, muted |
-| `SettingsWorkspacePage.tsx` | page-header, panel, status, muted |
+| `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
+| `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |
+| `SettingsRepositoriesPage.tsx` | page-header, repo-columns, scope-context, status, muted |
+| `SettingsWorkspacePage.tsx` | page-header, scope-context, panel, status, muted |
 | `TaskComposerPage.tsx` | page-header, status |
 | `TaskDetailPage.tsx` | page-header, status |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |

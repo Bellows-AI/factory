@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_PREVIEW, NAV_ITEMS, SETTINGS_SECTIONS, countLabel, preview } from '../src/nav-model.js';
+import { MAX_PREVIEW, NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor, countLabel, preview } from '../src/nav-model.js';
 import type { TaskSummary } from '../src/api/useTasks.js';
 
 const entry = (id: string): TaskSummary => ({
@@ -34,6 +34,23 @@ describe('nav model', () => {
             ['/settings/repos', 'Repositories'],
             ['/settings/executors', 'Executors'],
         ]);
+    });
+
+    it('keeps the parent at /settings as the overview, with no duplicate child (#180)', () => {
+        // /settings IS a page now — the configuration overview. The parent link is its address,
+        // so the tree must not also grow an "Overview" child.
+        expect(NAV_ITEMS.some((item) => item.to === '/settings')).toBe(true);
+        expect(SETTINGS_SECTIONS.some((item) => item.to === '/settings')).toBe(false);
+        expect(SETTINGS_SECTIONS).toHaveLength(4);
+    });
+
+    it('marks /settings as the page only on the overview itself (#180)', () => {
+        expect(ariaCurrentFor({ to: '/settings', label: 'Settings' }, '/settings')).toBe('page');
+        // On a section page the parent is open but explicitly not the current page.
+        expect(ariaCurrentFor({ to: '/settings', label: 'Settings' }, '/settings/workspace')).toBe('false');
+        // Every other item lets the router decide.
+        expect(ariaCurrentFor({ to: '/', label: 'Dashboard' }, '/settings')).toBeUndefined();
+        expect(ariaCurrentFor({ to: '/tasks', label: 'Tasks' }, '/tasks')).toBeUndefined();
     });
 
     it('previews at most five entries, keeping the section order', () => {

@@ -184,10 +184,16 @@ The three editors (Core, My workspace, Per repository) live in the settings tree
 Settings → Organization, My workspace at Settings → Workspace, and Per repository at Settings →
 Repositories, each fed by `GET /api/env`
 on mount. **No polling**, because the list only changes when somebody edits it, and a poll would
-race the editors' draft state. Whole-list PUTs, the repos/executors idiom. The organization
-editor is admin-gated in the UI; the repository editor is any member's to edit (#181) — the
-server already accepted any installation member, and the old web-only gate was decoration over
-that contract.
+race the editors' draft state. Whole-list PUTs, the repos/executors idiom. Every role edits every
+scope: `PUT /api/env/org` and `PUT /api/env/repo` accept any member of the installation —
+membership is the one trust level (#99), and there is no admin tier — and `PUT /api/env/workspace`
+writes the caller's own rows, so the browser gates nothing the server does not. Issue #180 removed
+the earlier client-only `disabled` controls (a disabled browser control is not authorization, and
+these ones denied writes the server accepts) and had each editor state its scope truth first: what
+the scope applies to, who may edit it, and the organization < workspace < repository precedence
+(`ConfigurationScope`, echoed by the `/settings` overview's readiness items). If product policy
+ever narrows who writes, the server grows a tested `403` first, and only then does a page render a
+readable read-only view.
 
 Each editor is a draft over its scope (issue 182): one baseline, one local draft, and a canonical
 dirty comparison that looks only at the API payload shape — never React row ids, never row order
@@ -219,9 +225,9 @@ which is what blanks a typed secret and shows the stored truth — and keeps the
 confirmation alive (a `key` bump there was once the bug that ate it). On failure the draft is
 retained, the error renders as an alert that takes focus, and the inputs are untouched. The
 after-save GET keeps the configured repository editor's rows tracking the store; the editors that
-did not save keep their drafts, so a concurrent admin's write to another scope appears only on
-reload or repository switch — and that scope's next whole-list PUT clobbers it, the standing
-trade of draft survival.
+did not save keep their drafts, so a concurrent write to another scope appears only on reload or
+repository switch — and that scope's next whole-list PUT clobbers it, the standing trade of draft
+survival.
 
 While an editor is dirty, the settings layout guards it (#182): a `beforeunload` warning for the
 browser, a React Router blocker for in-app navigation (which is why `main.tsx` mounts a data
