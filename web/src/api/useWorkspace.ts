@@ -78,6 +78,20 @@ export function pollDelay(elapsedMs: number): number {
 }
 
 /**
+ * What a full executor row must look like for the dialog to be safe: it pre-fills from these rows
+ * and the page calls `.some()` on the list, so a 2xx body that is not that shape is refused as an
+ * error result, never handed on to throw in the render.
+ */
+const isExecutorFull = (row: unknown): row is WorkspaceExecutorFull =>
+    typeof row === 'object' &&
+    row !== null &&
+    typeof (row as WorkspaceExecutorFull).name === 'string' &&
+    typeof (row as WorkspaceExecutorFull).type === 'string' &&
+    typeof (row as WorkspaceExecutorFull).createdAt === 'string' &&
+    typeof (row as WorkspaceExecutorFull).config === 'object' &&
+    (row as WorkspaceExecutorFull).config !== null;
+
+/**
  * The one on-demand executor read — the dialog's only fetch. Module-level because it captures no
  * hook state: exported so the offline suite can pin the wire shape and its error handling, the
  * way `pollDelay` and `pollCompletedJobs` are.
@@ -98,8 +112,11 @@ export const listExecutorConfigs = async (): Promise<
                 error: body.error ?? `Could not load the executors (${response.status})`,
             };
         }
-        const body = (await response.json()) as { executors: WorkspaceExecutorFull[] };
-        return { ok: true as const, executors: body.executors };
+        const rows: unknown = ((await response.json()) as { executors?: unknown }).executors;
+        if (!Array.isArray(rows) || !rows.every(isExecutorFull)) {
+            return { ok: false as const, error: 'Could not load the executors: unexpected response shape.' };
+        }
+        return { ok: true as const, executors: rows };
     } catch (e) {
         return { ok: false as const, error: (e as Error).message };
     }

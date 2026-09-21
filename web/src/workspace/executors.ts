@@ -58,7 +58,16 @@ export type ValidExecutor = {
 
 export type ExecutorValidation = { ok: true; value: ValidExecutor } | { ok: false; error: string };
 
-export function validateExecutorConfig(raw: string, name: string, type: ExecutorType): ExecutorValidation {
+/**
+ * The config half of the validation, on its own: JSON that parses to an object, whatever the type
+ * requires inside it, under the size limit. The dialog's LIVE error under the textarea is this —
+ * and only this — so a missing name can never arrive attributed to the config field (issue 183
+ * review): the name is a different field with its own problem, and Save still runs the full
+ * `validateExecutorConfig` regardless.
+ */
+export type ExecutorPayloadValidation = { ok: true; value: object } | { ok: false; error: string };
+
+export function validateExecutorPayload(raw: string, type: ExecutorType): ExecutorPayloadValidation {
     const trimmed = raw.trim();
     if (!trimmed) return { ok: false, error: 'Paste the executor config as JSON.' };
 
@@ -72,11 +81,6 @@ export function validateExecutorConfig(raw: string, name: string, type: Executor
         return { ok: false, error: 'The config must be a JSON object, not a list or a scalar.' };
     }
 
-    const trimmedName = name.trim();
-    if (!trimmedName) return { ok: false, error: 'Give the executor a name.' };
-    if (/[/\\]/.test(trimmedName)) return { ok: false, error: 'The name cannot contain "/" or "\\".' };
-    if (/^[-.]/.test(trimmedName)) return { ok: false, error: 'The name cannot start with "-" or ".".' };
-
     for (const field of REQUIRED_FIELDS[type]) {
         if (!(field in parsed)) {
             return { ok: false, error: `The config for "${type}" must set "${field}".` };
@@ -87,7 +91,19 @@ export function validateExecutorConfig(raw: string, name: string, type: Executor
         return { ok: false, error: 'The config is too large (limit 32 KiB).' };
     }
 
-    return { ok: true, value: { name: trimmedName, type, config: parsed } };
+    return { ok: true, value: parsed };
+}
+
+export function validateExecutorConfig(raw: string, name: string, type: ExecutorType): ExecutorValidation {
+    const payload = validateExecutorPayload(raw, type);
+    if (!payload.ok) return payload;
+
+    const trimmedName = name.trim();
+    if (!trimmedName) return { ok: false, error: 'Give the executor a name.' };
+    if (/[/\\]/.test(trimmedName)) return { ok: false, error: 'The name cannot contain "/" or "\\".' };
+    if (/^[-.]/.test(trimmedName)) return { ok: false, error: 'The name cannot start with "-" or ".".' };
+
+    return { ok: true, value: { name: trimmedName, type, config: payload.value } };
 }
 
 /**

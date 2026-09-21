@@ -178,8 +178,16 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     await dialog.locator('textarea').fill('{ model: }');
     await expect(dialog.getByRole('button', { name: 'Add executor' })).toBeDisabled();
     await expect(dialog.locator('textarea')).toHaveValue('{ model: }');
+    await expect(dialog.locator('textarea')).toHaveAttribute('aria-invalid', 'true');
 
-    await dialog.locator('textarea').fill('{ "model": "sonnet" }');
+    // A name problem is not a config problem: with parseable JSON but no name, Save stays
+    // disabled and the textarea announces nothing — the error belongs to the name field.
+    await dialog.getByPlaceholder('main').fill('');
+    await dialog.locator('textarea').fill('{}');
+    await expect(dialog.getByRole('button', { name: 'Add executor' })).toBeDisabled();
+    await expect(dialog.locator('textarea')).not.toHaveAttribute('aria-invalid');
+
+    await dialog.getByPlaceholder('main').fill('main');
     await dialog.getByRole('button', { name: 'Add executor' }).click();
     await expect(dialog).toBeHidden();
 

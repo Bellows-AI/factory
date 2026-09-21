@@ -6,6 +6,7 @@ import {
     executorTypeLabel,
     mergeExecutors,
     validateExecutorConfig,
+    validateExecutorPayload,
     type ExecutorRow,
 } from '../workspace/executors.js';
 
@@ -70,8 +71,11 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
         // while the dialog is up, and re-seeding the fields mid-edit would discard typing.
     }, [open, editing]);
 
+    const payload = validateExecutorPayload(config, type);
     const validation = validateExecutorConfig(config, name, type);
-    const parseError = config.trim() && !validation.ok;
+    // The textarea's live error is the payload's — parse, object, size — never the name's: a
+    // blank name is announced against the name field, not as the config field's problem.
+    const parseError: string | null = config.trim() && !payload.ok ? payload.error : null;
 
     const save = async () => {
         if (!validation.ok) {
@@ -149,7 +153,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                         tied back to the textarea so a screen reader hears it as its error. */}
                     {parseError ? (
                         <p className="status" id="executor-config-error">
-                            {validation.error}
+                            {parseError}
                         </p>
                     ) : null}
 

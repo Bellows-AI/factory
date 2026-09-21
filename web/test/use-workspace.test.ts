@@ -33,6 +33,20 @@ describe('listExecutorConfigs', () => {
         });
     });
 
+    it('refuses a malformed success body instead of handing garbage to the dialog', async () => {
+        // The page calls .some() on the rows and the dialog pre-fills from them — a 2xx body
+        // without a real row list would throw in the render, not just look wrong.
+        const unexpected = 'Could not load the executors: unexpected response shape.';
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({})));
+        expect(await listExecutorConfigs()).toEqual({ ok: false, error: unexpected });
+
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ executors: 'two' })));
+        expect(await listExecutorConfigs()).toEqual({ ok: false, error: unexpected });
+
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ executors: [{ name: 'main', type: 'claude-code' }] })));
+        expect(await listExecutorConfigs()).toEqual({ ok: false, error: unexpected });
+    });
+
     it('hands a 401 to the session gate instead of rendering an error', async () => {
         const report = vi.spyOn(useSession, 'reportUnauthenticated').mockImplementation(() => {});
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, 401)));

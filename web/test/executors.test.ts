@@ -7,10 +7,39 @@ import {
     executorTypeLabel,
     mergeExecutors,
     validateExecutorConfig,
+    validateExecutorPayload,
     type ValidExecutor,
 } from '../src/workspace/executors.js';
 
 const valid = () => validateExecutorConfig('{ "model": "sonnet" }', 'main', 'claude-code');
+
+describe('validateExecutorPayload', () => {
+    // The dialog's live textarea error is the payload's — parse, object, per-type fields, size —
+    // and never the name's: a blank name must not arrive as the config field's problem.
+    it('accepts a JSON object regardless of the name', () => {
+        expect(validateExecutorPayload('{ "model": "sonnet" }', 'claude-code')).toEqual({
+            ok: true,
+            value: { model: 'sonnet' },
+        });
+    });
+
+    it('rejects paste that is not JSON, an empty paste, or a non-object', () => {
+        expect(validateExecutorPayload('{ model: }', 'claude-code').ok).toBe(false);
+        expect(validateExecutorPayload('   ', 'claude-code').ok).toBe(false);
+        expect(validateExecutorPayload('[]', 'opencode').ok).toBe(false);
+        expect(validateExecutorPayload('null', 'opencode').ok).toBe(false);
+    });
+
+    it('rejects a payload over the size limit', () => {
+        const big = JSON.stringify({ padding: 'x'.repeat(MAX_CONFIG_BYTES) });
+        expect(validateExecutorPayload(big, 'claude-code').ok).toBe(false);
+    });
+
+    it('stays name-agnostic: "{}" with no name anywhere is a valid payload', () => {
+        const result = validateExecutorPayload('{}', 'opencode');
+        expect(result).toEqual({ ok: true, value: {} });
+    });
+});
 
 describe('validateExecutorConfig', () => {
     it('accepts a plain object with a name and a known type', () => {
