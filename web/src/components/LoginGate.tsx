@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
+import { PublicPageHeader } from './PublicPageHeader.js';
 
 /** What the callback redirects back with when it could not sign somebody in. */
 const REASONS: Record<string, string> = {
@@ -38,22 +39,27 @@ export function LoginGate({ children }: { children: ReactNode }) {
     const returnTo = `${window.location.pathname}${window.location.hash}`;
 
     return (
-        <main className="login-gate">
-            <h1>Factory Stats</h1>
-            {error ? (
-                <p className="login-error">{error}</p>
-            ) : (
-                <p>Sign in with GitHub. The organizations you can see are the App installations.</p>
-            )}
-            {reason ? <p className="login-error">{REASONS[reason] ?? 'Sign-in failed.'}</p> : null}
-            {/*
-                A plain link, and it has to be. A `fetch` cannot follow a 302 to github.com, and a
-                <form method="get"> is blocked outright by `form-action 'none'` in the CSP — which is
-                worth keeping, so this stays an anchor.
-            */}
-            <a className="login-button" href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo)}`}>
-                Sign in with GitHub
-            </a>
-        </main>
+        <>
+            {/* The same compact chrome onboarding carries: one public product, two public pages
+                (issue 187). The actions cell stays empty here — the theme control lands in it later. */}
+            <PublicPageHeader />
+            <main className="login-gate">
+                <h1>Factory Stats</h1>
+                {error ? (
+                    <p className="login-error">{error}</p>
+                ) : (
+                    <p>Sign in with GitHub. The organizations you can see are the App installations.</p>
+                )}
+                {reason ? <p className="login-error">{REASONS[reason] ?? 'Sign-in failed.'}</p> : null}
+                {/*
+                    A plain link, and it has to be. A `fetch` cannot follow a 302 to github.com, and a
+                    <form method="get"> is blocked outright by `form-action 'none'` in the CSP — which is
+                    worth keeping, so this stays an anchor.
+                */}
+                <a className="login-button" href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo)}`}>
+                    Sign in with GitHub
+                </a>
+            </main>
+        </>
     );
 }

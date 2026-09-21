@@ -33,25 +33,38 @@ const pending: PendingSignInPayload = {
     returnTo: '/',
 };
 
+/** Checked org checkboxes — org selection is a checkbox; mode choices are radios, counted apart. */
+const checkedBoxes = (html: string) => html.match(/type="checkbox"[^>]*checked=""/g)?.length ?? 0;
+const checkedRadios = (html: string) => html.match(/type="radio"[^>]*checked=""/g)?.length ?? 0;
+
 describe('OnboardingPage', () => {
-    it('renders one pre-checked checkbox per reported installation, and the continue button', () => {
+    it('renders the setup decision: brand, context, one h1, purpose, identity, and the orgs', () => {
         const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
-        expect(html).toContain('The Octocat');
+        expect(html).toContain('public-brand');
+        expect(html).toContain('Factory');
+        expect(html).toContain('Setup · One step');
+        // Exactly one h1 in the loaded state, and it is the pinned one.
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('Choose organizations and repositories');
+        expect(html).toContain('Track agent activity, start work, and keep repository setup visible in one place.');
+        expect(html).toContain('The Octocat (@octocat)');
         expect(html).toContain('other-org');
         expect(html).toContain('acme');
         // Both arrive pre-checked: the default matches what sign-in did before the screen existed.
-        expect(html.match(/checked=""/g)?.length).toBe(2);
+        expect(checkedBoxes(html)).toBe(2);
         expect(html).toContain('Continue');
     });
 
-    it('says the choice is pre-checked on a reselect, and marks the asked-for org', () => {
+    it('marks the requested organization and renders the reselect context line', () => {
         const html = renderToStaticMarkup(
             <OnboardingPage payload={{ ...pending, selected: ['999999'], reselect: true, org: '999999' }} />
         );
-        expect(html).toContain('pre-checked');
-        expect(html).toContain('(asked for)');
+        expect(html).toContain('Requested for this sign-in');
+        expect(html).toContain(
+            'This replaces which organizations you enter Factory with. Repository modes change only where shown above.'
+        );
         // Only the stored choice arrives checked.
-        expect(html.match(/checked=""/g)?.length).toBe(1);
+        expect(checkedBoxes(html)).toBe(1);
     });
 
     it('never emits a placeholder value for an absent display name', () => {
@@ -62,26 +75,160 @@ describe('OnboardingPage', () => {
         expect(html).toContain('octocat');
     });
 
-    it('renders the loading shell while the pending sign-in is being fetched, with no placeholder', () => {
+    it('renders the loading shell while the pending sign-in is being fetched', () => {
         // No payload and no fetch under react-dom/server: the loading shell is all there is.
         const html = renderToStaticMarkup(<OnboardingPage />);
-        expect(html).toContain('Choose what to track');
-        expect(html).toContain('Loading…');
+        expect(html).toContain('Choose organizations and repositories');
+        expect(html).toContain('onboarding-loading');
+        // A placeholder enables no action and invents no rows.
+        expect(html).not.toContain('Continue');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
 
-describe('StartAgainPanel', () => {
-    it('offers the restart link, carrying the return path through the new round trip', () => {
+describe('OnboardingPage state recovery (issue 187)', () => {
+    it('the expired state keeps the page shape and states that nothing was saved', () => {
         const html = renderToStaticMarkup(<StartAgainPanel returnTo="/settings" />);
         expect(html).toContain('That sign-in expired.');
+        expect(html).toContain('Nothing was saved.');
         expect(html).toContain('href="/api/auth/github?returnTo=%2Fsettings"');
     });
 
-    it('falls back to the root when no return path survived', () => {
+    it('the restart link falls back to the root when no return path survived', () => {
         const html = renderToStaticMarkup(<StartAgainPanel />);
         expect(html).toContain('href="/api/auth/github?returnTo=%2F"');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('a defensive zero-installation payload explains itself and offers Start again', () => {
+        const html = renderToStaticMarkup(<OnboardingPage payload={{ ...pending, installations: [], selected: [] }} />);
+        expect(html).toContain('No GitHub App installation');
+        expect(html).toContain('Start again');
+        expect(html).toContain('href="/api/auth/github?returnTo=%2F"');
+        expect(html).not.toContain('Continue');
+    });
+});
+
+describe('OnboardingPage explicit repository mode (issue 187)', () => {
+    it('renders the mode radios with their pinned helpers inside every selected organization', () => {
+        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        expect(html).toContain('Repository tracking');
+        expect(html).toContain('All current and future repositories');
+        expect(html).toContain('Automatically include repositories this GitHub App installation reports later.');
+        expect(html).toContain('Choose specific repositories');
+        expect(html).toContain(
+            'Only the repositories selected below are tracked; new repositories are not added automatically.'
+        );
+        // Two selected orgs, each arriving all-mode: the all radio is the checked one.
+        expect(checkedRadios(html)).toBe(2);
+    });
+
+    it('a deselected organization reveals no mode radios', () => {
+        const html = renderToStaticMarkup(
+            <OnboardingPage payload={{ ...pending, selected: ['999999'], org: '999999' }} />
+        );
+        expect(checkedRadios(html)).toBe(1);
+        expect(html.match(/type="radio"/g)?.length).toBe(2);
+    });
+
+    it('carries no installation id in the markup and never renders a form', () => {
+        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        expect(html).not.toContain('888888');
+        expect(html).not.toContain('999999');
+        expect(html).not.toContain('<form');
+    });
+
+    it('renders the access note and the selection summary between the orgs and the action', () => {
+        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        // DOM order: access note before summary before the action region.
+        const note = html.indexOf('GitHub sign-in provides your identity and organization membership.');
+        const summary = html.indexOf('Your selection');
+        const action = html.indexOf('onboarding-actions');
+        expect(note).toBeGreaterThan(-1);
+        expect(summary).toBeGreaterThan(note);
+        expect(action).toBeGreaterThan(summary);
+        expect(html).toContain(
+            'This choice changes what Factory tracks, not your GitHub permissions.'
+        );
+        // Every org is accounted for, by name and mode, and the requested org is the active one.
+        expect(html).toContain('2 organizations selected');
+        expect(html).toContain('All current and future repositories');
+    });
+
+    it('the zero-organizations state disables Continue with its visible reason', () => {
+        const html = renderToStaticMarkup(<OnboardingPage payload={{ ...pending, selected: [] }} />);
+        expect(html).toContain('Choose at least one organization to continue.');
+        expect(html).toContain('aria-disabled="true"');
+        expect(html).toContain('Continue');
+    });
+
+    it('the ready state enables Continue and the summary names the exact payload', () => {
+        const html = renderToStaticMarkup(<OnboardingPage payload={pending} />);
+        expect(html).not.toContain('aria-disabled="true"');
+        expect(html).toContain('Continue');
+    });
+});
+
+describe('OnboardingPage listings (issue 187)', () => {
+    const LISTING: RepoListing = { repos: ['acme/web', 'acme/other'], source: 'app' };
+
+    it('seeds a stored narrowing intersected with the live listing, specific and counted', () => {
+        const stale: PendingSignInPayload = {
+            ...pending,
+            installations: [{ id: '999999', account: 'acme', tracked: ['acme/gone', 'acme/web'] }],
+            selected: ['999999'],
+        };
+        const html = renderToStaticMarkup(<OnboardingPage payload={stale} listings={{ 999999: LISTING }} />);
+        expect(html).toContain('acme/web');
+        expect(html).toContain('acme/other');
+        // The stale stored name has no checkbox anywhere — and no checkbox can carry it.
+        expect(html).not.toContain('acme/gone');
+        // The org (selected) plus its one surviving stored repo arrive checked; the specific
+        // radio is the org's checked mode choice.
+        expect(checkedBoxes(html)).toBe(2);
+        expect(checkedRadios(html)).toBe(1);
+        expect(html).toContain('1 of 2 repositories selected');
+        expect(html).toContain('1 specific repository');
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('a fully-stale specific selection stands at nothing and says what to do about it', () => {
+        const stale: PendingSignInPayload = {
+            ...pending,
+            installations: [{ id: '999999', account: 'acme', tracked: ['acme/gone'] }],
+            selected: ['999999'],
+        };
+        const html = renderToStaticMarkup(<OnboardingPage payload={stale} listings={{ 999999: LISTING }} />);
+        expect(html).not.toContain('acme/gone');
+        expect(html).toContain('Select at least one repository, switch to all repositories, or deselect');
+        expect(html).toContain('aria-disabled="true"');
+    });
+
+    it('an unavailable listing never renders an empty checklist, in either mode', () => {
+        const NONE: RepoListing = { repos: [], source: 'none' };
+        const html = renderToStaticMarkup(
+            <OnboardingPage
+                payload={{
+                    ...pending,
+                    installations: [
+                        { id: '888888', account: 'other-org', tracked: null },
+                        { id: '999999', account: 'acme', tracked: ['acme/web'] },
+                    ],
+                    selected: ['888888', '999999'],
+                }}
+                listings={{ 888888: NONE, 999999: NONE }}
+            />
+        );
+        expect(html).toContain(
+            'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
+        );
+        expect(html).toContain(
+            'Your existing specific selection is preserved, but it cannot be reviewed right now. Try again before changing repository scope.'
+        );
+        expect(html.match(/type="checkbox"/g)?.length).toBe(2); // org checkboxes only
+        expect(html).toContain('Retry');
+        // Nothing reviewable → nothing invalid: the payload still completes.
+        expect(html).not.toContain('aria-disabled="true"');
     });
 });
 
@@ -112,7 +259,7 @@ describe('seeding from a stored narrowing (#135 review)', () => {
         expect(html).not.toContain('acme/gone');
         // The org (selected) plus its one surviving stored repo; 'acme/other' is listed but
         // unstored, so unchecked.
-        expect(html.match(/checked=""/g)?.length).toBe(2);
+        expect(checkedBoxes(html)).toBe(2);
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
@@ -178,15 +325,15 @@ describe('explicit repository mode (issue 187)', () => {
         // Widening: the stored narrowing arrives specific, the person explicitly chooses all.
         const widened = withMode(one({ id: '999999', account: 'acme', tracked: ['acme/web'] }, LISTING), 'all');
         expect(widened.widenedToAll).toBe(true);
-        expect(buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', widened]])).repos[
-            '999999'
-        ]).toEqual([]);
+        expect(
+            buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', widened]])).repos[
+                '999999'
+            ]
+        ).toEqual([]);
         // Untouched all mode: no key — "track everything, future included" is the absence of a
         // narrowing, not today's list pinned as one.
         const fresh = one({ id: '888888', account: 'other-org', tracked: null });
-        expect(
-            buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', fresh]])).repos
-        ).toEqual({});
+        expect(buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', fresh]])).repos).toEqual({});
     });
 
     it('all checked in specific stays specific — the full name list is sent, never []', () => {
@@ -218,23 +365,21 @@ describe('explicit repository mode (issue 187)', () => {
         const draft = one({ id: '999999', account: 'acme', tracked: ['acme/web'] }, { repos: [], source: 'none' });
         expect(draft.mode).toBe('specific');
         expect(draft.chosen).toEqual(new Set(['acme/web']));
-        expect(
-            buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', draft]])).repos
-        ).toEqual({});
+        expect(buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', draft]])).repos).toEqual({});
         // Same for an all-mode org whose listing cannot be read: all mode stands, no key.
         const all = one({ id: '888888', account: 'other-org', tracked: null }, { repos: [], source: 'none' });
         expect(all.mode).toBe('all');
-        expect(
-            buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', all]])).repos
-        ).toEqual({});
+        expect(buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', all]])).repos).toEqual({});
     });
 
     it('a deselected organization contributes no org and no repo key, whatever its draft says', () => {
         const widened = withMode(one(INSTALLATIONS[1]!, LISTING), 'all');
-        expect(buildCompletionPayload(INSTALLATIONS, new Set(['888888']), new Map([
-            ['888888', one(INSTALLATIONS[0]!)],
-            ['999999', widened],
-        ]))).toEqual({ orgs: ['888888'], repos: {} });
+        expect(
+            buildCompletionPayload(INSTALLATIONS, new Set(['888888']), new Map([
+                ['888888', one(INSTALLATIONS[0]!)],
+                ['999999', widened],
+            ]))
+        ).toEqual({ orgs: ['888888'], repos: {} });
     });
 
     it('a failed listing keeps the draft and posts no key', () => {
@@ -242,9 +387,7 @@ describe('explicit repository mode (issue 187)', () => {
         expect(failed.listing).toEqual({ kind: 'failed' });
         expect(failed.mode).toBe('specific');
         expect(failed.chosen).toEqual(new Set(['acme/web']));
-        expect(
-            buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', failed]])).repos
-        ).toEqual({});
+        expect(buildCompletionPayload([INSTALLATIONS[1]!], new Set(['999999']), new Map([['999999', failed]])).repos).toEqual({});
     });
 
     it('reconciliation on a refreshed listing drops stale names but never the mode', () => {
@@ -259,15 +402,19 @@ describe('explicit repository mode (issue 187)', () => {
     it('the first invalid group is a selected, ready, zero-chosen specific org — nothing else', () => {
         const readyEmpty = withChosen(one({ id: '999999', account: 'acme', tracked: ['acme/web'] }, LISTING), 'acme/web');
         expect(readyEmpty.chosen.size).toBe(0);
-        expect(firstInvalidOrg(INSTALLATIONS, new Set(['888888', '999999']), new Map([
-            ['888888', one(INSTALLATIONS[0]!)],
-            ['999999', readyEmpty],
-        ]))).toBe('999999');
+        expect(
+            firstInvalidOrg(INSTALLATIONS, new Set(['888888', '999999']), new Map([
+                ['888888', one(INSTALLATIONS[0]!)],
+                ['999999', readyEmpty],
+            ]))
+        ).toBe('999999');
         // Unselected: the group is invisible to validation.
-        expect(firstInvalidOrg(INSTALLATIONS, new Set(['888888']), new Map([
-            ['888888', one(INSTALLATIONS[0]!)],
-            ['999999', readyEmpty],
-        ]))).toBeNull();
+        expect(
+            firstInvalidOrg(INSTALLATIONS, new Set(['888888']), new Map([
+                ['888888', one(INSTALLATIONS[0]!)],
+                ['999999', readyEmpty],
+            ]))
+        ).toBeNull();
         // Preserved-not-reviewable: a specific group without a listing is never "empty".
         const idleEmpty = one({ id: '999999', account: 'acme', tracked: [] });
         expect(idleEmpty.chosen.size).toBe(0);
