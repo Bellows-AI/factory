@@ -27,6 +27,21 @@ import {
 } from '../src/publish.js';
 import { bellowsReadScript } from '../src/services.js';
 import {
+    BODY_MAX,
+    DIFF_HUNK_MAX,
+    ERROR_MAX,
+    GENERAL_LIMIT,
+    INLINE_LIMIT,
+    PLAN_BYTES_MAX,
+    PLAN_TARGETS_MAX,
+    REVIEWS_LIMIT,
+    THREADS_LIMIT,
+    TOTAL_OUTPUT_BYTES,
+    TRUNCATED_MARKER,
+    reviewCollectScript,
+    reviewReplyScript,
+} from '../src/review.js';
+import {
     claudeTurnsScript,
     opencodeCacheProbeScript,
     opencodeReadoutScript,
@@ -87,6 +102,8 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['remote-session.sh', 'sh'],
+    ['review-collect.cjs', 'node'],
+    ['review-reply.cjs', 'node'],
 ];
 
 const pathOf = (name: string): string => join(SCRIPTS_DIR, name);
@@ -133,6 +150,53 @@ describe('the container scripts', () => {
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(remoteSessionScript).toBe(readFileSync(pathOf('remote-session.sh'), 'utf8'));
+        expect(reviewCollectScript).toBe(readFileSync(pathOf('review-collect.cjs'), 'utf8'));
+        expect(reviewReplyScript).toBe(readFileSync(pathOf('review-reply.cjs'), 'utf8'));
+    });
+
+    // The review scripts are not yet loaded by any argv builder, so a byte pin through a
+    // (dormant) constant is the whole seam. The caps they enforce are duplicated as literals in
+    // the scripts AND as the exported constants this module hands to orchestration: a cap drift
+    // in either direction changes what a container truncates versus what the planner promises, so
+    // the shared caps have to agree literal by literal.
+    it('pins the review cap literals to the exported constants', () => {
+        const capsOf = (name: string): Record<string, string> => {
+            const src = readFileSync(pathOf(name), 'utf8');
+            const caps: Record<string, string> = {};
+            for (const m of src.matchAll(/^const ([A-Z_]+) = (.+);$/gm)) caps[m[1]!] = m[2]!;
+            return caps;
+        };
+        const evalCap = (rhs: string): unknown => new Function(`return (${rhs})`)();
+        const collect = capsOf('review-collect.cjs');
+        const reply = capsOf('review-reply.cjs');
+        const collectOnly: Array<[string, unknown]> = [
+            ['BODY_MAX', BODY_MAX],
+            ['DIFF_HUNK_MAX', DIFF_HUNK_MAX],
+            ['GENERAL_LIMIT', GENERAL_LIMIT],
+            ['INLINE_LIMIT', INLINE_LIMIT],
+            ['REVIEWS_LIMIT', REVIEWS_LIMIT],
+            ['THREADS_LIMIT', THREADS_LIMIT],
+            ['TOTAL_OUTPUT_BYTES', TOTAL_OUTPUT_BYTES],
+        ];
+        const replyOnly: Array<[string, unknown]> = [
+            ['PLAN_TARGETS_MAX', PLAN_TARGETS_MAX],
+            ['PLAN_BYTES_MAX', PLAN_BYTES_MAX],
+        ];
+        const shared: Array<[string, unknown]> = [
+            ['ERROR_MAX', ERROR_MAX],
+            ['TRUNCATED_MARKER', TRUNCATED_MARKER],
+        ];
+        const check = (caps: Record<string, string>, name: string, value: unknown, where: string) => {
+            expect(caps[name], `${name} in ${where}`).toBeDefined();
+            expect(evalCap(caps[name]!), `${name} in ${where}`).toEqual(value);
+        };
+        for (const [name, value] of collectOnly) check(collect, name, value, 'collect');
+        for (const [name, value] of replyOnly) check(reply, name, value, 'reply');
+        for (const [name, value] of shared) {
+            check(collect, name, value, 'collect');
+            check(reply, name, value, 'reply');
+        }
+        expect(collect['TOTAL_OUTPUT_BYTES']).toBe('256 * 1024');
     });
 
     // The credential helper runs exactly as git spawns it (gitcredentials(7)): a `!`-prefixed
