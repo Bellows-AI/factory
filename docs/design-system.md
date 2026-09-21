@@ -47,13 +47,14 @@ literal may appear. Base palette from issue 148 (the andon board), in `oklch`:
 | `--ink-muted` | Secondary foreground: labels, captions, ticks, disabled text | `oklch(0.73 0.014 250)` | `oklch(0.45 0.02 250)` |
 | `--ink-inverse` | Foreground on an accent fill | `oklch(0.19 0.012 250)` | `oklch(0.975 0.004 250)` |
 | `--accent` | The one blue: "a human is needed here", links, active controls, focus rings | `oklch(0.74 0.12 240)` | `oklch(0.52 0.16 250)` |
-| `--lamp-run` | Running / ready — the green lamp | `oklch(0.80 0.17 150)` | `oklch(0.58 0.15 150)` |
-| `--lamp-wait` | Queued / stopping / in flight — the amber lamp | `oklch(0.84 0.15 85)` | `oklch(0.70 0.15 75)` |
+| `--lamp-run` | Running / ready — the green lamp | `oklch(0.80 0.17 150)` | `oklch(0.52 0.15 150)` |
+| `--lamp-wait` | Queued / stopping / in flight — the amber lamp | `oklch(0.84 0.15 85)` | `oklch(0.54 0.14 75)` |
 | `--lamp-stop` | Failed / loud — the red lamp | `oklch(0.69 0.20 25)` | `oklch(0.56 0.21 27)` |
 | `--lamp-done` | Parked marks, done dots — the grey lamp | `oklch(0.66 0.03 250)` | `oklch(0.58 0.03 250)` |
 
-Derived tokens, mixed per theme with `color-mix(in oklab, …)` — the recipes are identical in
-both blocks and read against that block's tokens:
+Derived tokens, mixed per theme with `color-mix(in oklab, …)` — each recipe reads against that
+block's tokens, and where a pair's contrast demands it the two blocks deliberately diverge (the
+`--on-*` rows below say which):
 
 | Token | Role | Recipe |
 | --- | --- | --- |
@@ -61,8 +62,8 @@ both blocks and read against that block's tokens:
 | `--ok-border` | Status-tinted edge for a run state (pills, quiet banners) | lamp-run 30% over surface-raised |
 | `--warn-border` | Status-tinted edge for a wait state | lamp-wait 30% over surface-raised |
 | `--bad-border` | Status-tinted edge for a stop state | lamp-stop 30% over surface-raised |
-| `--on-warn` | Foreground on a lamp-wait fill (dark text) | black 88% over lamp-wait |
-| `--on-bad` | Foreground on a lamp-stop fill (light text, as in the pre-theme set) | white 92% over lamp-stop |
+| `--on-warn` | Foreground on a lamp-wait fill | dark: black 88% over lamp-wait · light: `var(--ink-inverse)` — the light theme's deep amber cannot carry a darker ink at AA |
+| `--on-bad` | Foreground on a lamp-stop fill | dark: black 88% over lamp-stop (the dark theme's red is bright enough to wash light text below AA) · light: white 92% over lamp-stop |
 | `--chart-grid` | Chart gridlines — a step behind `--line` (lines behind data, not edges) | line 60% over surface |
 | `--chart-primary` | Chart series fill and its legend swatch | accent 70% over black |
 | `--lamp-glow` | The halo behind a breathing lamp | currentColor 26% over transparent |
@@ -94,6 +95,43 @@ Rules the token set carries:
 - **Tokens with no call site do not exist.** The suite fails on a defined-but-unused token
   (`--ink-faint` was pruned for exactly this; `--line-strong` stays because the picker's edge
   uses it).
+
+## Type, targets, motion, forced colors
+
+The application-wide interaction contracts (issue 189). `web/test/styles.test.ts` pins them as
+static suites; `e2e/polish.spec.ts` measures the rendered values in both themes.
+
+- **Type floors.** Decision-bearing text — navigation, task information, form labels and
+  helpers, statuses, metadata — never renders under 12px; buttons, inputs, selects and tabs
+  carry 14px through `font: inherit`. The one documented exception is `.tick`: the narrowest
+  plot's mono ticks sit at 11px, with collision covered by the overflow matrix; chart axis
+  labels stay at 12px. Muted text renders its token bare — no extra `opacity` on top, or the
+  audited pair is not the rendered one.
+- **Control sizes.** Desktop controls clear 36px in height: the `button` element, non-checkbox
+  `input`/`select` (a base-layer floor — there is no global input skin), and the `.inbox-tab`
+  links. `.toolbar-value` is exempt — it echoes a value, it is not a control. Sidenav links are
+  prose navigation, and inline prose links are exempt everywhere. At ≤900px the compact shell's
+  control list (navigation, filters, task actions, dialog actions, editor tabs, composer
+  controls) clears 44px — the smallest reliable finger target; new mobile-visible controls join
+  that one rule.
+- **Focus.** The shared ring is a two-pixel accent outline with a two-pixel gap, applied to
+  every focusable control through a zero-specificity `:where(...):focus-visible` rule so
+  self-skinned primitives never have to fight it. The chart's `.bucket-hit` paints its own
+  accent stroke — the ring's equivalent on an SVG rect. The skip link is the first stop and
+  lands on `#main-content`.
+- **Motion.** One ambient animation exists — the breathing running/stopping lamp. Under
+  `prefers-reduced-motion: reduce` it stills at full strength: the classes keep their color,
+  shape, halo and adjacent text, so no state ever rides on the movement. There are no CSS
+  transitions: state changes are instantaneous, and none may be added through intermediate
+  color sweeps.
+- **Forced colors.** Under `forced-colors: active` the system repaint carries the UI — tokens
+  resolve, borders and fills survive. The one casualty is the accent ring, whose color is
+  pinned to the system highlight so keyboard focus stays visible.
+- **Deliberately decorative pairs.** Chart gridlines (`--chart-grid`, ~1.2–1.5:1) and the
+  `--line`/`--line-strong` hairlines (~1.3–2.3:1) sit below the 3:1 boundary threshold on
+  purpose: gridlines carry no data, and a hairline never carries meaning alone — grouping comes
+  from the sunken fill, the label, or the text beside it. Status meaning rides on text plus
+  tint, never tint alone.
 
 ## Primitives
 
