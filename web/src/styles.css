@@ -335,6 +335,7 @@
     .inbox-sort {
         align-items: center;
         display: flex;
+        flex-wrap: wrap;
         gap: 4px;
     }
 
@@ -393,7 +394,15 @@
         border-bottom: 1px solid var(--line);
         column-gap: 12px;
         display: grid;
-        grid-template-columns: 170px minmax(200px, 1fr) 180px 110px 90px;
+        /* Fluid fixed tracks: each metadata column keeps its desktop width while space allows
+           and gives some back around the shell's 900–1024 stretch, where the persistent nav
+           leaves too little for the old all-fixed sum — the columns shrank, the page did not
+           scroll (issue 190). */
+        grid-template-columns:
+            minmax(120px, 170px) minmax(200px, 1fr) minmax(120px, 180px) minmax(80px, 110px) minmax(
+                60px,
+                90px
+            );
         padding: 8px 4px;
         row-gap: 4px;
     }
