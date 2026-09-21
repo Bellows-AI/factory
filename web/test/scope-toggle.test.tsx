@@ -82,7 +82,9 @@ describe('dashboard scope toggle', () => {
     it('renders beside the range selector when the session reports a signed-in member', () => {
         const html = renderPage(session('github'));
         expect(html).toContain('range-presets');
-        expect(html).toContain('scope-label'); // the RadioGroup is labelled by the visible Scope text
+        // aria-label, not aria-labelledby: the RadioGroup's label context overrides a labelledby
+        // that points outside it, so the old wiring rendered an unnamed group (issue 190).
+        expect(html).toContain('aria-label="Scope"'); // the RadioGroup is named for the visible Scope text
         expect(html).toContain('Me');
     });
 
