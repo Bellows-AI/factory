@@ -151,7 +151,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Appearance | `public-header`, `theme-field`, `theme-label`, `theme-select` | The one System/Light/Dark select (native, keyboard-complete), worn by the app bar and the public header rows; the label is clipped below 640px while the accessible name stays |
+| Appearance | `theme-field`, `theme-label`, `theme-select` | The one System/Light/Dark select (native, keyboard-complete), worn by the app bar and the public header's actions cell; the label is clipped below 640px while the accessible name stays |
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
@@ -163,7 +163,8 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
 | Org | `org-selector`, `org-select` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
-| Onboarding | `onboarding`, `onboarding-orgs`, `onboarding-org`, `onboarding-repos` | The sign-in selection screen (#125): the centered column, the org checkbox list, one org's bordered row and its repo checkboxes |
+| Public header | `public-header`, `public-brand`, `public-context`, `public-header-actions` | The compact chrome both public pages (gate, onboarding) carry: the Factory brand, one context word, and the actions cell, which holds the theme control (issue 187; the appearance control arrived in issue 188). No navigation, no session, no `h1` — each page owns its one heading |
+| Onboarding | `onboarding`, `onboarding-purpose`, `onboarding-identity`, `onboarding-orgs`, `onboarding-org`, `onboarding-org-head`, `onboarding-org-name`, `onboarding-org-mark`, `onboarding-requested`, `onboarding-org-details`, `onboarding-org-summary`, `onboarding-mode`, `onboarding-mode-option`, `onboarding-mode-help`, `onboarding-repos`, `onboarding-repo`, `onboarding-repo-count`, `onboarding-note`, `onboarding-summary`, `onboarding-summary-total`, `onboarding-summary-rows`, `onboarding-summary-row`, `onboarding-actions`, `onboarding-loading`, `onboarding-loading-line` | The setup screen (issue 125, recomposed by issue 187): the centered column, the org checkbox list with each org's initial identity mark and its `Requested for this sign-in` mark, one org's bordered row — a focus target for a blocked attempt, never a click target — whose disclosure summary names the org's repository mode while collapsed, the explicit mode radios with their helpers, the specific-mode checklist with its `N of M` count, the access note, the final selection summary, and the action region (global error, disabled reason, Continue). `onboarding-loading` shapes the pending-load placeholders: static rows and a status line, no shimmer |
 | User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar's identity disclosure (Headless UI Menu) |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
 | Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox executor picker; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay`. The `dialog-*` shell is shared with the dialogs below |
@@ -260,8 +261,10 @@ Components:
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login, appearance, public-header |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
+| `OnboardingOrganization.tsx` | onboarding |
 | `OrgSelector.tsx` | org |
 | `PageHeader.tsx` | page-header |
+| `PublicPageHeader.tsx` | public-header |
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
 | `ConfigurationScope.tsx` | scope-context |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
@@ -305,7 +308,7 @@ Pages:
 | --- | --- |
 | `AccountPage.tsx` | page-header, panel |
 | `DashboardPage.tsx` | page-header, dashboard-controls |
-| `OnboardingPage.tsx` | onboarding, appearance, public-header, panel, status, muted |
+| `OnboardingPage.tsx` | onboarding, appearance, public-header, status, muted, avatar, login-button, primary |
 | `SettingsExecutorsPage.tsx` | page-header, panel, status, muted |
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |

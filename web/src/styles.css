@@ -1242,6 +1242,34 @@
 
     /* Both screens live outside the shell, so the `.page` container never wraps them: they carry
         the page gutters themselves, which the old global `main` rule used to supply. */
+
+    /* The public-page header (issue 187): Factory brand, one context word, and the actions cell,
+       which carries the theme control (issue 188). Shared by the gate and onboarding — the one
+       chrome a page renders before any session exists. */
+    .public-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 24px;
+    }
+
+    .public-brand {
+        font-weight: 600;
+        letter-spacing: 0.02em;
+    }
+
+    .public-context {
+        color: var(--ink-muted);
+        font-size: 13px;
+    }
+
+    .public-header-actions {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
     .login-gate {
         display: flex;
         flex-direction: column;
@@ -1278,19 +1306,10 @@
         border-color: var(--accent);
     }
 
-    /* The public header row (issue 188): the appearance control rides the top edge of both public
-       pages — gate and onboarding — end-aligned, until the shared header of issue 187 absorbs
-       the placement. `align-self` beats the gate's centered column; onboarding stretches anyway. */
-    .public-header {
-        align-self: stretch;
-        display: flex;
-        justify-content: flex-end;
-    }
-
     /* The appearance control (issue 188): the one System/Light/Dark preference select, worn by
-       the app bar and the public header row alike. Sunken like every other form control; the
-       focus ring comes from the global `:focus-visible` rule, and `color-scheme` in the theme
-       blocks paints the native popup without a rule of its own. */
+       the app bar and the public header's actions cell alike. Sunken like every other form
+       control; the focus ring comes from the global `:focus-visible` rule, and `color-scheme`
+       in the theme blocks paints the native popup without a rule of its own. */
     .theme-field {
         align-items: center;
         display: flex;
@@ -1327,15 +1346,29 @@
 
     /* --- Sign-in onboarding ------------------------------------------------------------------- */
 
-    /* The selection screen (issue 125): a centered column, narrower than the shell, because it renders
-       before any session exists and carries one decision, not a dashboard. */
+    /* The setup screen (issue 125, recomposed by issue 187): a centered column, narrower than the
+       shell, because it renders before any session exists and carries one decision, not a
+       dashboard. The public header sits above it, so the column starts lower. */
     .onboarding {
         display: flex;
         flex-direction: column;
         gap: 16px;
         max-width: 560px;
-        margin: 8vh auto 0;
+        margin: 4vh auto 0;
         padding: 24px;
+    }
+
+    .onboarding-purpose {
+        margin: -8px 0 0;
+        color: var(--ink-muted);
+    }
+
+    /* The signed-in person: avatar (or its initial fallback) and the name sign-in reported. */
+    .onboarding-identity {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--ink-muted);
     }
 
     .onboarding-orgs {
@@ -1354,12 +1387,206 @@
         background: var(--surface);
     }
 
+    /* Focus lands here after a blocked attempt — the row is a focus target, not a click one. */
+    .onboarding-org:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
+    .onboarding-org-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .onboarding-org-name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 24px;
+    }
+
+    /* The org's identity mark: the account's initial, when no avatar is reported. */
+    .onboarding-org-mark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        font-size: 12px;
+    }
+
+    .onboarding-requested {
+        color: var(--ink-muted);
+        font-size: 13px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 1px 8px;
+    }
+
+    .onboarding-org-summary {
+        margin-top: 6px;
+        color: var(--ink-muted);
+        cursor: pointer;
+    }
+
+    .onboarding-mode {
+        margin: 8px 0 0;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+    }
+
+    .onboarding-mode legend {
+        color: var(--ink-muted);
+        font-size: 13px;
+        padding: 0 4px;
+    }
+
+    .onboarding-mode-option {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        column-gap: 8px;
+        align-items: baseline;
+    }
+
+    .onboarding-mode-option input {
+        align-self: center;
+    }
+
+    .onboarding-mode-help {
+        grid-column: 2;
+        margin: 0;
+        color: var(--ink-muted);
+        font-size: 13px;
+    }
+
     .onboarding-repos {
         margin-top: 8px;
         padding-left: 16px;
         display: flex;
         flex-direction: column;
         gap: 4px;
+    }
+
+    .onboarding-repo {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 24px;
+        overflow-wrap: anywhere;
+    }
+
+    .onboarding-repo-count {
+        margin: 8px 0 0;
+        color: var(--ink-muted);
+        font-size: 13px;
+    }
+
+    /* The plain-language access note and the final summary: the decision and its consequence,
+       read top to bottom (issue 187). */
+    .onboarding-note {
+        margin: 0;
+        color: var(--ink-muted);
+        border-left: 2px solid var(--line);
+        padding-left: 12px;
+    }
+
+    .onboarding-summary h2 {
+        font-size: 15px;
+        margin: 0 0 4px;
+    }
+
+    .onboarding-summary-total {
+        margin: 0 0 4px;
+        color: var(--ink-muted);
+        font-size: 13px;
+    }
+
+    .onboarding-summary-rows {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .onboarding-summary-row {
+        display: flex;
+        flex-wrap: wrap;
+        column-gap: 8px;
+        padding: 2px 0;
+    }
+
+    .onboarding-summary-row span:first-child {
+        font-weight: 600;
+    }
+
+    /* The action region: global error, disabled reason, and Continue — the last thing on the
+       page in both reading and focus order. It is a programmatic focus target after a refused
+       submission, so it keeps the browser's focus ring: keyboard users must see where focus
+       was placed. */
+    .onboarding-actions {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .onboarding-actions button {
+        min-width: 140px;
+        min-height: 44px;
+    }
+
+    /* The pending-load placeholders: static blocks shaped like the identity and organization
+       rows they stand in for — labeled by the status line, no shimmer, no invented names. */
+    .onboarding-loading {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .onboarding-loading-line {
+        height: 44px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--surface);
+    }
+
+    .onboarding-loading-line:first-child {
+        width: 40%;
+    }
+
+    @media (max-width: 640px) {
+        /* Narrow: the choice reads top to bottom — checkbox and name on one row, mode radios and
+           checklists stacked under them, every control a 44px target, nothing sideways (issue 187). */
+        .onboarding {
+            padding: 16px;
+        }
+
+        .onboarding-org {
+            padding: 10px;
+        }
+
+        .onboarding-org-name,
+        .onboarding-repo,
+        .onboarding-mode-option {
+            min-height: 44px;
+        }
+
+        .onboarding-mode-option {
+            grid-template-columns: auto 1fr;
+            align-items: center;
+        }
     }
 
     /* --- Shell -------------------------------------------------------------------------------- */

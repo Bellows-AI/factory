@@ -189,6 +189,17 @@ Plus `GET /api/auth/github/setup` (the App's Setup URL target), `POST /api/auth/
   anything is materialized, so only one of two completions racing the same cookie can get past it —
   expires in ten minutes, is reaped at boot — and its read spends an expired row on sight, so a
   stale cookie can never complete even before the reaper runs.
+- **Repository scope is an explicit per-org choice on the screen (issue 187).** Every selected
+  organization answers two radios — *all current and future repositories* or *a specific list* —
+  seeded from its stored narrowing (`tracked: null` arrives all-mode, an array arrives specific,
+  intersected with the live listing). The mode is a decision, never an inference: checking every
+  repository of a specific choice leaves it specific, future repositories excluded — the old
+  all-checkboxes-checked widening heuristic is gone. The POST speaks that same language: an
+  untouched all-mode org omits its `repos` key entirely, the only `[]` is the explicit widening
+  move, a ready specific group posts its non-empty full names, and a group whose listing could
+  not be read omits its key too — the stored narrowing stands rather than being widened because
+  a read failed. The API itself is unchanged: `repos` keys remain optional per org, and `[]`
+  still means "clear any narrowing".
 - **The screen is a first-sign-in affair; changing the choice is a re-run (#125).** The stored
   choice is the membership set, so an account that has one signs straight in — re-prompting every
   sign-in would be hostile. There is deliberately no in-place editor on the settings page: the
