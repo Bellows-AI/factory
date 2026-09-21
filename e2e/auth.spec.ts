@@ -203,7 +203,7 @@ test('the screen explains itself, its identity, and the default choice (issue 18
 
     // Confirming the default still completes: the choice lands, the dashboard is reached.
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('a choice of nothing refuses Continue and says what is missing (issue 187)', async ({ page }) => {
@@ -226,7 +226,7 @@ test('a choice of nothing refuses Continue and says what is missing (issue 187)'
     await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
     await expect(cont).not.toHaveAttribute('aria-disabled', 'true');
     await cont.click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('an unavailable repository listing says so and keeps the choice completable (issue 187)', async ({ page }) => {
@@ -252,7 +252,7 @@ test('an unavailable repository listing says so and keeps the choice completable
 
     // All mode stands: the submission posts the org without a repos key and completes.
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('the next sign-in reuses the stored choice without the screen (issue 125)', async ({ page }) => {
