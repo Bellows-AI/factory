@@ -4,6 +4,9 @@ The Factory stack on Kubernetes: the dashboard (API + SPA on one port), an in-ch
 the workspaces claim the checkouts live on, and the driver — whose runners are batch Jobs in the
 namespace the release is installed to, selected with `EXECUTOR=kubernetes`.
 
+For the operator-focused installation and upgrade guide, see the
+[Factory documentation](https://bellows-ai.github.io/factory/getting-started/kubernetes/).
+
 Configuration is the repository's usual environment-only contract (`docs/configuration.md`): the
 chart is a way to set the containers' environment, not a second config system. Every value maps to
 a variable documented in `docs/kubernetes.md`.

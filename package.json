@@ -6,16 +6,21 @@
         "core",
         "server",
         "web",
-        "driver"
+        "driver",
+        "docs-site"
     ],
     "engines": {
-        "node": ">=22"
+        "node": ">=22.12.0"
     },
     "scripts": {
         "build": "npm run build -w core && npm run build -w server && npm run build -w web && npm run build -w driver",
         "dev": "npm run build -w core && concurrently -n server,web -c blue,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
         "dev:server": "npm run dev -w server",
         "dev:web": "npm run dev -w web",
+        "docs:dev": "npm run dev -w @factory-ai/docs",
+        "docs:build": "npm run build -w @factory-ai/docs",
+        "docs:check": "npm run check -w @factory-ai/docs",
+        "docs:preview": "npm run preview -w @factory-ai/docs",
         "driver": "npm run dev -w driver",
         "start": "node --env-file-if-exists=.env server/dist/index.js",
         "test": "vitest run",
