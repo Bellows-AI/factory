@@ -1232,6 +1232,7 @@ export function staticRegistry(
         envVars?: OrgRuntime['envVars'];
         userRepos?: OrgRuntime['userRepos'];
         userExecutors?: OrgRuntime['userExecutors'];
+        workflowDefaults?: OrgRuntime['workflowDefaults'];
         cloneQueue?: OrgRuntime['cloneQueue'];
         /** When set, `for()` answers null for every id not in it. */
         orgsFor?: readonly string[];
@@ -1251,6 +1252,7 @@ export function staticRegistry(
         envVars: parts.envVars,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
+        workflowDefaults: parts.workflowDefaults,
         cloneQueue: parts.cloneQueue,
     };
     return {

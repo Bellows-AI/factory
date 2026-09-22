@@ -45,6 +45,11 @@ restart with a warm database serves real data on the first request rather than a
   GitHub App installation — or, with no credential, from the distinct repos already in
   `session_branch` — and `org_id` partitions every session row. A read that ignored either would
   render another partition's or another repo's sessions as this dashboard's.
+- **`035_default_workflow_settings.sql` stores absence, not defaults.** `user_workflow_default`
+  holds a row only for a member who has saved something; `createDefaultWorkflowSettingsStore().get()`
+  answers both switches `true` with a null `updatedAt` for a missing row and never inserts one, so
+  the default lives in one place — the read — instead of a column that would need migrating the day
+  the default changes. Keyed `(org_id, user_id)`, the same argument 012 made for `user_executor`.
 
 **Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
 `npm test`**. That is the price of keeping the default suite offline and database-free; they are

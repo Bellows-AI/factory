@@ -1,5 +1,9 @@
 import type { Sql } from 'postgres';
 import type { AppConfig } from './config.js';
+import {
+    createDefaultWorkflowSettingsStore,
+    type DefaultWorkflowSettingsStore,
+} from './db/default-workflow-settings-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
 import { createJobStore, type JobStore } from './db/job-store.js';
 import { storedRepoNames } from './db/stored-repos.js';
@@ -45,6 +49,8 @@ export interface OrgRuntime {
     envVars?: EnvVarStore | undefined;
     userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
+    /** A member's saved default-workflow switches (035). Present with the other stores. */
+    workflowDefaults?: DefaultWorkflowSettingsStore | undefined;
     cloneQueue?: CloneQueue | undefined;
 }
 
@@ -113,6 +119,7 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
             const envVars = createEnvVarStore({ sql, orgId, ready });
             const userExecutors = createUserExecutorStore({ sql, orgId, ready });
             const userRepos = createUserRepoStore({ sql, orgId, ready });
+            const workflowDefaults = createDefaultWorkflowSettingsStore({ sql, orgId, ready });
             // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
             // transaction records the thread's publication identity through it.
             const prs = createPrLifecycleStore({ sql, orgId, ready });
@@ -153,6 +160,7 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
             runtime.envVars = envVars;
             runtime.userExecutors = userExecutors;
             runtime.userRepos = userRepos;
+            runtime.workflowDefaults = workflowDefaults;
             runtime.cloneQueue = cloneQueue;
             runtime.jobs = jobs;
             runtime.prs = prs;
