@@ -18,6 +18,7 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
 const CLAUDE_REPORTER = 'docker/claude-executor/branch-reporter.cjs';
 const OPENCODE_REPORTER = 'docker/opencode-executor/branch-reporter.cjs';
+const CLAUDE_PROGRESS = 'docker/claude-executor/claude-progress.cjs';
 
 describe('the executor branch reporter', () => {
     // Deliberate copies, like the collector's per-branch blocks: one file per image, byte-equal
@@ -46,6 +47,13 @@ describe('the executor branch reporter', () => {
         }
     });
 
+    it('ships the Claude progress formatter beside the entrypoint, outside the mutable config home', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toMatch(/COPY[^\n]*claude-progress\.cjs \/usr\/local\/bin\/claude-progress\.cjs/);
+        expect(dockerfile).toMatch(/chmod 0755[^\n]*claude-progress\.cjs/);
+        expect(dockerfile).not.toMatch(/claude-progress[^\n]*claude-home\//);
+    });
+
     // The entrypoint shape: launched beside the CLI (never as its child, so a CLI crash cannot
     // take it down mid-run), stdio discarded (the run's output stream is the CLI's), a close-time
     // `--once` sample, and the CLI's exit status preserved through the `exec` it replaced. The
@@ -64,7 +72,13 @@ describe('the executor branch reporter', () => {
         );
         // Both children tracked: the reporter and the CLI each hand their PID back to the shell.
         expect(entry).toMatch(/^REPORTER_PID=\$!$/m);
-        expect(entry).toMatch(new RegExp(`^${cli} "\\$@" &$`, 'm'));
+        if (cli === 'claude') {
+            expect(entry).toMatch(/^claude --output-format stream-json --verbose "\$@" > "\$PROGRESS_FIFO" &$/m);
+            expect(entry).toMatch(/node "\$\(dirname "\$0"\)\/claude-progress\.cjs" < "\$PROGRESS_FIFO" &/);
+            expect(entry).toMatch(/^PROGRESS_PID=\$!$/m);
+        } else {
+            expect(entry).toMatch(new RegExp(`^${cli} "\\$@" &$`, 'm'));
+        }
         expect(entry).toMatch(/^CLI_PID=\$!$/m);
         // The CLI runs as a background child now, so the close-time sample can run after it;
         // a leftover `exec` would turn the script into the PID-1 replacement and skip it.
@@ -85,12 +99,31 @@ describe('the executor branch reporter', () => {
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
         } else {
-            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID"/);
+            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID" "\$PROGRESS_PID"/);
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
+            expect(entry).toMatch(/wait "\$PROGRESS_PID" 2>\/dev\/null \|\| true/);
         }
         expect(entry).toMatch(/branch-reporter\.cjs --once/);
         expect(entry).toMatch(/exit "\$STATUS"/);
+    });
+
+    it('turns Claude protocol events into safe live progress', () => {
+        const { linesFor } = requireCjs(join(ROOT, CLAUDE_PROGRESS)) as { linesFor(event: unknown): string[] };
+        expect(linesFor({ type: 'system', subtype: 'init' })).toEqual(['Claude session started.']);
+        expect(
+            linesFor({
+                type: 'assistant',
+                message: {
+                    content: [
+                        { type: 'tool_use', name: 'Bash', input: { command: 'export TOKEN=secret; npm test' } },
+                        { type: 'text', text: 'I am running the test suite.' },
+                    ],
+                },
+            })
+        ).toEqual(['Running Bash.', 'I am running the test suite.']);
+        expect(linesFor({ type: 'stream_event', event: { type: 'content_block_delta' } })).toEqual([]);
+        expect(linesFor(null)).toEqual([]);
     });
 
     // opencode mints its own session ids and tells nobody before the run starts — discovery

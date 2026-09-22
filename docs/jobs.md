@@ -292,6 +292,10 @@ the span is the same one the view's per-run "running time" already shows.
 - The docker runner hands the loop its newest output tail on every chunk it reads (the tail it
   would report on complete anyway); the kubernetes twin reads the pod log's tail on each status
   poll. Neither throttles — that is the loop's business.
+- The Claude image runs the CLI in `stream-json` mode and formats its session start, tool names
+  and assistant text into that tail. Tool arguments never leave the container through this path:
+  they can carry credentials, while the tool name is enough to show that the task is progressing.
+  Kubernetes uses the same image, so it receives the same stream.
 - The loop flushes at most once every 2s, and only when the tail changed — the pace the detail
   page itself polls at, so a faster flush would be requests the reader cannot see.
 - The board **replaces** `output` with the tail it is sent, never appends. Appending would grow

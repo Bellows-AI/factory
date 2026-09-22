@@ -140,11 +140,16 @@ fi
 # nothing outlives the run.
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
-claude "$@" &
+PROGRESS_DIR="$(mktemp -d)"
+PROGRESS_FIFO="$PROGRESS_DIR/events"
+mkfifo "$PROGRESS_FIFO"
+node "$(dirname "$0")/claude-progress.cjs" < "$PROGRESS_FIFO" &
+PROGRESS_PID=$!
+claude --output-format stream-json --verbose "$@" > "$PROGRESS_FIFO" &
 CLI_PID=$!
 
 on_term() {
-    kill -TERM "$CLI_PID" "$REPORTER_PID" 2>/dev/null || true
+    kill -TERM "$CLI_PID" "$REPORTER_PID" "$PROGRESS_PID" 2>/dev/null || true
 }
 trap on_term TERM INT
 
@@ -163,5 +168,8 @@ set -e
 # last thing that runs.
 kill -TERM "$REPORTER_PID" 2>/dev/null || true
 wait "$REPORTER_PID" 2>/dev/null || true
+kill -TERM "$PROGRESS_PID" 2>/dev/null || true
+wait "$PROGRESS_PID" 2>/dev/null || true
+rm -rf "$PROGRESS_DIR"
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
 exit "$STATUS"

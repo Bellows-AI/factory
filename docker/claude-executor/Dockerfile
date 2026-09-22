@@ -60,7 +60,8 @@ COPY entrypoint.sh /usr/local/bin/claude-executor
 # boat and for the same reason: the checkout it protects matters most on driver-run attempts.
 COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
 COPY git-guard.cjs /usr/local/bin/git-guard.cjs
-RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs
+COPY claude-progress.cjs /usr/local/bin/claude-progress.cjs
+RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs
 
 USER node
 
