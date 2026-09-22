@@ -4,6 +4,8 @@ import { Link } from 'react-router-dom';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     clampedWorkflow,
+    defaultWorkflowPayload,
+    effectiveDefaultSteps,
     effectiveWorkflows,
     firstRepo,
     freshWorkflowDraft,
@@ -13,9 +15,11 @@ import {
     preflightSentence,
     resolveWorkflowChoice,
     startBlocker,
+    toggleDefaultStep,
     touchAll,
     valuesForWorkflow,
 } from '../task-composer.js';
+import type { DefaultWorkflowSteps } from '../task-composer.js';
 
 /**
  * The prompt's example placeholder. The issue number travels as string parts because
@@ -44,6 +48,7 @@ export function TaskComposer({
     onRetryWorkspace,
     executors,
     workflows,
+    defaultWorkflowSettings,
     actionError,
     sending,
     onSend,
@@ -75,16 +80,26 @@ export function TaskComposer({
               params?: import('../task-composer.js').WorkflowParamChoice[];
           }[]
         | null;
+    /**
+     * The member's saved default-workflow step settings (issues 203/208), or null while they have not
+     * answered yet — the two optional-step checkboxes stay hidden for exactly that duration, the
+     * same "not known yet" posture the workspace poll gets.
+     */
+    defaultWorkflowSettings: DefaultWorkflowSteps | null;
     /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
     actionError: string | null;
     sending: boolean;
-    /** `workflow` is a chosen name, or null for no process — the raw prompt runs. */
+    /**
+     * `workflow` is a chosen name, or null for Default workflow. `defaultWorkflow` carries the
+     * final step set beside Default workflow, and is null for a named custom workflow.
+     */
     onSend: (
         command: string,
         repo: string | null,
         executor: string,
         workflow: string | null,
-        workflowParams: Record<string, string> | null
+        workflowParams: Record<string, string> | null,
+        defaultWorkflow: DefaultWorkflowSteps | null
     ) => Promise<string | null>;
     /**
      * Reports the chosen repository upward, so the page can re-fetch the workflow list for that
@@ -108,6 +123,10 @@ export function TaskComposer({
     // Which parameter fields the member has left (or an invalid keyboard submission has marked).
     // An untouched empty field is a hint — "Required" — not a painted failure.
     const [paramTouched, setParamTouched] = useState(freshWorkflowDraft().paramTouched);
+    // The member's explicit inversions of the saved default-workflow steps for THIS task — empty
+    // until a checkbox is touched, so an untouched field keeps tracking a settings poll refresh
+    // live while a touched one is locked to the member's choice.
+    const [defaultStepOverrides, setDefaultStepOverrides] = useState(freshWorkflowDraft().defaultStepOverrides);
 
     // The workflow whose inputs the composer shows: exactly the member's explicit choice, at the
     // scope the board would resolve. Nothing autoselects one — an unnamed task runs the raw
@@ -117,6 +136,11 @@ export function TaskComposer({
     const chosenWorkflowId = chosenWorkflow?.id ?? null;
     const paramValues = valuesForWorkflow(storedParams, chosenWorkflowId);
     const paramsReady = paramsComplete(declaredParams, paramValues);
+
+    // The default workflow's effective step set for THIS task — null until the saved settings
+    // have answered. Only meaningful beside the unchosen ('') workflow value; a named custom
+    // workflow's own params own the composer's attention instead.
+    const effectiveDefaultWorkflowSteps = effectiveDefaultSteps(defaultWorkflowSettings, defaultStepOverrides);
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
     // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
@@ -168,6 +192,7 @@ export function TaskComposer({
         setWorkflow(reset.workflow);
         setStoredParams(reset.storedParams);
         setParamTouched(reset.paramTouched);
+        setDefaultStepOverrides(reset.defaultStepOverrides);
     }, [repo]);
 
     // And the workflow: a repository switch refetches the list for the new context, and a chosen
@@ -213,7 +238,12 @@ export function TaskComposer({
             declaredParams.length > 0
                 ? Object.fromEntries(declaredParams.map((param) => [param.name, values[param.name] ?? '']))
                 : null;
-        if ((await onSend(draft, chosenRepo, executor, chosenWorkflowName, chosenParams)) === null) setDraft('');
+        const chosenDefaultWorkflow = defaultWorkflowPayload(workflow, effectiveDefaultWorkflowSteps);
+        if (
+            (await onSend(draft, chosenRepo, executor, chosenWorkflowName, chosenParams, chosenDefaultWorkflow)) ===
+            null
+        )
+            setDraft('');
     };
 
     // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
@@ -251,6 +281,7 @@ export function TaskComposer({
         repo: repo === '' ? null : repo,
         executor: executor === '' ? null : executor,
         workflow: workflow === '' ? null : workflow,
+        defaultSteps: workflow === '' ? effectiveDefaultWorkflowSteps : null,
     });
 
     if (repos === null) {
@@ -384,11 +415,11 @@ export function TaskComposer({
                             }}
                         >
                             <ListboxButton className="composer-select" aria-label="Reusable workflow">
-                                {workflow === '' ? 'No workflow — run prompt as written' : workflow}
+                                {workflow === '' ? 'Default workflow' : workflow}
                             </ListboxButton>
                             <ListboxOptions anchor="bottom start" className="popover">
                                 <ListboxOption value="" className="popover-option">
-                                    No workflow — run prompt as written
+                                    Default workflow
                                 </ListboxOption>
                                 {effectiveWorkflows(workflows).map((choice) => (
                                     <ListboxOption key={choice.id} value={choice.name} className="popover-option">
@@ -397,6 +428,42 @@ export function TaskComposer({
                                 ))}
                             </ListboxOptions>
                         </Listbox>
+                        {workflow === '' && effectiveDefaultWorkflowSteps !== null ? (
+                            <div className="composer-field">
+                                <label className="settings-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={effectiveDefaultWorkflowSteps.reviewReconciliation}
+                                        onChange={() =>
+                                            setDefaultStepOverrides(
+                                                toggleDefaultStep(
+                                                    defaultStepOverrides,
+                                                    'reviewReconciliation',
+                                                    defaultWorkflowSettings
+                                                )
+                                            )
+                                        }
+                                    />
+                                    Iterate on PR review comments
+                                </label>
+                                <label className="settings-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={effectiveDefaultWorkflowSteps.mergeConflictAutofix}
+                                        onChange={() =>
+                                            setDefaultStepOverrides(
+                                                toggleDefaultStep(
+                                                    defaultStepOverrides,
+                                                    'mergeConflictAutofix',
+                                                    defaultWorkflowSettings
+                                                )
+                                            )
+                                        }
+                                    />
+                                    Repair merge conflicts
+                                </label>
+                            </div>
+                        ) : null}
                     </div>
                 ) : null}
 

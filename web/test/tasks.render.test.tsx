@@ -28,6 +28,9 @@ import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
 import {
     type WorkflowParamChoice,
     clampedWorkflow,
+    defaultWorkflowPayload,
+    defaultWorkflowStepSummary,
+    effectiveDefaultSteps,
     effectiveWorkflows,
     freshWorkflowDraft,
     humanizeParamName,
@@ -37,6 +40,7 @@ import {
     paramValueMatches,
     preflightSentence,
     startBlocker,
+    toggleDefaultStep,
     touchAll,
     valuesForWorkflow,
 } from '../src/task-composer.js';
@@ -97,6 +101,8 @@ interface ComposerArgs {
         | null;
     actionError?: string | null;
     sending?: boolean;
+    /** The saved default-workflow step settings; null while they have not answered yet. */
+    defaultWorkflowSettings?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean } | null;
 }
 
 const renderComposer = ({
@@ -106,6 +112,7 @@ const renderComposer = ({
     workflows = null,
     actionError = null,
     sending = false,
+    defaultWorkflowSettings = null,
 }: ComposerArgs = {}) =>
     // The Settings remediation is an SPA Link, so the panel needs a routing context to render.
     renderToStaticMarkup(
@@ -116,6 +123,7 @@ const renderComposer = ({
                 onRetryWorkspace={() => {}}
                 executors={executors}
                 workflows={workflows}
+                defaultWorkflowSettings={defaultWorkflowSettings}
                 actionError={actionError}
                 sending={sending}
                 onSend={async () => null}
@@ -403,7 +411,61 @@ describe('TaskComposer', () => {
         expect(html).toContain('A workflow can turn this request into a repeatable multi-step process.');
         // Unchosen means NO process: the trigger reads the empty option's label. The offered
         // names are client-side; e2e/composer.spec.ts drives the real dropdown.
-        expect(html).toContain('>No workflow — run prompt as written</button>');
+        expect(html).toContain('>Default workflow</button>');
+    });
+
+    describe('default-workflow step checkboxes (#208)', () => {
+        const oneWorkflow = [{ id: 'w1', name: 'fix-issue', scope: 'org' as const }];
+
+        it('shows both optional steps, initialized from the saved defaults, once they have answered', () => {
+            const html = renderComposer({
+                workflows: oneWorkflow,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: false },
+            });
+            expect(html).toContain('Iterate on PR review comments');
+            expect(html).toContain('Repair merge conflicts');
+            const checkboxes = html.match(/<input type="checkbox"[^>]*>/g) ?? [];
+            expect(checkboxes).toHaveLength(2);
+            expect(checkboxes[0]).toContain('checked=""');
+            expect(checkboxes[1]).not.toContain('checked=""');
+        });
+
+        it('shows both steps on for the missing-row defaults', () => {
+            const html = renderComposer({
+                workflows: oneWorkflow,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
+            });
+            const checkboxes = html.match(/<input type="checkbox"[^>]*>/g) ?? [];
+            expect(checkboxes).toHaveLength(2);
+            for (const box of checkboxes) expect(box).toContain('checked=""');
+        });
+
+        it('renders no checkboxes while the saved defaults have not answered yet', () => {
+            const html = renderComposer({ workflows: oneWorkflow, defaultWorkflowSettings: null });
+            expect(html).not.toContain('Iterate on PR review comments');
+            expect(html).not.toContain('Repair merge conflicts');
+        });
+
+        it('renders no checkboxes on a board that serves no workflows at all', () => {
+            // The same gate as the dropdown itself: a board without the feature renders exactly
+            // the composer that came before it.
+            const html = renderComposer({
+                workflows: null,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
+            });
+            expect(html).not.toContain('Iterate on PR review comments');
+            expect(html).not.toContain('Repair merge conflicts');
+        });
+
+        it('lists the final step set in the preflight sentence', () => {
+            const html = renderComposer({
+                workflows: oneWorkflow,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: false },
+            });
+            expect(html).toContain(
+                'Will run the default workflow: prompt, gates, publish, plus iterate on PR review comments.'
+            );
+        });
     });
 });
 
@@ -1978,7 +2040,7 @@ describe('composer parameters', () => {
         expect(html).not.toContain('composer-param');
         // The dropdown renders unchosen; the offered names are client-side, and e2e covers the
         // real dropdown.
-        expect(html).toContain('>No workflow — run prompt as written</button>');
+        expect(html).toContain('>Default workflow</button>');
     });
 });
 
@@ -2187,11 +2249,12 @@ describe('composer workflow draft resets on a repository change', () => {
     // list's default still effective, which is exactly what is effective while the window is open.
     const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
 
-    it('resets to the mount shape — unchosen workflow, no stored values, no touched fields — so the mount run is a no-op', () => {
+    it('resets to the mount shape — unchosen workflow, no stored values, no touched fields, no default-step overrides — so the mount run is a no-op', () => {
         expect(freshWorkflowDraft()).toEqual({
             workflow: '',
             storedParams: { workflowId: null, values: {} },
             paramTouched: {},
+            defaultStepOverrides: {},
         });
     });
 
@@ -2343,6 +2406,86 @@ describe('preflightSentence — what will actually run, before it runs', () => {
         );
         expect(preflightSentence({ repo: null, executor: 'heavy', workflow: 'triage' })).toBe(
             'Will run without a repository using heavy executor, with the triage workflow.'
+        );
+    });
+
+    it('lists the final default-workflow step set once the saved settings have answered (#208)', () => {
+        expect(
+            preflightSentence({
+                repo: 'acme/web',
+                executor: 'main',
+                workflow: null,
+                defaultSteps: { reviewReconciliation: true, mergeConflictAutofix: false },
+            })
+        ).toBe(
+            'Will run in acme/web using main executor. Will run the default workflow: prompt, gates, publish, plus iterate on PR review comments.'
+        );
+    });
+
+    it('keeps the old raw-prompt sentence while the default-workflow settings have not answered yet', () => {
+        // defaultSteps omitted entirely — the option existed before #208 and stays true today:
+        // an unresolved default-workflow choice still runs the raw prompt at the wire.
+        expect(preflightSentence({ repo: 'acme/web', executor: 'main', workflow: null })).toBe(
+            'Will run in acme/web using main executor. Your prompt will run as written.'
+        );
+    });
+});
+
+describe('DefaultWorkflowSteps — the effective set, its toggle, and its summary (#208)', () => {
+    const bothOn = { reviewReconciliation: true, mergeConflictAutofix: true };
+    const bothOff = { reviewReconciliation: false, mergeConflictAutofix: false };
+
+    it('answers null before the saved settings have loaded', () => {
+        expect(effectiveDefaultSteps(null, {})).toBeNull();
+    });
+
+    it('reads the saved value straight through with no override', () => {
+        expect(effectiveDefaultSteps(bothOn, {})).toEqual(bothOn);
+        expect(effectiveDefaultSteps(bothOff, {})).toEqual(bothOff);
+    });
+
+    it('lets an explicit override invert either field independently, in either direction', () => {
+        expect(effectiveDefaultSteps(bothOn, { reviewReconciliation: false })).toEqual({
+            reviewReconciliation: false,
+            mergeConflictAutofix: true,
+        });
+        expect(effectiveDefaultSteps(bothOff, { mergeConflictAutofix: true })).toEqual({
+            reviewReconciliation: false,
+            mergeConflictAutofix: true,
+        });
+    });
+
+    it('toggles one field from its EFFECTIVE value, landing back on an explicit choice, not absence', () => {
+        let overrides = toggleDefaultStep({}, 'reviewReconciliation', bothOn);
+        expect(effectiveDefaultSteps(bothOn, overrides)).toEqual({
+            reviewReconciliation: false,
+            mergeConflictAutofix: true,
+        });
+        overrides = toggleDefaultStep(overrides, 'reviewReconciliation', bothOn);
+        expect(effectiveDefaultSteps(bothOn, overrides)).toEqual(bothOn);
+    });
+
+    it('leaves the untouched field alone when the other toggles', () => {
+        const overrides = toggleDefaultStep({}, 'mergeConflictAutofix', bothOn);
+        expect(overrides).toEqual({ mergeConflictAutofix: false });
+    });
+
+    it('sends the default-workflow pair only when Default workflow is chosen', () => {
+        expect(defaultWorkflowPayload('', bothOn)).toEqual(bothOn);
+        expect(defaultWorkflowPayload('fix-issue', bothOn)).toBeNull();
+        expect(defaultWorkflowPayload('', null)).toBeNull();
+    });
+
+    it('summarizes the final step set, omitting steps that are off', () => {
+        expect(defaultWorkflowStepSummary(bothOn)).toBe(
+            'prompt, gates, publish, plus iterate on PR review comments and repair merge conflicts'
+        );
+        expect(defaultWorkflowStepSummary(bothOff)).toBe('prompt, gates, publish');
+        expect(defaultWorkflowStepSummary({ reviewReconciliation: true, mergeConflictAutofix: false })).toBe(
+            'prompt, gates, publish, plus iterate on PR review comments'
+        );
+        expect(defaultWorkflowStepSummary({ reviewReconciliation: false, mergeConflictAutofix: true })).toBe(
+            'prompt, gates, publish, plus repair merge conflicts'
         );
     });
 });

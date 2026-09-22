@@ -285,6 +285,7 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | CRUD routes and `POST /api/jobs` resolution | `server/src/routes/workflows.ts`, `routes/jobs.ts` |
 | The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/task-composer.ts`, `web/src/api/useWorkflows.ts` |
 | A member's saved default-step switches (035, #203) — no job behavior yet reads them | `server/src/db/default-workflow-settings-store.ts`, `server/src/routes/workflow-settings.ts` |
+| The settings page and composer checkboxes that read/write that API (#208) — still no job behavior reads the submitted `defaultWorkflow` field | `web/src/pages/SettingsWorkflowsPage.tsx`, `web/src/panels/DefaultWorkflowPanel.tsx`, `web/src/api/useDefaultWorkflowSettings.ts` |
 
 ## Tests
 

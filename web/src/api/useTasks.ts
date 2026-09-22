@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import type { DefaultWorkflowSteps } from '../task-composer.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
 import { reportUnauthenticated } from './useSession.js';
 
@@ -140,12 +141,37 @@ export interface UseTasks {
             repo: string | null,
             executor: string,
             workflow: string | null,
-            workflowParams: Record<string, string> | null
+            workflowParams: Record<string, string> | null,
+            defaultWorkflow: DefaultWorkflowSteps | null
         ) => Promise<QueueResult>;
         followUp: (id: string, command: string) => Promise<QueueResult>;
         markDone: (id: string) => Promise<string | null>;
         stop: (id: string) => Promise<string | null>;
         remove: (id: string) => Promise<string | null>;
+    };
+}
+
+/**
+ * The `POST /api/jobs` body, pure so the `defaultWorkflow` omission contract is a property of the
+ * builder rather than something a fetch mock has to observe: present only beside Default workflow
+ * (`workflow: null`), absent outright beside a named custom workflow — "Custom workflow selection
+ * sends no defaultWorkflow object" (issue 208's acceptance criteria).
+ */
+export function queueBody(
+    command: string,
+    repo: string | null,
+    executor: string,
+    workflow: string | null,
+    workflowParams: Record<string, string> | null,
+    defaultWorkflow: DefaultWorkflowSteps | null
+): Record<string, unknown> {
+    return {
+        command,
+        repo,
+        executor,
+        workflow,
+        workflowParams,
+        ...(defaultWorkflow !== null ? { defaultWorkflow } : {}),
     };
 }
 
@@ -408,13 +434,16 @@ export function useTasks(enabled: boolean): UseTasks {
                 repo: string | null,
                 executor: string,
                 workflow: string | null,
-                workflowParams: Record<string, string> | null
+                workflowParams: Record<string, string> | null,
+                defaultWorkflow: DefaultWorkflowSteps | null
             ): Promise<QueueResult> {
                 try {
                     const response = await fetch('/api/jobs', {
                         method: 'POST',
                         headers: { 'content-type': 'application/json' },
-                        body: JSON.stringify({ command, repo, executor, workflow, workflowParams }),
+                        body: JSON.stringify(
+                            queueBody(command, repo, executor, workflow, workflowParams, defaultWorkflow)
+                        ),
                     });
                     if (response.status === 401) {
                         reportUnauthenticated();

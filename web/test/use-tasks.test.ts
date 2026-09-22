@@ -5,6 +5,7 @@ import {
     firstPageError,
     inboxFiltersFromSearch,
     inboxQueryString,
+    queueBody,
 } from '../src/api/useTasks.js';
 
 /**
@@ -61,6 +62,38 @@ describe('inboxQueryString', () => {
 
     it('never sends an empty or clamped value', () => {
         expect(inboxQueryString({ ...DEFAULT_FILTERS, q: null, author: null, repo: null })).toBe('');
+    });
+});
+
+describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
+    // The wire contract the issue's acceptance criteria name: "Preflight and submitted JSON
+    // agree" and "Custom workflow selection sends no defaultWorkflow object" — pinned here so the
+    // omission is a property of the body builder, not something a fetch mock has to observe.
+    it('carries no defaultWorkflow key beside a named custom workflow', () => {
+        const body = queueBody('fix the bug', 'acme/web', 'main', 'fix-issue', { issue: '#12' }, null);
+        expect(body).toEqual({
+            command: 'fix the bug',
+            repo: 'acme/web',
+            executor: 'main',
+            workflow: 'fix-issue',
+            workflowParams: { issue: '#12' },
+        });
+        expect('defaultWorkflow' in body).toBe(false);
+    });
+
+    it('carries the effective step pair beside Default workflow', () => {
+        const body = queueBody('fix the bug', 'acme/web', 'main', null, null, {
+            reviewReconciliation: true,
+            mergeConflictAutofix: false,
+        });
+        expect(body).toEqual({
+            command: 'fix the bug',
+            repo: 'acme/web',
+            executor: 'main',
+            workflow: null,
+            workflowParams: null,
+            defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: false },
+        });
     });
 });
 

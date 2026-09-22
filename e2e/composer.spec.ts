@@ -98,7 +98,7 @@ test.describe('the guided task composer', () => {
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
-        await expect(page.getByLabel('Reusable workflow')).toHaveText('No workflow — run prompt as written');
+        await expect(page.getByLabel('Reusable workflow')).toHaveText('Default workflow');
 
         // Fresh page, empty prompt: Start is dark by design and says so.
         const start = page.getByRole('button', { name: 'Start task' });
@@ -110,7 +110,7 @@ test.describe('the guided task composer', () => {
         // whole command, and the preflight says exactly that.
         await page.getByLabel('What should the agent do?').fill('fix the login crash');
         await expect(start).toBeEnabled();
-        await expect(composer.getByText('Your prompt will run as written.')).toBeVisible();
+        await expect(composer.getByText(/Will run the default workflow: prompt, gates, publish/)).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
