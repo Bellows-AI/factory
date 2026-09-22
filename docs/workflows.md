@@ -28,7 +28,7 @@ by OUTCOME — they are never nodes with containers.
   "nodes": [
     {
       "name": "review",                        // /^[a-z0-9][a-z0-9-]{0,63}$/, unique in the graph
-      "kind": "agent",                         // the only kind; see below
+      "kind": "agent",                         // "agent" or "block"; see "Built-in blocks" below
       "session": "fresh",                      // "resume" | "fresh"
       "gates": false,                          // optional; default true — run the driver's gates
       "publish": true,                         // optional; default false — see "Publishing" below
