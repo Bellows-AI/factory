@@ -15,6 +15,14 @@
 export const DEFINITION_LIMIT = 16_384;
 
 /**
+ * The size cap of a COMPILED definition — after block nodes are expanded into their low-level
+ * subgraphs (workflow-blocks/index.ts). Wider than DEFINITION_LIMIT because one authored block
+ * reference can expand into many nodes and edges; still bounded, because the expanded graph is
+ * exactly what freezes onto a root job's snapshot.
+ */
+export const EXPANDED_DEFINITION_LIMIT = 65_536;
+
+/**
  * The command a substituted prompt may reach: the board refuses an insert past the cap rather than
  * handing the driver a command it cannot report against (routes/jobs.ts enforces the same number
  * on every create).
@@ -49,6 +57,17 @@ export const PARAM_EXAMPLE_LIMIT = 120;
 
 /** The character cap on one parameter value — bounded author content, like everything interpolated. */
 export const PARAM_VALUE_LIMIT = 512;
+
+/** A block reference: `namespace/block-name`, each segment the same lowercase-hyphenated shape. */
+const BLOCK_USES = /^[a-z0-9]+(?:-[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const BLOCK_USES_LIMIT = 128;
+
+/** At most this many `with` keys — generic bounding; a block's own configSchema is the real shape. */
+const BLOCK_WITH_MAX_KEYS = 16;
+
+/** A `with` config key: camelCase, like `maxRounds` in the grammar's own example — not NODE_NAME's
+ *  lowercase-hyphenated shape, which is a display identifier, not a config field name. */
+const BLOCK_CONFIG_KEY = /^[a-z][a-zA-Z0-9]{0,63}$/;
 
 /** A marker is a fixed string the node's block must emit as its final line. Bounded, non-empty. */
 const MARKER_LIMIT = 256;
@@ -87,6 +106,40 @@ export interface WorkflowNode {
      * graph's exit — get the flag on their claim.
      */
     publish?: boolean;
+}
+
+/** A block config value: a bounded JSON scalar — workflow-schema.ts knows no block's real shape. */
+export type BlockConfigValue = string | number | boolean;
+
+/**
+ * A reference to a board-owned, allowlisted block (issue #204) — the authored alternative to an
+ * inline `agent` node. `uses` names a reserved block id (`namespace/block-name`); the registry
+ * under `server/src/db/workflow-blocks/` owns which ids exist, their config shape, availability
+ * and expansion — this module stays registry-unaware and validates structural shape only. `with`
+ * is generically bounded here (scalar values, a conservative key count); a block's own
+ * `configSchema` enforces its real types and ranges at compile time.
+ */
+export interface BlockNode {
+    name: string;
+    kind: 'block';
+    uses: string;
+    with?: Record<string, BlockConfigValue>;
+}
+
+/** A node as AUTHORED: either an inline `agent` node or a `block` reference. Never mixed. */
+export type AuthoredWorkflowNode = WorkflowNode | BlockNode;
+
+/**
+ * A definition as AUTHORED — what a member POSTs. Distinct from `WorkflowDefinition` (the
+ * low-level, agent-only shape `workflow-engine.ts`, `job-store.ts` and `routes/jobs.ts` already
+ * depend on): a block node never reaches those files. `workflow-blocks/index.ts`'s
+ * `compileDefinition` turns one of these into a `WorkflowDefinition` before it is ever stored.
+ */
+export interface AuthoredWorkflowDefinition {
+    entry: string;
+    nodes: AuthoredWorkflowNode[];
+    edges: WorkflowEdge[];
+    params: WorkflowParam[];
 }
 
 /**
@@ -168,14 +221,17 @@ export interface DefinitionRefusal {
     message: string;
 }
 
-export type DefinitionCheck = { ok: true; definition: WorkflowDefinition } | { ok: false; refusal: DefinitionRefusal };
+export type DefinitionCheck =
+    | { ok: true; definition: AuthoredWorkflowDefinition }
+    | { ok: false; refusal: DefinitionRefusal };
 
 const refuse = (code: DefinitionRefusal['code'], message: string): DefinitionCheck => ({
     ok: false,
     refusal: { code, message },
 });
 
-const KNOWN_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish']);
+const KNOWN_AGENT_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish']);
+const KNOWN_BLOCK_NODE_KEYS = new Set(['name', 'kind', 'uses', 'with']);
 const KNOWN_EDGE_KEYS = new Set(['from', 'to', 'when', 'max']);
 const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges', 'params']);
 
@@ -346,8 +402,14 @@ function isSafePattern(source: string): boolean {
 /**
  * The strict validator. Everything it refuses, it names — the key, the node, the edge, the
  * placeholder — so a bad definition is diagnosable from the API answer alone.
+ *
+ * `opts.sizeLimit` overrides the JSON-character cap (default `DEFINITION_LIMIT`, the authored
+ * cap). `workflow-blocks/index.ts`'s compiler reuses this same function — every other invariant
+ * unchanged — to re-validate an EXPANDED (post-block-compilation) definition against the wider
+ * `EXPANDED_DEFINITION_LIMIT`, instead of duplicating reachability/publish-path/placeholder logic.
  */
-export function validateDefinition(raw: unknown): DefinitionCheck {
+export function validateDefinition(raw: unknown, opts?: { sizeLimit?: number }): DefinitionCheck {
+    const sizeLimit = opts?.sizeLimit ?? DEFINITION_LIMIT;
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
         return refuse('BAD_DEFINITION', 'definition must be a JSON object');
     }
@@ -442,19 +504,24 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         }
     }
 
-    // Nodes: at least one, every one a declared-shape `agent` node with a unique name.
+    // Nodes: at least one, every one a declared-shape `agent` or `block` node with a unique name.
+    // A node is one or the other — never mixed — so the unknown-key check picks its key set off
+    // `kind` alone, before `kind` itself is validated: anything other than the literal `"block"`
+    // falls to the agent key set, which is exactly what makes a missing/bad `kind` still refuse
+    // `BAD_NODE` below (unchanged from before blocks existed) rather than a confusing `UNKNOWN_KEY`.
     if (!Array.isArray(def.nodes) || def.nodes.length === 0) {
         return refuse('BAD_NODES', 'definition.nodes must be a non-empty array');
     }
-    const nodes: WorkflowNode[] = [];
+    const nodes: AuthoredWorkflowNode[] = [];
     const names = new Set<string>();
     for (const [i, item] of def.nodes.entries()) {
         if (typeof item !== 'object' || item === null || Array.isArray(item)) {
             return refuse('BAD_NODES', `definition.nodes[${i}] must be an object`);
         }
         const node = item as Record<string, unknown>;
+        const knownKeys = node.kind === 'block' ? KNOWN_BLOCK_NODE_KEYS : KNOWN_AGENT_NODE_KEYS;
         for (const key of Object.keys(node)) {
-            if (!KNOWN_NODE_KEYS.has(key)) return refuse('UNKNOWN_KEY', `unknown key "${key}" in nodes[${i}]`);
+            if (!knownKeys.has(key)) return refuse('UNKNOWN_KEY', `unknown key "${key}" in nodes[${i}]`);
         }
         const name = node.name;
         if (typeof name !== 'string' || !NODE_NAME.test(name)) {
@@ -467,8 +534,59 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         }
         if (names.has(name)) return refuse('DUPLICATE_NODE', `duplicate node name "${name}"`);
         names.add(name);
+
+        if (node.kind === 'block') {
+            if (typeof node.uses !== 'string' || node.uses.length > BLOCK_USES_LIMIT || !BLOCK_USES.test(node.uses)) {
+                return refuse('BAD_NODE', `nodes[${i}].uses must be a reserved block id matching ${BLOCK_USES.source}`);
+            }
+            let withConfig: Record<string, BlockConfigValue> | undefined;
+            if (node.with !== undefined) {
+                if (typeof node.with !== 'object' || node.with === null || Array.isArray(node.with)) {
+                    return refuse('BAD_NODE', `nodes[${i}].with must be an object`);
+                }
+                const raw = node.with as Record<string, unknown>;
+                const keys = Object.keys(raw);
+                if (keys.length > BLOCK_WITH_MAX_KEYS) {
+                    return refuse('BAD_NODE', `nodes[${i}].with must declare at most ${BLOCK_WITH_MAX_KEYS} keys`);
+                }
+                const validated: Record<string, BlockConfigValue> = {};
+                for (const key of keys) {
+                    if (!BLOCK_CONFIG_KEY.test(key)) {
+                        return refuse(
+                            'BAD_NODE',
+                            `nodes[${i}].with key "${key}" must match ${BLOCK_CONFIG_KEY.source}`
+                        );
+                    }
+                    const value = raw[key];
+                    if (typeof value === 'string') {
+                        if (value.length > PARAM_VALUE_LIMIT) {
+                            return refuse(
+                                'BAD_NODE',
+                                `nodes[${i}].with.${key} exceeds ${PARAM_VALUE_LIMIT} characters`
+                            );
+                        }
+                    } else if (typeof value === 'number') {
+                        if (!Number.isFinite(value)) {
+                            return refuse('BAD_NODE', `nodes[${i}].with.${key} must be a finite number`);
+                        }
+                    } else if (typeof value !== 'boolean') {
+                        return refuse('BAD_NODE', `nodes[${i}].with.${key} must be a string, number or boolean`);
+                    }
+                    validated[key] = value as BlockConfigValue;
+                }
+                withConfig = validated;
+            }
+            nodes.push({
+                name,
+                kind: 'block',
+                uses: node.uses,
+                ...(withConfig !== undefined ? { with: withConfig } : {}),
+            });
+            continue;
+        }
+
         if (node.kind !== 'agent') {
-            return refuse('BAD_NODE', `nodes[${i}].kind must be "agent" — no other node kind exists`);
+            return refuse('BAD_NODE', `nodes[${i}].kind must be "agent" or "block"`);
         }
         if (node.session !== 'resume' && node.session !== 'fresh') {
             return refuse('BAD_NODE', `nodes[${i}].session must be "resume" or "fresh"`);
@@ -554,8 +672,10 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
 
     // Prompt placeholders: the closed vocabulary only — node outputs, the gate pair, declared
     // params, and `{{command}}` (the thread root's command). A template referencing an unknown
-    // prior node or an undeclared param would interpolate empty forever.
+    // prior node or an undeclared param would interpolate empty forever. A block node has no
+    // prompt of its own to scan — its eventual expansion carries the placeholder contract instead.
     for (const node of nodes) {
+        if (node.kind !== 'agent') continue;
         for (const match of node.prompt.matchAll(/\{\{([^{}]+)\}\}/g)) {
             const spec = match[1]!.trim();
             const nodeRef = /^([a-z0-9-]+)\.output$/.exec(spec);
@@ -579,8 +699,9 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
     }
 
     // A definition with no path to a publish node has no exit: every thread would rest mid-graph.
-    // Reachability is a walk of the declared edges from the entry.
-    const publishing = nodes.filter((n) => n.publish === true).map((n) => n.name);
+    // Reachability is a walk of the declared edges from the entry. A block node is never itself a
+    // publish node — the outer graph must route to a downstream agent that declares `publish`.
+    const publishing = nodes.filter((n) => n.kind === 'agent' && n.publish === true).map((n) => n.name);
     if (publishing.length === 0) {
         return refuse('NO_PUBLISH_PATH', 'no node declares publish: true — the graph has no exit');
     }
@@ -598,9 +719,9 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         return refuse('NO_PUBLISH_PATH', 'no publish node is reachable from the entry');
     }
 
-    const definition: WorkflowDefinition = { entry, nodes, edges, params };
-    if (JSON.stringify(definition).length > DEFINITION_LIMIT) {
-        return refuse('TOO_LARGE', `definition exceeds ${DEFINITION_LIMIT} characters`);
+    const definition: AuthoredWorkflowDefinition = { entry, nodes, edges, params };
+    if (JSON.stringify(definition).length > sizeLimit) {
+        return refuse('TOO_LARGE', `definition exceeds ${sizeLimit} characters`);
     }
     return { ok: true, definition };
 }

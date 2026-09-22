@@ -233,6 +233,56 @@ describe('POST /api/workflows', () => {
         expect(takenPost.statusCode).toBe(409);
         expect(takenPost.json().code).toBe('NAME_TAKEN');
     });
+
+    it("serves the compiler's block refusals as 400, same as a schema refusal — the store surfaces both alike", async () => {
+        const workflows = stubWorkflows();
+        const { instance, adminCookie } = await boot(workflows);
+        workflows.create = (async () => ({
+            refused: true as const,
+            code: 'BLOCK_UNAVAILABLE' as const,
+            message: 'node "review-comments" uses "builtin/github-review-reconcile", which is not yet available',
+        })) as never;
+        const response = await instance.inject({
+            method: 'POST',
+            url: '/api/workflows',
+            payload: { name: 'x', scope: 'org', definition },
+            headers: { cookie: adminCookie },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BLOCK_UNAVAILABLE');
+    });
+});
+
+describe('GET /api/workflow-blocks', () => {
+    it('needs a session — same surface as workflow selection', async () => {
+        const workflows = stubWorkflows();
+        const { instance } = await boot(workflows);
+        const response = await instance.inject({ method: 'GET', url: '/api/workflow-blocks' });
+        expect(response.statusCode).toBe(401);
+    });
+
+    it('serves the catalog for a signed-in caller — metadata only, never a prompt or script body', async () => {
+        const workflows = stubWorkflows();
+        const { instance, memberCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'GET',
+            url: '/api/workflow-blocks',
+            headers: { cookie: memberCookie },
+        });
+        expect(response.statusCode).toBe(200);
+        const { blocks } = response.json();
+        expect(blocks.map((b: { id: string }) => b.id).sort()).toEqual(
+            ['builtin/github-review-reconcile', 'builtin/merge-conflict-autofix'].sort()
+        );
+        for (const block of blocks) {
+            expect(block.available).toBe(false);
+            expect(typeof block.description).toBe('string');
+            expect(Array.isArray(block.configSchema)).toBe(true);
+            expect(block).not.toHaveProperty('expand');
+            expect(block).not.toHaveProperty('prompt');
+            expect(block).not.toHaveProperty('script');
+        }
+    });
 });
 
 describe('DELETE /api/workflows/:id', () => {
