@@ -60,13 +60,12 @@ spec:
                         value: {{ $.Release.Name | quote }}
                       - name: EXECUTOR
                         value: kubernetes
-                      # Which CLI the runner image speaks — claude-code, or opencode's headless
-                      # `run [--session <id>] <command>`. Read docs/jobs.md before switching it:
-                      # executorImage must speak the same dialect.
-                      - name: RUNNER_CLI
-                        value: {{ $.Values.driver.runnerCli | quote }}
-                      - name: EXECUTOR_IMAGE
-                        value: {{ $.Values.driver.executorImage | quote }}
+                      # Image locations only. The claimed task's selected executor profile chooses
+                      # the CLI/image pair for that run.
+                      - name: CLAUDE_EXECUTOR_IMAGE
+                        value: {{ $.Values.driver.executorImages.claudeCode | quote }}
+                      - name: OPENCODE_EXECUTOR_IMAGE
+                        value: {{ $.Values.driver.executorImages.opencode | quote }}
                       # Runner pods pull like the driver's own: IfNotPresent, so a side-loaded
                       # executor image is used rather than reached for.
                       - name: RUNNER_IMAGE_PULL_POLICY

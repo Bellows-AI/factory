@@ -178,10 +178,11 @@ come and go with a PUT).
   runner image (and the entrypoint's per-member `external_directory` patch) is the only authority
   on what a run may touch: a pasted `external_directory: "*": allow` would otherwise open every
   member's tree to one run. Every other key travels verbatim.
-- **The label drives config, nothing else.** An executor label matching no row — an executor
-  deleted after the task was queued, or free text — runs exactly as an unlabelled job, on the
-  image default. Which image and CLI a run uses is still the driver operator's `RUNNER_CLI`, not
-  this list: a member's row configures the CLI already chosen for the deployment.
+- **The selected label drives the run.** At claim time the board resolves the label in the task
+  author's executor list and sends that row's type to the driver. `claude-code` selects the Claude
+  Code image and CLI; `opencode` selects OpenCode. A label matching no row — renamed, deleted or
+  free text — is an unresolved selection, and the driver fails the task explicitly instead of
+  guessing a runner.
 - **The dialog edits as well as adds, and validation is structural.** Each row carries an Edit
   action that reopens the dialog pre-filled with the row's type, name and config; a rename saves
   under the new name and is matched against the old one. The contract is still "raw JSON the member
@@ -202,8 +203,8 @@ come and go with a PUT).
   everything else applies, except that the baked `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env
   values and the driver's `OTEL_EXPORTER_OTLP_ENDPOINT` override always win over anything a member
   pastes. The opencode help: merged over the baked configuration by the
-  deployment's CLI — model and provider apply, permission rules ignored. A note under the Type
-  select says the field describes the config and does not switch the deployment's runner CLI; both
+  selected OpenCode runner — model and provider apply, permission rules ignored. A note under the
+  Type select says tasks using the executor run with that selected type; both
   helps are tied to their fields with `aria-describedby`, and the actions read "Add executor" /
   "Save executor".
 - **Types are labelled for people, stored for machines.** List and dialog show "Claude Code" and
@@ -218,7 +219,7 @@ come and go with a PUT).
 - **A rename leaves the stamped tasks alone, on purpose.** `job.executor` was an audit stamp at
   queue time; historical tasks keep showing the old name, and a follow-up continues on the
   executor that ran it (copied at insert, not looked up again). A task queued against a name that
-  no longer matches a row — renamed or deleted — runs as an unlabelled job on the image default.
+  no longer matches a row — renamed or deleted — fails with an unresolved-executor reason.
 - **The whole list is a PUT.** Same argument as the repos selection: the body is the entire list,
   so a retried request after a dropped connection changes nothing.
 

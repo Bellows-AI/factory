@@ -47,6 +47,7 @@ const job: BoardJob = {
     attempts: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
     resumeSessionId: null,
     followUp: false,
     userId: USER,
@@ -54,6 +55,7 @@ const job: BoardJob = {
 };
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
+const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 
 const spec = (env: NodeJS.ProcessEnv = {}) =>
     runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: false });
@@ -170,7 +172,7 @@ describe('the runner job spec', () => {
     });
 
     it('never carries the transcript store for opencode', () => {
-        const ocSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode' }), job, null);
+        const ocSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null);
         expect(ocSpec.spec.template.spec.containers[0].env.some((e) => e.name === 'FACTORY_TRANSCRIPT_DIR')).toBe(
             false
         );
@@ -364,13 +366,13 @@ describe('the runner job spec', () => {
             value: SESSION,
         });
         const opencode = (env: NodeJS.ProcessEnv = {}) =>
-            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', ...env }), job, null).spec
-                .template.spec.containers[0];
+            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), opencodeJob, null).spec.template.spec
+                .containers[0];
         expect(opencode().env.some((entry) => entry.name === 'BELLOWS_SESSION_ID')).toBe(false);
         expect(
             runnerJobSpec(
-                loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode' }),
-                { ...job, followUp: true },
+                loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+                { ...opencodeJob, followUp: true },
                 { id: SESSION, resume: true }
             ).spec.template.spec.containers[0].env
         ).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: SESSION });
@@ -5161,7 +5163,7 @@ describe('the kubernetes services flow', () => {
 });
 
 /**
- * RUNNER_CLI=opencode under EXECUTOR=kubernetes: the same `run [--session <id>] <command>` argv
+ * An opencode-selected task under EXECUTOR=kubernetes: the same `run [--session <id>] <command>` argv
  * the docker runner composes, a session database persisted on the PVC, and the close-time
  * session scrape as an aux Job. The spec tests pin the shapes; the runner tests pin that the
  * scrape rides the run's outcome the way docker's verdict does.
@@ -5236,25 +5238,24 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
 describe('the runner job spec under opencode', () => {
     const ocConfig = loadDriverConfig({
         EXECUTOR: 'kubernetes',
-        RUNNER_CLI: 'opencode',
         K8S_NAMESPACE: namespace,
         RUNNER_SERVICES: '0',
     });
 
     it('runs a fresh job headless, with no session argv at all', () => {
-        const spec = runnerJobSpec(ocConfig, job, null);
+        const spec = runnerJobSpec(ocConfig, opencodeJob, null);
         const container = spec.spec.template.spec.containers[0];
         expect(container.args).toEqual(['run', 'fix the failing build']);
     });
 
     it('restores a follow-up session with run --session, the id the CLI itself minted', () => {
-        const spec = runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'ses_abc123', resume: true });
+        const spec = runnerJobSpec(ocConfig, { ...opencodeJob, followUp: true }, { id: 'ses_abc123', resume: true });
         const container = spec.spec.template.spec.containers[0];
         expect(container.args).toEqual(['run', '--session', 'ses_abc123', 'fix the failing build']);
     });
 
     it('persists the session database on the workspaces volume, under the member tree', () => {
-        const spec = runnerJobSpec(ocConfig, job, null);
+        const spec = runnerJobSpec(ocConfig, opencodeJob, null);
         const xdg = spec.spec.template.spec.containers[0].env.find((e) => e.name === 'XDG_DATA_HOME');
         expect(xdg).toEqual({
             name: 'XDG_DATA_HOME',
@@ -5277,14 +5278,14 @@ describe('the runner job spec under opencode', () => {
     });
 
     it('refuses to restore a session for anything but a follow-up, as dockerArgs does', () => {
-        expect(() => runnerJobSpec(ocConfig, job, { id: 'ses_abc123', resume: true })).toThrow(
+        expect(() => runnerJobSpec(ocConfig, opencodeJob, { id: 'ses_abc123', resume: true })).toThrow(
             /restores a session only for a follow-up/
         );
     });
 
     it('refuses a session id that is not a safe token, before it reaches argv', () => {
         expect(() =>
-            runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'bad id; rm -rf', resume: true })
+            runnerJobSpec(ocConfig, { ...opencodeJob, followUp: true }, { id: 'bad id; rm -rf', resume: true })
         ).toThrow(/not a safe token/);
     });
 });
@@ -5292,7 +5293,6 @@ describe('the runner job spec under opencode', () => {
 describe('the opencode session readout job', () => {
     const config = loadDriverConfig({
         EXECUTOR: 'kubernetes',
-        RUNNER_CLI: 'opencode',
         K8S_NAMESPACE: namespace,
         RUNNER_SERVICES: '0',
     });
@@ -5472,7 +5472,6 @@ describe('the kubernetes runner under opencode', () => {
         createKubernetesRunner(
             loadDriverConfig({
                 EXECUTOR: 'kubernetes',
-                RUNNER_CLI: 'opencode',
                 K8S_NAMESPACE: namespace,
                 RUNNER_SERVICES: '0',
             }),
@@ -5491,7 +5490,7 @@ describe('the kubernetes runner under opencode', () => {
                 summary: 'Fixed the flaky test',
             }),
         });
-        const outcome = await ocRunner(request).run(job, null);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
 
         expect(outcome.sessionId).toBe('ses_n3w');
         expect(outcome.finishReason).toBe('stop');
@@ -5529,7 +5528,7 @@ describe('the kubernetes runner under opencode', () => {
                 error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
             }),
         });
-        const outcome = await ocRunner(request).run(job, null);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
 
         expect(outcome.sessionId).toBe('ses_n3w');
         expect(outcome.finishReason).toBe('tool-calls');
@@ -5554,14 +5553,14 @@ describe('the kubernetes runner under opencode', () => {
             }
             return opencodeFake().request(method, path, body);
         };
-        const outcome = await ocRunner(flaky).run(job, null);
+        const outcome = await ocRunner(flaky).run(opencodeJob, null);
         expect(scrapeRuns).toBe(3);
         expect(outcome.sessionId).toBe('ses_late');
     });
 
     it('fails no verdict when the scrape cannot run: the error rides readoutError instead', async () => {
         const { request, calls } = opencodeFake({ status: 'failed' });
-        const outcome = await ocRunner(request).run(job, null);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
 
         // The run's own verdict is untouched; only the follow-up-ability was lost, said out loud.
         expect(outcome.exitCode).toBe(0);

@@ -47,4 +47,6 @@ secret:
 
 driver:
     image: factory-driver
-    executorImage: echo-executor
+    executorImages:
+        claudeCode: echo-executor
+        opencode: echo-executor

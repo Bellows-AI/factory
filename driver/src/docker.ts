@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
-import type { DriverConfig } from './config.js';
+import { executorImage, type DriverConfig } from './config.js';
 import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
 import {
@@ -717,7 +717,7 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
         `RUN_STARTED_MS=${Date.parse(startedAt)}`,
         '--entrypoint',
         'node',
-        config.image,
+        executorImage(config, job.executorType),
         '-e',
         opencodeReadoutScript,
     ];
@@ -814,7 +814,7 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
         `RUN_STARTED_AT=${startedAt}`,
         '--entrypoint',
         'node',
-        config.image,
+        executorImage(config, job.executorType),
         '-e',
         claudeTurnsScript,
     ];
@@ -843,8 +843,12 @@ export function parseClaudeCloseRead(stdout: string): { turns: number | null; su
  * Control keeps an interactive conversation that continues after any single read, so its count
  * stays unmeasured rather than freezing a mid-conversation number (the design's null posture).
  */
-export function readsAgentTurns(config: DriverConfig, session: RunSession | null): boolean {
-    return config.cli === 'claude-code' && !config.remoteControl && session !== null && UUID.test(session.id);
+export function readsAgentTurns(
+    config: DriverConfig,
+    job: Pick<BoardJob, 'executorType'>,
+    session: RunSession | null
+): boolean {
+    return job.executorType === 'claude-code' && !config.remoteControl && session !== null && UUID.test(session.id);
 }
 
 /*
@@ -932,7 +936,7 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
         `CACHE_WATCH_TURNS=${CACHE_WATCH_TURNS}`,
         '--entrypoint',
         'node',
-        config.image,
+        executorImage(config, job.executorType),
         '-e',
         opencodeCacheProbeScript,
     ];
@@ -1259,7 +1263,7 @@ export function dockerArgs(
     // <id> <command>` continues that conversation with the new adjustment. A resume claim with
     // nothing to deliver is a parked claude-code session — standby is a Remote Control feature —
     // and is refused by loop.ts before it gets here.
-    if (config.cli === 'opencode') {
+    if (job.executorType === 'opencode') {
         if (session && !session.resume) {
             throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
         }
@@ -1287,7 +1291,7 @@ export function dockerArgs(
             }
             args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
         }
-        args.push(config.image, 'run');
+        args.push(executorImage(config, job.executorType), 'run');
         if (session) args.push('--session', session.id);
         args.push(job.command);
         return args;
@@ -1311,7 +1315,7 @@ export function dockerArgs(
 
     // Restoring a session versus starting one. `--resume` keeps the original id — forking it is a
     // separate flag — which is what makes a parked job's link survive being parked.
-    args.push(config.image, session.resume ? '--resume' : '--session-id', session.id);
+    args.push(executorImage(config, job.executorType), session.resume ? '--resume' : '--session-id', session.id);
     if (config.skipPermissions) args.push('--dangerously-skip-permissions');
 
     // Interactive versus headless. The command is the session's opening prompt and is delivered
@@ -1606,7 +1610,7 @@ export function createDockerRunner(
                     ...(!restore && claimCarriesGithubToken(job) ? ['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`] : []),
                     '--entrypoint',
                     'node',
-                    config.image,
+                    executorImage(config, job.executorType),
                     '-e',
                     gitWorktreeScript,
                 ]);
@@ -1651,7 +1655,7 @@ export function createDockerRunner(
                     `WORKTREE=${worktree}`,
                     '--entrypoint',
                     'node',
-                    config.image,
+                    executorImage(config, job.executorType),
                     '-e',
                     gitWorktreeRemoveScript,
                 ]);
@@ -1708,7 +1712,12 @@ export function createDockerRunner(
                         args.push('-e', `${name}=${value}`);
                     }
                     if (publish.env) args.push('--env-file', envFile);
-                    args.push('--entrypoint', publish.entrypoint, config.image, ...publish.args);
+                    args.push(
+                        '--entrypoint',
+                        publish.entrypoint,
+                        executorImage(config, job.executorType),
+                        ...publish.args
+                    );
                     try {
                         return await execDocker(args);
                     } catch (e) {
@@ -2006,10 +2015,10 @@ export function createDockerRunner(
                  * session is not there yet) just waits for the next tick, and the trigger itself
                  * needs three consecutive damning turns, so no single answer — or no single fluke —
                  * kills anything. The kill is this attempt's own, label-scoped like every other;
-                 * config guarantees the watch is only armed for opencode on docker, headless.
+                 * the task-type check below keeps it on opencode, and config keeps it docker-only.
                  */
                 let cacheTimer: NodeJS.Timeout | null = null;
-                if (config.cacheWatch) {
+                if (config.cacheWatch && job.executorType === 'opencode') {
                     cacheTimer = setInterval(() => {
                         void (async () => {
                             const probe = await execDocker(opencodeCacheProbeArgs(config, job))
@@ -2075,7 +2084,7 @@ export function createDockerRunner(
                              * not a failed run: it costs the task its follow-ups and this
                              * verdict-check, not its verdict.
                              */
-                            if (config.cli === 'opencode') {
+                            if (job.executorType === 'opencode') {
                                 /*
                                  * NOT single-shot, and not only when the container fails. The CLI
                                  * exited a moment ago, and its session database may still be
@@ -2145,7 +2154,7 @@ export function createDockerRunner(
                              * Control is excluded by readsAgentTurns: its conversation continues
                              * after this read would run, so its count stays unmeasured.
                              */
-                            if (readsAgentTurns(config, session)) {
+                            if (readsAgentTurns(config, job, session)) {
                                 const read = await execDocker(
                                     claudeTurnsArgs(config, job, (session as RunSession).id, startedAt),
                                     { timeout: CLOSE_READ_DEADLINE_MS }

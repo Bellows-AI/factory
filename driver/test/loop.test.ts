@@ -14,6 +14,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     attempts: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
     resumeSessionId,
     followUp: false,
     userId: USER,
@@ -461,13 +462,13 @@ describe('the poll loop', () => {
     // loud, because a silently-lost session presents later as "this run cannot take a follow-up"
     // with nothing anywhere naming why.
     it('says so when an opencode run closes with no session scraped', async () => {
-        const board = stubBoard([job(1)]);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }]);
         const runner = stubRunner(async () => ok({ finishReason: 'stop', contextTokens: 1200, costUsd: 0 }));
         const logs: string[] = [];
         const loop = createLoop({
             board: board.board,
             runner,
-            config: config({ RUNNER_CLI: 'opencode' }),
+            config: config(),
             sleep,
             log: (m) => logs.push(m),
         });
@@ -680,6 +681,19 @@ describe('the poll loop', () => {
 
         expect(runner.synced).toEqual([job(1)]);
         expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    it('fails a task whose selected executor profile no longer resolves, before anything runs', async () => {
+        const board = stubBoard([{ ...job(1), executorType: null }]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('selected executor no longer exists');
     });
 
     // The same no-fallback rule the null workspacePath refusal applies, extended to the task
@@ -1056,7 +1070,7 @@ describe('the poll loop', () => {
     // and the stopped task settles sessionless: nothing to follow up (issue #152).
     it('reports the scraped session before parking a stopped opencode run', async () => {
         const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
         const events: string[] = [];
         const rawSuspend = board.board.suspend.bind(board.board);
         board.board.suspend = async (claimed) => {
@@ -1071,7 +1085,7 @@ describe('the poll loop', () => {
             return ok({ sessionId: 'ses_stoppedrun00000000001' });
         });
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
         expect(board.board.sessions).toEqual([
             { id: job(1).id, sessionId: 'ses_stoppedrun00000000001', remoteSessionId: null },
@@ -1086,7 +1100,7 @@ describe('the poll loop', () => {
     // task that can never take a follow-up (issue #152).
     it('says so when a stopped opencode run has no session to report', async () => {
         const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
         const logs: string[] = [];
         const runner = stubRunner(async () => {
             options.cancelRequested = true;
@@ -1094,7 +1108,7 @@ describe('the poll loop', () => {
             return ok({ readoutError: 'the readout container failed: boom' });
         });
 
-        await drive({ ...board, runner, log: (m) => logs.push(m) }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(true);
         expect(board.board.sessions).toEqual([]);
@@ -1402,6 +1416,7 @@ describe('the poll loop', () => {
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,
                 repo: 'Bellows-AI/factory',
+                executorType: 'claude-code',
             },
         ]);
         expect(board.board.reclaimAcks).toEqual([rowId]);
@@ -1980,14 +1995,14 @@ describe('an opencode runner', () => {
     // uuid here and reporting it would put a session on the board that the runner never used — so
     // the honest answer is no session at all.
     it('runs headless: no session is minted, reported or given', async () => {
-        const board = stubBoard([job(1)]);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }]);
         let given: RunSession | null | undefined;
         const runner = stubRunner(async (_job, session) => {
             given = session;
             return ok();
         });
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
         expect(given).toBeNull();
         expect(board.board.sessions).toEqual([]);
@@ -2004,22 +2019,22 @@ describe('an opencode runner', () => {
     });
 
     // A claim carrying resumeSessionId under opencode WITHOUT a follow-up can only be board state
-    // from before a RUNNER_CLI flip: standby is a Remote Control feature, and opencode refuses
+    // from before the selected profile changed type: standby is a Remote Control feature, and opencode refuses
     // Remote Control at startup. Failing it with a reason beats restoring a session the runner
     // cannot adopt — or idling a headless run to its deadline.
     it('fails a parked job it cannot resume, with a reason, without running it', async () => {
-        const board = stubBoard([job(1, '44444444-4444-4444-8444-444444444444')]);
+        const board = stubBoard([{ ...job(1, '44444444-4444-4444-8444-444444444444'), executorType: 'opencode' }]);
         let ran = 0;
         const runner = stubRunner(async () => {
             ran += 1;
             return ok();
         });
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
         expect(ran).toBe(0);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
-        expect(board.board.completed[0]?.output).toContain('opencode');
+        expect(board.board.completed[0]?.output).toContain('OpenCode');
     });
 
     /**
@@ -2028,14 +2043,16 @@ describe('an opencode runner', () => {
      * restores it with `--session` and delivers the new command into it.
      */
     it('runs an opencode follow-up, restoring the session it carries', async () => {
-        const board = stubBoard([{ ...job(1, 'ses_f86188c3dffeZGYO4yZq4atba9'), followUp: true }]);
+        const board = stubBoard([
+            { ...job(1, 'ses_f86188c3dffeZGYO4yZq4atba9'), executorType: 'opencode', followUp: true },
+        ]);
         let given: RunSession | null | undefined;
         const runner = stubRunner(async (_job, session) => {
             given = session;
             return ok();
         });
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
         expect(given).toEqual({ id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true });
         expect(board.board.completed).toHaveLength(1);
@@ -2047,10 +2064,10 @@ describe('an opencode runner', () => {
     // scrapes it out of the session database after the run and the board is told while the lease
     // is still live, because a follow-up resumes exactly this.
     it('reports the session id the runner scraped from a finished opencode run', async () => {
-        const board = stubBoard([job(1)]);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }]);
         const runner = stubRunner(async () => ok({ sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9' }));
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
         expect(board.board.sessions).toEqual([
             { id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9', remoteSessionId: null },

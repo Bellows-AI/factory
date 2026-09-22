@@ -5,12 +5,13 @@ Read before: touching `server/src/routes/jobs.ts`, `server/src/db/job-store.ts`,
 
 A job is a text command waiting for a worker — read as an agent prompt. The runner's `ENTRYPOINT`
 is a CLI wrapper: the driver passes the command as `-p <command>` to claude-code, or as the
-positional prompt of `opencode run` under `RUNNER_CLI=opencode`.
+positional prompt of `opencode run`. The task's selected executor profile type chooses which.
 
-**The server hands jobs out and records results. It never spawns anything.** The driver claims a
-job, runs it in a `claude-executor` container against the AUTHOR's workspace checkout, and reports
-back. The docker socket lives with the driver, never with the dashboard: the dashboard's port is
-unauthenticated, and a socket on that process would make it root on the host.
+**The server hands jobs out and records results. It never spawns anything.** The claim resolves the
+task's executor label in the AUTHOR's executor list and carries its type; the driver runs the
+matching `claude-executor` or `opencode-executor` container against that author's workspace checkout
+and reports back. The docker socket lives with the driver, never with the dashboard: the dashboard's
+port is unauthenticated, and a socket on that process would make it root on the host.
 
 When a task walks a WORKFLOW — the graph of agent nodes the board itself walks between verdicts —
 that is a separate doc: [docs/workflows.md](docs/workflows.md) covers the definition grammar, the
@@ -21,7 +22,7 @@ one-row pipeline every task still shares, workflow or not.
 
 ```
 POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
-                                        userId, workspacePath, resumeSessionId, followUp,
+                                        executorType, userId, workspacePath, resumeSessionId, followUp,
                                         env} | 204
   every request carries `authorization: Bearer $JOB_BOARD_TOKEN`, when the board requires one
   resumeSessionId ? restore that session : mint one, POST /api/jobs/:id/session
@@ -103,8 +104,8 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | --- | --- | --- |
 | `JOB_BOARD_URL` | `http://127.0.0.1:8080` | Must be http(s); the scheme is checked, because `new URL('dashboard:8080')` parses. |
 | `JOB_BOARD_TOKEN` | unset | The shared board secret — the same value the dashboard validates against, both sides from one `.env` entry (chart: one Secret key). **Required against a board running `AUTH_MODE=github`** (the board itself refuses to boot without it); unset against an open one, where the header is **omitted rather than sent empty** — an empty Bearer is a credential that failed, not one that was never offered. |
-| `EXECUTOR_IMAGE` | `claude-executor` | The runner image. `opencode-executor` under `RUNNER_CLI=opencode`, unless set explicitly. |
-| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run [--session <id>] <prompt>`. Explicit enum. Under `opencode` no session is minted — the runner scrapes the id the run used and reports it at close — and Remote Control and skip-permissions are refused at startup. Both executors carry both CLIs; the cache watch is the one opencode feature that stays docker-only (see `RUNNER_CACHE_WATCH`). |
+| `CLAUDE_EXECUTOR_IMAGE` | `claude-executor` | Deployment image for tasks whose selected executor profile type is `claude-code`. This changes the image location, never task routing. |
+| `OPENCODE_EXECUTOR_IMAGE` | `opencode-executor` | Deployment image for tasks whose selected executor profile type is `opencode`. This changes the image location, never task routing. |
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, passed to both runners as `OTEL_EXPORTER_OTLP_ENDPOINT`. The default names the compose collector, so the endpoint is always provided — a runner's telemetry reaches the collector whether or not the compose network is there to make the baked image default resolve. The chart overrides it with the in-chart collector. |
@@ -335,9 +336,10 @@ provider state it names usually outlives a re-queue. First observed 2026-09-09 o
 model: cache served for fourteen turns, then stopped — turns went from ~25s to 2.5-4.5 minutes
 re-reading 63-84k tokens, and the run died on the timeout having explored and edited nothing.
 The watch is opencode-only (the message rows record per-turn cache tokens; a claude-code
-transcript answers nothing to the query), refused at startup under claude-code, and docker-only:
-each tick is one throwaway container on a warm daemon, while the kubernetes form would be a Job
-per tick — pod admission every poll period, refused at startup under `EXECUTOR=kubernetes`.
+transcript answers nothing to the query): a mixed-task driver probes only its OpenCode runs and
+leaves Claude Code runs alone. It is docker-only: each tick is one throwaway container on a warm
+daemon, while the kubernetes form would be a Job per tick — pod admission every poll period,
+refused at startup under `EXECUTOR=kubernetes`.
 
 **The branch reporter is how an executor run becomes attributable at all.** The CLIs' OTLP
 metrics carry a session id and nothing else — no branch, no repo — so without the reporter's
@@ -382,12 +384,12 @@ widened): merging the remote default in is the one exit from a conflicts dead-en
 and a merge can neither move HEAD off the task branch nor rewrite the published commits, so the
 invariant survives it. This is a guardrail, not a security boundary — the agent is root in its
 container,
-and the sync refusal stays the last line of defense. The same images serve both executors, so one
+    and the sync refusal stays the last line of defense. The same images serve both backends, so one
 change covers docker and kubernetes; the case table lives in `git-guard.cjs` itself and is pinned
 twice — offline by vitest (`driver/test/executor-images.test.ts`) and against the baked copy by
 the image suites' checks.
 
-**`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
+**Selecting an `opencode` executor swaps the CLI and with it the session contract for that task.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own
 ids (`ses_…`) and cannot adopt one minted in advance — minting a uuid anyway would put a session
 on the board that the runner never used. Instead the runner **scrapes the id the run actually
@@ -414,19 +416,20 @@ legible. The id is reported while the lease is still live, before the verdict, b
 resumes exactly that row. These jobs show no session link (the link is built
 from `remote_session_id`, which stays claude-only). Their runs still emit OTLP, but the server's
 metric map carries no opencode rows yet, so spend records as an unmapped agent — null, never zero
-— until those rows are added (see [limits.md](limits.md)). The combination is refused at startup
-with `RUNNER_REMOTE_CONTROL` (that is claude-code's bridge) and with `RUNNER_SKIP_PERMISSIONS`
-(that appends a claude-code flag; opencode's permissions come from the `opencode.json` baked into
-its image — see [its README](../docker/opencode-executor/README.md)).
+— until those rows are added (see [limits.md](limits.md)). An OpenCode task is failed before its
+runner starts when `RUNNER_REMOTE_CONTROL` is enabled (that is claude-code's bridge).
+`RUNNER_SKIP_PERMISSIONS` applies only
+to claude-code tasks; opencode's permissions come from the `opencode.json` baked into its image —
+see [its README](../docker/opencode-executor/README.md).
 
 **Any executor can resume its own sessions.** A follow-up claim carries the session id the parent
 run used, whatever CLI minted it: claude-code restores with `--resume <uuid> -p <command>`,
 opencode with `run --session <ses_…> <command>`. The one refusal that survives is a resume claim
 under opencode with **nothing to deliver** — standby is a Remote Control feature, so that means
-the operator flipped `RUNNER_CLI` while something was parked, and restoring a claude session into
-opencode's database is impossible (`Session not found`, loudly, if it were tried). A follow-up
-whose parent ran under a DIFFERENT CLI than the driver now serving the queue fails at run time
-the same loud way — the operator keeps one CLI per queue.
+the selected executor profile changed type while something was parked, and restoring a Claude
+session into opencode's database is impossible (`Session not found`, loudly, if it were tried).
+A driver may run Claude Code and OpenCode tasks concurrently; the claim, not the process, owns the
+choice.
 
 ### The executor transcript store (issue #55)
 
@@ -1318,18 +1321,13 @@ flatten it.
 **`order by created_at, id`.** `now()` is transaction-constant, so a batch insert shares a
 timestamp and FIFO without the id tiebreaker is arbitrary.
 
-**`repo` and `executor` are grouping metadata for the tasks UI, not execution inputs.** The task
-list names the repository workspace a task belongs to and the executor it was queued with, so a
-job carries both labels — nullable, because every job queued before the tasks UI has neither, and 014
-adds them as plain text for the same reason `remote_session_id` is. No foreign keys: `job` is an
-audit record (the `created_by` precedent — "records who did rather than limiting what they may do"),
-while `user_repo` and `user_executor` rows are member state that comes and goes with a PUT, and a
-deselected repository must not take its history with it. Shape-validated only, under the same
-path-segment rules a checkout's name obeys, because nothing consumes either label: the claim payload
-is unchanged, and a wrong-but-well-formed label in a hand-written API call is as harmless as a
-typo'd command. Wiring an executor into the driver remains future work — that change will decide
-what an executor name means to a worker, and whether existence is then checked at create or at
-claim. "Nothing runs an executor yet" stays true.
+**`repo` and `executor` remain audit labels, but executor is also resolved at claim time.** The task
+list names the repository workspace and executor profile a task was queued with. There are no foreign
+keys: `job` records the choice, while `user_repo` and `user_executor` are mutable member state. The
+claim resolves the executor label against the AUTHOR's current profiles and carries the matched type;
+that type chooses the CLI and its image. A renamed or deleted profile leaves the label in history but
+produces `executorType: null`, which the driver reports as a failed task instead of choosing a
+deployment default. The composer requires a configured profile and initially selects the first one.
 
 **The git guard lives in the images, not the sync.** The restore-mode sync enforces the checkout
 invariant only when a claim STARTS — by then a wrong checkout already exists and the thread is

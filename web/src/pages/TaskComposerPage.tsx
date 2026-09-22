@@ -32,7 +32,7 @@ export function TaskComposerPage() {
     const send = async (
         command: string,
         chosenRepo: string | null,
-        executor: string | null,
+        executor: string,
         workflow: string | null,
         workflowParams: Record<string, string> | null
     ): Promise<string | null> => {

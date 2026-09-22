@@ -3,10 +3,10 @@
 opencode in a container, with a fixed configuration baked in. It runs an agent against a mounted
 checkout; it does not build or run this repo's application.
 
-Headless only. The driver selects it with `RUNNER_CLI=opencode`, and that combination refuses
-`RUNNER_REMOTE_CONTROL` and `RUNNER_SKIP_PERMISSIONS` at startup — Remote Control is claude-code's
-bridge, and opencode takes its permissions from the config baked into this image, not from a CLI
-flag.
+Headless only. The driver selects it when the task's chosen executor profile has type `opencode`.
+An OpenCode task is refused when the driver is in `RUNNER_REMOTE_CONTROL` mode — Remote Control is
+Claude Code's bridge. `RUNNER_SKIP_PERMISSIONS` applies only to Claude Code tasks; OpenCode takes
+its permissions from the config baked into this image, not from a CLI flag.
 
 ## Layout
 

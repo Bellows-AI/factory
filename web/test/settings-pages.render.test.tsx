@@ -270,7 +270,7 @@ describe('Settings executors page', () => {
             },
         });
         expect(html).toContain('page-header-description');
-        expect(html).toContain('The deployment chooses the runner CLI and image');
+        expect(html).toContain('Each task runs with its selected executor');
         expect(html).toContain('<h2>My workspace</h2>');
         expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
         expect(html).toContain('Add executor');

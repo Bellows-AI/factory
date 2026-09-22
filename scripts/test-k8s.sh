@@ -345,7 +345,8 @@ echo "installing the release $RELEASE"
 helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml \
     --set "dashboard.image=$DASH_IMAGE" \
     --set "driver.image=$DRIVER_IMAGE" \
-    --set "driver.executorImage=$STUB_IMAGE" \
+    --set "driver.executorImages.claudeCode=$STUB_IMAGE" \
+    --set "driver.executorImages.opencode=$STUB_IMAGE" \
     --set "collector.image=$COLLECTOR_IMAGE" \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'

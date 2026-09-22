@@ -152,6 +152,20 @@ describe('the worker token', () => {
 });
 
 describe('the claimed job', () => {
+    it('carries a known executor type and refuses to invent one for a missing or unknown value', async () => {
+        const { fetch } = recorder(() => claimed({ executorType: 'opencode' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.executorType).toBe('opencode');
+
+        const { fetch: unknown } = recorder(() => claimed({ executorType: 'other' }));
+        const unknownBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: unknown });
+        expect((await unknownBoard.claim('driver-1'))?.executorType).toBeNull();
+
+        const { fetch: missing } = recorder(() => claimed());
+        const missingBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: missing });
+        expect((await missingBoard.claim('driver-1'))?.executorType).toBeNull();
+    });
+
     it('carries the account that queued it', async () => {
         const { fetch } = recorder(() => claimed({ userId: 'user-7' }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });

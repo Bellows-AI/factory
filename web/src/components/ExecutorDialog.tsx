@@ -18,9 +18,9 @@ import {
  * submits because CSP sends `form-action 'none'`. The one difference in body is a textarea for
  * the pasted JSON, re-validated on every keystroke by the pure validator — cheap, and the message
  * under the field is what makes raw JSON pasteable at all. Issue 183 makes the help tell the
- * truth per type (EXECUTOR_TYPE_META): what the config is stored for, what actually consumes it,
- * and what the type does NOT do — the note under the Type select says the field describes the
- * config, it does not switch the deployment's runner CLI. Both helps are tied to their fields
+ * truth per type (EXECUTOR_TYPE_META): what the config is stored for and what consumes it. The
+ * note under the Type select says that the type selects the runner for tasks using this profile.
+ * Both helps are tied to their fields
  * with `aria-describedby`, and the textarea's parse error is `aria-invalid` plus a described-by
  * error, the content itself retained.
  *
@@ -36,9 +36,8 @@ import {
 export const ADD_LABEL = 'Add executor';
 export const SAVE_LABEL = 'Save executor';
 
-/** What choosing a Type does and does not do; tied to the select with aria-describedby. */
-export const TYPE_CONFIG_NOTE =
-    "The selected Type describes this config. It does not change the deployment's runner CLI.";
+/** What choosing a Type does; tied to the select with aria-describedby. */
+export const TYPE_CONFIG_NOTE = 'Tasks using this executor run with the selected type: Claude Code or OpenCode.';
 
 export interface ExecutorDialogProps {
     open: boolean;

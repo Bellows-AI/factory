@@ -515,6 +515,21 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * within one heartbeat poll and stands the attempt down before anything spawns (issue #126).
      */
     async function runJob(job: BoardJob): Promise<void> {
+        const executorType = job.executorType;
+        const executorRefusal =
+            executorType === null
+                ? 'The selected executor no longer exists. Choose a configured executor and start a new task.'
+                : executorType === 'opencode' && config.remoteControl
+                  ? 'The selected OpenCode executor cannot run with Remote Control enabled.'
+                  : null;
+        if (executorRefusal) {
+            log(`job ${job.id}: executor selection is not runnable, failing`);
+            await report(job, { status: 'failed', exitCode: null, output: executorRefusal }).catch((e: Error) =>
+                log(`job ${job.id}: could not report the executor failure: ${e.message}`)
+            );
+            return;
+        }
+
         const state = newJobState();
         const beating = heartbeat(job, state);
         // Armed before the run so the runner can hand over tails from its first chunk. The pump
@@ -531,7 +546,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         // scrapes the id the run used and reports it when the outcome lands. A follow-up claim
         // carries the session opencode itself created, restored via `--session` on the runner.
         const session: RunSession | null =
-            config.cli === 'opencode'
+            executorType === 'opencode'
                 ? job.resumeSessionId
                     ? { id: job.resumeSessionId, resume: true }
                     : null
@@ -597,7 +612,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 } catch (e) {
                     log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
                 }
-            } else if (config.cli === 'opencode') {
+            } else if (executorType === 'opencode') {
                 log(
                     `job ${job.id}: the session readout came up empty (${outcome.readoutError ?? 'no session in the database'}) — ` +
                         'no session to follow up, finish reason and context stats unread'
@@ -1177,6 +1192,9 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 workspacePath: reclaim.workspacePath,
                 rootJobId: reclaim.rootJobId,
                 repo: reclaim.repo,
+                // Removed-thread reclamation runs only the bundled git maintenance script. It is
+                // not task execution and the deleted rows no longer carry an executor selection.
+                executorType: 'claude-code',
             };
             let outcome: ReclaimResult;
             try {
@@ -1214,7 +1232,8 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         async start() {
             log(
                 `polling ${config.boardUrl} every ${config.pollMs}ms as "${config.worker}", ` +
-                    `${config.concurrency} at a time, image ${config.image}`
+                    `${config.concurrency} at a time, executor images ` +
+                    `claude-code=${config.executorImages['claude-code']}, opencode=${config.executorImages.opencode}`
             );
 
             // Drains the board's removed-thread queue in parallel with the claim loop. This loop
@@ -1281,21 +1300,21 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 }
 
                 /*
-                 * A job's session cannot follow it across a RUNNER_CLI flip — with one carve-out:
+                 * A job's session cannot follow a profile whose type changed — with one carve-out:
                  * a FOLLOW-UP under opencode runs, because its session is opencode's own and the
                  * runner restores it with `--session`. What is still refused is a resume claim
                  * carrying nothing to deliver: standby is a Remote Control feature and opencode
-                 * refuses Remote Control at startup, so a parked claim under opencode means the
-                 * operator changed the CLI while something was parked. Restoring a claude-code
+                 * cannot run under Remote Control, so a parked claim under opencode means the
+                 * profile changed type while something was parked. Restoring a claude-code
                  * session is impossible — opencode has none in its database — and resuming it
                  * without a command would idle a headless run to its deadline.
                  */
-                if (config.cli === 'opencode' && job.resumeSessionId && !job.followUp) {
-                    log(`job ${job.id}: carries a session this opencode driver cannot restore, failing`);
+                if (job.executorType === 'opencode' && job.resumeSessionId && !job.followUp) {
+                    log(`job ${job.id}: carries a session its selected OpenCode executor cannot restore, failing`);
                     await report(job, {
                         status: 'failed',
                         exitCode: null,
-                        output: 'This job was parked with an agent session by a claude-code driver, and this driver runs opencode, whose runner cannot restore that session. Re-queue the job to run it fresh.',
+                        output: 'This job was parked with a Claude Code session, and its selected OpenCode executor cannot restore that session. Start a new task to run it fresh.',
                     }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
                     continue;
                 }

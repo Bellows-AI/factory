@@ -127,9 +127,10 @@ describe('EXECUTOR_TYPE_META', () => {
         expect(JSON.parse(meta.example)).toEqual({});
     });
 
-    it('tells the opencode truth: the deployment CLI is authoritative and permission is ignored', () => {
+    it('tells the opencode truth: the profile selects OpenCode and permission is ignored', () => {
         const meta = EXECUTOR_TYPE_META.opencode;
         expect(meta.label).toBe('OpenCode');
+        expect(meta.configHelp).toMatch(/Tasks using this executor run OpenCode/);
         expect(meta.configHelp).toMatch(/merged over its baked configuration/);
         expect(meta.configHelp).toMatch(/permission rules are ignored/);
         // The example illustrates the keys that do apply, and carries nothing that looks like a

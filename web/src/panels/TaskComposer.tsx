@@ -33,10 +33,10 @@ const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected te
  *
  * The page reads top to bottom the way a member decides: what the agent should do, where it will
  * run, which process will guide it, what is still blocking the launch, and what will actually
- * run — before Start is ever pressed. The repository, the executor and the workflow are stamps
- * the member chooses per task, with explicit product words for every deliberate null: no
- * repository, the deployment's default executor, no workflow. The pure layer beneath — the
- * verdicts, the preflight sentence, the blocker matrix — lives in `task-composer.ts`.
+ * run — before Start is ever pressed. The repository, executor and workflow are task parameters.
+ * Repository and workflow may deliberately be absent; executor may not, because its profile type
+ * chooses the runner. The pure layer beneath — the verdicts, preflight sentence and blocker
+ * matrix — lives in `task-composer.ts`.
  */
 export function TaskComposer({
     repos,
@@ -82,7 +82,7 @@ export function TaskComposer({
     onSend: (
         command: string,
         repo: string | null,
-        executor: string | null,
+        executor: string,
         workflow: string | null,
         workflowParams: Record<string, string> | null
     ) => Promise<string | null>;
@@ -94,7 +94,6 @@ export function TaskComposer({
 }) {
     const [draft, setDraft] = useState('');
     const [executor, setExecutor] = useState(() => executors[0]?.name ?? '');
-    const [executorTouched, setExecutorTouched] = useState(false);
     const [repo, setRepo] = useState(() => firstRepo(repos));
     const [repoTouched, setRepoTouched] = useState(false);
     // The workflow starts UNCHOSEN — '', meaning no process: the raw prompt runs. And, unlike
@@ -131,19 +130,17 @@ export function TaskComposer({
         }
     }, [repos, repo, repoTouched]);
 
-    // The FIRST configured executor is the default: a member who set one up means their tasks to
-    // run on it, not on an unlabelled runner. Explicit `none` wins the moment they pick it —
-    // `executorTouched` is what stops this autoselect from stomping their choice back on the
-    // next workspace poll.
+    // The FIRST configured executor is selected when the async workspace poll lands. There is no
+    // deployment fallback: the selected profile type is the task's runner choice.
     useEffect(() => {
-        if (!executorTouched && executor === '' && executors.length > 0) {
+        if (executor === '' && executors.length > 0) {
             setExecutor(executors[0]!.name);
         }
-    }, [executors, executor, executorTouched]);
+    }, [executors, executor]);
 
     // A configured executor can be deleted on the Workspace page while a draft sits here; the
     // select would go blank while `send` still submitted the stale name. Clamp to what exists —
-    // back to the first executor, or the deployment default when the list is empty.
+    // back to the first executor, or an explicit blocked state when the list is empty.
     useEffect(() => {
         if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
             setExecutor(executors.length > 0 ? executors[0]!.name : '');
@@ -205,8 +202,7 @@ export function TaskComposer({
     // The mirror of the board's check: a missing or malformed parameter must never reach the
     // wire — the composer says nothing and the launch stays dark.
     const send = async () => {
-        if (!draft.trim() || sending || !paramsReady) return;
-        const chosenExecutor = executor === '' ? null : executor;
+        if (!draft.trim() || sending || !paramsReady || executor === '') return;
         const chosenRepo = repo === '' ? null : repo;
         const chosenWorkflowName = workflow === '' ? null : workflow;
         // Values travel trimmed, and only beside an explicit choice — a task with no workflow
@@ -217,14 +213,19 @@ export function TaskComposer({
             declaredParams.length > 0
                 ? Object.fromEntries(declaredParams.map((param) => [param.name, values[param.name] ?? '']))
                 : null;
-        if ((await onSend(draft, chosenRepo, chosenExecutor, chosenWorkflowName, chosenParams)) === null) setDraft('');
+        if ((await onSend(draft, chosenRepo, executor, chosenWorkflowName, chosenParams)) === null) setDraft('');
     };
 
     // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
     // button, never a bypass. An invalid keyboard submission owes the member the same screen a
     // tab-through would have left: every field marked, the first invalid one focused, and no
     // request sent. An empty prompt is the missing task itself; the visible blocker says so.
-    const blocker = startBlocker({ sending, promptEmpty: draft.trim() === '', paramsInvalid: !paramsReady });
+    const blocker = startBlocker({
+        sending,
+        executorMissing: executor === '',
+        promptEmpty: draft.trim() === '',
+        paramsInvalid: !paramsReady,
+    });
     const attemptStart = () => {
         if (blocker === null) {
             void send();
@@ -239,11 +240,13 @@ export function TaskComposer({
     const blockerCopy =
         blocker === 'in-flight'
             ? 'Starting the task…'
-            : blocker === 'empty-prompt'
-              ? 'Describe the task to continue.'
-              : blocker === 'invalid-params'
-                ? 'Complete the required workflow details to continue.'
-                : null;
+            : blocker === 'missing-executor'
+              ? 'Configure an executor in Settings to continue.'
+              : blocker === 'empty-prompt'
+                ? 'Describe the task to continue.'
+                : blocker === 'invalid-params'
+                  ? 'Complete the required workflow details to continue.'
+                  : null;
     const preflight = preflightSentence({
         repo: repo === '' ? null : repo,
         executor: executor === '' ? null : executor,
@@ -331,21 +334,12 @@ export function TaskComposer({
                     </div>
                     <div className="composer-field">
                         <span className="composer-label">Executor</span>
-                        <p className="composer-helper">Use the deployment&rsquo;s default runner.</p>
-                        <Listbox
-                            value={executor}
-                            onChange={(next) => {
-                                setExecutorTouched(true);
-                                setExecutor(next);
-                            }}
-                        >
+                        <p className="composer-helper">The selected executor type chooses the runner for this task.</p>
+                        <Listbox value={executor} disabled={executors.length === 0} onChange={setExecutor}>
                             <ListboxButton className="composer-select" aria-label="Executor">
-                                {executor === '' ? 'Default executor' : executor}
+                                {executor === '' ? 'No executor configured' : executor}
                             </ListboxButton>
                             <ListboxOptions anchor="bottom start" className="popover">
-                                <ListboxOption value="" className="popover-option">
-                                    Default executor
-                                </ListboxOption>
                                 {executors.map((candidate) => (
                                     <ListboxOption
                                         key={candidate.name}
@@ -357,6 +351,12 @@ export function TaskComposer({
                                 ))}
                             </ListboxOptions>
                         </Listbox>
+                        {executors.length === 0 ? (
+                            <p className="muted">
+                                Add an executor in <Link to="/settings/executors">Settings</Link> before starting a
+                                task.
+                            </p>
+                        ) : null}
                     </div>
                 </div>
                 {repos.length === 0 ? (

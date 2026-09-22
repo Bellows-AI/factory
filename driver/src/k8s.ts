@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { BoardJob } from './board.js';
-import type { DriverConfig } from './config.js';
+import { executorImage, type DriverConfig } from './config.js';
 import {
     claimCarriesGithubToken,
     claimContinuesSession,
@@ -253,7 +253,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // with an empty one — pointing it at the member's own tree on the workspaces PVC is what
     // makes a follow-up's `--session <id>` resumable at all, exactly as the docker runner's env
     // does (docker.ts). A path literal like WORKDIR, never a credential.
-    if (config.cli === 'opencode') {
+    if (job.executorType === 'opencode') {
         env.push({ name: 'XDG_DATA_HOME', value: `${config.workspaceMount}/${path}/.opencode` });
     } else {
         // The transcript store for headless claude-code (opencode persists through its own
@@ -269,7 +269,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // the ENTRYPOINT of either executor image receives exactly these arguments after the image
     // name, so the platform below the container is the only difference.
     let args: string[];
-    if (config.cli === 'opencode') {
+    if (job.executorType === 'opencode') {
         // Headless only, and opencode mints its own session ids: a fresh run is `run <command>`
         // with no session at all, and a follow-up is `run --session <id> <command>` — the
         // session opencode ITSELF created on the earlier run, persisted via XDG_DATA_HOME above.
@@ -357,7 +357,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             // out of the raw form. Nothing addresses the container by name — its
                             // log is read off the pod's labels, its lifecycle by the Job's.
                             name: 'runner',
-                            image: config.image,
+                            image: executorImage(config, job.executorType),
                             // Stated, never defaulted: kubernetes reads a missing or :latest tag as
                             // `Always` and would reach for a registry, past the image the node
                             // already holds — which is how the docker runner finds it.
@@ -626,7 +626,7 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                     containers: [
                         {
                             name: 'bellows-read',
-                            image: config.image,
+                            image: executorImage(config, job.executorType),
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['sh', '-c', bellowsReadScript],
                             // The readout's parameters as literal env values — a path and two
@@ -711,7 +711,7 @@ export function claudeTurnsJobSpec(
                     containers: [
                         {
                             name: 'claude-turns',
-                            image: config.image,
+                            image: executorImage(config, job.executorType),
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['node', '-e', claudeTurnsScript],
                             // Both travel as env VALUES — the script is static, so nothing
@@ -765,7 +765,7 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
                     containers: [
                         {
                             name: 'opencode-readout',
-                            image: config.image,
+                            image: executorImage(config, job.executorType),
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['node', '-e', opencodeReadoutScript],
                             // Both travel as env VALUES — the script is static, so nothing
@@ -849,7 +849,7 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                     containers: [
                         {
                             name: 'worktree-sync',
-                            image: config.image,
+                            image: executorImage(config, job.executorType),
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['node', '-e', gitWorktreeScript],
                             env: [
@@ -933,7 +933,7 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                     containers: [
                         {
                             name: 'worktree-reclaim',
-                            image: config.image,
+                            image: executorImage(config, job.executorType),
                             imagePullPolicy: config.imagePullPolicy,
                             command: ['node', '-e', gitWorktreeRemoveScript],
                             env: [
@@ -1011,7 +1011,7 @@ export function publishStepJobSpec(
                     containers: [
                         {
                             name: `publish-${step}`,
-                            image: config.image,
+                            image: executorImage(config, job.executorType),
                             imagePullPolicy: config.imagePullPolicy,
                             // The workflow's argv verbatim — the executable the docker runner
                             // swaps in as --entrypoint is this command's head.
@@ -2360,7 +2360,7 @@ export function createKubernetesRunner(
             // same shape the docker runner carries (dockerArgs). Under claude-code every job is
             // a session, and one arriving without is refused here, BEFORE the fence takes the
             // checkout — the same early refusal the docker loop makes.
-            if (!session && config.cli !== 'opencode') {
+            if (!session && job.executorType !== 'opencode') {
                 throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
             }
             await prepare(job, cleanup);
@@ -2609,7 +2609,7 @@ export function createKubernetesRunner(
              * as the docker runner scrapes — the CLI exited a moment ago, and the database may
              * still be mid-checkpoint, which an answer of "no session yet" says without naming.
              */
-            if (config.cli === 'opencode') {
+            if (job.executorType === 'opencode') {
                 let scraped: OpencodeRunOutcome = {
                     sessionId: null,
                     finishReason: null,
@@ -2652,7 +2652,7 @@ export function createKubernetesRunner(
              * interactive conversation to freeze; the guard exists only to say so beside
              * docker's.
              */
-            if (config.cli === 'claude-code' && session) {
+            if (job.executorType === 'claude-code' && session) {
                 const read = await scrapeClaudeCloseRead(job, session.id, startedAt);
                 outcome.agentTurns = read.turns;
                 if (read.summary) outcome.summary = read.summary;

@@ -1,4 +1,5 @@
 import type { ServiceStatus } from './docker.js';
+import { isExecutorType, type ExecutorType } from './config.js';
 
 export interface BoardJob {
     id: string;
@@ -6,6 +7,12 @@ export interface BoardJob {
     attempts: number;
     leaseToken: string;
     leaseExpiresAt: string;
+    /**
+     * The CLI/image family selected by this task's executor profile. Null means the stamped
+     * executor no longer resolves; the loop fails that task explicitly instead of choosing a
+     * process-wide fallback.
+     */
+    executorType: ExecutorType | null;
     /**
      * Set when this claim is picking a parked job back up: the runner restores that session rather
      * than starting one, and the command is not re-delivered — it is already in the transcript.
@@ -301,6 +308,7 @@ export function createBoard({
                 userId: claimed.userId ?? null,
                 workspacePath: claimed.workspacePath ?? null,
                 rootJobId: claimed.rootJobId ?? null,
+                executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
                 env: claimed.env ?? {},
             };
         },

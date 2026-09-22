@@ -138,7 +138,7 @@ export interface UseTasks {
         queue: (
             command: string,
             repo: string | null,
-            executor: string | null,
+            executor: string,
             workflow: string | null,
             workflowParams: Record<string, string> | null
         ) => Promise<QueueResult>;
@@ -406,7 +406,7 @@ export function useTasks(enabled: boolean): UseTasks {
             async queue(
                 command: string,
                 repo: string | null,
-                executor: string | null,
+                executor: string,
                 workflow: string | null,
                 workflowParams: Record<string, string> | null
             ): Promise<QueueResult> {

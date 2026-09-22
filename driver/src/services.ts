@@ -14,7 +14,7 @@
  */
 import { readFileSync } from 'node:fs';
 import type { BoardJob } from './board.js';
-import type { DriverConfig } from './config.js';
+import { executorImage, type DriverConfig } from './config.js';
 
 /**
  * The readout's shell script: a real file (scripts/bellows-read.sh) read at load time and
@@ -505,7 +505,7 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
         ...Object.entries(bellowsReadEnv(config, job)).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         '--entrypoint',
         'sh',
-        config.image,
+        executorImage(config, job.executorType),
         '-c',
         bellowsReadScript,
     ];

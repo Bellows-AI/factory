@@ -23,7 +23,7 @@ export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
  * The copy is contractual, not decorative (issue 183): claude-code configs are merged into the
  * runner's settings.json with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped
  * board-side (the git guard hook and the baked context-mode plugin install), and opencode configs
- * are merged over the deployment's baked configuration with `permission` stripped board-side to
+ * are merged over the runner's baked configuration with `permission` stripped board-side to
  * preserve the runner fence (see docs/workspace.md). The `Record` shape is the same exhaustiveness
  * guard REQUIRED_FIELDS uses: a new EXECUTOR_TYPES entry cannot compile until it declares its own
  * truth.
@@ -38,7 +38,7 @@ export const EXECUTOR_TYPE_META: Record<ExecutorType, { label: string; configHel
     opencode: {
         label: 'OpenCode',
         configHelp:
-            'When the deployment runs OpenCode, this object is merged over its baked configuration. Model and provider settings apply; permission rules are ignored to preserve the runner fence.',
+            'Tasks using this executor run OpenCode. This object is merged over its baked configuration; model and provider settings apply, while permission rules are ignored to preserve the runner fence.',
         example:
             '{ "model": "<provider-id>/<model-id>", "provider": { "api_key": "<from your provider, not stored here>" } }',
     },

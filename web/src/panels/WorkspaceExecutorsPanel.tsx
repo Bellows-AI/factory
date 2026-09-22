@@ -6,13 +6,12 @@ import { executorTypeLabel } from '../workspace/executors.js';
  * One row per configured executor — each with the Edit action that reopens the dialog on it — and
  * the empty state that makes "none" a sentence rather than a blank panel. The section's heading
  * and its Add action are the page header's; this panel is the list plus its scope context
- * (issue 183): "My workspace", and the guidance that separates what an executor stores from what
- * the deployment controls.
+ * (issue 183): "My workspace", and the guidance that explains the task-scoped runner choice.
  */
 
 /** The same sentence the page's root-null refusal reuses — one truth about scope, two contexts. */
 export const EXECUTOR_GUIDANCE =
-    'The deployment chooses the runner CLI and image. An executor stores your label and config; it does not switch the deployment between Claude Code and OpenCode.';
+    'Each task runs with its selected executor. The executor type chooses Claude Code or OpenCode, and its JSON config is applied to that runner.';
 
 export function WorkspaceExecutorsPanel({
     executors,
@@ -26,9 +25,7 @@ export function WorkspaceExecutorsPanel({
             <h2>My workspace</h2>
             <p className="muted">{EXECUTOR_GUIDANCE}</p>
             {executors.length === 0 ? (
-                <p className="muted">
-                    No personal executors configured. New tasks use the deployment&#x27;s image default.
-                </p>
+                <p className="muted">No personal executors configured. Add one before starting a task.</p>
             ) : (
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" tabIndex={0} aria-label="Executors">

@@ -6,6 +6,19 @@
  * socket — and the two have nothing in common at all: the board tells this process which
  * workspace a job belongs to, so it does not even need to know the organization.
  */
+/**
+ * The executor types the board may assign to one claim.
+ *
+ * Copied from core rather than imported: the driver is an HTTP client with no dependency on the
+ * server's package graph (AGENTS.md). Keep this union in lockstep with core/src/executors.ts.
+ */
+export const EXECUTOR_TYPES = ['claude-code', 'opencode'] as const;
+export type ExecutorType = (typeof EXECUTOR_TYPES)[number];
+
+export function isExecutorType(value: unknown): value is ExecutorType {
+    return typeof value === 'string' && EXECUTOR_TYPES.includes(value as ExecutorType);
+}
+
 export interface DriverConfig {
     /** Where the board is. The driver is a client of it, never of the database. */
     boardUrl: string;
@@ -28,14 +41,8 @@ export interface DriverConfig {
      * longer has to be told which organization it is working for. The board's own claim already says
      * that, and said it more reliably.
      */
-    image: string;
-    /**
-     * Which CLI the runner image speaks: claude-code's `--session-id <uuid>` / `-p <prompt>` form,
-     * or opencode's headless `run <prompt>` form. The union is COPIED, not imported from core's
-     * EXECUTOR_TYPES: this package depends on nothing, deliberately (see AGENTS.md), and one string
-     * union does not change that.
-     */
-    cli: 'claude-code' | 'opencode';
+    /** Deployment image for each task-selected executor type. CLI choice comes from the claim. */
+    executorImages: Readonly<Record<ExecutorType, string>>;
     /**
      * The docker volume holding the checkouts — a NAME, not a host path. The dashboard writes them
      * into a named volume precisely so no host directory is involved, and a runner spawned from
@@ -200,9 +207,16 @@ export interface DriverConfig {
     cacheWatchPollMs: number;
 }
 
+/** The deployment image paired with one task-selected executor type. */
+export function executorImage(config: DriverConfig, executorType: ExecutorType | null): string {
+    if (executorType === null) throw new Error('the claimed task has no configured executor type');
+    return config.executorImages[executorType];
+}
+
 const DEFAULTS = {
     boardUrl: 'http://127.0.0.1:8080',
-    image: 'claude-executor',
+    claudeExecutorImage: 'claude-executor',
+    opencodeExecutorImage: 'opencode-executor',
     workspaceVolume: 'factory-ai_workspaces',
     workspaceMount: '/workspaces',
     concurrency: 2,
@@ -268,40 +282,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         throw new Error(`RUNNER_STATS_URL must be an http(s) URL, got "${statsUrl}"`);
     }
 
-    // Which CLI the runner speaks. An explicit enum, fatal on an unknown value: a typo must not
-    // read as claude-code and hand every prompt to a CLI that exits on "unknown flag" — the job
-    // would burn its attempts looking like a command that keeps failing.
-    const CLIS = ['claude-code', 'opencode'] as const;
-    const cliRaw = (env.RUNNER_CLI ?? '').trim() || 'claude-code';
-    if (!CLIS.includes(cliRaw as (typeof CLIS)[number])) {
-        throw new Error(`RUNNER_CLI must be one of ${CLIS.join(', ')}, got "${cliRaw}"`);
-    }
-    const cli = cliRaw as (typeof CLIS)[number];
-
-    // Two combinations that cannot work, refused at startup rather than discovered mid-job.
-    //
-    // Remote Control is claude-code's bridge: the tty, the login volume and the idle-parking loop
-    // all exist to serve a session drivable from claude.ai, and opencode has nothing that answers
-    // to `--remote-control`. And skip-permissions appends a claude-code flag; opencode takes its
-    // permissions from the opencode.json baked into its image, so the flag would be a no-op that
-    // reads as a decision made.
-    if (cli === 'opencode') {
-        if (flag(env.RUNNER_REMOTE_CONTROL)) {
-            throw new Error(
-                'RUNNER_REMOTE_CONTROL is not supported under RUNNER_CLI=opencode: Remote Control is ' +
-                    "claude-code's bridge, and opencode has nothing that answers to it. Only " +
-                    'RUNNER_CLI=claude-code can be driven.'
-            );
-        }
-        if (flag(env.RUNNER_SKIP_PERMISSIONS)) {
-            throw new Error(
-                'RUNNER_SKIP_PERMISSIONS is not supported under RUNNER_CLI=opencode: it appends a ' +
-                    'claude-code flag, and opencode takes its permissions from the opencode.json ' +
-                    'baked into its image.'
-            );
-        }
-    }
-
     const leaseSeconds = int(env.DRIVER_LEASE_SECONDS, 'DRIVER_LEASE_SECONDS', DEFAULTS.leaseSeconds, 10, 3600);
     const jobTimeoutMs = int(
         env.DRIVER_JOB_TIMEOUT_MS,
@@ -347,20 +327,13 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         throw new Error(`RUNNER_IMAGE_PULL_POLICY must be one of ${PULL_POLICIES.join(', ')}, got "${pullPolicyRaw}"`);
     }
 
-    // The cache watch is opencode's — refused at startup rather than discovered mid-job. The
-    // probe reads the opencode session database, whose message rows record per-turn input and
-    // cache tokens; a claude-code transcript answers nothing to the query. And it stays
+    // The cache watch is opencode's, so Claude Code tasks ignore it even when the same driver also
+    // serves OpenCode work. The probe reads the opencode session database, whose message rows
+    // record per-turn input and cache tokens; a claude-code transcript answers nothing. It stays
     // docker-only: each tick is one throwaway container on an already-warm daemon, while the
     // kubernetes equivalent would be a Job per tick — pod admission every poll period is a tax
     // no watch is worth paying the cluster.
     const cacheWatch = flag(env.RUNNER_CACHE_WATCH);
-    if (cacheWatch && cli === 'claude-code') {
-        throw new Error(
-            'RUNNER_CACHE_WATCH is not supported under RUNNER_CLI=claude-code: the watch reads the ' +
-                'opencode session database, which records per-turn input and cache tokens. Only ' +
-                'RUNNER_CLI=opencode runs can be watched.'
-        );
-    }
     if (cacheWatch && executor === 'kubernetes') {
         throw new Error(
             'RUNNER_CACHE_WATCH is not supported under EXECUTOR=kubernetes: each watch tick is one ' +
@@ -373,8 +346,10 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         boardUrl,
         boardToken: (env.JOB_BOARD_TOKEN ?? '').trim(),
         worker: text(env.DRIVER_WORKER, 'DRIVER_WORKER', `driver-${process.pid}`),
-        image: text(env.EXECUTOR_IMAGE, 'EXECUTOR_IMAGE', cli === 'opencode' ? 'opencode-executor' : DEFAULTS.image),
-        cli,
+        executorImages: {
+            'claude-code': text(env.CLAUDE_EXECUTOR_IMAGE, 'CLAUDE_EXECUTOR_IMAGE', DEFAULTS.claudeExecutorImage),
+            opencode: text(env.OPENCODE_EXECUTOR_IMAGE, 'OPENCODE_EXECUTOR_IMAGE', DEFAULTS.opencodeExecutorImage),
+        },
         workspaceVolume: text(env.WORKSPACE_VOLUME, 'WORKSPACE_VOLUME', DEFAULTS.workspaceVolume),
         workspaceMount: text(env.WORKSPACE_MOUNT, 'WORKSPACE_MOUNT', DEFAULTS.workspaceMount),
         // Empty is unset, like every other optional value here: default to the collector on the

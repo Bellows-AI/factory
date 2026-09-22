@@ -1580,6 +1580,7 @@ describe.runIf(enabled)('attribution', () => {
 
             const claim = await configured().claim('driver-1', 300);
 
+            expect(claim?.executorType).toBe('opencode');
             const content = JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? '') as Record<string, unknown>;
             expect(content).toMatchObject({ model: 'zai-coding-plan/glm-5.3-flash' });
             expect(content).toHaveProperty('provider');
@@ -1588,7 +1589,7 @@ describe.runIf(enabled)('attribution', () => {
             expect(claim?.env?.OPENCODE_CONFIG_CONTENT).not.toMatch(/[\r\n]/);
         });
 
-        it('hands a claude-code row’s config over too, and leaves an unknown label and no label alone', async () => {
+        it('routes by the selected executor type and leaves unresolved selections explicit', async () => {
             const userId = await account(executorAccountId(), 'executor-dog');
             await executors.replace(userId, [
                 { name: 'claude', type: 'claude-code', config: { model: 'x' } },
@@ -1600,12 +1601,19 @@ describe.runIf(enabled)('attribution', () => {
             await store.create('ghost task', userId, { repo: null, executor: 'deleted' });
             await store.create('unlabelled task', userId, { repo: null, executor: null });
 
-            // Each claim takes the oldest claimable row; three claims, three answers.
-            expect((await store.claim('driver-1', 300))?.env).toEqual({
+            // Each claim takes the oldest claimable row; three claims, three answers. A missing
+            // selection is null rather than a Claude/OpenCode fallback for the driver to guess at.
+            const claude = await store.claim('driver-1', 300);
+            expect(claude?.executorType).toBe('claude-code');
+            expect(claude?.env).toEqual({
                 CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
             });
-            expect((await store.claim('driver-2', 300))?.env).toBeUndefined();
-            expect((await store.claim('driver-3', 300))?.env).toBeUndefined();
+            const deleted = await store.claim('driver-2', 300);
+            expect(deleted?.executorType).toBeNull();
+            expect(deleted?.env).toBeUndefined();
+            const unlabelled = await store.claim('driver-3', 300);
+            expect(unlabelled?.executorType).toBeNull();
+            expect(unlabelled?.env).toBeUndefined();
         });
 
         it('strips hooks, enabledPlugins and extraKnownMarketplaces from a claude-code row’s config', async () => {

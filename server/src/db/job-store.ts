@@ -1,5 +1,5 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
-import type { UserRef } from '@factory-ai/core';
+import { EXECUTOR_TYPES, type ExecutorType, type UserRef } from '@factory-ai/core';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import { decodeCursor, encodeCursor } from './task-summary.js';
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
@@ -138,9 +138,9 @@ export interface Job {
     runtime: RuntimeVitals | null;
     /**
      * The repository (`owner/name`) the task was queued against, and the member's executor name it
-     * was stamped with. Grouping metadata for the tasks chat, nullable for every job that predates
-     * it; neither is validated against the member's configured rows and neither changes what a
-     * worker runs. See docs/jobs.md.
+     * was stamped with. Both remain audit labels; executor is additionally resolved against the
+     * author's current profile at claim time, and the resolved type chooses what the worker runs.
+     * See docs/jobs.md.
      */
     repo: string | null;
     executor: string | null;
@@ -225,6 +225,12 @@ export interface Claim {
     attempts: number;
     leaseToken: string;
     leaseExpiresAt: string;
+    /**
+     * The executor profile type selected by the task's stamped executor label. Null when the
+     * profile no longer exists; the driver reports that as a task failure instead of choosing a
+     * deployment-wide CLI.
+     */
+    executorType: ExecutorType | null;
     /**
      * Who queued the job, so a worker can run it as them. Null for an unattributed job.
      *
@@ -1008,15 +1014,12 @@ export function createJobStore({
         ): Promise<{ config: BellowsConfig | null; error: string | null }>;
     };
     /**
-     * The member executor store's claim-time reader, when the deployment stores executor
-     * configuration. Declared inline like `env`, because `db/` must not import from
-     * `db/user-executor-store.ts`'s surface — the claim needs exactly one question answered: the
-     * row the task's executor LABEL names, with the config the member pasted. Only an `opencode`-type
-     * row is applied — its config travels as `OPENCODE_CONFIG_CONTENT`, the env name opencode
-     * merges over its baked configuration (verified against the pinned runner image), which is how
-     * the member's model and provider choice reach the run. A `claude-code` row has no consumer
-     * yet and is read only to be skipped. A reader failure throws, and the same rollback that
-     * guards the env resolver leaves the job queued with its attempt unburned.
+     * The member executor store's claim-time reader. Declared inline like `env`, because `db/`
+     * must not import from `db/user-executor-store.ts`'s surface — the claim needs exactly one
+     * question answered: the row the task's executor LABEL names. Its type selects the task's
+     * runner and its config travels under that runner's config env name. A reader failure throws,
+     * and the same rollback that guards the env resolver leaves the job queued with its attempt
+     * unburned.
      */
     executorConfig?: {
         configFor(
@@ -1640,21 +1643,22 @@ export function createJobStore({
                             ? withMintedToken(await githubToken.fresh(), resolvedEnv)
                             : resolvedEnv;
                     // The executor label a task was queued with names a row in the AUTHOR's own
-                    // executor list (docs/workspace.md), and for an opencode or claude-code row the
-                    // pasted config IS the run's model and provider choice. It rides the claim env
-                    // under the name each CLI's entrypoint merges over its baked configuration,
+                    // executor list (docs/workspace.md). Its TYPE is the execution input: it tells
+                    // the driver which CLI/image family to run. Its pasted config rides the claim
+                    // env under the name that CLI's entrypoint merges over the baked configuration,
                     // applied LAST so the synthesized value wins a collision with a member env var
-                    // — both names are reserved at PUT besides. A label matching nothing — an
-                    // executor deleted after the task was queued, or free text typed into the chat
-                    // — runs exactly as an unlabelled job always has. A row whose config is not an
-                    // object is skipped for the same availability reason the resolver failure is
-                    // NOT: refusing the claim would retry a broken row forever. A Remote Control
-                    // claim never sees claimEnv at all (driver/src/docker.ts) — like every other
-                    // claim env value, a claude-code or opencode row's config does not reach a
-                    // Remote Control runner, which gets only the baked settings.json and the
-                    // mounted auth volume.
+                    // — both names are reserved at PUT besides. A label matching nothing remains
+                    // null on the claim and is failed explicitly by the driver; there is no global
+                    // CLI fallback. A Remote Control claim never sees claimEnv at all
+                    // (driver/src/docker.ts) — like every other claim env value, a claude-code row's
+                    // config does not reach a Remote Control runner, which gets only the baked
+                    // settings.json and the mounted auth volume.
+                    let executorType: ExecutorType | null = null;
                     if (executorConfig && row.executor !== null && row.created_by !== null) {
                         const configured = await executorConfig.configFor(row.created_by, row.executor, tx);
+                        if (configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType)) {
+                            executorType = configured.type as ExecutorType;
+                        }
                         const member = configured?.config;
                         if (member !== null && typeof member === 'object' && !Array.isArray(member)) {
                             if (configured?.type === 'opencode') {
@@ -1733,6 +1737,7 @@ export function createJobStore({
                         attempts: row.attempts,
                         leaseToken: row.lease_token,
                         leaseExpiresAt: row.lease_expires_at.toISOString(),
+                        executorType,
                         userId: row.created_by,
                         // Built here rather than in the route, because this is where the org is bound. Null
                         // for an unattributed job — no member, so no workspace — and null when this

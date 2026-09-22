@@ -58,6 +58,7 @@ const job: BoardJob = {
     attempts: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
     resumeSessionId: null,
     followUp: false,
     userId: USER,
@@ -65,6 +66,7 @@ const job: BoardJob = {
 };
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
+const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 
 /** One `docker ps --format '{{json .}}'` line for a service container, the fields the parse reads. */
 const psLine = (service: { name: string; image: string; state: string }): string =>
@@ -233,13 +235,13 @@ describe('the docker run arguments', () => {
 
     it('gives the opencode runner a session id only when one exists', () => {
         const open = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = null) =>
-            dockerArgs(loadDriverConfig({ RUNNER_CLI: 'opencode', ...env }), job, session, null, '/tmp/env-file');
+            dockerArgs(loadDriverConfig(env), opencodeJob, session, null, '/tmp/env-file');
         // A fresh opencode run has no id yet — the reporter discovers it from the session
         // database. An unvalidated id must never be interpolated.
         expect(open().some((arg) => arg.includes('BELLOWS_SESSION_ID'))).toBe(false);
         const followUp = dockerArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            { ...job, followUp: true },
+            loadDriverConfig({}),
+            { ...opencodeJob, followUp: true },
             { id: SESSION, resume: true },
             null,
             '/tmp/env-file'
@@ -265,7 +267,9 @@ describe('the docker run arguments', () => {
     it('never hands the transcript store to opencode', () => {
         // opencode persists through its own per-member session database; a second store buys
         // nothing (Remote Control's exclusion is pinned in its own describe).
-        expect(args({ RUNNER_CLI: 'opencode' }, null)).not.toContain(expect.stringContaining('FACTORY_TRANSCRIPT_DIR'));
+        expect(dockerArgs(loadDriverConfig({}), opencodeJob, null, null, '/tmp/env-file')).not.toContain(
+            expect.stringContaining('FACTORY_TRANSCRIPT_DIR')
+        );
     });
 
     // --rm is gone deliberately: cleanup is explicit (a `docker rm` after close), so the runner
@@ -617,13 +621,13 @@ describe('which runs get a close-time turn read', () => {
      */
     it('reads for a headless claude-code run with a session, and never under Remote Control', () => {
         const session = { id: SESSION, resume: false };
-        expect(readsAgentTurns(loadDriverConfig({}), session)).toBe(true);
-        expect(readsAgentTurns(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), session)).toBe(false);
+        expect(readsAgentTurns(loadDriverConfig({}), job, session)).toBe(true);
+        expect(readsAgentTurns(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), job, session)).toBe(false);
         // Opencode counts in its own readout; there is no second read for it.
-        expect(readsAgentTurns(loadDriverConfig({ RUNNER_CLI: 'opencode' }), session)).toBe(false);
+        expect(readsAgentTurns(loadDriverConfig({}), opencodeJob, session)).toBe(false);
         // No session minted — nothing to read a transcript for.
-        expect(readsAgentTurns(loadDriverConfig({}), null)).toBe(false);
-        expect(readsAgentTurns(loadDriverConfig({}), { id: 'not-a-uuid', resume: false })).toBe(false);
+        expect(readsAgentTurns(loadDriverConfig({}), job, null)).toBe(false);
+        expect(readsAgentTurns(loadDriverConfig({}), job, { id: 'not-a-uuid', resume: false })).toBe(false);
     });
 });
 
@@ -691,7 +695,8 @@ describe('a Remote Control runner', () => {
 });
 
 describe('an opencode runner', () => {
-    const oc = (env: NodeJS.ProcessEnv = {}) => args({ RUNNER_CLI: 'opencode', ...env }, null);
+    const oc = (env: NodeJS.ProcessEnv = {}) =>
+        dockerArgs(loadDriverConfig(env), opencodeJob, null, null, '/tmp/env-file');
 
     // opencode's asymmetry, per the repo's own executor spec: `run --session <id>` CONTINUES an
     // existing session, it cannot adopt one minted in advance. So a fresh run is just
@@ -718,8 +723,8 @@ describe('an opencode runner', () => {
      */
     it('continues its own session with the new command on a follow-up', () => {
         const line = dockerArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            { ...job, followUp: true },
+            loadDriverConfig({}),
+            { ...opencodeJob, followUp: true },
             {
                 id: 'ses_f86188c3dffeZGYO4yZq4atba9',
                 resume: true,
@@ -755,12 +760,12 @@ describe('an opencode runner', () => {
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            loadDriverConfig({}),
             (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome).toMatchObject({
             exitCode: 0,
             sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9',
@@ -786,12 +791,12 @@ describe('an opencode runner', () => {
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            loadDriverConfig({}),
             (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
         expect(outcome.finishReason).toBe('tool-calls');
         expect(outcome.providerError).toBe(
@@ -814,7 +819,7 @@ describe('an opencode runner', () => {
      * RUNNER_SERVICES=0 throughout: the stub routes every `--entrypoint` run to one branch, and
      * these tests are about the SESSION readout, not the bellows one.
      */
-    const ocServicesOff = { RUNNER_CLI: 'opencode', RUNNER_SERVICES: '0' } as const;
+    const ocServicesOff = { RUNNER_SERVICES: '0' } as const;
 
     it('retries a readout that answers nothing, and takes the session when a later try answers', async () => {
         let calls = 0;
@@ -833,7 +838,7 @@ describe('an opencode runner', () => {
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(calls).toBe(2);
         expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
         expect(outcome.readoutError).toBeUndefined();
@@ -854,7 +859,7 @@ describe('an opencode runner', () => {
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(calls).toBe(3);
         expect(outcome.sessionId ?? null).toBeNull();
         expect(outcome.readoutError).toBe('no such column: role');
@@ -871,21 +876,23 @@ describe('an opencode runner', () => {
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.readoutError).toBe('the readout container failed: daemon refused the readout');
     });
 
     // Standby is a Remote Control feature and opencode cannot be configured for it, so a resume
-    // with nothing to deliver means board state from before a RUNNER_CLI flip. The loop refuses
+    // with nothing to deliver means the selected profile changed type while parked. The loop refuses
     // it first; the runner refuses it too, because a headless run restoring a session without a
     // command would idle to its deadline.
     it('refuses to restore a session when there is no command to deliver', () => {
-        expect(() => resumed({ RUNNER_CLI: 'opencode' })).toThrow(/session/);
+        expect(() =>
+            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: true }, null, '/tmp/env-file')
+        ).toThrow(/session/);
         expect(() => oc()).not.toThrow();
     });
 
-    it('keeps the explicit-image rule', () => {
-        expect(oc({ EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-2)).toEqual(['run', 'fix the failing build']);
+    it('uses the image configured for its selected executor type', () => {
+        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-2)).toEqual(['run', 'fix the failing build']);
     });
 
     // The claude pins hold unchanged, because nothing about the docker-level posture depends on
@@ -920,17 +927,13 @@ describe('scraping the session opencode used', () => {
     it('refuses to build a readout argv for a claim whose workspace path cannot be asserted', () => {
         // The path lands in the mount's volume-subpath now, so it is asserted before any argv
         // exists — a malformed claim produces no container, not one mounted somewhere unintended.
-        const broken = { ...job, workspacePath: '../../etc' };
-        expect(() => opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), broken, START)).toThrow(
-            /workspace path/
-        );
-        expect(() => opencodeCacheProbeArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), broken)).toThrow(
-            /workspace path/
-        );
+        const broken = { ...opencodeJob, workspacePath: '../../etc' };
+        expect(() => opencodeSessionReadoutArgs(loadDriverConfig({}), broken, START)).toThrow(/workspace path/);
+        expect(() => opencodeCacheProbeArgs(loadDriverConfig({}), broken)).toThrow(/workspace path/);
     });
 
     it('reads the session database out of the member’s data directory, root sessions only', () => {
-        const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job, START);
+        const line = opencodeSessionReadoutArgs(loadDriverConfig({}), opencodeJob, START);
         expect(line.slice(0, 10)).toEqual([
             'run',
             '--rm',
@@ -973,8 +976,8 @@ describe('scraping the session opencode used', () => {
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
         const line = opencodeSessionReadoutArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            { ...job, repo: 'Bellows-AI/factory' },
+            loadDriverConfig({}),
+            { ...opencodeJob, repo: 'Bellows-AI/factory' },
             START
         );
         expect(line).toContain(`OPENCODE_DIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
@@ -1081,7 +1084,7 @@ describe('the cache watch', () => {
      * — the live-run twin of the close-time readout. Pure and pinned for the same reason.
      */
     it('probes the newest root session of the member’s data directory, read-only', () => {
-        const line = opencodeCacheProbeArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
+        const line = opencodeCacheProbeArgs(loadDriverConfig({}), opencodeJob);
         expect(line.slice(0, 8)).toEqual([
             'run',
             '--rm',
@@ -1182,7 +1185,6 @@ describe('the cache watch', () => {
         const { spawn: childSpawn, close } = openChild();
         const runner = createDockerRunner(
             loadDriverConfig({
-                RUNNER_CLI: 'opencode',
                 RUNNER_CACHE_WATCH: '1',
                 RUNNER_CACHE_WATCH_POLL_MS: '250',
             }),
@@ -1190,7 +1192,7 @@ describe('the cache watch', () => {
             exec
         );
 
-        const pending = runner.run({ ...job, followUp: false }, null);
+        const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         while (!calls.some((a) => a[0] === 'kill')) await new Promise((r) => setTimeout(r, 5));
         close(137);
         const outcome = await pending;
@@ -1207,9 +1209,9 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_CLI: 'opencode' }), childSpawn, exec);
+        const runner = createDockerRunner(loadDriverConfig({}), childSpawn, exec);
 
-        const pending = runner.run({ ...job, followUp: false }, null);
+        const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         // Two poll periods of a live run, had the watch been armed at the same 250ms the armed
         // test uses — then an ordinary clean exit.
         await new Promise((r) => setTimeout(r, 500));
@@ -1217,6 +1219,27 @@ describe('the cache watch', () => {
         await pending;
 
         // The close-time readout does run; the mid-run probe never does.
+        expect(calls.some((a) => a[0] === 'run' && a.includes('order by id desc'))).toBe(false);
+    });
+
+    it('does not probe Claude Code tasks when the mixed-task driver has the OpenCode watch enabled', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const { spawn: childSpawn, close } = openChild();
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '250' }),
+            childSpawn,
+            exec
+        );
+
+        const pending = runner.run(job, { id: SESSION, resume: false });
+        await new Promise((r) => setTimeout(r, 500));
+        close(0);
+        await pending;
+
         expect(calls.some((a) => a[0] === 'run' && a.includes('order by id desc'))).toBe(false);
     });
 });
@@ -1422,8 +1445,8 @@ describe('the runner env for a gated job', () => {
     // var has to reach the runner at all, for this CLI no less than for claude-code.
     it('forwards the OTEL endpoint to the opencode runner too', () => {
         const line = dockerArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }),
-            job,
+            loadDriverConfig({ RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }),
+            opencodeJob,
             null,
             null,
             '/tmp/env-file'
@@ -3693,11 +3716,7 @@ describe('publishing the produced work', () => {
             if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            (() => fakeChild('')) as unknown as typeof spawn,
-            exec
-        );
+        const runner = createDockerRunner(loadDriverConfig({}), (() => fakeChild('')) as unknown as typeof spawn, exec);
         return { calls, envBodies, runner };
     };
 

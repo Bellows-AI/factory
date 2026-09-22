@@ -10,9 +10,8 @@ import { useSettingsPage } from './SettingsLayout.js';
  * The Executors section of the settings tree: the member's configured executors and the add/edit
  * dialog (issue 150), moved off the workspace page — executors configure what a runner runs with
  * and have nothing to do with checkouts. The page header owns the section's one action, "Add
- * executor"; the panel below is the list itself. Issue 183 adds the honest framing: what the
- * page's sentence says an executor controls (label and config) versus what the deployment
- * controls (runner CLI and image).
+ * executor"; the panel below is the list itself. The profile type and config together define the
+ * runner selected by a task.
  */
 
 /** The executor dialog's state: adding, or editing the row that had this name when it opened. */

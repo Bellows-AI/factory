@@ -177,32 +177,34 @@ export function paramFieldVerdict(
 export function preflightSentence(input: {
     /** `owner/name` of the chosen repository, or null for none. */
     repo: string | null;
-    /** The chosen executor's name, or null for the deployment default. */
+    /** The chosen executor's name, or null while no configured executor can be selected. */
     executor: string | null;
     /** The chosen workflow's name, or null for no process. */
     workflow: string | null;
 }): string {
     const where = input.repo === null ? 'Will run without a repository' : `Will run in ${input.repo}`;
-    const who = input.executor === null ? 'using the default executor' : `using ${input.executor} executor`;
+    const who = input.executor === null ? 'after you configure an executor' : `using ${input.executor} executor`;
     const what =
         input.workflow === null ? '. Your prompt will run as written.' : `, with the ${input.workflow} workflow.`;
     return `${where} ${who}${what}`;
 }
 
-/** The one reason Start is dark, in precedence order: in flight, empty prompt, invalid params. */
-export type StartBlocker = 'in-flight' | 'empty-prompt' | 'invalid-params';
+/** The one reason Start is dark, in precedence order: in flight, executor, prompt, workflow params. */
+export type StartBlocker = 'in-flight' | 'missing-executor' | 'empty-prompt' | 'invalid-params';
 
 /**
  * Why Start cannot start, or null when it can. The order is the message the member needs: an
- * in-flight queue must not be re-entered, an empty prompt is the missing task itself, and the
- * workflow details come after there is a task for them to belong to.
+ * in-flight queue must not be re-entered, a task cannot run without an executor profile, an empty
+ * prompt is the missing task itself, and workflow details come last.
  */
 export function startBlocker(input: {
     sending: boolean;
+    executorMissing: boolean;
     promptEmpty: boolean;
     paramsInvalid: boolean;
 }): StartBlocker | null {
     if (input.sending) return 'in-flight';
+    if (input.executorMissing) return 'missing-executor';
     if (input.promptEmpty) return 'empty-prompt';
     if (input.paramsInvalid) return 'invalid-params';
     return null;

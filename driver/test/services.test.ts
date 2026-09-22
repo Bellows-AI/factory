@@ -19,6 +19,7 @@ const job: BoardJob = {
     attempts: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
     resumeSessionId: null,
     followUp: false,
     userId: USER,

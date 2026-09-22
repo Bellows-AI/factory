@@ -36,6 +36,6 @@ describe('ExecutorDialog', () => {
         // contract the component renders and e2e/workspace.spec.ts asserts by role and name.
         expect(ADD_LABEL).toBe('Add executor');
         expect(SAVE_LABEL).toBe('Save executor');
-        expect(TYPE_CONFIG_NOTE).toMatch(/does not change the deployment's runner CLI/);
+        expect(TYPE_CONFIG_NOTE).toMatch(/run with the selected type: Claude Code or OpenCode/);
     });
 });

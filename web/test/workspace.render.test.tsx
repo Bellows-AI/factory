@@ -16,24 +16,24 @@ const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 describe('the executors panel', () => {
     // The panel is the list itself plus the scope context (#183): the "My workspace" heading, the
-    // guidance that says what an executor does and does not control, and the rows.
+    // guidance that says the type controls task execution, and the rows.
     const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z') => ({
         name,
         type,
         createdAt,
     });
 
-    it('scopes the list under "My workspace" and carries the deployment guidance', () => {
+    it('scopes the list under "My workspace" and carries task-routing guidance', () => {
         const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
         expect(html).toContain('<h2>My workspace</h2>');
-        expect(html).toContain('The deployment chooses the runner CLI and image');
-        expect(html).toContain('does not switch the deployment between Claude Code and OpenCode');
+        expect(html).toContain('Each task runs with its selected executor');
+        expect(html).toContain('type chooses Claude Code or OpenCode');
     });
 
-    it('says new tasks use the image default when the list is empty', () => {
+    it('says an executor is required when the list is empty', () => {
         const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
         expect(html).toContain('No personal executors configured');
-        expect(html).toContain('use the deployment&#x27;s image default');
+        expect(html).toContain('Add one before starting a task');
         expect(html).not.toContain('No executors configured');
     });
 

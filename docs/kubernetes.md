@@ -234,7 +234,7 @@ container on the docker daemon, and the kubernetes form would be a Job per tick,
 every poll period. The alternative to refusing either was a driver that claims jobs and burns
 attempts running nothing.
 
-**opencode runs under this executor** (with `RUNNER_CLI=opencode` and an image that speaks it):
+**An OpenCode task runs under this executor** when its selected executor profile type is `opencode`:
 the runner Job's argv is opencode's headless form — `run [--session <id>] <command>`, no session
 minted by the driver — and the Job carries `XDG_DATA_HOME=<mount>/<org>/<user>/.opencode` so the
 session database persists on the workspaces PVC, which is what makes a follow-up's `--session`

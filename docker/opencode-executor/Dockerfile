@@ -5,8 +5,7 @@
 #
 #   docker build -t opencode-executor docker/opencode-executor
 #
-# The driver selects this image with RUNNER_CLI=opencode, which also switches the default
-# EXECUTOR_IMAGE — an explicit EXECUTOR_IMAGE still wins.
+# The driver selects this image when a task's chosen executor profile has type `opencode`.
 #
 # debian rather than alpine: the CLI ships prebuilt glibc binaries that fail at runtime on musl,
 # and the full image already carries git and the CA bundle the agent shells out to.

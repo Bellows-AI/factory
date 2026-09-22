@@ -102,7 +102,7 @@ interface ComposerArgs {
 const renderComposer = ({
     repos = [{ owner: 'acme', name: 'web' }],
     workspaceError = null,
-    executors = [],
+    executors = [{ name: 'main', type: 'claude-code' }],
     workflows = null,
     actionError = null,
     sending = false,
@@ -259,10 +259,9 @@ describe('TaskComposer', () => {
         expect(noneTrigger).toContain('>No repository</button>');
     });
 
-    // A member who configured executors means their tasks to run on one: the FIRST is the
-    // default, and `none` stays available in product words — an absent executor is a valid
-    // deployment default, never a blocker.
-    it('preselects the first configured executor, and none only when there is none', () => {
+    // A task always runs through a configured profile. The first is selected initially; with no
+    // profiles the composer names the missing requirement and cannot start.
+    it('preselects the first configured executor and blocks when there is none', () => {
         const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Start task<'));
 
         const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
@@ -278,8 +277,11 @@ describe('TaskComposer', () => {
         expect(trigger(two)).toContain('>main</button>');
 
         const empty = renderComposer({ repos: [], executors: [] });
-        // Only the `none` option exists, and the executor one is the one selected.
-        expect(trigger(empty)).toContain('>Default executor</button>');
+        expect(trigger(empty)).toContain('>No executor configured</button>');
+        expect(empty).toContain('Add an executor in');
+        expect(empty).toContain('href="/settings/executors"');
+        expect(empty).toContain('Configure an executor in Settings to continue.');
+        expect(empty).toContain('disabled');
     });
 
     it('keeps the composer reachable when no repository is selected, and says where to fix that', () => {
@@ -1511,8 +1513,8 @@ describe('TaskOutcome', () => {
         expect(bare).not.toContain('fix-issue');
     });
 
-    it('names the default executor when the run carries none', () => {
-        expect(renderDetail({ jobs: [job()] })).toContain('Default executor');
+    it('names an absent executor selection explicitly', () => {
+        expect(renderDetail({ jobs: [job()] })).toContain('No executor selected');
     });
 
     it('renders the frozen workflow name and the node as different concepts', () => {
@@ -2330,14 +2332,14 @@ describe('preflightSentence — what will actually run, before it runs', () => {
     });
 
     it('says the prompt runs as written when no workflow is chosen', () => {
-        expect(preflightSentence({ repo: 'acme/web', executor: null, workflow: null })).toBe(
-            'Will run in acme/web using the default executor. Your prompt will run as written.'
+        expect(preflightSentence({ repo: 'acme/web', executor: 'main', workflow: null })).toBe(
+            'Will run in acme/web using main executor. Your prompt will run as written.'
         );
     });
 
-    it('says the task runs without a repository when none is selected', () => {
+    it('states when execution is blocked on configuring an executor', () => {
         expect(preflightSentence({ repo: null, executor: null, workflow: null })).toBe(
-            'Will run without a repository using the default executor. Your prompt will run as written.'
+            'Will run without a repository after you configure an executor. Your prompt will run as written.'
         );
         expect(preflightSentence({ repo: null, executor: 'heavy', workflow: 'triage' })).toBe(
             'Will run without a repository using heavy executor, with the triage workflow.'
@@ -2347,16 +2349,27 @@ describe('preflightSentence — what will actually run, before it runs', () => {
 
 describe('startBlocker — the one reason Start is dark, in precedence order', () => {
     it('answers null only when nothing blocks the launch', () => {
-        expect(startBlocker({ sending: false, promptEmpty: false, paramsInvalid: false })).toBeNull();
+        expect(
+            startBlocker({ sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: false })
+        ).toBeNull();
     });
 
     it('puts the in-flight queue first, so a second click cannot double-send', () => {
-        expect(startBlocker({ sending: true, promptEmpty: true, paramsInvalid: true })).toBe('in-flight');
+        expect(startBlocker({ sending: true, executorMissing: true, promptEmpty: true, paramsInvalid: true })).toBe(
+            'in-flight'
+        );
     });
 
-    it('puts the empty prompt above invalid params — the prompt is the task', () => {
-        expect(startBlocker({ sending: false, promptEmpty: true, paramsInvalid: true })).toBe('empty-prompt');
-        expect(startBlocker({ sending: false, promptEmpty: false, paramsInvalid: true })).toBe('invalid-params');
+    it('requires an executor before the prompt and workflow details', () => {
+        expect(startBlocker({ sending: false, executorMissing: true, promptEmpty: true, paramsInvalid: true })).toBe(
+            'missing-executor'
+        );
+        expect(startBlocker({ sending: false, executorMissing: false, promptEmpty: true, paramsInvalid: true })).toBe(
+            'empty-prompt'
+        );
+        expect(startBlocker({ sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: true })).toBe(
+            'invalid-params'
+        );
     });
 });
 

@@ -124,9 +124,9 @@ expect_contains() { # expect_contains <name> <haystack> <needle>
     esac
 }
 
-create_job() { # create_job <command> -> id, recorded in $work/created-jobs for the teardown sweep
+create_job() { # create_job <command> [executor] -> id, recorded in $work/created-jobs for teardown
     local id
-    id="$(field "$(body "$(api POST /api/jobs "{\"command\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1")}")")" id)"
+    id="$(field "$(body "$(api POST /api/jobs "{\"command\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"),\"executor\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "${2:-claude}")}")")" id)"
     # A file, not a variable: every caller captures this function's output by command substitution,
     # which runs it in a subshell — an assignment here would be thrown away.
     printf '%s\n' "$id" >>"$work/created-jobs"
@@ -278,6 +278,9 @@ docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, work
     exit 1
 }
 
+expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/executors \
+    '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+
 expect_status 'health answers'            200 GET /api/health
 expect_status 'refuses an empty command'  400 POST /api/jobs '{"command":""}'
 expect_status 'refuses a malformed id'    400 GET '/api/jobs/not-a-uuid'
@@ -407,12 +410,13 @@ docker volume create "$VOLUME" >/dev/null &&
 echo
 echo '# driver'
 
-start_driver() { # start_driver <image> [RUNNER_CLI] [RUNNER_SERVICES]
+start_driver() { # start_driver <image> [RUNNER_SERVICES]
     # No ORG_ID. The board sends `workspacePath` on the claim now — it owns the layout, because it
     # is the thing that created the directory — so the driver builds no path of its own.
     # RUNNER_SERVICES defaults to on now; every phase but the services one passes 0 explicitly, so
     # what each phase asserts stays independent of the default.
-    env JOB_BOARD_URL="$BASE" EXECUTOR_IMAGE="$1" RUNNER_CLI="${2:-claude-code}" RUNNER_SERVICES="${3:-0}" \
+    env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$1" OPENCODE_EXECUTOR_IMAGE="$1" \
+        RUNNER_SERVICES="${2:-0}" \
         WORKSPACE_VOLUME="$VOLUME" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
@@ -472,12 +476,12 @@ expect_field    'the exit code is reported'    "$failed_body" exitCode 3
 expect_contains 'stderr is captured'           "$(field "$failed_body" output)" boom
 
 stop_driver
-start_driver "$IMAGE_OK" opencode
+start_driver "$IMAGE_OK"
 
 # The opencode switch, end to end: same stub image (its entrypoint echoes, so the output is the
 # argv the container received), but the driver now speaks opencode's headless form — `run <prompt>`
 # — and, because opencode cannot adopt a minted session id, reports no session at all.
-oc="$(create_job 'opencode prompt')"
+oc="$(create_job 'opencode prompt' opencode)"
 expect_contains 'an opencode driver runs its job' "$(await_settled "$oc")" succeeded
 oc_body="$(body "$(api GET "/api/jobs/$oc")")"
 expect_contains 'the opencode argv reached it' "$(field "$oc_body" output)" 'run opencode prompt'
@@ -546,7 +550,7 @@ write_bellows 'services:
   - name: stub-svc
     image: factory-jobs-smoke-svc'
 
-start_driver "$IMAGE_RUN" claude-code 1
+start_driver "$IMAGE_RUN" 1
 
 svc="$(create_job 'wget -qO- http://stub-svc:8000/probe')"
 expect_contains 'a declared service is reachable by name' "$(await_settled "$svc")" succeeded
@@ -639,7 +643,7 @@ thread_command() { # thread_command <root-id> <index> -> that row's command
 }
 
 start_driver "$IMAGE_OK"
-walked="$(api POST /api/jobs '{"command":"walk me end to end","workflow":"stub-walk"}')"
+walked="$(api POST /api/jobs '{"command":"walk me end to end","executor":"claude","workflow":"stub-walk"}')"
 wf_id="$(field "$(body "$walked")" id)"
 printf '%s\n' "$wf_id" >>"$work/created-jobs"
 
@@ -704,7 +708,7 @@ walk_flag() { # walk_flag <name> <got> <want>
 
 # Task two: the publish flag. Every node's claim says false until the graph's publish node — six
 # claims to walk the whole graph: fetch, implement, review, fix, the second review, then publish.
-wf2="$(api POST /api/jobs '{"command":"flag walk","workflow":"stub-walk"}')"
+wf2="$(api POST /api/jobs '{"command":"flag walk","executor":"claude","workflow":"stub-walk"}')"
 wf2_id="$(field "$(body "$wf2")" id)"
 printf '%s\n' "$wf2_id" >>"$work/created-jobs"
 walk_out="$(claim_walk 'fetch the issue')"
@@ -722,7 +726,7 @@ walk_flag 'the publish node claim may publish'  "$(printf '%s' "$walk_out" | cut
 
 # Task three: the loop bound. The second review names the fix marker AGAIN, but review→fix is
 # bounded at one and the fix row already exists — the board rests the thread instead.
-wf3="$(api POST /api/jobs '{"command":"bound walk","workflow":"stub-walk"}')"
+wf3="$(api POST /api/jobs '{"command":"bound walk","executor":"claude","workflow":"stub-walk"}')"
 wf3_id="$(field "$(body "$wf3")" id)"
 printf '%s\n' "$wf3_id" >>"$work/created-jobs"
 claim_walk 'fetch the issue' >/dev/null
@@ -763,7 +767,8 @@ ok 'the compose driver image builds'
 # "failed" — the lifecycle here must be settled by the driver itself, not by that leftover.
 docker compose -p "$COMPOSE_PROJECT" run --rm --name "$COMPOSE_DRIVER" --no-deps \
     -e JOB_BOARD_URL="http://host.docker.internal:$PORT" \
-    -e EXECUTOR_IMAGE="$IMAGE_OK" \
+    -e CLAUDE_EXECUTOR_IMAGE="$IMAGE_OK" \
+    -e OPENCODE_EXECUTOR_IMAGE="$IMAGE_OK" \
     -e WORKSPACE_VOLUME="$VOLUME" \
     -e RUNNER_NETWORK=bridge \
     -e RUNNER_SERVICES=0 \
