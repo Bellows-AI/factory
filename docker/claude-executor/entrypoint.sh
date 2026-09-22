@@ -73,7 +73,10 @@ fi
 # CLAUDE_CODE_CONFIG_CONTENT, the same shape opencode's OPENCODE_CONFIG_CONTENT takes. Top-level
 # keys overwrite the baked settings.json; `env` merges INTO the baked env block instead of
 # replacing it outright, so a member's model/token additions cannot silently drop the baked
-# OTEL_* telemetry keys below. `hooks`, `enabledPlugins` and `extraKnownMarketplaces` are the
+# OTEL_* telemetry keys below — and the baked `CLAUDE_CODE_ENABLE_TELEMETRY` / `OTEL_*` values are
+# re-applied on top of the merge, so a member cannot disable required telemetry or turn on
+# prompt/response/tool-detail logging by setting those keys explicitly either. `hooks`,
+# `enabledPlugins` and `extraKnownMarketplaces` are the
 # runner's fence — the git guard hook and the baked context-mode plugin install — the board
 # already strips them before this env var is set; stripped again here in case a value ever
 # arrives some other way. Applied before the OTEL_EXPORTER_OTLP_ENDPOINT patch below, so the
@@ -92,7 +95,14 @@ if [ -n "${CLAUDE_CODE_CONFIG_CONTENT:-}" ]; then
             const { env: memberEnv, ...rest } = member;
             Object.assign(c, rest);
             if (memberEnv && typeof memberEnv === 'object') {
-                c.env = { ...(c.env || {}), ...memberEnv };
+                const baked = c.env || {};
+                const telemetry = {};
+                for (const k of Object.keys(baked)) {
+                    if (k === 'CLAUDE_CODE_ENABLE_TELEMETRY' || k.startsWith('OTEL_')) {
+                        telemetry[k] = baked[k];
+                    }
+                }
+                c.env = { ...baked, ...memberEnv, ...telemetry };
             }
             fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
         " || echo "claude-executor: could not merge CLAUDE_CODE_CONFIG_CONTENT into settings.json" >&2

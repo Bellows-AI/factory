@@ -20,17 +20,19 @@ export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
 /**
  * What each type's config actually does, in the words the dialog and the list show.
  *
- * The copy is contractual, not decorative (issue 183): claude-code configs are stored-only today —
- * no consumer reads them — and opencode configs are merged over the deployment's baked
- * configuration with `permission` stripped board-side to preserve the runner fence (see
- * docs/workspace.md). The `Record` shape is the same exhaustiveness guard REQUIRED_FIELDS uses: a
- * new EXECUTOR_TYPES entry cannot compile until it declares its own truth.
+ * The copy is contractual, not decorative (issue 183): claude-code configs are merged into the
+ * runner's settings.json with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped
+ * board-side (the git guard hook and the baked context-mode plugin install), and opencode configs
+ * are merged over the deployment's baked configuration with `permission` stripped board-side to
+ * preserve the runner fence (see docs/workspace.md). The `Record` shape is the same exhaustiveness
+ * guard REQUIRED_FIELDS uses: a new EXECUTOR_TYPES entry cannot compile until it declares its own
+ * truth.
  */
 export const EXECUTOR_TYPE_META: Record<ExecutorType, { label: string; configHelp: string; example: string }> = {
     'claude-code': {
         label: 'Claude Code',
         configHelp:
-            'This JSON is stored with the executor but is not consumed by the current Claude Code runner. Use {} unless your deployment documents another consumer.',
+            'This JSON is merged into the runner settings.json. hooks, enabledPlugins and extraKnownMarketplaces are stripped to preserve the runner guard hook and plugin install; everything else — model, env, permissions.allow — applies.',
         example: '{}',
     },
     opencode: {

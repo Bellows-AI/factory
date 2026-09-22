@@ -135,5 +135,46 @@ else
     echo 'note: no token in the environment or .env — skipped the live prompt'
 fi
 
+# The member's own executor config (CLAUDE_CODE_CONFIG_CONTENT, #212): model and env additions
+# merge into the baked settings.json, but a member cannot use it to strip the runner's hooks/
+# plugins fence, nor to disable telemetry or turn on prompt/response/tool-detail logging by
+# setting those OTEL_*/CLAUDE_CODE_ENABLE_TELEMETRY keys explicitly — the baked values are
+# re-applied on top of the member's env merge. The container OTEL_EXPORTER_OTLP_ENDPOINT still
+# wins over both the baked value and the member's, proving the later patch's precedence holds even
+# with a member config present.
+CNF="$(mktemp -d)"
+cp "$HERE/claude-home/settings.json" "$CNF/settings.json"
+printf '{"hasCompletedOnboarding":true,"theme":"dark"}\n' > "$CNF/.claude.json"
+chmod -R a+rwX "$CNF"
+MEMBER_CONFIG='{"model":"claude-member-model","hooks":{"PreToolUse":[]},"enabledPlugins":["evil"],"extraKnownMarketplaces":["evil"],"env":{"CLAUDE_CODE_ENABLE_TELEMETRY":"0","OTEL_LOG_USER_PROMPTS":"1","OTEL_EXPORTER_OTLP_ENDPOINT":"http://member-supplied:4318","ANTHROPIC_API_KEY":"member-token"}}'
+docker run --rm \
+    -e CLAUDE_CONFIG_DIR=/claude-member-test \
+    -e CLAUDE_CODE_CONFIG_CONTENT="$MEMBER_CONFIG" \
+    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
+    -v "$CNF:/claude-member-test" \
+    -v "$REPO:/workspace" \
+    "$IMAGE" --version >/dev/null 2>&1
+patched="$(cat "$CNF/settings.json")"
+rm -rf "$CNF"
+if node -e '
+    const c = JSON.parse(process.argv[1]);
+    const ok =
+        c.model === "claude-member-model" &&
+        c.env.ANTHROPIC_API_KEY === "member-token" &&
+        c.env.CLAUDE_CODE_ENABLE_TELEMETRY === "1" &&
+        c.env.OTEL_LOG_USER_PROMPTS === "0" &&
+        c.env.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector.example:4318" &&
+        c.enabledPlugins === undefined &&
+        c.extraKnownMarketplaces === undefined &&
+        JSON.stringify(c.hooks) === JSON.stringify(require(process.argv[2]).hooks);
+    process.exit(ok ? 0 : 1);
+' "$patched" "$HERE/claude-home/settings.json" >/dev/null 2>&1; then
+    printf 'ok   %s\n' 'CLAUDE_CODE_CONFIG_CONTENT merges member settings without weakening baked telemetry, hooks or plugins'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     patched settings: %s\n' 'CLAUDE_CODE_CONFIG_CONTENT merges member settings without weakening baked telemetry, hooks or plugins' "$patched"
+    fail=$((fail + 1))
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -1591,7 +1591,11 @@ export function createJobStore({
                     // executor deleted after the task was queued, or free text typed into the chat
                     // — runs exactly as an unlabelled job always has. A row whose config is not an
                     // object is skipped for the same availability reason the resolver failure is
-                    // NOT: refusing the claim would retry a broken row forever.
+                    // NOT: refusing the claim would retry a broken row forever. A Remote Control
+                    // claim never sees claimEnv at all (driver/src/docker.ts) — like every other
+                    // claim env value, a claude-code or opencode row's config does not reach a
+                    // Remote Control runner, which gets only the baked settings.json and the
+                    // mounted auth volume.
                     if (executorConfig && row.executor !== null && row.created_by !== null) {
                         const configured = await executorConfig.configFor(row.created_by, row.executor, tx);
                         const member = configured?.config;
