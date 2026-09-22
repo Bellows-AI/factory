@@ -37,7 +37,8 @@ export interface UserExecutorStore {
     /**
      * The one executor row a task label names, WITH its pasted config — the claim-time read the
      * job store makes to hand a runner the member's own executor configuration
-     * (`OPENCODE_CONFIG_CONTENT`). `list()` deliberately never selects `config`, because it feeds
+     * (`OPENCODE_CONFIG_CONTENT` / `CLAUDE_CODE_CONFIG_CONTENT`). `list()` deliberately never
+     * selects `config`, because it feeds
      * a two-second poll; this is the one read that must, and it runs on the claim's transaction
      * for the same reason the env resolver does: a claim holds one connection, so enough
      * concurrent claims can never wedge the pool against itself.

@@ -1640,31 +1640,45 @@ export function createJobStore({
                             ? withMintedToken(await githubToken.fresh(), resolvedEnv)
                             : resolvedEnv;
                     // The executor label a task was queued with names a row in the AUTHOR's own
-                    // executor list (docs/workspace.md), and for an opencode row the pasted config
-                    // IS the run's model and provider choice. It rides the claim env under the
-                    // name opencode merges over its baked configuration, applied LAST so the
-                    // synthesized value wins a collision with a member env var — the name is
-                    // reserved at PUT besides. A label matching nothing — an executor deleted
-                    // after the task was queued, or free text typed into the chat — runs exactly
-                    // as an unlabelled job always has; so does a claude-code row, which has no
-                    // consumer yet. A row whose config is not an object is skipped for the same
-                    // availability reason the resolver failure is NOT: refusing the claim would
-                    // retry a broken row forever.
+                    // executor list (docs/workspace.md), and for an opencode or claude-code row the
+                    // pasted config IS the run's model and provider choice. It rides the claim env
+                    // under the name each CLI's entrypoint merges over its baked configuration,
+                    // applied LAST so the synthesized value wins a collision with a member env var
+                    // — both names are reserved at PUT besides. A label matching nothing — an
+                    // executor deleted after the task was queued, or free text typed into the chat
+                    // — runs exactly as an unlabelled job always has. A row whose config is not an
+                    // object is skipped for the same availability reason the resolver failure is
+                    // NOT: refusing the claim would retry a broken row forever. A Remote Control
+                    // claim never sees claimEnv at all (driver/src/docker.ts) — like every other
+                    // claim env value, a claude-code or opencode row's config does not reach a
+                    // Remote Control runner, which gets only the baked settings.json and the
+                    // mounted auth volume.
                     if (executorConfig && row.executor !== null && row.created_by !== null) {
                         const configured = await executorConfig.configFor(row.created_by, row.executor, tx);
                         const member = configured?.config;
-                        if (
-                            configured?.type === 'opencode' &&
-                            member !== null &&
-                            typeof member === 'object' &&
-                            !Array.isArray(member)
-                        ) {
-                            // `permission` is the runner's fence, baked into the image and patched
-                            // by its entrypoint — the one key the member does not get to set: a
-                            // pasted `external_directory: allow` would open every member's tree
-                            // to this run. Everything else travels verbatim.
-                            const { permission: _fence, ...rest } = member;
-                            claimEnv = { ...(claimEnv ?? {}), OPENCODE_CONFIG_CONTENT: JSON.stringify(rest) };
+                        if (member !== null && typeof member === 'object' && !Array.isArray(member)) {
+                            if (configured?.type === 'opencode') {
+                                // `permission` is the runner's fence, baked into the image and patched
+                                // by its entrypoint — the one key the member does not get to set: a
+                                // pasted `external_directory: allow` would open every member's tree
+                                // to this run. Everything else travels verbatim.
+                                const { permission: _fence, ...rest } = member;
+                                claimEnv = { ...(claimEnv ?? {}), OPENCODE_CONFIG_CONTENT: JSON.stringify(rest) };
+                            } else if (configured?.type === 'claude-code') {
+                                // `hooks`, `enabledPlugins` and `extraKnownMarketplaces` are the
+                                // runner's fence: the git guard hook and the baked context-mode
+                                // plugin install. A pasted `hooks` would silently drop the guard;
+                                // a pasted plugin/marketplace pair would run code the image never
+                                // installed. Everything else — model, env, permissions.allow —
+                                // travels verbatim.
+                                const {
+                                    hooks: _hooks,
+                                    enabledPlugins: _plugins,
+                                    extraKnownMarketplaces: _markets,
+                                    ...rest
+                                } = member;
+                                claimEnv = { ...(claimEnv ?? {}), CLAUDE_CODE_CONFIG_CONTENT: JSON.stringify(rest) };
+                            }
                         }
                     }
                     // Read off the filesystem, inside the claim but OFF the transaction's tables: a

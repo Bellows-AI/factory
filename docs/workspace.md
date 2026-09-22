@@ -165,14 +165,15 @@ resolves that label against the author's rows at run time — the name is the jo
 it is never validated against the list when the task is queued (`job` is an audit record; the rows
 come and go with a PUT).
 
-- **`opencode` config reaches the run; `claude-code` config does not yet.** At claim, the job
-  store reads the author's row of the stamped name (`configFor`), and for an `opencode` row hands
-  the pasted config to the runner as the claim-env value `OPENCODE_CONFIG_CONTENT` — the name
-  opencode merges over its baked configuration (verified against the pinned runner image: baked
-  plugins, instructions and permission fence survive, member `model`/`provider`/`small_model`
-  land). This is what makes the member's model and provider choice authoritative; without a
-  matching row the run falls back to the image's default model. `claude-code` rows have no
-  consumer yet and are stored only.
+- **Both `opencode` and `claude-code` config reach the run.** At claim, the job store reads the
+  author's row of the stamped name (`configFor`) and hands the pasted config to the runner as a
+  claim-env value each CLI's entrypoint merges over its baked configuration — `OPENCODE_CONFIG_CONTENT`
+  for an opencode row (verified against the pinned runner image: baked plugins, instructions and
+  permission fence survive, member `model`/`provider`/`small_model` land), `CLAUDE_CODE_CONFIG_CONTENT`
+  for a claude-code row with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped (the
+  git guard hook and the baked context-mode plugin install). This is what makes the member's model
+  and provider choice authoritative; without a matching row the run falls back to the image's
+  default model.
 - **`permission` is stripped board-side, never honored from a paste.** The baked fence in the
   runner image (and the entrypoint's per-member `external_directory` patch) is the only authority
   on what a run may touch: a pasted `external_directory: "*": allow` would otherwise open every
@@ -196,12 +197,15 @@ come and go with a PUT).
 - **The first row's marker describes the composer, not a default.** A new-task draft autoselects
   the first row of the polled list — that is all "Selected first on new tasks" says. Nothing is
   persisted: there is no default, no ordering UI, no make-default action.
-- **The dialog says what each type's config does.** The claude-code help: stored with the
-  executor, not consumed by the current runner, `{}` unless the deployment documents a consumer.
-  The opencode help: merged over the baked configuration by the deployment's CLI — model and
-  provider apply, permission rules ignored. A note under the Type select says the field describes
-  the config and does not switch the deployment's runner CLI; both helps are tied to their fields
-  with `aria-describedby`, and the actions read "Add executor" / "Save executor".
+- **The dialog says what each type's config does.** The claude-code help: merged into the
+  runner's settings.json, with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped —
+  everything else applies, except that the baked `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env
+  values and the driver's `OTEL_EXPORTER_OTLP_ENDPOINT` override always win over anything a member
+  pastes. The opencode help: merged over the baked configuration by the
+  deployment's CLI — model and provider apply, permission rules ignored. A note under the Type
+  select says the field describes the config and does not switch the deployment's runner CLI; both
+  helps are tied to their fields with `aria-describedby`, and the actions read "Add executor" /
+  "Save executor".
 - **Types are labelled for people, stored for machines.** List and dialog show "Claude Code" and
   "OpenCode"; the stored `type` stays the raw union value (`claude-code`, `opencode`).
 - **`config` is never echoed by the poll — one on-demand read excepted.** It may hold credentials

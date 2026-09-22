@@ -118,11 +118,12 @@ describe('EXECUTOR_TYPE_META', () => {
         for (const type of EXECUTOR_TYPES) expect(type in EXECUTOR_TYPE_META).toBe(true);
     });
 
-    it('labels claude-code as stored-but-not-consumed, with an empty-object example', () => {
+    it('tells the claude-code truth: the config is merged, with the guard/plugin keys stripped', () => {
         const meta = EXECUTOR_TYPE_META['claude-code'];
         expect(meta.label).toBe('Claude Code');
-        expect(meta.configHelp).toMatch(/stored/);
-        expect(meta.configHelp).toMatch(/not consumed by the current Claude Code runner/);
+        expect(meta.configHelp).toMatch(/merged into the runner/);
+        expect(meta.configHelp).toMatch(/hooks.*enabledPlugins.*extraKnownMarketplaces/);
+        expect(meta.configHelp).toMatch(/CLAUDE_CODE_ENABLE_TELEMETRY.*OTEL_.*always wins/);
         expect(JSON.parse(meta.example)).toEqual({});
     });
 
