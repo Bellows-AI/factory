@@ -17,7 +17,7 @@ FROM node:24-bookworm
 # No --ignore-scripts here, deliberately. The postinstall is what places the native binary, and
 # without it the CLI installs cleanly and then fails at run time with
 # "Error: claude native binary not installed."
-ARG CLAUDE_CODE_VERSION=2.1.251
+ARG CLAUDE_CODE_VERSION=2.1.278
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
     && npm cache clean --force
 
