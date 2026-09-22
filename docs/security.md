@@ -57,7 +57,7 @@ why that distinction is load-bearing.
 the auth hook by design and verifies `x-hub-signature-256` over the RAW body itself — the signature
 is the credential, and the route exists only when `GITHUB_WEBHOOK_SECRET` is configured. It is
 GitHub's `organization.member_removed` endpoint (see [auth.md](auth.md)) and, since 036, also
-ingests the five PR-family events — `pull_request`, `pull_request_review`,
+ingests the four PR-family events — `pull_request`, `pull_request_review`,
 `pull_request_review_comment`, `issue_comment` — which fold into or cancel a thread's durable PR
 waits. Ingestion is write-bounded on the fields the delivery carries: no numeric installation id, no
 string repo it can name, no positive PR number, or no `x-github-delivery` GUID (at most 64 bytes —

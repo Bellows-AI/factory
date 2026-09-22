@@ -114,7 +114,7 @@ export interface PublishResult {
      * phantom publication into a thread that never shipped one.
      */
     repository: string | null;
-    /** The branch published — the prior attempt's branch when this run re-pushed an existing one. */
+    /** The branch the PR targets — the origin default the task branched from. */
     baseBranch: string | null;
     prNumber: number | null;
 }
