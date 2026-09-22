@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import type { WorkflowStore } from '../db/workflow-store.js';
+import { blockCatalog } from '../db/workflow-blocks/index.js';
 import { UUID, bad, badSegment, body } from './helpers.js';
 
 export interface WorkflowRouteDeps {
@@ -41,7 +42,13 @@ function repoReason(value: string): string | null {
  * - `GET /api/workflows?repo=owner/name` — the caller-visible list (the org's, their own, the
  *   named repository's), the composer's dropdown feed.
  * - `POST /api/workflows` — create; org-level is an admin's move, user- and repo-level are any
- *   member's.
+ *   member's. A `kind: "block"` node is compiled (registry lookup, availability, config, expansion)
+ *   before storage — an unknown/unavailable/misconfigured block refuses the same way a schema
+ *   error does (issue #204, docs/workflows.md "Built-in blocks").
+ * - `GET /api/workflow-blocks` — the board-owned catalog every `uses` may reference: id,
+ *   description, config schema, availability. Never a prompt or script body — those stay inside
+ *   the registry, unserialized. Static, org-independent metadata; gated the same as the other
+ *   routes here because block selection is the same human authoring surface.
  * - `DELETE /api/workflows/:id` — an admin, the owning member, or any member within repo scope.
  *
  * Refusals carry named codes: a pasted foreign pipeline fails loudly (UNKNOWN_KEY, UNKNOWN_NODE,
@@ -82,6 +89,14 @@ export const workflowRoutes =
                 repo: typeof repoField === 'string' ? repoField : null,
             });
             return reply.code(200).send({ workflows });
+        });
+
+        // Board-owned, org-independent metadata — no `storeOf` gate. Auth-gated anyway: block
+        // selection is part of the same human workflow-authoring surface as the routes above.
+        app.get('/api/workflow-blocks', { bodyLimit: 4096 }, async (request, reply) => {
+            const caller = callerOf(request);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            return reply.code(200).send({ blocks: blockCatalog() });
         });
 
         app.post('/api/workflows', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
