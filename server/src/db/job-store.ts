@@ -613,6 +613,20 @@ export interface JobStore {
              * agent's final text, already truncated by the driver and re-bounded by the route.
              */
             summary?: string | null;
+            /**
+             * The publication the run reports — the PR identity a successful publish landed.
+             * Omitted (or null) when the run published nothing, so no `job_pr` row is invented.
+             * When present it is recorded in the verdict's own transaction, and its `repo` is
+             * cross-checked against the leased job's own repo label: a payload may not claim
+             * another org's repository by spelling it in the report.
+             */
+            publication?: {
+                repo: string;
+                prNumber: number;
+                prUrl: string;
+                headBranch: string;
+                baseBranch: string;
+            } | null;
         }
     ): Promise<{ result: 'ok'; threadDone: boolean } | { result: 'lost' | 'missing' }>;
     /**
@@ -691,6 +705,15 @@ export interface TaskSummary {
     activity: string | null;
     /** The head run's close-time summary — what the newest run did, in the agent's last words. */
     summary: string | null;
+    /**
+     * The thread's PR wait, when it has one (036): the block's reason ("review", ...), when the
+     * wait started, and — when the wait is terminal — why it ended. The open wait is preferred
+     * over a terminal one, so a thread waiting for review reads waiting; a finished wait reads
+     * what exhausted it. All null for a thread that never entered a wait.
+     */
+    waitReason: string | null;
+    waitingSince: string | null;
+    waitTerminalReason: string | null;
     /** The root's creation: when the conversation started. */
     createdAt: string;
     /** The head run's newest of created/started/finished/done — the task's sort key. */
@@ -806,6 +829,9 @@ interface TaskRow {
     creator_login: string | null;
     creator_name: string | null;
     creator_avatar_url: string | null;
+    wait_reason: string | null;
+    waiting_since: Date | string | null;
+    wait_terminal_reason: string | null;
 }
 
 /** A stamp from either engine: a parsed Date from the row, an ISO string out of the json. */
@@ -933,6 +959,7 @@ export function createJobStore({
     githubToken,
     gates: gatesReader,
     executorConfig,
+    prs,
 }: {
     sql: Sql;
     hasWorkspaces?: boolean;
@@ -998,6 +1025,27 @@ export function createJobStore({
             exec: Sql | TransactionSql
         ): Promise<{ type: string; config: Record<string, unknown> } | null>;
     };
+    /**
+     * The PR lifecycle store, when the deployment records publications and PR waits (036).
+     * Declared inline like `env`, because only the completion surface (the publication upsert),
+     * the stop/remove sweep (wait cancellation) and the read model (the thread's wait) touch it —
+     * the rest of the job store has no opinion of it. Present in main.ts under `withStores`,
+     * absent in the tests that predate it: a verdict then simply records no publication.
+     */
+    prs?: {
+        recordPublication(
+            input: {
+                root: string;
+                repo: string;
+                prNumber: number;
+                prUrl: string;
+                headBranch: string;
+                baseBranch: string;
+            },
+            exec?: Sql | TransactionSql
+        ): Promise<void>;
+        cancelWaitsForRoot(root: string, terminalReason?: string, exec?: Sql | TransactionSql): Promise<number>;
+    };
 }): JobStore {
     const gate = async () => {
         if (ready) await ready;
@@ -1039,7 +1087,8 @@ export function createJobStore({
     // navigation-preview and page subquery, which read the derived set rather than the tables.
     const taskPreviewColumns = sql`
         id, command, repo, executor, created_at, status, done_at, cancel_requested_at,
-        summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url
+        summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url,
+        wait_reason, waiting_since, wait_terminal_reason
     `;
 
     // A left join answers null columns when the uuid matched nothing; a matched row always has
@@ -1101,6 +1150,9 @@ export function createJobStore({
         author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
         activity: row.runtime?.activity ?? null,
         summary: row.summary,
+        waitReason: row.wait_reason,
+        waitingSince: stampOf(row.waiting_since),
+        waitTerminalReason: row.wait_terminal_reason,
         // Both are NOT NULL in the schema — created_at by the column, activity_at through
         // greatest() with created_at in it.
         createdAt: stampOf(row.created_at)!,
@@ -1313,7 +1365,7 @@ export function createJobStore({
             // a rewrite of when it was asked. stopped_by coalesces beside it unconditionally —
             // every status this UPDATE touches is a stoppable one, so this caller acted, and the
             // first asker is the actor that survives.
-            const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null }[]>`
+            const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null; root_job_id: string }[]>`
                 update job set
                     status = case
                         when status in ('queued','standby') then 'stopped'
@@ -1348,7 +1400,7 @@ export function createJobStore({
                     stopped_by = coalesce(stopped_by, ${stoppedBy})
                 where org_id = ${orgId} and id = ${id}
                   and status in ('queued','running','standby')
-                returning status, cancel_requested_at
+                returning status, cancel_requested_at, root_job_id
             `;
             const row = rows[0];
             if (!row) {
@@ -1358,6 +1410,11 @@ export function createJobStore({
                     select status from job where org_id = ${orgId} and id = ${id}
                 `;
                 return other ? { result: 'conflict', status: other.status } : 'missing';
+            }
+            if (prs && row.cancel_requested_at === null) {
+                // A settled stop ends the thread's turn: its PR waits have nothing left to
+                // fold for — the session a follow-up continues from starts its own wait cycle.
+                await prs.cancelWaitsForRoot(row.root_job_id, 'task stopped');
             }
             return row.cancel_requested_at !== null
                 ? { result: 'requested', cancelRequestedAt: row.cancel_requested_at.toISOString() }
@@ -1900,6 +1957,12 @@ export function createJobStore({
                     where org_id = ${orgId} and id = any(${members.map((m) => m.id)})
                 `;
 
+                // The thread is gone, and with it every PR wait folded for it — the webhook's
+                // next redelivery folds into nothing, which is the point: no ghost thread wakes.
+                if (prs) {
+                    await prs.cancelWaitsForRoot(rootJobId, 'task removed', tx);
+                }
+
                 // Queue the worktree reclaim. The driver polls this queue — nothing is holding a
                 // lease on a removed thread, so no live driver would ever notice the deletion
                 // otherwise — and takes the tree down, acking the row when it has. Same relative
@@ -1982,7 +2045,7 @@ export function createJobStore({
         async complete(
             id,
             leaseToken,
-            { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary }
+            { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, publication }
         ) {
             await gate();
             // The context stats ride the verdict and merge into the runtime vitals — the row keeps
@@ -2003,7 +2066,7 @@ export function createJobStore({
             // VERDICT lands: the walk below runs on the same connection, where the just-updated
             // row's new status is visible and no follow-up inserted after the commit can be.
             return sql.begin(async (tx) => {
-                const rows = await tx<{ id: string; root_job_id: string }[]>`
+                const rows = await tx<{ id: string; root_job_id: string; repo: string | null }[]>`
                     update job set
                         status      = ${status},
                         exit_code   = ${exitCode},
@@ -2033,7 +2096,7 @@ export function createJobStore({
                         runtime     = ${context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`}
                     where org_id = ${orgId} and id = ${id}
                       and status = 'running' and lease_token = ${leaseToken}
-                    returning id, root_job_id
+                    returning id, root_job_id, repo
                 `;
                 if (!rows[0]) {
                     // A report from a worker whose lease was reclaimed is refused, not merged: the
@@ -2042,6 +2105,16 @@ export function createJobStore({
                 }
                 const completedId = rows[0]!.id;
                 const rootJobId = rows[0]!.root_job_id;
+                const jobRepo = rows[0]!.repo;
+
+                // The publication, when the driver reports one, is recorded in the VERDICT's
+                // transaction — the identity commits with the run's terminal state or not at all.
+                // The repo the payload claims is cross-checked against the leased job's own label
+                // before anything is written: a report can only record the repository the board
+                // gave the job, never one it was not authorized to.
+                if (publication && prs && publication.repo === jobRepo) {
+                    await prs.recordPublication({ root: rootJobId, ...publication }, tx);
+                }
 
                 /*
                  * The workflow transition, when this thread walks a graph — decided HERE, in the
@@ -2368,10 +2441,22 @@ export function createJobStore({
                                       greatest(h.created_at, h.started_at, h.finished_at, h.done_at)) as activity_at,
                            (h.status in ('succeeded', 'failed', 'dead', 'stopped')) as terminal,
                            cu.id as creator_id, cu.github_login as creator_login,
-                           cu.display_name as creator_name, cu.avatar_url as creator_avatar_url
+                           cu.display_name as creator_name, cu.avatar_url as creator_avatar_url,
+                           wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
                     from head h
                     join job r on r.org_id = ${orgId} and r.id = h.root_job_id
                     left join app_user cu on cu.id = r.created_by
+                    -- The thread's wait, when it has one (036): the OPEN wait first, else the most
+                    -- recently active terminal one — one row, so a waiting thread reads waiting and
+                    -- a finished wait reads what exhausted it.
+                    left join lateral (
+                        select w.reason as wait_reason, w.active_at as waiting_since,
+                               w.terminal_reason as wait_terminal_reason
+                        from workflow_wait w
+                        where w.org_id = ${orgId} and w.root_job_id = h.root_job_id
+                        order by (w.completed_at is null and w.cancelled_at is null) desc, w.active_at desc
+                        limit 1
+                    ) wl on true
                 )
                 select
                     (

@@ -1028,6 +1028,25 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
                 }
 
+                // The publication's identity rides the verdict ONLY when the publish really happened and
+                // every half of it resolved — a no-op or failed publish answers no publication,
+                // and the board must not record a thread as having shipped a PR it did not.
+                const publication =
+                    published?.published &&
+                    published.repository &&
+                    published.prNumber &&
+                    published.prUrl &&
+                    published.branch &&
+                    published.baseBranch
+                        ? {
+                              repo: published.repository,
+                              prNumber: published.prNumber,
+                              prUrl: published.prUrl,
+                              headBranch: published.branch,
+                              baseBranch: published.baseBranch,
+                          }
+                        : null;
+
                 const verdict = await report(job, {
                     status,
                     exitCode,
@@ -1040,6 +1059,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                     // The run's last words, when the close-time read lifted them; absent stays
                     // absent, and the board stores null.
                     ...(outcome.summary ? { summary: outcome.summary } : {}),
+                    ...(publication ? { publication } : {}),
                 });
                 log(
                     verdict === 'lost'

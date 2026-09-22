@@ -230,6 +230,18 @@ export interface Board {
             contextCostUsd?: number | null;
             agentTurns?: number | null;
             summary?: string | null;
+            /**
+             * What the publish landed, when a publish did: the board's only trusted record of a
+             * thread's repository — review traffic and the thread's wait key on it. Omitted when
+             * the run published nothing.
+             */
+            publication?: {
+                repo: string;
+                prNumber: number;
+                prUrl: string;
+                headBranch: string;
+                baseBranch: string;
+            } | null;
         }
     ): Promise<{ state: LeaseState; threadDone: boolean }>;
 }
@@ -381,7 +393,10 @@ export function createBoard({
             return response.status === 409 ? 'lost' : 'held';
         },
 
-        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary }) {
+        async complete(
+            job,
+            { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, publication }
+        ) {
             const response = await post(`/api/jobs/${job.id}/complete`, {
                 leaseToken: job.leaseToken,
                 status,
@@ -393,6 +408,9 @@ export function createBoard({
                 // unmeasured — the never-zero contract is the driver's to keep too.
                 ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
                 ...(summary ? { summary } : {}),
+                // The identity of what was published, when anything was — the board keys review
+                // traffic and the thread's wait on it.
+                ...(publication ? { publication } : {}),
             });
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — the done answer is false, not unknown.

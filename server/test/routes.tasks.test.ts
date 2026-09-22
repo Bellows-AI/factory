@@ -172,6 +172,10 @@ describe('GET /api/tasks', () => {
             author: null,
             activity: 'the live line',
             summary: null,
+            // No PR-wait rows in the in-memory board, so the fields read null — the stored shape.
+            waitReason: null,
+            waitingSince: null,
+            waitTerminalReason: null,
             createdAt: at(60),
             activityAt: at(19),
         });
@@ -186,6 +190,9 @@ describe('GET /api/tasks', () => {
             'author',
             'activity',
             'summary',
+            'waitReason',
+            'waitingSince',
+            'waitTerminalReason',
             'createdAt',
             'activityAt',
         ]);

@@ -10,6 +10,7 @@ import { installationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
 import { trackedRepos } from './db/tracked-repos.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflow-store.js';
+import { createPrLifecycleStore, type PrLifecycleStore } from './db/pr-lifecycle-store.js';
 import { createStatsService, type StatsService } from './stats-service.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
@@ -39,6 +40,8 @@ export interface OrgRuntime {
     jobs?: JobStore | undefined;
     /** The workflow definitions (027) this org's tasks may walk; present with the other stores. */
     workflows?: WorkflowStore | undefined;
+    /** The PR lifecycle (036): the thread's publication identity and its PR waits. */
+    prs?: PrLifecycleStore | undefined;
     envVars?: EnvVarStore | undefined;
     userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
@@ -110,6 +113,9 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
             const envVars = createEnvVarStore({ sql, orgId, ready });
             const userExecutors = createUserExecutorStore({ sql, orgId, ready });
             const userRepos = createUserRepoStore({ sql, orgId, ready });
+            // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
+            // transaction records the thread's publication identity through it.
+            const prs = createPrLifecycleStore({ sql, orgId, ready });
             const cloneQueue = config.workspaceRoot
                 ? createCloneQueue({
                       store: userRepos,
@@ -140,12 +146,16 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
                 // layer. Per-org here is the whole point: a runner gets the installation of the
                 // org whose board it is working, and no other.
                 ...(tokens ? { githubToken: tokens } : {}),
+                // The completion surface records the thread's publication identity in the same
+                // transaction as the verdict (and cancel/remove sweep the thread's waits).
+                prs,
             });
             runtime.envVars = envVars;
             runtime.userExecutors = userExecutors;
             runtime.userRepos = userRepos;
             runtime.cloneQueue = cloneQueue;
             runtime.jobs = jobs;
+            runtime.prs = prs;
             // Workflow definitions (027): the process a task walks, stored per scope inside this
             // org. The base `fix-issue` workflow seeds here too — org-level, idempotent by name,
             // fired with the same posture as the clone queue: not awaited, because no route on

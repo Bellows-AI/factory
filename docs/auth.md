@@ -77,8 +77,12 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   installations only, so an installation owned by a personal account reports nothing here and
   stays one-sign-in-late. No new permission buys any of this — the webhook authenticates by
   signature, which is why the installation stays at `Metadata: read` + `Contents: read`
-  (docs/security.md). Operator step: App settings → webhook URL `<PUBLIC_URL>/api/github/webhook`,
-  secret `GITHUB_WEBHOOK_SECRET`, subscribed to `organization` events.
+  (docs/security.md), and the PR events it also ingests (036) travel by webhook, not by API read:
+  the same signed delivery folds a thread's durable PR waits and cancels them on close — the
+  `x-github-delivery` GUID is the dedupe key, so a redelivery never folds the same event twice.
+  Operator step: App settings → webhook URL `<PUBLIC_URL>/api/github/webhook`,
+  secret `GITHUB_WEBHOOK_SECRET`, subscribed to `organization`, `pull_request`,
+  `pull_request_review`, `pull_request_review_comment` and `issue_comment` events.
 
 - **`github_user_id` is the identity; `github_login` is a label.** GitHub permits renames and then
   lets the freed login be claimed by somebody else. Nothing here keys on the login: the account

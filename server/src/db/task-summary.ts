@@ -142,6 +142,11 @@ export function memoryTaskList(jobs: readonly Job[], filters: TaskListFilters): 
             author: root.author,
             activity: head.runtime?.activity ?? null,
             summary: head.summary,
+            // The in-memory engine has no PR-wait store to join — a thread's wait reads null
+            // here, exactly as it does on an org with no waits recorded.
+            waitReason: null,
+            waitingSince: null,
+            waitTerminalReason: null,
             createdAt: root.createdAt,
             activityAt: activityAtOf(head),
         };

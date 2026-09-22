@@ -107,7 +107,25 @@ export interface PublishResult {
     branch: string | null;
     prUrl: string | null;
     reason: string | null;
+    /**
+     * What the publish actually landed, when it did: the repository the PR lives in, the branch
+     * it pushed, and its base. Null on a no-op or a failed publish — the board records the
+     * identity ONLY for work that reached GitHub, and a summary session's no-op must not spew a
+     * phantom publication into a thread that never shipped one.
+     */
+    repository: string | null;
+    /** The branch the PR targets — the origin default the task branched from. */
+    baseBranch: string | null;
+    prNumber: number | null;
 }
+
+/** The PR number a url names, or null when it does not point at a pull request. */
+export const prNumberFromUrl = (url: string): number | null => {
+    const match = /\/pull\/(\d+)\/?$/.exec(url.trim());
+    if (!match) return null;
+    const number = Number(match[1]);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+};
 
 /** What the startup sync answers: ok, or the reason the run should not start from a stale tree. */
 export interface SyncResult {
@@ -134,6 +152,9 @@ export const publishNothing = (reason: string): PublishResult => ({
     branch: null,
     prUrl: null,
     reason,
+    repository: null,
+    baseBranch: null,
+    prNumber: null,
 });
 
 export const publishFailed = (reason: string): PublishResult => ({
@@ -142,6 +163,9 @@ export const publishFailed = (reason: string): PublishResult => ({
     branch: null,
     prUrl: null,
     reason,
+    repository: null,
+    baseBranch: null,
+    prNumber: null,
 });
 
 /**
@@ -476,7 +500,16 @@ export async function publishCheckout(
             });
             prUrl = created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
         }
-        return { ok: true, published: true, branch, prUrl, reason: null };
+        return {
+            ok: true,
+            published: true,
+            branch,
+            prUrl,
+            reason: null,
+            repository: job.repo ?? null,
+            baseBranch: state.defaultBranch ?? null,
+            prNumber: prNumberFromUrl(prUrl ?? ''),
+        };
     } catch (e) {
         return publishFailed(`${(e as Error).message}`.slice(0, 400));
     }

@@ -53,6 +53,19 @@ host, and that source then sits in a plain directory. It is passed to `git` thro
 environment and never on a command line or into `.git/config` — see [workspace.md](workspace.md) for
 why that distinction is load-bearing.
 
+**The webhook is the one route that authenticates itself.** `POST /api/github/webhook` is open to
+the auth hook by design and verifies `x-hub-signature-256` over the RAW body itself — the signature
+is the credential, and the route exists only when `GITHUB_WEBHOOK_SECRET` is configured. It is
+GitHub's `organization.member_removed` endpoint (see [auth.md](auth.md)) and, since 036, also
+ingests the four PR-family events — `pull_request`, `pull_request_review`,
+`pull_request_review_comment`, `issue_comment` — which fold into or cancel a thread's durable PR
+waits. Ingestion is write-bounded on the fields the delivery carries: no numeric installation id, no
+string repo it can name, no positive PR number, or no `x-github-delivery` GUID (at most 64 bytes —
+the dedupe key AND the column's bound) and the delivery is acknowledged and dropped without a store
+call, and every fold is idempotent on that GUID — whatever GitHub retries, nothing can fold twice.
+An event for an installation this board has no runtime for resolves cleanly to a no-op: the folding
+never reaches another org's rows.
+
 **Checkouts are per member, and the isolation is the mount itself.** Each person's clones live under
 their own `app_user.id`, and every container the driver starts — runner, gate, worktree sync,
 readout, publish step — mounts exactly that job's own `<orgId>/<userId>` subtree of the workspaces
