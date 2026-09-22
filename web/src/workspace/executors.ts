@@ -32,7 +32,7 @@ export const EXECUTOR_TYPE_META: Record<ExecutorType, { label: string; configHel
     'claude-code': {
         label: 'Claude Code',
         configHelp:
-            'This JSON is merged into the runner settings.json. hooks, enabledPlugins and extraKnownMarketplaces are stripped to preserve the runner guard hook and plugin install; everything else — model, env, permissions.allow — applies.',
+            'This JSON is merged into the runner settings.json. hooks, enabledPlugins and extraKnownMarketplaces are stripped to preserve the runner guard hook and plugin install; everything else — model, env, permissions.allow — applies, except that the baked telemetry env (CLAUDE_CODE_ENABLE_TELEMETRY, OTEL_*) always wins over anything pasted here.',
         example: '{}',
     },
     opencode: {

@@ -199,7 +199,9 @@ come and go with a PUT).
   persisted: there is no default, no ordering UI, no make-default action.
 - **The dialog says what each type's config does.** The claude-code help: merged into the
   runner's settings.json, with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped —
-  everything else applies. The opencode help: merged over the baked configuration by the
+  everything else applies, except that the baked `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env
+  values and the driver's `OTEL_EXPORTER_OTLP_ENDPOINT` override always win over anything a member
+  pastes. The opencode help: merged over the baked configuration by the
   deployment's CLI — model and provider apply, permission rules ignored. A note under the Type
   select says the field describes the config and does not switch the deployment's runner CLI; both
   helps are tied to their fields with `aria-describedby`, and the actions read "Add executor" /

@@ -123,6 +123,7 @@ describe('EXECUTOR_TYPE_META', () => {
         expect(meta.label).toBe('Claude Code');
         expect(meta.configHelp).toMatch(/merged into the runner/);
         expect(meta.configHelp).toMatch(/hooks.*enabledPlugins.*extraKnownMarketplaces/);
+        expect(meta.configHelp).toMatch(/CLAUDE_CODE_ENABLE_TELEMETRY.*OTEL_.*always wins/);
         expect(JSON.parse(meta.example)).toEqual({});
     });
 
