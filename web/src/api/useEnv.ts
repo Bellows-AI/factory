@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 /** What a list read echoes. A secret's `value` is null for every caller — the write-only contract. */
 export interface EnvVarView {
@@ -105,7 +106,7 @@ export function useEnv(): UseEnv {
         try {
             const response = await fetch(url, {
                 method: 'PUT',
-                headers: { 'content-type': 'application/json' },
+                headers: JSON_HEADERS,
                 body: JSON.stringify(body),
             });
             if (response.status === HTTP_STATUS_UNAUTHORIZED) {

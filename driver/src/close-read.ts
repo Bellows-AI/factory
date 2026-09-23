@@ -10,6 +10,7 @@ import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
 import type { DriverConfig } from './config.js';
 import type { RunOutcome, RunSession } from './runner.js';
+import { CLAUDE_CODE } from './executors.js';
 
 /** What the readout answers: the session the run used, how it ended, and the context it reached. */
 export interface OpencodeRunOutcome {
@@ -174,7 +175,7 @@ export function readsAgentTurns(
     job: Pick<BoardJob, 'executorType'>,
     session: RunSession | null
 ): boolean {
-    return job.executorType === 'claude-code' && !config.remoteControl && session !== null && UUID.test(session.id);
+    return job.executorType === CLAUDE_CODE && !config.remoteControl && session !== null && UUID.test(session.id);
 }
 
 /*

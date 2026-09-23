@@ -17,6 +17,7 @@ import type { RunSession } from './runner.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript } from './services.js';
+import { OPENCODE } from './executors.js';
 
 /**
  * The kubernetes executor's pure Job/pod spec builders — the `dockerArgs` analogue for every
@@ -266,7 +267,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // receives exactly these arguments after the image name, so the platform below the
     // container is the only difference.
     const plan =
-        job.executorType === 'opencode'
+        job.executorType === OPENCODE
             ? opencodeRunnerPlan(config, job, session, path)
             : claudeRunnerPlan(config, job, session);
     env.push(...plan.env);

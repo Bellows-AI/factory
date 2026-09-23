@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import type { DefaultWorkflowSteps } from './useDefaultWorkflowSettings.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 /**
  * The client's copy of the task-summary read model (`GET /api/tasks`): one row per thread ROOT,
@@ -313,7 +314,7 @@ async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
     try {
         const response = await fetch('/api/jobs', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: JSON_HEADERS,
             body: JSON.stringify(input),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
@@ -336,7 +337,7 @@ async function followUpOnTask(id: string, command: string): Promise<QueueResult>
     try {
         const response = await fetch(`/api/jobs/${id}/follow-up`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: JSON_HEADERS,
             body: JSON.stringify({ command }),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {

@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { AuthStore } from '../auth/store.js';
 import type { OrgRegistry } from '../orgs.js';
+import { JSON_CONTENT_TYPE } from '@factory-ai/core';
 
 /**
  * A payload big enough for any member or PR event and far above what a real delivery can reach.
@@ -178,7 +179,7 @@ export const webhookRoutes =
         // The signature is computed over the raw bytes, so this scope's parser hands the route the
         // Buffer and verification runs before any parse. Scoped to this plugin: every other route
         // keeps Fastify's own JSON parser.
-        app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
+        app.addContentTypeParser(JSON_CONTENT_TYPE, { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
 
         app.post('/api/github/webhook', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             // The signature IS the credential here — the route is open to the auth hook

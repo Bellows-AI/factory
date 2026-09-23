@@ -19,6 +19,7 @@ import { LOCAL_ORG_ID } from '../config.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
 import { generate, SYNTHETIC_MEMBERS } from './synthetic.js';
+import { CLAUDE_CODE } from '@factory-ai/core';
 
 /**
  * A database whose name ends here is understood to be disposable.
@@ -102,14 +103,14 @@ try {
     for (const s of data.sessions) {
         await sql`
             insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            values (${LOCAL_ORG_ID}, 'claude-code', ${s.sessionId}, ${s.repo}, ${s.branch}, null,
+            values (${LOCAL_ORG_ID}, ${CLAUDE_CODE}, ${s.sessionId}, ${s.repo}, ${s.branch}, null,
                     ${new Date(s.firstSeen)}, ${new Date(s.lastSeen)}, ${s.samples})
             on conflict (org_id, agent, session_id, repo, branch) do nothing
         `;
 
         const mid = new Date((Date.parse(s.firstSeen) + Date.parse(s.lastSeen)) / 2);
         const rows = Object.entries(s.fields).map(([field, value]) => ({
-            agent: 'claude-code',
+            agent: CLAUDE_CODE,
             metric: metricFor(field),
             field,
             session_id: s.sessionId,
@@ -131,7 +132,7 @@ try {
     for (const org of seedOrgs) {
         await sql`
             insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            values (${org}, 'claude-code', ${`seed-${org}`}, ${repo}, 'main', null,
+            values (${org}, ${CLAUDE_CODE}, ${`seed-${org}`}, ${repo}, 'main', null,
                     ${new Date(now.getTime() - MS_PER_DAY)}, ${now}, 1)
             on conflict (org_id, agent, session_id, repo, branch) do nothing
         `;

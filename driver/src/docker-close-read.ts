@@ -22,6 +22,7 @@ import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts
 import type { ExecDocker } from './docker-runner-support.js';
 import { workspacesMountArgs, opencodeSessionReadoutArgs, CLOSE_READ_DEADLINE_MS } from './docker.js';
 import type { RunOutcome, RunSession } from './runner.js';
+import { OPENCODE } from './executors.js';
 
 /**
  * The full `docker run` argv that counts the agent turns a finished claude-code run banked —
@@ -139,7 +140,7 @@ async function applyClaudeCloseRead(
 
 /**
  * Every close-time read this runner performs after a container exits: opencode's session scrape
- * (job.executorType === 'opencode' only), then claude-code's agent-turn count (readsAgentTurns
+ * (job.executorType === OPENCODE only), then claude-code's agent-turn count (readsAgentTurns
  * decides). Mutates and answers the same outcome object verdict() produced.
  */
 export async function applyCloseTimeReadout(
@@ -147,7 +148,7 @@ export async function applyCloseTimeReadout(
     ctx: CloseReadContext,
     session: RunSession | null
 ): Promise<RunOutcome> {
-    if (ctx.job.executorType === 'opencode') {
+    if (ctx.job.executorType === OPENCODE) {
         await applyOpencodeCloseRead(outcome, ctx);
     }
     await applyClaudeCloseRead(outcome, ctx, session);

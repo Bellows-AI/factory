@@ -1,4 +1,5 @@
 import type { AuthConfig } from '../config.js';
+import { JSON_CONTENT_TYPE, JSON_HEADERS } from '@factory-ai/core';
 
 /** What GitHub is asked for, and all it is asked for. */
 export interface GitHubIdentity {
@@ -76,7 +77,7 @@ export function createGitHubIdentityClient(
         async exchange(code) {
             const response = await fetchFn(auth.tokenUrl, {
                 method: 'POST',
-                headers: { accept: 'application/json', 'content-type': 'application/json' },
+                headers: { accept: JSON_CONTENT_TYPE, ...JSON_HEADERS },
                 body: JSON.stringify({
                     client_id: auth.clientId,
                     client_secret: auth.clientSecret,

@@ -1,3 +1,4 @@
+import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
 /**
  * Vendor metric name -> canonical field, in one table.
  *
@@ -71,8 +72,8 @@ const RULES: Record<string, Rule> = {
 
 /** The agent that produced a metric, from its name prefix. */
 export function agentOf(metric: string): string {
-    if (metric.startsWith('claude_code.')) return 'claude-code';
-    if (metric.startsWith('opencode.')) return 'opencode';
+    if (metric.startsWith('claude_code.')) return CLAUDE_CODE;
+    if (metric.startsWith('opencode.')) return OPENCODE;
     return 'unknown';
 }
 

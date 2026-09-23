@@ -28,6 +28,7 @@
         "lineWidth": 120,
         "lineEnding": "lf"
     },
+    "plugins": ["./lint/no-shared-literals.grit"],
     "assist": {
         "enabled": false
     },

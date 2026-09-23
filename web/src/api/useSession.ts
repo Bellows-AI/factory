@@ -1,3 +1,4 @@
+import { ADMIN_ROLE, type Role } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
 
 export interface Session {
@@ -11,7 +12,7 @@ export interface Session {
         githubUserId: number;
         avatarUrl: string | null;
     };
-    role: 'admin' | 'member';
+    role: Role;
     membership: { invitedAt: string | null; claimedAt: string | null };
     account: { createdAt: string | null; lastLoginAt: string | null };
     organization: { id: string; name: string };
@@ -22,6 +23,9 @@ export interface Session {
     /** 'none' means the server is running open, so there is no session to end and no button. */
     mode: 'github' | 'none';
 }
+
+/** The role as the settings pages print it. */
+export const roleLabel = (role: Role): string => (role === ADMIN_ROLE ? 'Admin' : 'Member');
 
 /**
  * How an expired session reaches the gate.

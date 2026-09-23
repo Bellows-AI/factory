@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { LOCAL_ORG_ID } from '../config.js';
 import { TelemetryError } from '../telemetry/errors.js';
+import { ADMIN_ROLE } from '@factory-ai/core';
 
 /**
  * The .sql files are not compiled by tsc, so the Dockerfile has to copy them explicitly.
@@ -66,7 +67,7 @@ async function ensureLocalUser(sql: Sql, orgId: string): Promise<void> {
     // so the local org seeds its own — keyed like every membership since 029, by account.
     await sql`
         insert into org_membership (org_id, github_login, user_id, role, claimed_at)
-        values (${orgId}, ${LOCAL_LOGIN}, ${user.id}, 'admin', now())
+        values (${orgId}, ${LOCAL_LOGIN}, ${user.id}, ${ADMIN_ROLE}, now())
         on conflict (org_id, user_id) do update set user_id = excluded.user_id
     `;
 }

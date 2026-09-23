@@ -9,6 +9,7 @@ import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName, gateExecArgs } from './docker.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
 const run = promisify(execFile);
 
@@ -357,7 +358,7 @@ export function createGateServer({
 
     const respond = (reply: ServerResponse, status: number, body: unknown): void => {
         reply.statusCode = status;
-        reply.setHeader('content-type', 'application/json');
+        reply.setHeader(CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE);
         reply.end(JSON.stringify(body));
     };
 

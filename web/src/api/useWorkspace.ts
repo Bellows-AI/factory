@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed';
 
@@ -230,7 +231,7 @@ export function useWorkspace(): UseWorkspace {
             try {
                 const response = await fetch('/api/workspace/repos', {
                     method: 'PUT',
-                    headers: { 'content-type': 'application/json' },
+                    headers: JSON_HEADERS,
                     body: JSON.stringify({ repos }),
                 });
                 if (response.status === HTTP_STATUS_UNAUTHORIZED) {
@@ -264,7 +265,7 @@ export function useWorkspace(): UseWorkspace {
             try {
                 const response = await fetch('/api/workspace/executors', {
                     method: 'PUT',
-                    headers: { 'content-type': 'application/json' },
+                    headers: JSON_HEADERS,
                     body: JSON.stringify({ executors }),
                 });
                 if (response.status === HTTP_STATUS_UNAUTHORIZED) {

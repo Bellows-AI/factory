@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { roleLabel } from '../api/useSession.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { deriveReadiness } from '../settings/readiness.js';
@@ -38,7 +39,7 @@ export function SettingsOverviewPage() {
                     <KeyValues
                         pairs={[
                             ['Organization', session.organization.name],
-                            ['Your role', session.role === 'admin' ? 'Admin' : 'Member'],
+                            ['Your role', roleLabel(session.role)],
                         ]}
                     />
                 </section>

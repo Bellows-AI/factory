@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
+import { CLAUDE_CODE } from '@factory-ai/core';
 
 /**
  * Imports history from Claude Code session transcripts.
@@ -206,7 +207,7 @@ const INSERT_CHUNK = 2000;
 async function insertDatapoints(sql: Sql, points: DataPoint[]): Promise<void> {
     for (let i = 0; i < points.length; i += INSERT_CHUNK) {
         const batch = points.slice(i, i + INSERT_CHUNK).map((p) => ({
-            agent: 'claude-code',
+            agent: CLAUDE_CODE,
             metric: 'claude_code.token.usage',
             field: p.field,
             session_id: p.session_id,
@@ -227,7 +228,7 @@ async function insertBranchSpans(sql: Sql, orgId: string, spans: Map<string, Bra
         const sessionId = key.split('\u0000')[0] as string;
         await sql`
             insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            values (${orgId}, 'claude-code', ${sessionId}, ${span.repo}, ${span.branch}, null,
+            values (${orgId}, ${CLAUDE_CODE}, ${sessionId}, ${span.repo}, ${span.branch}, null,
                     ${new Date(span.first)}, ${new Date(span.last)}, ${span.samples})
             on conflict (org_id, agent, session_id, repo, branch) do update
                 set first_seen = least(session_branch.first_seen, excluded.first_seen),

@@ -181,6 +181,14 @@ Every carve-out is a re-enable candidate: turn a rule back on only with the
 source change that retires its hits. Import sorting (assist) and CSS formatting are off; neither
 is a convention here.
 
+`lint/no-shared-literals.grit` is a Biome plugin that bans raw spellings of values with one named
+home: executor types (`CLAUDE_CODE`, `OPENCODE`), roles (`ADMIN_ROLE`, `MEMBER_ROLE`) and the
+JSON content type (`JSON_HEADERS`, `JSON_CONTENT_TYPE`, `CONTENT_TYPE_HEADER`). Server and web
+import them from core; the driver imports its own copies from `driver/src/{executors,http}.ts`.
+Tests are exempt. To add a value, give it a home, list the home in the plugin's `$filename`
+exclusions, and add one regex per value. Grit binds a regex group to a variable, so an
+alternation group fails to compile.
+
 ## Build coupling to know about
 
 `server` and `web` resolve `@factory-ai/core` to `core/dist`, not `core/src`. **`core` must be

@@ -1,0 +1,33 @@
+language js
+
+// Values with one named home. Spelling one raw anywhere else is a second copy that can drift from
+// the first; import the constant instead. The homes, and tests (which pin wire values on purpose),
+// are the only places the literal may appear. One regex per value: grit binds a regex group to a
+// variable, so an alternation group fails to compile.
+or {
+    JsStringLiteralExpression(),
+    TsStringLiteralType(),
+    JsLiteralMemberName()
+} as $lit where {
+    not $filename <: or {
+        r".*/core/src/executors\.ts$",
+        r".*/core/src/roles\.ts$",
+        r".*/core/src/http\.ts$",
+        r".*/driver/src/executors\.ts$",
+        r".*/driver/src/http\.ts$",
+        r".*/test/.*",
+        r".*/test-db/.*"
+    },
+    $lit <: or {
+        r"^['\"]claude-code['\"]$",
+        r"^['\"]opencode['\"]$",
+        r"^['\"]admin['\"]$",
+        r"^['\"]member['\"]$",
+        r"^['\"]content-type['\"]$",
+        r"^['\"]application/json['\"]$"
+    },
+    register_diagnostic(
+        span = $lit,
+        message = "Shared literal: import it from core/src/{executors,roles,http}.ts (driver: driver/src/{executors,http}.ts)."
+    )
+}

@@ -6,18 +6,7 @@
  * socket — and the two have nothing in common at all: the board tells this process which
  * workspace a job belongs to, so it does not even need to know the organization.
  */
-/**
- * The executor types the board may assign to one claim.
- *
- * Copied from core rather than imported: the driver is an HTTP client with no dependency on the
- * server's package graph (AGENTS.md). Keep this union in lockstep with core/src/executors.ts.
- */
-export const EXECUTOR_TYPES = ['claude-code', 'opencode'] as const;
-export type ExecutorType = (typeof EXECUTOR_TYPES)[number];
-
-export function isExecutorType(value: unknown): value is ExecutorType {
-    return typeof value === 'string' && EXECUTOR_TYPES.includes(value as ExecutorType);
-}
+import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 
 export interface DriverConfig {
     /** Where the board is. The driver is a client of it, never of the database. */
@@ -390,8 +379,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         boardToken: (env.JOB_BOARD_TOKEN ?? '').trim(),
         worker: text(env.DRIVER_WORKER, 'DRIVER_WORKER', `driver-${process.pid}`),
         executorImages: {
-            'claude-code': text(env.CLAUDE_EXECUTOR_IMAGE, 'CLAUDE_EXECUTOR_IMAGE', DEFAULTS.claudeExecutorImage),
-            opencode: text(env.OPENCODE_EXECUTOR_IMAGE, 'OPENCODE_EXECUTOR_IMAGE', DEFAULTS.opencodeExecutorImage),
+            [CLAUDE_CODE]: text(env.CLAUDE_EXECUTOR_IMAGE, 'CLAUDE_EXECUTOR_IMAGE', DEFAULTS.claudeExecutorImage),
+            [OPENCODE]: text(env.OPENCODE_EXECUTOR_IMAGE, 'OPENCODE_EXECUTOR_IMAGE', DEFAULTS.opencodeExecutorImage),
         },
         workspaceVolume: text(env.WORKSPACE_VOLUME, 'WORKSPACE_VOLUME', DEFAULTS.workspaceVolume),
         workspaceMount: text(env.WORKSPACE_MOUNT, 'WORKSPACE_MOUNT', DEFAULTS.workspaceMount),

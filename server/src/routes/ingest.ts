@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import { flattenMetrics } from '../telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js';
+import { CLAUDE_CODE, CONTENT_TYPE_HEADER } from '@factory-ai/core';
 
 /**
  * A misconfigured exporter can POST into the same process that serves the SPA, every few
@@ -30,7 +31,7 @@ function branchReport(body: unknown): SessionBranchReport | null {
     // and would join to nothing while looking like one.
     if (branch !== null && (typeof branch !== 'string' || !branch || branch === 'HEAD')) return null;
     return {
-        agent: typeof agent === 'string' && agent ? agent : 'claude-code',
+        agent: typeof agent === 'string' && agent ? agent : CLAUDE_CODE,
         sessionId,
         repo,
         branch: branch as string | null,
@@ -43,7 +44,7 @@ export const ingestRoutes =
     (store: TelemetryStore): FastifyPluginAsync =>
     async (app) => {
         app.post('/api/otlp/v1/metrics', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            if (!isJson(request.headers['content-type'])) {
+            if (!isJson(request.headers[CONTENT_TYPE_HEADER])) {
                 return reply.code(HTTP_UNSUPPORTED_MEDIA_TYPE).send({ error: 'Expected application/json' });
             }
 
@@ -68,7 +69,7 @@ export const ingestRoutes =
         // worth storing once there is a per-prompt view to spend them on (M6). Returning 200
         // keeps a configured exporter from retrying forever in the meantime.
         app.post('/api/otlp/v1/logs', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            if (!isJson(request.headers['content-type'])) {
+            if (!isJson(request.headers[CONTENT_TYPE_HEADER])) {
                 return reply.code(HTTP_UNSUPPORTED_MEDIA_TYPE).send({ error: 'Expected application/json' });
             }
             return reply.code(HTTP_OK).send({ partialSuccess: {} });

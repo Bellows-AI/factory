@@ -6,6 +6,7 @@ import type { Caller } from '../auth/store.js';
 import { blockCatalog } from '../db/workflow-blocks/index.js';
 import { bad, body, repoReason } from './helpers.js';
 import { UUID } from '../config.js';
+import { ADMIN_ROLE } from '@factory-ai/core';
 
 export interface WorkflowRouteDeps {
     /**
@@ -114,7 +115,7 @@ function resolveScope(
         return { ok: false, code: 'BAD_SCOPE', message: 'scope must be "org", "user" or "repo"' };
     }
     if (scopeName === 'org') {
-        if (caller.role !== 'admin') {
+        if (caller.role !== ADMIN_ROLE) {
             return {
                 ok: false,
                 code: 'FORBIDDEN',
@@ -157,7 +158,7 @@ async function handleCreateWorkflow(orgs: OrgRegistry, request: FastifyRequest, 
 }
 
 function canDelete(caller: Caller, record: WorkflowSummary): boolean {
-    if (caller.role === 'admin') return true;
+    if (caller.role === ADMIN_ROLE) return true;
     if (record.scope === 'org') return false;
     if (record.scope === 'user' && record.userId !== caller.user.id) return false;
     return true;

@@ -1,9 +1,8 @@
+import type { Role } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
 import { hashToken, mintToken } from './session.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
-
-export type Role = 'admin' | 'member';
 
 export interface AuthUser {
     id: string;

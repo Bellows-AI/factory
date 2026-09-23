@@ -53,6 +53,7 @@ import {
     type Spawn,
     type ExecDocker,
 } from './docker-runner-support.js';
+import { OPENCODE } from './executors.js';
 
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
@@ -536,7 +537,7 @@ async function dockerRun(
          * the task-type check below keeps it on opencode, and config keeps it docker-only.
          */
         let cacheTimer: NodeJS.Timeout | null = null;
-        if (config.cacheWatch && job.executorType === 'opencode') {
+        if (config.cacheWatch && job.executorType === OPENCODE) {
             cacheTimer = setInterval(() => {
                 void tickCacheWatch({ execDocker, config, job, kill: (j) => dockerKill(deps, j) }, cacheState);
             }, config.cacheWatchPollMs);

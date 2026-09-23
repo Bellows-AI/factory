@@ -1,4 +1,4 @@
-import type { ExecutorType } from '@factory-ai/core';
+import { CLAUDE_CODE, type ExecutorType, OPENCODE } from '@factory-ai/core';
 
 /**
  * Client-side structural validation for the pasted executor config.
@@ -13,8 +13,8 @@ import type { ExecutorType } from '@factory-ai/core';
  * exists and can be wrong about them. Adding a type's requirements is one line here.
  */
 export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
-    'claude-code': [],
-    opencode: [],
+    [CLAUDE_CODE]: [],
+    [OPENCODE]: [],
 };
 
 /**
@@ -29,13 +29,13 @@ export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
  * truth.
  */
 export const EXECUTOR_TYPE_META: Record<ExecutorType, { label: string; configHelp: string; example: string }> = {
-    'claude-code': {
+    [CLAUDE_CODE]: {
         label: 'Claude Code',
         configHelp:
             'This JSON is merged into the runner settings.json. hooks, enabledPlugins and extraKnownMarketplaces are stripped to preserve the runner guard hook and plugin install; everything else — model, env, permissions.allow — applies, except that the baked telemetry env (CLAUDE_CODE_ENABLE_TELEMETRY, OTEL_*) always wins over anything pasted here.',
         example: '{}',
     },
-    opencode: {
+    [OPENCODE]: {
         label: 'OpenCode',
         configHelp:
             'Tasks using this executor run OpenCode. This object is merged over its baked configuration; model and provider settings apply, while permission rules are ignored to preserve the runner fence.',

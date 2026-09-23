@@ -55,6 +55,7 @@ import {
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { publishCheckout, publishFailed, repoPath, withPublishToken, worktreeDir } from './publish.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
+import { CLAUDE_CODE, OPENCODE } from './executors.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -223,7 +224,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     const { session, onOutput, cleanup } = req;
     // A null session is an opencode job under this executor; under claude-code every job is a
     // session, and one arriving without is refused here, BEFORE the fence takes the checkout.
-    if (!session && job.executorType !== 'opencode') {
+    if (!session && job.executorType !== OPENCODE) {
         throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
     }
     await prepare(deps, job, cleanup);
@@ -242,11 +243,11 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 
     const outcome: RunOutcome = { exitCode, output, timedOut, idled: false, started: true };
 
-    if (job.executorType === 'opencode') {
+    if (job.executorType === OPENCODE) {
         await attachOpencodeOutcome(deps, job, startedAt, outcome);
     }
 
-    if (job.executorType === 'claude-code' && session) {
+    if (job.executorType === CLAUDE_CODE && session) {
         const read = await scrapeClaudeCloseRead(deps, job, session.id, startedAt);
         outcome.agentTurns = read.turns;
         if (read.summary) outcome.summary = read.summary;

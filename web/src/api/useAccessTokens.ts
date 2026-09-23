@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 /** A list-row view of an access token. A token's secret — or its hash — is never in a list. */
 export interface AccessTokenView {
@@ -82,7 +83,7 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
             try {
                 const response = await fetch(base, {
                     method: 'POST',
-                    headers: { 'content-type': 'application/json' },
+                    headers: JSON_HEADERS,
                     body: JSON.stringify({ label }),
                 });
                 if (response.status === HTTP_STATUS_UNAUTHORIZED) {

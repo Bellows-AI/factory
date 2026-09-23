@@ -1,5 +1,5 @@
 import type { UseEnv } from '../api/useEnv.js';
-import type { Session } from '../api/useSession.js';
+import { roleLabel, type Session } from '../api/useSession.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 
 /**
@@ -82,7 +82,7 @@ function organizationItem(session: ReadinessInput['session']): ReadinessItem {
         facts: [
             { text: session.organization.name },
             // The role's title, and nothing more: no internal id, no powers the API does not grant.
-            { text: `Your role: ${session.role === 'admin' ? 'Admin' : 'Member'}` },
+            { text: `Your role: ${roleLabel(session.role)}` },
         ],
         tone: 'ok',
         action: { label: 'Review organization settings', to: '/settings/organization' },

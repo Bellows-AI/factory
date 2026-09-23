@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 const HTTP_STATUS_SERVICE_UNAVAILABLE = 503;
 /** Foreground/background poll cadence — the value only changes when a member edits it. */
@@ -65,7 +66,7 @@ export async function putDefaultWorkflowSettings(pair: DefaultWorkflowSteps): Pr
     try {
         const response = await fetch('/api/workflows/default-settings', {
             method: 'PUT',
-            headers: { 'content-type': 'application/json' },
+            headers: JSON_HEADERS,
             body: JSON.stringify(pair),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {

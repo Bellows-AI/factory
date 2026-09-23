@@ -7,13 +7,14 @@ import type { JobState } from './loop-attempt.js';
 import { down, heartbeat, newJobState, raceStep, watchOutput, watchRemote } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { PublishResult, SyncResult } from './publish.js';
+import { OPENCODE } from './executors.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
     // none — the runner scrapes the id the run used and reports it when the outcome lands. A
     // follow-up claim carries the session opencode itself created, restored via `--session` on
     // the runner.
-    if (executorType === 'opencode') return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : null;
+    if (executorType === OPENCODE) return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : null;
     return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : { id: randomUUID(), resume: false };
 }
 
@@ -22,7 +23,7 @@ function executorRefusalReason(rt: LoopRuntime, job: BoardJob): string | null {
     if (job.executorType === null) {
         return 'The selected executor no longer exists. Choose a configured executor and start a new task.';
     }
-    if (job.executorType === 'opencode' && rt.config.remoteControl) {
+    if (job.executorType === OPENCODE && rt.config.remoteControl) {
         return 'The selected OpenCode executor cannot run with Remote Control enabled.';
     }
     return null;
@@ -52,7 +53,7 @@ async function reportScrapedSession(
         } catch (e) {
             log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
         }
-    } else if (executorType === 'opencode') {
+    } else if (executorType === OPENCODE) {
         log(
             `job ${job.id}: the session readout came up empty (${outcome.readoutError ?? 'no session in the database'}) — ` +
                 'no session to follow up, finish reason and context stats unread'

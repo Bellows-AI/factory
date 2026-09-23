@@ -1,4 +1,5 @@
-import { isExecutorType, type ExecutorType } from './config.js';
+import { type ExecutorType, isExecutorType } from './executors.js';
+import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
 /**
  * One declared service of the attempt's `.bellows.yaml`, as the platform reports it right now:
@@ -294,7 +295,7 @@ export function createBoard({
         const response = await fetch(`${url}${path}`, {
             method: 'POST',
             headers: {
-                'content-type': 'application/json',
+                [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
                 // Omitted rather than sent empty: a board with no auth would otherwise see a Bearer
                 // header with nothing in it, which is a credential that failed rather than one that
                 // was never offered.

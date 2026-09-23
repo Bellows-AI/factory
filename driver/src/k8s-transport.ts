@@ -5,6 +5,7 @@ import { OUTPUT_LIMIT } from './runner.js';
 import type { ServiceStatus } from './board.js';
 import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
+import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -166,7 +167,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                     headers: {
                         // Read per call: a rotated ServiceAccount token must not be remembered.
                         authorization: `Bearer ${readFile(`${serviceAccountDir}/token`, 'utf8').trim()}`,
-                        'content-type': 'application/json',
+                        [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
                     },
                 },
                 (res) => {

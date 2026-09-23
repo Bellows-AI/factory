@@ -18,6 +18,7 @@ import { remoteSessionScript, opencodeReadoutScript } from './container-scripts.
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, type RuntimeSample, type RunSession } from './runner.js';
 import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
+import { OPENCODE } from './executors.js';
 
 /**
  * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
@@ -483,7 +484,7 @@ export function dockerArgs(
     // config would have refused at boot; the default names the board JOB_BOARD_URL names.
     args.push('-e', `FACTORY_STATS_URL=${config.statsUrl}`);
 
-    if (job.executorType === 'opencode') {
+    if (job.executorType === OPENCODE) {
         return pushOpencodeArgs(args, config, job, session);
     }
     return pushClaudeCodeArgs(args, config, job, session);

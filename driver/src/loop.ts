@@ -6,6 +6,7 @@ import type { ReclaimResult } from './publish.js';
 import { worktreeRelDir } from './publish.js';
 import type { GateStack, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
+import { CLAUDE_CODE, OPENCODE } from './executors.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -70,7 +71,7 @@ function claimRefusal(job: BoardJob): { log: string; output: string } | null {
      * session is impossible — opencode has none in its database — and resuming it
      * without a command would idle a headless run to its deadline.
      */
-    if (job.executorType === 'opencode' && job.resumeSessionId && !job.followUp) {
+    if (job.executorType === OPENCODE && job.resumeSessionId && !job.followUp) {
         return {
             log: 'carries a session its selected OpenCode executor cannot restore, failing',
             output: 'This job was parked with a Claude Code session, and its selected OpenCode executor cannot restore that session. Start a new task to run it fresh.',
@@ -190,7 +191,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             repo: reclaim.repo,
             // Removed-thread reclamation runs only the bundled git maintenance script. It is
             // not task execution and the deleted rows no longer carry an executor selection.
-            executorType: 'claude-code',
+            executorType: CLAUDE_CODE,
         };
         let outcome: ReclaimResult;
         try {
@@ -286,7 +287,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             log(
                 `polling ${config.boardUrl} every ${config.pollMs}ms as "${config.worker}", ` +
                     `${config.concurrency} at a time, executor images ` +
-                    `claude-code=${config.executorImages['claude-code']}, opencode=${config.executorImages.opencode}`
+                    `claude-code=${config.executorImages[CLAUDE_CODE]}, opencode=${config.executorImages.opencode}`
             );
 
             // Drains the board's removed-thread queue in parallel with the claim loop. This loop

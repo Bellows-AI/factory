@@ -1,3 +1,4 @@
+import { JSON_HEADERS } from '@factory-ai/core';
 /**
  * The one organization switch. The app bar's selector and the mobile drawer's both call this —
  * the switch is a server-side session change, and on success the reload makes every org-scoped
@@ -8,7 +9,7 @@
 export function switchOrg(orgId: string): void {
     void fetch('/api/auth/org', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: JSON_HEADERS,
         body: JSON.stringify({ orgId }),
     })
         .then((response) => {

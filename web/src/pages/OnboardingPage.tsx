@@ -21,6 +21,7 @@ import {
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
 import { ThemeSelector } from '../components/ThemeSelector.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 /** The board's session-expired status — the same recovery (Start again) as everywhere on this
  * screen. */
@@ -437,7 +438,7 @@ function useOnboardingSubmit(state: {
         try {
             const response = await fetch('/api/auth/github/complete', {
                 method: 'POST',
-                headers: { 'content-type': 'application/json' },
+                headers: JSON_HEADERS,
                 body: JSON.stringify(body),
             });
             if (response.status === HTTP_STATUS_UNAUTHORIZED) {
