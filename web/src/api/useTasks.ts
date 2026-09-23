@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import type { DefaultWorkflowSteps } from '../task-composer.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
@@ -143,13 +144,16 @@ export interface UseTasks {
     };
 }
 
-/** What starting a task takes — bundled so the queueing call stays under the param-count limit. */
+/** What starting a task takes — bundled so the queueing call stays under the param-count limit.
+ * `defaultWorkflow` is present only beside Default workflow; `queueBody` (task-composer.ts) is
+ * what builds this with the omission contract, since only the composer knows which is which. */
 export interface QueueTaskInput {
     command: string;
     repo: string | null;
     executor: string;
     workflow: string | null;
     workflowParams: Record<string, string> | null;
+    defaultWorkflow?: DefaultWorkflowSteps;
 }
 
 /** The first-page failure: the retained refresh error with nothing beside it. Exported pure so

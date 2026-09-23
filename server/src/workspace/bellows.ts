@@ -386,7 +386,7 @@ export async function readGatesFile(options: {
     /** Test seam: lets the suite assert the path and simulate failures without a filesystem. */
     readFile?: (path: string) => Promise<string>;
 }): Promise<GatesRead> {
-    const { root, workspacePath, repo, worktreeId, readFile = defaultRead } = options;
+    const { root, workspacePath, repo, worktreeId = null, readFile = defaultRead } = options;
     if (!root || !repo) return { config: null, error: null };
 
     const resolved = resolveGatesPaths({ root, workspacePath, repo, worktreeId });

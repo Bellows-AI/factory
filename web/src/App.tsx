@@ -9,6 +9,7 @@ import { SettingsLayout } from './pages/SettingsLayout.js';
 import { SettingsOrganizationPage } from './pages/SettingsOrganizationPage.js';
 import { SettingsOverviewPage } from './pages/SettingsOverviewPage.js';
 import { SettingsRepositoriesPage } from './pages/SettingsRepositoriesPage.js';
+import { SettingsWorkflowsPage } from './pages/SettingsWorkflowsPage.js';
 import { SettingsWorkspacePage } from './pages/SettingsWorkspacePage.js';
 import { TaskComposerPage } from './pages/TaskComposerPage.js';
 import { TaskDetailPage } from './pages/TaskDetailPage.js';
@@ -45,13 +46,14 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
         <Route element={<AppShell />}>
             <Route index element={<DashboardPage />} />
             {/* The organization's settings tree (issues 150 and 180): one sidenav item — an
-                overview index, then four sections. */}
+                overview index, then five sections. */}
             <Route path="settings" element={<SettingsLayout />}>
                 <Route index element={<SettingsOverviewPage />} />
                 <Route path="organization" element={<SettingsOrganizationPage />} />
                 <Route path="workspace" element={<SettingsWorkspacePage />} />
                 <Route path="repos" element={<SettingsRepositoriesPage />} />
                 <Route path="executors" element={<SettingsExecutorsPage />} />
+                <Route path="workflows" element={<SettingsWorkflowsPage />} />
             </Route>
             <Route path="tasks" element={<TasksLayout />}>
                 {/* The inbox is the index (issue 158); the composer is its own address below it —

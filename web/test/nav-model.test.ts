@@ -33,6 +33,7 @@ describe('nav model', () => {
             ['/settings/workspace', 'Workspace'],
             ['/settings/repos', 'Repositories'],
             ['/settings/executors', 'Executors'],
+            ['/settings/workflows', 'Default workflow'],
         ]);
     });
 
@@ -41,7 +42,7 @@ describe('nav model', () => {
         // so the tree must not also grow an "Overview" child.
         expect(NAV_ITEMS.some((item) => item.to === '/settings')).toBe(true);
         expect(SETTINGS_SECTIONS.some((item) => item.to === '/settings')).toBe(false);
-        const EXPECTED_SETTINGS_SECTION_COUNT = 4;
+        const EXPECTED_SETTINGS_SECTION_COUNT = 5;
         expect(SETTINGS_SECTIONS).toHaveLength(EXPECTED_SETTINGS_SECTION_COUNT);
     });
 
