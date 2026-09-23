@@ -127,7 +127,7 @@ const STREAM_BUFFER_TAIL_MULTIPLE = 2;
 const STREAM_BUFFER_LIMIT = STREAM_BUFFER_OVERFLOW_MULTIPLE * OUTPUT_LIMIT;
 const STREAM_BUFFER_TAIL = STREAM_BUFFER_TAIL_MULTIPLE * OUTPUT_LIMIT;
 
-export interface InClusterRequestDeps {
+interface InClusterRequestDeps {
     env?: NodeJS.ProcessEnv;
     readFile?: typeof readFileSync;
     request?: typeof httpsRequest;

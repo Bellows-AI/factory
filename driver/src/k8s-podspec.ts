@@ -466,7 +466,7 @@ export const gateEnvSecretName = (job: BoardJob): string => `factory-gate-${hash
  * the checkout and is swept by the same `factory.job` fence if it outlives its attempt), and any
  * ServiceAccount token (the pin every pod this driver creates shares).
  */
-export interface GateJobSpecInput {
+interface GateJobSpecInput {
     key: string;
     image: string;
     gateName: string;
@@ -572,7 +572,7 @@ export const envBodyToData = (body: string): Record<string, string> => {
  */
 const BELLOWS_READ_DEADLINE_SECONDS = 120;
 
-export const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash16(`${job.id}|${job.leaseToken}`)}`;
+const bellowsJobName = (job: BoardJob): string => `factory-bellows-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
 /**
  * The runner Job's name, hashed like the readout's rather than `containerName(job)`'s raw

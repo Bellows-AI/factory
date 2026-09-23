@@ -59,7 +59,7 @@ const runnerEnv = (job: BoardJob): Record<string, string> => ({
  * (404); false for any other non-2xx status or a transport rejection, where the Job may survive
  * to the kubelet's deadline — the caller then HOLDS the checkout claim instead of releasing it.
  */
-export const deleteOwnJob = (deps: K8sDeps, job: BoardJob): Promise<boolean> =>
+const deleteOwnJob = (deps: K8sDeps, job: BoardJob): Promise<boolean> =>
     deps.request('DELETE', `${jobPath(deps.config.k8sNamespace, runnerName(job))}?propagationPolicy=Foreground`).then(
         (response) => response.status < HTTP_ERROR_STATUS || response.status === HTTP_NOT_FOUND,
         () => false
@@ -293,7 +293,7 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<n
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
  */
-export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0): Promise<void> {
+async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, waits = 0): Promise<void> {
     const nextRound = async (giveUpMessage: string): Promise<void> => {
         if (waits + 1 > REPLACE_MAX_POLLS) {
             throw new Error(`${giveUpMessage} (${REPLACE_MAX_POLLS} polls)`);

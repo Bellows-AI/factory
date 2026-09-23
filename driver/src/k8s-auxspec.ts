@@ -206,7 +206,7 @@ export const publishEnvSecretName = (job: BoardJob): string =>
 export const publishStepJobName = (job: BoardJob, step: number): string =>
     `factory-pub-${hash16(`${job.id}|${job.leaseToken}`)}-${step}`;
 
-export interface PublishStepJobSpecInput {
+interface PublishStepJobSpecInput {
     step: number;
     publish: PublishStep;
     envSecret: string | null;
@@ -275,8 +275,7 @@ export function publishStepJobSpec(config: DriverConfig, job: BoardJob, input: P
  * were already world-readable in the author's `.bellows.yaml`, and no secret of this process's
  * own ever reaches them — the same reasoning docker's `-e KEY=value` argv states.
  */
-export const servicePodName = (job: BoardJob, name: string): string =>
-    `factory-job-${job.id}-${job.leaseToken}-svc-${name}`;
+const servicePodName = (job: BoardJob, name: string): string => `factory-job-${job.id}-${job.leaseToken}-svc-${name}`;
 
 const SERVICE_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
