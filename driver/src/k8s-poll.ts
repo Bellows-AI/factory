@@ -81,19 +81,25 @@ async function readJobOrGiveUp(
     }
 }
 
-/** The messages one `pollJobToTerminal` caller answers its own give-up shapes with. */
+/**
+ * The messages one `pollJobToTerminal` caller answers its own give-up shapes with. `failed` is
+ * `null` for the sync/reclaim callers, whose script prints `{ok:false,reason}` on its OWN
+ * failure — a failed Job is still a verdict to read there, never a give-up reason on its own.
+ */
 export interface PollToTerminalMessages {
     what: string;
     notFound: (jobName: string) => string;
     errorStatus: (status: number) => string;
-    failed: string;
+    failed: string | null;
 }
 
 /**
  * Poll one Job to a terminal status, the shape every aux Job readout shares: `readVerdict` owns
  * the transport/429/5xx retry bound, a 404 means the Job is gone, any other non-2xx is
- * unexpected, and a terminal status answers `failed` on the Job's own failure or null on success.
- * NEVER throws — a caller that must throw wraps the non-null answer itself.
+ * unexpected, and a terminal status answers `failed` on the Job's own failure (when the caller
+ * names one) or null once there is a verdict to read — a Job failure with no `failed` message is
+ * itself such a verdict, exactly like success. NEVER throws — a caller that must throw wraps the
+ * non-null answer itself.
  */
 export async function pollJobToTerminal(
     deps: K8sDeps,
@@ -105,8 +111,8 @@ export async function pollJobToTerminal(
     if (result.status === HTTP_NOT_FOUND) return messages.notFound(jobName);
     if (result.status >= HTTP_ERROR_STATUS) return messages.errorStatus(result.status);
     const outcome = jobOutcome(parse<{ status?: K8sJobStatus }>(result.body).status ?? {});
-    if (outcome === 'failed') return messages.failed;
-    if (outcome === 'succeeded') return null;
+    if (outcome === 'failed' && messages.failed !== null) return messages.failed;
+    if (outcome !== 'pending') return null;
     await deps.sleep(POLL_MS);
     return pollJobToTerminal(deps, jobName, messages);
 }
@@ -274,69 +280,13 @@ export async function readRunnerVerdict(
 }
 
 /**
- * A bounded consecutive-failure retry, shared by the sync and reclaim pollers below: on a
- * transport failure or a 429/5xx, either give up with `reason` once the bound is spent, or sleep
- * and try again. Pulled out purely to keep each poller's own complexity readable — the two
- * pollers are otherwise the same shape as `readVerdict`, but NEVER throw (a failed sync or
- * reclaim is data, not an exception).
+ * The verdict is the pod log — one JSON line, the same answer the docker sync/reclaim containers
+ * print. A pod gone before its log could be read is a failed run: running on a tree of unknown
+ * state would compound whatever went wrong. Empty for anything unreadable.
  */
-async function pollAgainOrGiveUp(
-    sleep: (ms: number) => Promise<void>,
-    failures: number,
-    reason: string,
-    retry: (failures: number) => Promise<string | null>
-): Promise<string | null> {
-    if (failures + 1 > POLL_MAX_CONSECUTIVE_FAILURES) {
-        return reason;
-    }
-    await sleep(POLL_MS);
-    return retry(failures + 1);
-}
-
-/**
- * Poll the worktree sync Job to a terminal state, bounded like the runner's own status poll: a
- * blink or a 503 is not the sync's verdict, but an apiserver that will not answer is not a tree to
- * run on either — the bound expires into a failed sync. `null` is success; a string is the failure
- * reason. NEVER throws — `syncCheckout` answers a failed sync as data, the same shape any other
- * sync failure takes.
- */
-export async function pollSyncJobToTerminal(deps: K8sDeps, job: BoardJob, failures = 0): Promise<string | null> {
-    let response: K8sResponse;
+async function readJobLog(deps: K8sDeps, jobName: string): Promise<string> {
     try {
-        response = await deps.request('GET', jobPath(deps.config.k8sNamespace, syncJobName(job)));
-    } catch (e) {
-        return pollAgainOrGiveUp(
-            deps.sleep,
-            failures,
-            `the worktree sync job could not be read: ${(e as Error).message}`,
-            (f) => pollSyncJobToTerminal(deps, job, f)
-        );
-    }
-    if (response.status === HTTP_TOO_MANY_REQUESTS || response.status >= HTTP_SERVER_ERROR_STATUS) {
-        return pollAgainOrGiveUp(
-            deps.sleep,
-            failures,
-            `reading the worktree sync job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
-            (f) => pollSyncJobToTerminal(deps, job, f)
-        );
-    }
-    if (response.status >= HTTP_ERROR_STATUS) {
-        return `reading the worktree sync job answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`;
-    }
-    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
-    if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) return null;
-    await deps.sleep(POLL_MS);
-    return pollSyncJobToTerminal(deps, job, 0);
-}
-
-/**
- * The verdict is the pod log — one JSON line, the same answer the docker sync container prints. A
- * pod gone before its log could be read is a failed sync: running on a tree of unknown state would
- * compound whatever went wrong. Empty for anything unreadable.
- */
-async function readSyncJobLog(deps: K8sDeps, job: BoardJob): Promise<string> {
-    try {
-        const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, syncJobName(job)));
+        const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, jobName));
         const pod = livePod(pods.body);
         if (pod?.metadata?.name) {
             const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, null));
@@ -393,59 +343,16 @@ export async function runSyncJob(
             reason: `creating the worktree sync job answered ${create.status}: ${create.body.slice(0, ERROR_PREVIEW_CHARS)}`,
         };
     }
-    const pollFailure = await pollSyncJobToTerminal(deps, job);
+    const jobName = syncJobName(job);
+    const pollFailure = await pollJobToTerminal(deps, jobName, {
+        what: 'reading the worktree sync job',
+        notFound: (n) => `the worktree sync job ${n} no longer exists`,
+        errorStatus: (s) => `reading the worktree sync job answered ${s}`,
+        failed: null,
+    });
     if (pollFailure) return { ok: false, reason: pollFailure };
-    const body = await readSyncJobLog(deps, job);
+    const body = await readJobLog(deps, jobName);
     return parseLastJsonLine<SyncResult>(body, () => syncUnreadable);
-}
-
-/**
- * Poll the worktree reclaim Job to a terminal state — the sync poller's twin, bounded the same
- * way and NEVER throwing: `reclaimWorktree` is best-effort by contract, and a poll that cannot
- * answer is a skipped reclaim, never a failed task.
- */
-export async function pollReclaimJobToTerminal(deps: K8sDeps, job: BoardJob, failures = 0): Promise<string | null> {
-    let response: K8sResponse;
-    try {
-        response = await deps.request('GET', jobPath(deps.config.k8sNamespace, reclaimJobName(job)));
-    } catch (e) {
-        return pollAgainOrGiveUp(
-            deps.sleep,
-            failures,
-            `the worktree reclaim job could not be read: ${(e as Error).message}`,
-            (f) => pollReclaimJobToTerminal(deps, job, f)
-        );
-    }
-    if (response.status === HTTP_TOO_MANY_REQUESTS || response.status >= HTTP_SERVER_ERROR_STATUS) {
-        return pollAgainOrGiveUp(
-            deps.sleep,
-            failures,
-            `reading the worktree reclaim job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`,
-            (f) => pollReclaimJobToTerminal(deps, job, f)
-        );
-    }
-    if (response.status >= HTTP_ERROR_STATUS) {
-        return `reading the worktree reclaim job answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`;
-    }
-    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
-    if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) return null;
-    await deps.sleep(POLL_MS);
-    return pollReclaimJobToTerminal(deps, job, 0);
-}
-
-/** The reclaim Job's verdict line, off its pod's log — the sync log read's twin. */
-async function readReclaimJobLog(deps: K8sDeps, job: BoardJob): Promise<string> {
-    try {
-        const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, reclaimJobName(job)));
-        const pod = livePod(pods.body);
-        if (pod?.metadata?.name) {
-            const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, null));
-            if (log.status < HTTP_ERROR_STATUS) return log.body;
-        }
-    } catch {
-        // Unreadable is empty, same as a pod that never carried a log.
-    }
-    return '';
 }
 
 /**
@@ -462,8 +369,14 @@ export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<Recla
             reason: `creating the worktree reclaim job answered ${create.status}: ${create.body.slice(0, ERROR_PREVIEW_CHARS)}`,
         };
     }
-    const pollFailure = await pollReclaimJobToTerminal(deps, job);
+    const jobName = reclaimJobName(job);
+    const pollFailure = await pollJobToTerminal(deps, jobName, {
+        what: 'reading the worktree reclaim job',
+        notFound: (n) => `the worktree reclaim job ${n} no longer exists`,
+        errorStatus: (s) => `reading the worktree reclaim job answered ${s}`,
+        failed: null,
+    });
     if (pollFailure) return { ok: false, removed: false, reason: pollFailure };
-    const body = await readReclaimJobLog(deps, job);
+    const body = await readJobLog(deps, jobName);
     return parseLastJsonLine<ReclaimResult>(body, () => reclaimUnreadable);
 }
