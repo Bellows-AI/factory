@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ConsoleMessage, Page } from '@playwright/test';
+import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -84,9 +85,83 @@ test.describe('the guided task composer', () => {
 
         await page.screenshot({ path: `${SHOTS}/composer-guided.png`, fullPage: true });
         await page.setViewportSize({ width: 360, height: 800 });
+        await noHorizontalOverflow(page);
         await page.screenshot({ path: `${SHOTS}/composer-360.png`, fullPage: true });
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.screenshot({ path: `${SHOTS}/composer-1440.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('the compact context row stays content-sized, and the optional steps sit behind a closed disclosure', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+
+        const composer = page.locator('.composer');
+        const context = composer.locator('.composer-context');
+        await expect(context).toBeVisible();
+
+        // Each trigger is a compact, content-sized control — none of them stretches to the
+        // composer's own width, unlike the old full-width grid columns.
+        const composerBox = await composer.boundingBox();
+        for (const label of ['Repository', 'Executor', 'Reusable workflow']) {
+            const box = await page.getByLabel(label).boundingBox();
+            expect(box).not.toBeNull();
+            expect(box!.width).toBeLessThan(composerBox!.width * 0.6);
+        }
+
+        // The two default-workflow steps (#208) are collapsed behind a summary that names how
+        // many are on, not two persistent rows.
+        const steps = composer.locator('.composer-steps');
+        const summary = steps.locator('summary');
+        await expect(summary).toHaveText(/Optional steps \(\d of 2 on\)/);
+        const reviewToggle = composer.getByRole('checkbox', { name: 'Iterate on PR review comments' });
+        await expect(reviewToggle).toBeHidden();
+
+        // Opening it reveals both switches; toggling one updates the summary's count and the
+        // preflight sentence together.
+        await summary.click();
+        await expect(reviewToggle).toBeVisible();
+        const beforeText = await summary.textContent();
+        await reviewToggle.click();
+        await expect(summary).not.toHaveText(beforeText ?? '');
+        await expect(composer.getByText(/Default workflow selected:/)).toBeVisible();
+
+        // The keyboard path opens it too: a focused summary responds to Enter like any disclosure.
+        await summary.click();
+        await expect(reviewToggle).toBeHidden();
+        await summary.focus();
+        await page.keyboard.press('Enter');
+        await expect(reviewToggle).toBeVisible();
+
+        await page.screenshot({ path: `${SHOTS}/composer-steps-open.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('renders correctly in dark theme at desktop and mobile widths', async ({ page }) => {
+        const problems = watchConsole(page);
+        await page.addInitScript(() => localStorage.setItem('factory.theme', 'dark'));
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+
+        const composer = page.locator('.composer');
+        await expect(composer.getByText('What should the agent do?')).toBeVisible();
+
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.screenshot({ path: `${SHOTS}/composer-1440-dark.png`, fullPage: true });
+        await page.setViewportSize({ width: 360, height: 800 });
+        await noHorizontalOverflow(page);
+        // Every context trigger still clears the compact-shell touch-target floor in dark theme,
+        // the same as light — the theme swaps color tokens only.
+        for (const label of ['Repository', 'Executor', 'Reusable workflow']) {
+            const box = await page.getByLabel(label).boundingBox();
+            expect(box).not.toBeNull();
+            expect(box!.height).toBeGreaterThanOrEqual(44);
+        }
+        await page.screenshot({ path: `${SHOTS}/composer-360-dark.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
 

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -79,15 +80,6 @@ async function someTaskId(page: Page): Promise<string> {
     const roots = body.jobs.filter((job) => job.followUpTo === null);
     expect(roots.length, 'the seed leaves at least one task').toBeGreaterThan(0);
     return roots[0]!.id;
-}
-
-async function noHorizontalOverflow(page: Page): Promise<void> {
-    const overflow = await page.evaluate(() => ({
-        document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        body: document.body.scrollWidth - document.body.clientWidth,
-    }));
-    expect(overflow.document, 'document overflows horizontally').toBeLessThanOrEqual(0);
-    expect(overflow.body, 'body overflows horizontally').toBeLessThanOrEqual(0);
 }
 
 /** Every rendered control sits inside the viewport. Content inside a named scroll region is

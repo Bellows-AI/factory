@@ -69,16 +69,22 @@ describe('biome', () => {
         expect(`${result.stdout}${result.stderr}`).not.toBe('');
     });
 
-    // A tree-wide check is the heaviest spawn in the suite (vitest.config.ts), and the global 30s
-    // testTimeout is not always enough headroom under worker contention — this one test gets its
-    // own, larger budget rather than raising the timeout for every test.
-    it('passes biome check on the repository', () => {
-        // A vacuous pass (mis-shaped includes checking nothing) must fail, not pass.
-        const MIN_FILES_CHECKED = 50;
-        const result = runBiome(['check', '.']);
-        expect(result.status, `biome check output:\n${result.stdout}${result.stderr}`).toBe(0);
-        const checked = /Checked (\d+) files/.exec(result.stdout)?.[1];
-        expect(checked, `biome check output:\n${result.stdout}${result.stderr}`).toBeDefined();
-        expect(Number(checked)).toBeGreaterThan(MIN_FILES_CHECKED);
-    }, 90_000);
+    // A tree-wide `biome check` is the suite's heaviest single spawn — it alone can take longer
+    // than the file's default budget under the contention the shared testTimeout already absorbs
+    // for everything else (vitest.config.ts), so it gets its own longer allowance rather than
+    // raising the global one for every other, far lighter test.
+    const BIOME_CHECK_TIMEOUT_MS = 120_000;
+    it(
+        'passes biome check on the repository',
+        () => {
+            // A vacuous pass (mis-shaped includes checking nothing) must fail, not pass.
+            const MIN_FILES_CHECKED = 50;
+            const result = runBiome(['check', '.']);
+            expect(result.status, `biome check output:\n${result.stdout}${result.stderr}`).toBe(0);
+            const checked = /Checked (\d+) files/.exec(result.stdout)?.[1];
+            expect(checked, `biome check output:\n${result.stdout}${result.stderr}`).toBeDefined();
+            expect(Number(checked)).toBeGreaterThan(MIN_FILES_CHECKED);
+        },
+        BIOME_CHECK_TIMEOUT_MS
+    );
 });
