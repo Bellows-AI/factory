@@ -551,24 +551,22 @@ describe('the real, shipped registry', () => {
             expect(Array.isArray(entry.configSchema)).toBe(true);
             expect(entry).not.toHaveProperty('expand');
         }
-        // github-review-reconcile is issue #133's own scope and has not landed; merge-conflict-autofix
-        // (issue #122) has — its own compiler coverage lives in
-        // workflow-block-merge-conflict-autofix.test.ts.
-        expect(catalog.find((b) => b.id === 'builtin/github-review-reconcile')?.available).toBe(false);
+        // Both reserved ids are real and available: merge-conflict-autofix (issue #122) and
+        // github-review-reconcile (issue #133) — each block's own compiler coverage lives in its
+        // own sibling test file (workflow-block-merge-conflict-autofix.test.ts,
+        // workflow-block-github-review-reconcile.test.ts).
+        expect(catalog.find((b) => b.id === 'builtin/github-review-reconcile')?.available).toBe(true);
         expect(catalog.find((b) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
     });
 
-    it('refuses BLOCK_UNAVAILABLE for the still-unimplemented reserved id against the real registry', () => {
+    it('compiles the github-review-reconcile block against the real registry', () => {
         const authored: AuthoredWorkflowDefinition = {
             entry: 'step',
             params: [],
             nodes: [{ name: 'step', kind: 'block', uses: 'builtin/github-review-reconcile' }],
             edges: [],
         };
-        expect(compileDefinition(authored, BLOCK_REGISTRY)).toMatchObject({
-            ok: false,
-            refusal: { code: 'BLOCK_UNAVAILABLE' },
-        });
+        expect(compileDefinition(authored, BLOCK_REGISTRY)).toMatchObject({ ok: true });
     });
 
     it('refuses UNKNOWN_BLOCK for an id the registry never reserved', () => {

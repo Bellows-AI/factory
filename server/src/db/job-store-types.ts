@@ -864,6 +864,12 @@ export interface JobStorePrs {
      * published.
      */
     publicationOf(root: string, exec?: Sql | TransactionSql): Promise<PublicationState | null>;
+    /**
+     * Ends a durable wait as completed (issue #133's `runtime-settle.ts`, the counterpart to
+     * `enterWait` below): idempotent, like every other terminal wait call — an already-terminal or
+     * missing wait is left alone.
+     */
+    finishWait(root: string, reason: string, terminalReason?: string, exec?: Sql | TransactionSql): Promise<boolean>;
     cancelWaitsForRoot(root: string, terminalReason?: string, exec?: Sql | TransactionSql): Promise<number>;
     /**
      * Enters (or re-enters) a durable wait for a workflow-block runtime boundary (issue #231) —

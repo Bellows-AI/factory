@@ -16,6 +16,7 @@ import type {
 } from './job-store-types.js';
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
 import { enterRuntimeBoundary } from './workflow-blocks/runtime.js';
+import { settleBlockWaits } from './workflow-blocks/runtime-settle.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
 export type HeartbeatResult = Awaited<ReturnType<JobStore['heartbeat']>>;
@@ -400,6 +401,24 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         rows: engineRows,
         completed: completedRun,
     });
+
+    // The halted node the transition evaluated FROM — the completed row's own node, or (an
+    // off-graph user follow-up completing) the thread's newest carried node, mirroring
+    // workflow-engine.ts's own private `haltedNode` exactly (its own module comment: "the current
+    // node is the completed row's own workflow_node — or, for an off-graph row, the halted node").
+    // Recomputed here rather than exported, since only this settle call needs it outside the
+    // engine itself.
+    const halted =
+        completedRun.node ??
+        threadRows
+            .slice()
+            .reverse()
+            .find((row) => row.id !== completedId && row.workflow_node !== null)?.workflow_node ??
+        null;
+    if (halted !== null) {
+        await settleBlockWaits(tx, prs, { rootJobId, snapshot: root.workflow_snapshot, from: halted, transition });
+    }
+
     if (transition.action !== 'insert') {
         // `rest` lands nothing: an exhausted loop, an unmatched verdict or marker absence leaves
         // the thread where the run ended — visible and follow-up-able, never silently continued

@@ -12,6 +12,15 @@ import type {
     WorkflowNode,
 } from '../workflow-schema.js';
 
+/**
+ * The compiler's own node-namespacing separator (`workflow-blocks/index.ts`'s `expandBlockNode`):
+ * a block use's internal node names are namespaced as `${blockNodeName}${BLOCK_NAMESPACE_SEPARATOR}${internalName}`,
+ * and never appears in an authored node name otherwise (docs/workflows.md, "Built-in blocks" —
+ * `--` only ever appears here as the compiler's own separator). `runtime-settle.ts`'s `scopeOf`
+ * is the one other reader of this same value, kept as a shared constant so the two can never drift.
+ */
+export const BLOCK_NAMESPACE_SEPARATOR = '--';
+
 /** One config field a block declares: the catalog route serves this, and the compiler validates
  *  an authored `with` value against it before ever calling `expand`. */
 export interface BlockConfigField {
