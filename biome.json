@@ -120,6 +120,16 @@
                     }
                 }
             }
+        },
+        {
+            "includes": ["web/src/api/useTasks.ts"],
+            "linter": {
+                "rules": {
+                    "style": {
+                        "noExcessiveLinesPerFile": "off"
+                    }
+                }
+            }
         }
     ]
 }

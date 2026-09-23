@@ -88,12 +88,12 @@ describe('taskStatusLabel', () => {
     });
 
     it('appends the terminal wait reason to the ordinary needs-review copy once the wait has ended', () => {
-        expect(taskStatusLabel(status({ status: 'succeeded', waitReason: 'review', waitTerminalReason: 'exhausted' }))).toBe(
-            'Succeeded · Needs review · exhausted'
-        );
-        expect(taskStatusLabel(status({ status: 'failed', waitReason: 'review', waitTerminalReason: 'cancelled' }))).toBe(
-            'Failed · Needs review · cancelled'
-        );
+        expect(
+            taskStatusLabel(status({ status: 'succeeded', waitReason: 'review', waitTerminalReason: 'exhausted' }))
+        ).toBe('Succeeded · Needs review · exhausted');
+        expect(
+            taskStatusLabel(status({ status: 'failed', waitReason: 'review', waitTerminalReason: 'cancelled' }))
+        ).toBe('Failed · Needs review · cancelled');
     });
 });
 

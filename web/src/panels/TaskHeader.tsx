@@ -2,6 +2,7 @@ import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { isTerminal, type Job } from '../api/useJobs.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { wallClock } from '../format.js';
+import { isWaitingForReview } from '../task-outcome.js';
 import { taskSummary, taskTitleFromCommand } from '../task-tree.js';
 
 /** Stop run's own three faces: the button, this click's own in-flight label, and the board's own
@@ -175,10 +176,7 @@ export function TaskHeader({
     // The task's live summary — the newest run's activity line, while there is one — beside the
     // title, the same line the sidebar's "Task" row and the sidenav read.
     const summary = taskSummary(latestTask.id, jobs);
-    // An open PR-review wait (206), straight off the structured contract — never inferred from
-    // output or a node name. A terminal wait carries no special weight here: the pill stays the
-    // ordinary status word, the same as a thread that never waited.
-    const waiting = latestTask.waitReason !== null && latestTask.waitTerminalReason === null;
+    const waiting = isWaitingForReview(latestTask);
 
     return (
         <PageHeader

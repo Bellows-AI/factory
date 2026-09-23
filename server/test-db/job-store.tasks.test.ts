@@ -25,8 +25,8 @@ const OTHER_AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, UUID_HEX_SL
 
 const db = useTestDb({
     max: 8,
-    // workflow_wait FKs to organization — the wait tests below need both planted.
-    orgs: [ORG, OTHER_ORG],
+    // workflow_wait FKs to organization — the wait tests below need it planted.
+    orgs: [ORG],
     users: [
         { id: AUTHOR, githubUserId: AUTHOR_GITHUB_ID, login: 'tasks-cat' },
         { id: OTHER_AUTHOR, githubUserId: OTHER_AUTHOR_GITHUB_ID, login: 'tasks-other' },

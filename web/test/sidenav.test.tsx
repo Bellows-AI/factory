@@ -288,10 +288,7 @@ describe('SideNav status dots and live lines', () => {
     });
 
     it('holds the same grey paused dot for an open PR-review wait as for parked/queued', () => {
-        const html = render(
-            '/tasks',
-            navigation([], [summary({ status: 'standby', waitReason: 'review' })])
-        );
+        const html = render('/tasks', navigation([], [summary({ status: 'standby', waitReason: 'review' })]));
         expect(html).toContain('sidenav-dot sidenav-dot-paused');
         expect(html).not.toContain('sidenav-dot-done');
     });

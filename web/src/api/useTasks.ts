@@ -29,12 +29,6 @@ export interface TaskSummary {
     activity: string | null;
     /** The head's terminal summary — the agent's own last words on the newest run. */
     summary: string | null;
-    /**
-     * The thread's durable PR-review wait, when it has one: the block's reason, when the wait
-     * began, and — once terminal — why it ended. The open wait wins over a terminal one. All
-     * null for a thread that never entered a wait. Never inferred client-side from output text
-     * or a workflow node name — straight off this structured contract.
-     */
     waitReason: string | null;
     waitingSince: string | null;
     waitTerminalReason: string | null;

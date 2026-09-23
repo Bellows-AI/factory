@@ -7,6 +7,7 @@ import {
     closureOf,
     gateCounts,
     isHttpUrl,
+    isWaitingForReview,
     issueUrl,
     newestTerminalExit,
     prNumber,
@@ -206,10 +207,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
     const counts = gateCounts(latest.gates);
     const services = latest.runtime?.services ?? null;
     const issueLink = issueUrl(latest.repo, issue);
-    // An open PR-review wait (206), straight off the structured contract — never inferred from
-    // output or a node name. A terminal wait no longer relabels the pill; its reason rides beside
-    // the ordinary result instead.
-    const waiting = latest.waitReason !== null && latest.waitTerminalReason === null;
+    const waiting = isWaitingForReview(latest);
     // A row's link is a reference, not a command: the row's label already says what it is, so
     // the value names only WHICH one — the number.
     const prLink = publish !== null && publish.url !== null && isHttpUrl(publish.url) ? publish.url : null;
