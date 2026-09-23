@@ -18,8 +18,9 @@ it, and that is the point. A third platform would add a third `Runner`, nothing 
 
 What both executors share lives in executor-neutral files: `runner.ts` (the `Runner` contract,
 `RunOutcome`/`RunSession`/`RuntimeSample`, output tails), `claim.ts` (workspace and working-dir
-paths, transcript and opencode-db locations, gate identity, claim env) and `container-scripts.ts`
-(the script loader and the run-time scripts). `docker.ts` and `docker-*.ts` are docker-only; a
+paths, transcript and opencode-db locations, gate identity, claim env), `close-read.ts` (the
+outcome and turn-count parsers, the cache watch's policy and probe parser) and
+`container-scripts.ts` (the script loader and the run-time scripts). `docker.ts` and `docker-*.ts` are docker-only; a
 `k8s-*.ts` file importing from them is a parity smell — move the shared name to a neutral file.
 
 The kubernetes executor is split across `driver/src/k8s-*.ts`; import from the file that owns a

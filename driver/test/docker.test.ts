@@ -20,16 +20,15 @@ import {
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { currentActivity, reportTail, stripAnsi, tailBytes } from '../src/runner.js';
+import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
 import {
     CACHE_WATCH_TURNS,
     cacheCollapse,
-    claudeTurnsArgs,
-    opencodeCacheProbeArgs,
     parseClaudeCloseRead,
     parseOpencodeCacheProbe,
     parseOpencodeRunOutcome,
     readsAgentTurns,
-} from '../src/docker-close-read.js';
+} from '../src/close-read.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import {
