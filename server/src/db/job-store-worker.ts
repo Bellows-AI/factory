@@ -5,7 +5,7 @@
  */
 
 import type { TransactionSql } from 'postgres';
-import { exists, runtimePatch, workspacePathFor } from './job-store-rows.js';
+import { exists, insertWorkflowSuccessor, runtimePatch, workspacePathFor } from './job-store-rows.js';
 import type {
     JobStore,
     JobStoreContext,
@@ -15,6 +15,7 @@ import type {
     GateReport,
 } from './job-store-types.js';
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
+import { enterRuntimeBoundary } from './workflow-blocks/runtime.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
 export type HeartbeatResult = Awaited<ReturnType<JobStore['heartbeat']>>;
@@ -277,6 +278,7 @@ export async function completeJob(
                 completedId,
                 status: status as JobOutcome,
                 output,
+                prs,
             });
         }
 
@@ -336,10 +338,11 @@ export interface WorkflowTransitionInput {
     completedId: string;
     status: JobOutcome;
     output: string | null;
+    prs: JobStorePrs | undefined;
 }
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
-    const { orgId, rootJobId, root, completedId, status, output } = input;
+    const { orgId, rootJobId, root, completedId, status, output, prs } = input;
     if (!root.workflow_snapshot) return;
     // The same per-root advisory lock the claim takes: a transition insert must not interleave
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up
@@ -408,10 +411,26 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
     // driver claims it through the existing lease/fence machinery, `max_attempts` governing it
     // individually.
     const session = transition.session === 'resume' ? primarySessionId(root.workflow_snapshot, engineRows) : null;
-    await tx`
-        insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node)
-        values (${orgId}, ${transition.command}, ${root.created_by}, ${completed?.repo ?? root.repo},
-                ${completed?.executor ?? null}, ${completedId}, ${session}, ${rootJobId},
-                ${root.workflow_id}, ${root.workflow_name}, ${transition.node.name})
-    `;
+    const successor = {
+        orgId,
+        command: transition.command,
+        createdBy: root.created_by,
+        repo: completed?.repo ?? root.repo,
+        executor: completed?.executor ?? null,
+        parentJobId: completedId,
+        sessionId: session,
+        rootJobId,
+        workflowId: root.workflow_id,
+        workflowName: root.workflow_name,
+        workflowNode: transition.node.name,
+    };
+    if (transition.node.runtime !== undefined) {
+        // A durable wait boundary (issue #231): this park replaces the ordinary insert below
+        // entirely — the caller (enterRuntimeBoundary) rests the thread instead when the runtime
+        // is unrecognized, no PR store is configured, or the thread has not published yet, never
+        // falling back to an immediately runnable row.
+        await enterRuntimeBoundary(tx, prs, transition.node, successor);
+        return;
+    }
+    await insertWorkflowSuccessor(tx, successor);
 }

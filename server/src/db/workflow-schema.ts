@@ -136,10 +136,32 @@ export interface WorkflowNode {
      * every node that declares none, which is every node outside a block's own expansion today.
      */
     helperPlans?: WorkflowNodeHelperPlan[];
+    /**
+     * Private, server-authored runtime descriptor (issue #231): present only on a node a block's
+     * `expand()` declared as a durable wait boundary, attached by the compiler after validation —
+     * never authorable, never present on a plain node. See `WorkflowNodeRuntime`.
+     */
+    runtime?: WorkflowNodeRuntime;
 }
 
 /** A block config value: a bounded JSON scalar — workflow-schema.ts knows no block's real shape. */
 export type BlockConfigValue = string | number | boolean;
+
+/**
+ * A private, server-authored block runtime descriptor (issue #231): what turns a node into a
+ * durable wait boundary instead of an ordinary claimable row. Never a `KNOWN_AGENT_NODE_KEY` — the
+ * authored grammar has no `runtime` key at all, so a member's JSON (or a pasted `GET /api/workflows`
+ * body) carrying one refuses `UNKNOWN_KEY`. Only `workflow-blocks/index.ts`'s compiler attaches it,
+ * AFTER the expanded graph has already passed `validateDefinition` — the validator itself never
+ * sees this field. Registry-unaware like every other type here: `runtime` names an allowlisted id
+ * `workflow-blocks/runtime.ts`'s dispatcher resolves, never a module or script name.
+ */
+export interface WorkflowNodeRuntime {
+    runtime: string;
+    /** The block descriptor id that declared this boundary — stamped by the compiler, audit only. */
+    block: string;
+    params: Record<string, BlockConfigValue>;
+}
 
 /**
  * A reference to a board-owned, allowlisted block (issue #204) — the authored alternative to an

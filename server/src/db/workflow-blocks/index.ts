@@ -20,6 +20,7 @@ import {
 import { validateDefinition } from '../workflow-schema-validate.js';
 import { GITHUB_REVIEW_RECONCILE } from './github-review-reconcile.js';
 import { MERGE_CONFLICT_AUTOFIX } from './merge-conflict-autofix.js';
+import { parseRuntimeParams } from './runtime.js';
 import type { BlockConfigField, BlockDescriptor, BlockRegistry, CompileCheck, CompileRefusal } from './types.js';
 
 export const BLOCK_REGISTRY: BlockRegistry = new Map(
@@ -114,6 +115,9 @@ function namespacePrompt(prompt: string, prefix: string, internalNames: Readonly
     });
 }
 
+/** A namespaced node name -> its validated runtime descriptor, collected across every block use. */
+type RuntimeAttachments = Map<string, { runtime: string; block: string; params: Record<string, BlockConfigValue> }>;
+
 type BlockExpansionResult =
     | {
           ok: true;
@@ -121,6 +125,7 @@ type BlockExpansionResult =
           edges: AuthoredWorkflowDefinition['edges'];
           entry: string;
           exit: string;
+          runtime: RuntimeAttachments;
       }
     | { ok: false; refusal: CompileRefusal };
 
@@ -171,7 +176,39 @@ function expandBlockNode(node: BlockNode, registry: BlockRegistry): BlockExpansi
         from: `${prefix}${inner.from}`,
         to: `${prefix}${inner.to}`,
     }));
-    return { ok: true, nodes, edges, entry: `${prefix}${expansion.entry}`, exit: `${prefix}${expansion.exit}` };
+
+    const runtime: RuntimeAttachments = new Map();
+    for (const [internalName, declared] of Object.entries(expansion.runtime ?? {})) {
+        if (!internalNames.has(internalName)) {
+            return {
+                ok: false,
+                refusal: {
+                    code: ERROR_CODES.BAD_BLOCK_CONFIG,
+                    message: `node "${node.name}": block "${node.uses}" declared a runtime boundary on unknown internal node "${internalName}"`,
+                },
+            };
+        }
+        const params = parseRuntimeParams(declared.runtime, declared.params);
+        if (params === null) {
+            return {
+                ok: false,
+                refusal: {
+                    code: ERROR_CODES.BAD_BLOCK_CONFIG,
+                    message: `node "${node.name}": block "${node.uses}" declared an invalid runtime "${declared.runtime}" on "${internalName}"`,
+                },
+            };
+        }
+        runtime.set(`${prefix}${internalName}`, { runtime: declared.runtime, block: descriptor.id, params });
+    }
+
+    return {
+        ok: true,
+        nodes,
+        edges,
+        entry: `${prefix}${expansion.entry}`,
+        exit: `${prefix}${expansion.exit}`,
+        runtime,
+    };
 }
 
 /**
@@ -195,6 +232,10 @@ export function compileDefinition(
     // an agent node; the namespaced internal entry/exit for a block node.
     const entryOf = new Map<string, string>();
     const exitOf = new Map<string, string>();
+    // Every block's namespaced runtime attachments, merged — collision-free by construction, since
+    // each block use's own namespace prefix is unique (the same DUPLICATE_NODE proof `nodes` relies
+    // on covers this map's keys too, being a subset of the namespaced node names).
+    const runtime: RuntimeAttachments = new Map();
 
     for (const node of authored.nodes) {
         if (node.kind === 'agent') {
@@ -210,6 +251,7 @@ export function compileDefinition(
         edges.push(...result.edges);
         entryOf.set(node.name, result.entry);
         exitOf.set(node.name, result.exit);
+        for (const [name, descriptor] of result.runtime) runtime.set(name, descriptor);
     }
 
     for (const edge of authored.edges) {
@@ -228,10 +270,49 @@ export function compileDefinition(
     };
     // Reuses every existing invariant — reachability, the publish path, the placeholder
     // vocabulary, positive bounds — against the wider expanded-snapshot cap, instead of
-    // duplicating them: this IS the "validate the expanded graph again" step.
+    // duplicating them: this IS the "validate the expanded graph again" step. `runtime` is
+    // deliberately NOT part of `expanded` above — the validator's own key set has no `runtime`,
+    // and a node carrying one here would refuse `UNKNOWN_KEY` on its own expansion. It is grafted
+    // onto the ALREADY-VALIDATED nodes below instead, which is what keeps it unauthorable: nothing
+    // upstream of this line ever sees the field.
     const revalidated = validateDefinition(expanded, { sizeLimit: EXPANDED_DEFINITION_LIMIT });
     if (!revalidated.ok) return { ok: false, refusal: revalidated.refusal };
-    // Safe: every node the expanded graph carries is `kind: 'agent'` — block nodes existed only in
-    // the authored input, and every one was replaced above before revalidation ever ran.
-    return { ok: true, definition: revalidated.definition as WorkflowDefinition };
+    if (runtime.has(expanded.entry)) {
+        // A thread's very first row is inserted directly by routes/jobs.ts, never through
+        // runWorkflowTransition — the only place a `runtime` node's park is enforced. A wait
+        // boundary as the graph's entry would therefore run immediately as an ordinary claimable
+        // job, silently skipping the wait this field exists to guarantee (the issue's "never falls
+        // back to a runnable insert" contract). Refused here, at compile time, rather than
+        // discovered at the first thread that ever launches one.
+        return {
+            ok: false,
+            refusal: {
+                code: ERROR_CODES.BAD_BLOCK_CONFIG,
+                message:
+                    'a workflow-block runtime boundary cannot be the graph entry — it is never reached by a transition',
+            },
+        };
+    }
+    if (runtime.size === 0) {
+        // Safe: every node the expanded graph carries is `kind: 'agent'` — block nodes existed
+        // only in the authored input, and every one was replaced above before revalidation ran.
+        return { ok: true, definition: revalidated.definition as WorkflowDefinition };
+    }
+    const withRuntime: WorkflowDefinition = {
+        ...(revalidated.definition as WorkflowDefinition),
+        nodes: (revalidated.definition as WorkflowDefinition).nodes.map((n) => {
+            const attached = runtime.get(n.name);
+            return attached ? { ...n, runtime: attached } : n;
+        }),
+    };
+    if (JSON.stringify(withRuntime).length > EXPANDED_DEFINITION_LIMIT) {
+        return {
+            ok: false,
+            refusal: {
+                code: ERROR_CODES.TOO_LARGE,
+                message: `definition exceeds ${EXPANDED_DEFINITION_LIMIT} characters`,
+            },
+        };
+    }
+    return { ok: true, definition: withRuntime };
 }

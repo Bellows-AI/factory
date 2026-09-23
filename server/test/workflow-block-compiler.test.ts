@@ -206,6 +206,188 @@ describe('compileDefinition — expansion, namespacing, edge rewriting', () => {
     });
 });
 
+describe('compileDefinition — private runtime attachment (issue #231)', () => {
+    it('attaches a namespaced runtime descriptor to the matching expanded node, stamping the block id', () => {
+        const withRuntime = fakeBlock('fake/waits', {
+            expand: () => ({
+                nodes: [
+                    { name: 'work', kind: 'agent', session: 'fresh', prompt: 'do the work' },
+                    { name: 'done', kind: 'agent', session: 'fresh', prompt: 'wrap up', publish: true },
+                ],
+                edges: [{ from: 'work', to: 'done', when: 'succeeded' }],
+                entry: 'work',
+                exit: 'done',
+                runtime: { work: { runtime: 'pr-delivery-wait', params: {} } },
+            }),
+        });
+        const authored: AuthoredWorkflowDefinition = {
+            // A runtime-carrying node can never be the graph entry (see the dedicated test below)
+            // — "start" keeps the entry ordinary so this test can isolate the attachment itself.
+            entry: 'start',
+            params: [],
+            nodes: [
+                { name: 'start', kind: 'agent', session: 'resume', gates: false, prompt: 'go' },
+                { name: 'step', kind: 'block', uses: 'fake/waits' },
+            ],
+            edges: [{ from: 'start', to: 'step', when: 'succeeded' }],
+        };
+        const result = compileDefinition(authored, registryOf(withRuntime));
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error('expected compile to succeed');
+        const work = result.definition.nodes.find((n) => n.name === 'step--work');
+        expect(work?.runtime).toEqual({ runtime: 'pr-delivery-wait', block: 'fake/waits', params: {} });
+        // Every other node carries no runtime at all — not even `undefined` as an own key.
+        const done = result.definition.nodes.find((n) => n.name === 'step--done');
+        expect(done).not.toHaveProperty('runtime');
+    });
+
+    it('leaves an expansion with no declared runtime byte-identical — the real merge-conflict block included', () => {
+        const authored: AuthoredWorkflowDefinition = {
+            entry: 'step',
+            params: [],
+            nodes: [{ name: 'step', kind: 'block', uses: 'builtin/merge-conflict-autofix' }],
+            edges: [],
+        };
+        const result = compileDefinition(authored, BLOCK_REGISTRY);
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error('expected compile to succeed');
+        for (const node of result.definition.nodes) expect(node).not.toHaveProperty('runtime');
+    });
+
+    it('refuses BAD_BLOCK_CONFIG for a runtime declared on an unknown internal node', () => {
+        const badTarget = fakeBlock('fake/bad-target', {
+            expand: () => ({
+                nodes: [{ name: 'work', kind: 'agent', session: 'fresh', prompt: 'x', publish: true }],
+                edges: [],
+                entry: 'work',
+                exit: 'work',
+                runtime: { 'no-such-node': { runtime: 'pr-delivery-wait', params: {} } },
+            }),
+        });
+        const authored: AuthoredWorkflowDefinition = {
+            entry: 'step',
+            params: [],
+            nodes: [{ name: 'step', kind: 'block', uses: 'fake/bad-target' }],
+            edges: [],
+        };
+        expect(compileDefinition(authored, registryOf(badTarget))).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_BLOCK_CONFIG' },
+        });
+    });
+
+    it('refuses BAD_BLOCK_CONFIG for an unknown runtime id, never reaching the store', () => {
+        const badRuntime = fakeBlock('fake/bad-runtime', {
+            expand: () => ({
+                nodes: [{ name: 'work', kind: 'agent', session: 'fresh', prompt: 'x', publish: true }],
+                edges: [],
+                entry: 'work',
+                exit: 'work',
+                runtime: { work: { runtime: 'not-a-real-runtime', params: {} } },
+            }),
+        });
+        const authored: AuthoredWorkflowDefinition = {
+            entry: 'step',
+            params: [],
+            nodes: [{ name: 'step', kind: 'block', uses: 'fake/bad-runtime' }],
+            edges: [],
+        };
+        expect(compileDefinition(authored, registryOf(badRuntime))).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_BLOCK_CONFIG' },
+        });
+    });
+
+    it('refuses BAD_BLOCK_CONFIG for runtime params the handler rejects', () => {
+        const badParams = fakeBlock('fake/bad-params', {
+            expand: () => ({
+                nodes: [{ name: 'work', kind: 'agent', session: 'fresh', prompt: 'x', publish: true }],
+                edges: [],
+                entry: 'work',
+                exit: 'work',
+                runtime: { work: { runtime: 'pr-delivery-wait', params: { reason: 'review' } } },
+            }),
+        });
+        const authored: AuthoredWorkflowDefinition = {
+            entry: 'step',
+            params: [],
+            nodes: [{ name: 'step', kind: 'block', uses: 'fake/bad-params' }],
+            edges: [],
+        };
+        expect(compileDefinition(authored, registryOf(badParams))).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_BLOCK_CONFIG' },
+        });
+    });
+
+    it('keeps each block use’s runtime attachment independent when the same block is used twice', () => {
+        const withRuntime = fakeBlock('fake/waits', {
+            expand: () => ({
+                nodes: [{ name: 'work', kind: 'agent', session: 'fresh', prompt: 'x' }],
+                edges: [],
+                entry: 'work',
+                exit: 'work',
+                runtime: { work: { runtime: 'pr-delivery-wait', params: {} } },
+            }),
+        });
+        const authored: AuthoredWorkflowDefinition = {
+            // A runtime-carrying node can never be the graph entry (a thread's first row is
+            // inserted directly, never through a transition) — "start" keeps the entry ordinary.
+            entry: 'start',
+            params: [],
+            nodes: [
+                { name: 'start', kind: 'agent', session: 'resume', gates: false, prompt: 'go' },
+                { name: 'one', kind: 'block', uses: 'fake/waits' },
+                { name: 'two', kind: 'block', uses: 'fake/waits' },
+                { name: 'publish', kind: 'agent', session: 'resume', prompt: 'ship', publish: true },
+            ],
+            edges: [
+                { from: 'start', to: 'one', when: 'succeeded' },
+                { from: 'one', to: 'two', when: 'succeeded' },
+                { from: 'two', to: 'publish', when: 'succeeded' },
+            ],
+        };
+        const result = compileDefinition(authored, registryOf(withRuntime));
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error('expected compile to succeed');
+        expect(result.definition.nodes.find((n) => n.name === 'one--work')?.runtime).toEqual({
+            runtime: 'pr-delivery-wait',
+            block: 'fake/waits',
+            params: {},
+        });
+        expect(result.definition.nodes.find((n) => n.name === 'two--work')?.runtime).toEqual({
+            runtime: 'pr-delivery-wait',
+            block: 'fake/waits',
+            params: {},
+        });
+    });
+
+    it('refuses BAD_BLOCK_CONFIG when a runtime-carrying node resolves to the graph entry', () => {
+        // A thread's first row is inserted directly by routes/jobs.ts, never through
+        // runWorkflowTransition — so a wait boundary as the entry would run immediately as an
+        // ordinary claimable job, silently skipping the wait. Refused at compile time instead.
+        const withRuntime = fakeBlock('fake/waits', {
+            expand: () => ({
+                nodes: [{ name: 'work', kind: 'agent', session: 'fresh', prompt: 'x', publish: true }],
+                edges: [],
+                entry: 'work',
+                exit: 'work',
+                runtime: { work: { runtime: 'pr-delivery-wait', params: {} } },
+            }),
+        });
+        const authored: AuthoredWorkflowDefinition = {
+            entry: 'step',
+            params: [],
+            nodes: [{ name: 'step', kind: 'block', uses: 'fake/waits' }],
+            edges: [],
+        };
+        expect(compileDefinition(authored, registryOf(withRuntime))).toMatchObject({
+            ok: false,
+            refusal: { code: 'BAD_BLOCK_CONFIG' },
+        });
+    });
+});
+
 describe('compileDefinition — block config', () => {
     it('resolves declared config against the descriptor configSchema, applying defaults', () => {
         let seenConfig: unknown;

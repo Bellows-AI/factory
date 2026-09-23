@@ -17,6 +17,7 @@ import type {
     ClaimHelperPlan,
     JobStorePrs,
 } from './job-store-types.js';
+import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
 
 export interface ClaimCandidateRow {
@@ -184,6 +185,26 @@ async function claimNextCandidate(
             // holder claimed this thread first. Fall through to the next candidate.
             if (!row) continue;
 
+            // The cancellation fence (issue #231): a block-wait continuation the wake sweep just
+            // made claimable, whose wait was cancelled (PR close, task stop/remove) after the wake
+            // committed but before this claim reached it, is settled here rather than handed out —
+            // PR-close/thread-stop cancellation must win the race against a wake. Every other
+            // candidate (a workflow-less job, a plain agent node, a still-open continuation) pays
+            // one indexed lookup keyed off nothing but this row's own id.
+            if (row.workflow_node !== null && (await isCancelledContinuation(tx, orgId, row.id))) {
+                await tx`
+                    update job set status = 'stopped', finished_at = now(),
+                                   lease_token = null, lease_expires_at = now(),
+                                   -- The claim update above already burned an attempt and banked a
+                                   -- segment for a run that never actually launched — handed back,
+                                   -- the same "a settle here is not a failed try" rule stop/suspend
+                                   -- already follow for a park.
+                                   attempts = greatest(attempts - 1, 0)
+                    where org_id = ${orgId} and id = ${row.id}
+                `;
+                continue;
+            }
+
             // Resolved here rather than in the route, because the org is bound here and
             // the author and repo label are in hand — and ON THE TRANSACTION, so a claim
             // holds one connection. A resolver failure propagates: the claim route's
@@ -218,7 +239,14 @@ export async function claimJob(
     worker: string,
     leaseSeconds: number
 ): ReturnType<JobStore['claim']> {
-    const { sql, orgId, wallTick } = ctx;
+    const { sql, orgId, wallTick, prs } = ctx;
+
+    // The wake sweep (issue #231), before looking for queued work: a parked block-wait round with
+    // folded deliveries becomes exactly one queued continuation here, so claimNextCandidate below
+    // can find it like any other row. Each candidate wakes in its own transaction, under that
+    // thread's per-root advisory lock — never inside the claim transaction below, whose failure
+    // must not roll back a wake that already committed for an unrelated thread.
+    await sweepRuntimeWakes({ sql, orgId, prs });
     /*
      * Settle the stops nobody could deliver, before looking for work (issue #152).
      * A `running` row stamped `cancel_requested_at` whose lease has expired is a stop
