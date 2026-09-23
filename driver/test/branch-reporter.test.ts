@@ -92,12 +92,14 @@ const gitRepo = (): string => {
 const NODE_ARGS = ['--disable-warning=ExperimentalWarning'];
 
 /**
- * The suite can run inside a task whose own environment carries BELLOWS_SESSION_ID. Every child
- * here starts from this scrubbed copy (a test's explicit env still wins), so the reporter under
- * test exercises discovery unless a test hands an id on purpose.
+ * The suite can run inside a task whose own environment carries BELLOWS_SESSION_ID, and — when
+ * that task is itself a driver-run job, as a Factory board task is — RUNNER_JOB_ID and
+ * RUNNER_LEASE_TOKEN too. Every child here starts from this scrubbed copy (a test's explicit env
+ * still wins), so the reporter under test exercises discovery, and the attempt-pair test sees a
+ * genuinely bare environment, unless a test hands an id on purpose.
  */
 const OUTER_ENV: Record<string, string> = (() => {
-    const { BELLOWS_SESSION_ID: _handed, ...rest } = process.env;
+    const { BELLOWS_SESSION_ID: _session, RUNNER_JOB_ID: _job, RUNNER_LEASE_TOKEN: _lease, ...rest } = process.env;
     return rest;
 })();
 
