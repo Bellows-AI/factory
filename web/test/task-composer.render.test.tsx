@@ -97,11 +97,11 @@ describe('TaskComposer', () => {
         // The Listbox server-renders the trigger only — the options are client-side — so the
         // trigger's text is the selected repository, and the visible label names the control.
         const repoTrigger = html.slice(html.indexOf('Repository'), html.indexOf('Executor'));
-        expect(repoTrigger).toContain('>acme/web</button>');
+        expect(repoTrigger).toContain('>acme/web</span></button>');
         expect(repoTrigger).not.toContain('acme/api');
         const none = renderComposer({ repos: [] });
         const noneTrigger = none.slice(none.indexOf('Repository'), none.indexOf('Executor'));
-        expect(noneTrigger).toContain('>No repository</button>');
+        expect(noneTrigger).toContain('>No repository</span></button>');
     });
 
     // A task always runs through a configured profile. The first is selected initially; with no
@@ -110,7 +110,7 @@ describe('TaskComposer', () => {
         const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Start task<'));
 
         const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
-        expect(trigger(one)).toContain('>main</button>');
+        expect(trigger(one)).toContain('>main</span></button>');
 
         const two = renderComposer({
             repos: [],
@@ -119,10 +119,10 @@ describe('TaskComposer', () => {
                 { name: 'heavy', type: 'claude' },
             ],
         });
-        expect(trigger(two)).toContain('>main</button>');
+        expect(trigger(two)).toContain('>main</span></button>');
 
         const empty = renderComposer({ repos: [], executors: [] });
-        expect(trigger(empty)).toContain('>No executor configured</button>');
+        expect(trigger(empty)).toContain('>No executor configured</span></button>');
         expect(empty).toContain('Add an executor in');
         expect(empty).toContain('href="/settings/executors"');
         expect(empty).toContain('Configure an executor in Settings to continue.');
@@ -156,9 +156,7 @@ describe('TaskComposer — the prompt and the launch', () => {
     it('asks what the agent should do, and shows the example without prefilling it', () => {
         const html = renderComposer({});
         expect(html).toContain('What should the agent do?');
-        expect(html).toContain(
-            'Include the outcome you want, relevant files or issue, and checks the agent should run.'
-        );
+        expect(html).toContain('Include the outcome, relevant files or issue, and checks to run.');
         expect(html).toContain(
             'placeholder="Example: Fix issue #123, update the affected tests, and run the relevant checks."'
         );
@@ -248,10 +246,30 @@ describe('TaskComposer — the prompt and the launch', () => {
             ],
         });
         expect(html).toContain('Reusable workflow');
-        expect(html).toContain('A workflow can turn this request into a repeatable multi-step process.');
+        // The default view stays terse — no repeated-explanation sentence beside a compact
+        // control that already shows its own selected value.
+        expect(html).not.toContain('A workflow can turn this request');
         // Unchosen means NO process: the trigger reads the empty option's label. The offered
         // names are client-side; e2e/composer.spec.ts drives the real dropdown.
-        expect(html).toContain('>Default workflow</button>');
+        expect(html).toContain('>Default workflow</span></button>');
+    });
+
+    it('arranges repository, executor and workflow as a compact row under the prompt, not a full-width grid', () => {
+        const html = renderComposer({
+            repos: [{ owner: 'acme', name: 'web' }],
+            executors: [{ name: 'main', type: 'claude' }],
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
+        });
+        expect(html).toContain('class="composer-context"');
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
+        expect(html).not.toContain('composer-grid');
+        expect(html).not.toContain('<h2>Execution context</h2>');
+        expect(html).not.toContain('Run without a repository checkout.');
+        expect(html).not.toContain('The selected executor type chooses');
+        // The full value stays reachable off the truncated trigger through the title attribute,
+        // beside the listbox itself and the preflight sentence.
+        expect(html).toContain('title="acme/web"');
+        expect(html).toContain('title="main"');
     });
 
     describe('default-workflow step checkboxes (#208)', () => {
@@ -268,6 +286,11 @@ describe('TaskComposer — the prompt and the launch', () => {
             expect(checkboxes).toHaveLength(2);
             expect(checkboxes[0]).toContain('checked=""');
             expect(checkboxes[1]).not.toContain('checked=""');
+            // The pair lives inside a closed-by-default disclosure, not two persistent rows — the
+            // summary alone carries the enabled count for the default, unopened view.
+            expect(html).toContain('<details class="composer-steps">');
+            expect(html).not.toMatch(/<details class="composer-steps"[^>]*\bopen(="")?/);
+            expect(html).toContain('Optional steps (1 of 2 on)');
         });
 
         it('shows both steps on for the missing-row defaults', () => {
@@ -278,12 +301,14 @@ describe('TaskComposer — the prompt and the launch', () => {
             const checkboxes = html.match(/<input type="checkbox"[^>]*>/g) ?? [];
             expect(checkboxes).toHaveLength(2);
             for (const box of checkboxes) expect(box).toContain('checked=""');
+            expect(html).toContain('Optional steps (2 of 2 on)');
         });
 
         it('renders no checkboxes while the saved defaults have not answered yet', () => {
             const html = renderComposer({ workflows: oneWorkflow, defaultWorkflowSettings: null });
             expect(html).not.toContain('Iterate on PR review comments');
             expect(html).not.toContain('Repair merge conflicts');
+            expect(html).not.toContain('composer-steps');
         });
 
         it('renders no checkboxes on a board that serves no workflows at all', () => {
@@ -295,6 +320,7 @@ describe('TaskComposer — the prompt and the launch', () => {
             });
             expect(html).not.toContain('Iterate on PR review comments');
             expect(html).not.toContain('Repair merge conflicts');
+            expect(html).not.toContain('composer-steps');
         });
 
         it('lists the final step set in the preflight sentence', () => {
@@ -327,7 +353,7 @@ describe('composer parameters', () => {
         expect(html).not.toContain('composer-param');
         // The dropdown renders unchosen; the offered names are client-side, and e2e covers the
         // real dropdown.
-        expect(html).toContain('>Default workflow</button>');
+        expect(html).toContain('>Default workflow</span></button>');
     });
 });
 

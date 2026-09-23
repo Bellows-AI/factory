@@ -1987,6 +1987,14 @@
             min-height: 44px;
         }
 
+        /* A summary keeps its native disclosure marker only under `display: list-item`, so it
+            sits out of the shared inline-flex list above and clears the target through
+            line-height alone instead — the checkboxes it discloses are `.settings-toggle`,
+            already on that list. */
+        .composer-steps > summary {
+            line-height: 44px;
+        }
+
         /* The token group's two-up measures need the width more than the split at this size. */
         .usage-tokens {
             grid-column: auto;
@@ -2642,10 +2650,9 @@
         min-height: 160px;
     }
 
-    /* The guided composer (issue 176): label-above-control fields, the two-column execution
-       context, the plain-language helper and error lines, the preflight sentence, and the Format
-       details that hold a parameter's raw rule. One column until 768px — two columns only where
-       both fields have room, so nothing compresses. */
+    /* The guided composer (issue 176, compacted by 228): label-above-control fields, the
+       plain-language helper and error lines, the preflight sentence, and the Format details that
+       hold a parameter's raw rule. */
     .composer-field {
         display: flex;
         flex-direction: column;
@@ -2659,16 +2666,49 @@
         gap: 12px;
     }
 
-    .composer-grid {
-        display: grid;
-        gap: 12px;
-        grid-template-columns: 1fr;
+    /* The prompt stays the dominant element (issue 228): Repository, Executor and Workflow sit
+       directly beneath it as one wrapping row of small, content-sized controls instead of a
+       full-width grid — each item's own trigger already shows its selected value, so no separate
+       "Execution context" heading is needed. */
+    .composer-context {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        margin-top: 8px;
     }
 
-    @media (min-width: 768px) {
-        .composer-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
+    .composer-context-item {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    /* Truncates inside the flex trigger, where plain text-overflow does not apply — the full
+       value stays reachable through this span's title, the opened listbox, and the preflight
+       sentence. */
+    .composer-context-value {
+        display: block;
+        max-width: min(24ch, 60vw);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* The two default-workflow steps (issue 208), tucked behind a closed-by-default disclosure
+       (issue 228) instead of two persistent rows — the summary alone carries the enabled count. */
+    .composer-steps {
+        font-size: 12px;
+        margin-top: 8px;
+        max-width: 100%;
+        width: fit-content;
+    }
+
+    .composer-steps > summary {
+        color: var(--ink);
+        cursor: pointer;
     }
 
     .composer-helper {
