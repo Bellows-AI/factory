@@ -17,7 +17,7 @@ import {
 import { remoteSessionScript, opencodeReadoutScript } from './container-scripts.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, type RuntimeSample, type RunSession } from './runner.js';
-import { worktreeDir } from './publish.js';
+import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
 
 /**
  * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
@@ -192,13 +192,9 @@ export const containerName = (job: BoardJob): string => `factory-job-${job.id}-$
  * The segments mirror what the system legally produces: org ≤ 39 (the org-id shape
  * server/src/auth/github.ts documents) and both ids
  * uuids (36) — a validator narrower than the input domain would fail every job on a
- * legally-named checkout.
+ * legally-named checkout. GATE_KEY and GATE_IMAGE live in publish.ts, shared with the kubernetes
+ * gate manager.
  */
-const GATE_KEY =
-    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Same shape the board's `.bellows.yaml` parser enforces; re-asserted here, before argv. */
-const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /**
  * A container name this process will `docker exec` into: one token, no shell metacharacters. The

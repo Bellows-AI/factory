@@ -8,13 +8,12 @@
  * the daemon will be given. Lifecycle (when they start, when they die) lives in docker.ts.
  *
  * Nothing here imports docker.ts, which imports this module: one direction only, so the parse
- * stays testable without a daemon and the modules cannot knot. The workspace-path regex is
- * therefore COPIED from docker.ts rather than shared — the same package-internal copy the
- * server's own rules get when they cross a boundary this file must not depend on.
+ * stays testable without a daemon and the modules cannot knot.
  */
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { containerScript } from './container-scripts.js';
+import { WORKSPACE_PATH } from './publish.js';
 
 /**
  * The readout's shell script: a real file (scripts/bellows-read.sh) read at load time and
@@ -69,13 +68,6 @@ const MAX_SERVICES = 10;
  * in place of the content, which splitBellowsSections turns into the author-facing refusal.
  */
 export const MAX_BELLOWS_BYTES = 65_536;
-
-/**
- * `<org>/<user id>` — COPIED from docker.ts (which states the full why): the board is not
- * something this process trusts with a fragment of a command, and here the value is interpolated
- * into a shell script handed to a container this process spawns.
- */
-const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The line the readout container prints before each checkout's file. */
 const MARKER = /^###__bellows:(.*)$/;

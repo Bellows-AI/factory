@@ -4,15 +4,9 @@ import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
 import { jobPath, podsPath } from './k8s-auxspec.js';
-import {
-    envBodyToData,
-    GATE_IMAGE,
-    GATE_KEY,
-    gateEnvSecretName,
-    gateJobName,
-    gateJobSpec,
-    jobsPath,
-} from './k8s-podspec.js';
+import { readVerdict } from './k8s-poll.js';
+import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath } from './k8s-podspec.js';
+import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import {
     ERROR_PREVIEW_CHARS,
     HTTP_CONFLICT,
@@ -189,11 +183,16 @@ async function readGateJobResult(
     jobName: string,
     succeeded: boolean
 ): Promise<{ exitCode: number; output: string }> {
-    const podsResponse = await readGateVerdict(
-        deps,
-        `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
-        'listing the gate pods'
-    );
+    let podsResponse: K8sResponse;
+    try {
+        podsResponse = await readVerdict(
+            deps,
+            `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+            'listing the gate pods'
+        );
+    } catch (e) {
+        throw gateHarness((e as Error).message);
+    }
     if (podsResponse.status >= HTTP_ERROR_STATUS) {
         throw gateHarness(
             `listing the gate pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, ERROR_PREVIEW_CHARS)}`
@@ -341,30 +340,4 @@ export function createKubernetesGateManager({
             for (const key of [...entries.keys()]) this.release(key);
         },
     };
-}
-
-/**
- * The gate poll's verdict-carrying read: the same bounded patience the runner uses for the reads
- * that decide a run, because reporting a failed gate over an apiserver blink would blame the
- * command for the API server's problem.
- */
-async function readGateVerdict(deps: K8sDeps, path: string, what: string): Promise<K8sResponse> {
-    let failures = 0;
-    for (;;) {
-        let response: K8sResponse;
-        try {
-            response = await deps.request('GET', path);
-        } catch (e) {
-            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) throw gateHarness((e as Error).message);
-            await deps.sleep(POLL_MS);
-            continue;
-        }
-        if (response.status !== HTTP_TOO_MANY_REQUESTS && response.status < HTTP_SERVER_ERROR_STATUS) {
-            return response;
-        }
-        if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
-            throw gateHarness(`${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`);
-        }
-        await deps.sleep(POLL_MS);
-    }
 }

@@ -7,9 +7,9 @@
 
 import type { DriverConfig } from './config.js';
 import type { BoardJob } from './board.js';
-import { worktreeDir } from './publish.js';
+import { UUID, WORKSPACE_PATH, worktreeDir } from './publish.js';
 
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export { UUID };
 
 /**
  * What an agent session id may look like before it is interpolated into runner argv — claude's
@@ -20,20 +20,6 @@ export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
  * the same id before the same interpolation.
  */
 export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
-
-/**
- * `<org>/<user id>` and nothing else, asserted before it is interpolated into a `docker run`.
- *
- * The board is not something this process trusts with a fragment of a command line — the same rule
- * `remoteSessionArgs` applies to a session id. Here the stakes are higher: the value becomes the
- * agent's working directory, and `..` in it would point at the parent of every member's tree.
- *
- * The two halves restate the org-id shape server/src/auth/github.ts documents (≤ 39 chars) and the uuid above. COPIED rather
- * than imported: this package depends on nothing, deliberately (see AGENTS.md), and sharing a
- * constant with the server would give a process that needs only `fetch` and `docker` the whole
- * server dependency tree.
- */
-const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The uid:gid the gate environment runs as, and the HOME it gets: the executor images' `USER

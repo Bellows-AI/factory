@@ -15,7 +15,7 @@ import {
 import { claudeTurnsScript, opencodeReadoutScript } from './container-scripts.js';
 import type { RunSession } from './runner.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
-import { worktreeDir } from './publish.js';
+import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript } from './services.js';
 
 /**
@@ -413,18 +413,6 @@ export interface AuxJobSpec {
         };
     };
 }
-
-/**
- * The checkout key a gated job's environment is filed under, and the declared image — both
- * COPIED from docker.ts, which states the full why: the key is the task worktree the agent
- * edits — `<org>/<uuid>/.worktrees/<root id>` (issue #35) — and is interpolated into a working
- * directory every gate command runs in, and the image is repo content naming what executes.
- * A validator narrower than the input domain would fail every job on a legally-named checkout,
- * so the patterns travel unchanged rather than being "improved" here.
- */
-export const GATE_KEY =
-    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /** Sixteen hex characters naming one attempt-scoped run: readable in `kubectl get jobs`, and — at 64 bits — collision-proof at any real concurrency. Eight characters (32 bits) let two simultaneous attempts collide on one Job name, and the apiserver rejects the loser with AlreadyExists. */
 const HASH_HEX_LENGTH = 16;

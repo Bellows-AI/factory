@@ -175,16 +175,33 @@ export function repoPath(config: DriverConfig, job: BoardJob): string | null {
     return `${config.workspaceMount}/${job.workspacePath}/${segment}`;
 }
 
-/** A uuid, asserted before it names a worktree directory or a branch segment. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * A uuid, asserted before it names a worktree directory or a branch segment. The one home for
+ * this pattern (and the workspace and gate shapes below it): every other file that needs one
+ * imports from here rather than restating it.
+ */
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The workspace half, COPIED from docker.ts's WORKSPACE_PATH (both restating the org-id shape
- * server/src/auth/github.ts documents): the value becomes the agent's working directory, and a validator narrower
- * than the input domain would fail every job on a legally-named workspace — the trap every
- * copied pattern here exists to avoid.
+ * The workspace half: `<org>/<user id>`, the org-id shape server/src/auth/github.ts documents.
+ * The value becomes the agent's working directory, and a validator narrower than the input
+ * domain would fail every job on a legally-named workspace.
  */
-const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const WORKSPACE_PATH =
+    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The checkout key a gated run's environment is filed under, and the declared image: the key is
+ * the task worktree the agent edits — `<org>/<uuid>/.worktrees/<root id>` (issue #35) — and is
+ * interpolated into a working directory every gate command runs in, and the image is repo
+ * content naming what executes. Shared by the docker and kubernetes gate managers, which assert
+ * the same shapes before the same interpolation.
+ */
+export const GATE_KEY =
+    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Same shape the board's `.bellows.yaml` parser enforces; re-asserted here, before argv. */
+export const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /**
  * The task worktree of the job's clone, RELATIVE to the mount:

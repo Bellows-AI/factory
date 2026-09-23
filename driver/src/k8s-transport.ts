@@ -4,6 +4,7 @@ import type { DriverConfig } from './config.js';
 import { OUTPUT_LIMIT } from './runner.js';
 import type { ServiceStatus } from './board.js';
 import type { RuntimeSample } from './runner.js';
+import { UUID } from './publish.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -14,7 +15,7 @@ import type { RuntimeSample } from './runner.js';
  */
 
 /** A uuid, and nothing else — asserted before an id is interpolated into an API path or a pod name. */
-export const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const JOB_ID = UUID;
 
 /** Finished Job objects are reaped after an hour: the log is on the board, the pod is not worth keeping. */
 export const TTL_SECONDS = 3_600;
