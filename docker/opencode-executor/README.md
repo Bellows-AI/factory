@@ -20,17 +20,21 @@ its permissions from the config baked into this image, not from a CLI flag.
 | `opencode-home/opencode.json` | the baked permission policy plus the plugin references (telemetry, context mode), at `OPENCODE_CONFIG` |
 | `opencode-home/otel.json` | the telemetry plugin's config: the compose collector, http/json, delta temporality |
 | `opencode-home/AGENTS.md` | the global instructions every run loads |
+| `../skills/` | `/home/node/.config/opencode/skills` — the same skills claude-executor bakes, loaded on demand |
 
 ## Build
 
 ```bash
-docker build -t opencode-executor docker/opencode-executor
+docker build --build-context skills=docker/skills -t opencode-executor docker/opencode-executor
 
 # Pin the CLI instead of tracking latest:
-docker build --build-arg OPENCODE_VERSION=1.18.29 -t opencode-executor docker/opencode-executor
+docker build --build-context skills=docker/skills --build-arg OPENCODE_VERSION=1.18.29 \
+    -t opencode-executor docker/opencode-executor
 ```
 
-The build context is this directory, not the repo root.
+The build context is this directory, not the repo root. The skills are the exception: they live in
+`docker/skills/`, shared with the other executor image, and arrive as the named `skills` context —
+leave the flag off and the build fails trying to pull an image called `skills`.
 
 ## Test
 

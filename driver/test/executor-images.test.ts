@@ -1,5 +1,14 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -429,18 +438,88 @@ describe('the claude-executor git guard', () => {
 });
 
 /*
+ * One set of skills for both executors: docker/skills/ is baked into each image's own skills
+ * directory through the named `skills` build context, so a task sees the same skills whichever
+ * executor its profile picks. The repo's dev skills follow the same rule from the other side —
+ * .claude/skills/ is the one directory both Claude Code and OpenCode discover.
+ */
+describe('the shared executor skills', () => {
+    const SKILLS = 'docker/skills';
+    const IMAGES = [
+        { dockerfile: 'docker/claude-executor/Dockerfile', target: '/home/node/.claude/skills/' },
+        { dockerfile: 'docker/opencode-executor/Dockerfile', target: '/home/node/.config/opencode/skills/' },
+    ];
+
+    it('bakes docker/skills into both images', () => {
+        for (const { dockerfile, target } of IMAGES) {
+            expect(read(dockerfile)).toContain(`COPY --from=skills --chown=node:node . ${target}`);
+        }
+    });
+
+    it('lands in claude-executor before the Remote Control seed is snapshotted', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        const copy = dockerfile.indexOf('COPY --from=skills');
+        expect(copy).toBeGreaterThan(-1);
+        expect(copy).toBeLessThan(dockerfile.indexOf('cp -a /home/node/.claude/. /opt/claude-home/'));
+    });
+
+    it('is the only home: neither per-image config directory carries skills of its own', () => {
+        expect(existsSync(join(ROOT, 'docker/claude-executor/claude-home/skills'))).toBe(false);
+        expect(existsSync(join(ROOT, 'docker/opencode-executor/opencode-home/skills'))).toBe(false);
+    });
+
+    it('names every skill after its directory, as opencode requires', () => {
+        const names = readdirSync(join(ROOT, SKILLS));
+        expect(names.length).toBeGreaterThan(0);
+        for (const name of names) {
+            expect(read(`${SKILLS}/${name}/SKILL.md`)).toMatch(new RegExp(`^---\nname: ${name}\n`));
+        }
+    });
+
+    // Without the flag `COPY --from=skills` resolves `skills` as an image to pull, and the
+    // build fails far from the missing argument.
+    it('every executor image build passes the skills context', () => {
+        const files = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+            .split('\0')
+            .filter((file) => file && existsSync(join(ROOT, file)) && read(file).includes('docker build'));
+        let builds = 0;
+        for (const file of files) {
+            // Unwrap comment and prose line breaks so a command split across lines reads whole.
+            const text = read(file).replace(/\\?\n\s*#?\s*/g, ' ');
+            const invocations =
+                text.match(
+                    /docker build\b(?:(?!docker build)[^`])*?(?:docker\/(?:claude|opencode)-executor|"\$HERE"|\s\.\s>)/g
+                ) ?? [];
+            // `-f` names a Dockerfile elsewhere — the dashboard and driver images, not a runner.
+            for (const line of invocations.filter((build) => !/\s-f\s/.test(build))) {
+                builds++;
+                expect(line, `${file}: ${line}`).toContain('--build-context skills=');
+            }
+        }
+        expect(builds).toBeGreaterThan(0);
+    });
+
+    it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {
+        expect(existsSync(join(ROOT, '.opencode/skills'))).toBe(false);
+        expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(
+            expect.arrayContaining(['fix', 'openspec-propose', 'openspec-apply-change'])
+        );
+    });
+});
+
+/*
  * The PR boundary (issue #82): executors do not open pull requests — that is the driver
  * publish's, with the title/description written by the summarizer script. The enforcement is
  * the two guards above; these pins keep the INSTRUCTIONS from teaching the old behavior, the
  * way the baked github skill once did ("open the PR without waiting to be asked").
  */
 describe('the executor PR boundary', () => {
-    const GITHUB_SKILL = 'docker/claude-executor/claude-home/skills/github/SKILL.md';
+    const GITHUB_SKILL = 'docker/skills/github/SKILL.md';
 
     it('no baked skill instructs opening a pull request', () => {
         const skills = [
             GITHUB_SKILL,
-            'docker/claude-executor/claude-home/skills/backend-fix/SKILL.md',
+            'docker/skills/backend-fix/SKILL.md',
             'docker/opencode-executor/opencode-home/AGENTS.md',
         ];
         for (const skill of skills) {

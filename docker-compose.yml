@@ -153,7 +153,7 @@ services:
     # it mounts the docker socket, which is root on the host — see docs/security.md for what that
     # means before running this file anywhere shared. The runner image is built once:
     #
-    #   docker build -t claude-executor docker/claude-executor   # or opencode-executor
+    #   make runners   # claude-executor and opencode-executor, with their shared docker/skills
     #
     # Like the dashboard above, this service runs the working tree, not a baked build: it used to
     # build docker/driver.Dockerfile's `runtime` stage, and an `up` or restart without `--build`

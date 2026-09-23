@@ -1,9 +1,10 @@
 # Claude Code, headless, with a fixed configuration baked in.
 #
 # Build context is this directory, not the repo root: the image carries no application code, only
-# the CLI and the config under claude-home/.
+# the CLI, the config under claude-home/ and the skills shared with opencode-executor, which arrive
+# as the named `skills` context:
 #
-#   docker build -t claude-executor docker/claude-executor
+#   docker build --build-context skills=docker/skills -t claude-executor docker/claude-executor
 #
 # debian rather than alpine: the CLI ships prebuilt glibc binaries (ripgrep among them) that fail
 # at runtime on musl, and the failure surfaces as an empty search result rather than an error.
@@ -45,9 +46,14 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/d
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 
 # The predefined configuration. Everything under claude-home/ lands in the config directory as-is:
-# settings.json, CLAUDE.md, agents/, commands/, skills/, hooks/. No credentials live here — those
-# arrive at runtime as environment (see README).
+# settings.json, CLAUDE.md, agents/, commands/, hooks/. No credentials live here — those arrive at
+# runtime as environment (see README).
 COPY --chown=node:node claude-home/ /home/node/.claude/
+
+# The skills, from docker/skills/ — one source for both executor images, so a task sees the same
+# skills whichever executor runs it. Before the /opt/claude-home snapshot below, so a Remote Control
+# auth volume is seeded with them too.
+COPY --from=skills --chown=node:node . /home/node/.claude/skills/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 RUN mkdir -p /workspace /opt/claude-home && chown node:node /workspace /opt/claude-home
