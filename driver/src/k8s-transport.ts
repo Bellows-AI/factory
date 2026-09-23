@@ -206,18 +206,28 @@ export interface K8sJobStatus {
     conditions?: { type: string; reason?: string }[];
 }
 
+export interface K8sPod {
+    metadata?: { name?: string; deletionTimestamp?: string };
+    status?: {
+        containerStatuses?: {
+            state?: {
+                terminated?: { exitCode?: number };
+                waiting?: { reason?: string; message?: string };
+            };
+        }[];
+    };
+}
+
 export interface K8sPodList {
-    items?: {
-        metadata?: { name?: string; deletionTimestamp?: string };
-        status?: {
-            containerStatuses?: {
-                state?: {
-                    terminated?: { exitCode?: number };
-                    waiting?: { reason?: string; message?: string };
-                };
-            }[];
-        };
-    }[];
+    items?: K8sPod[];
+}
+
+/**
+ * The one pod a job-name-scoped list names, skipping any mid-deletion — a re-claim's replaced
+ * attempt can still list its predecessor's pod while it terminates, carrying the same label.
+ */
+export function livePod(body: string): K8sPod | undefined {
+    return parse<K8sPodList>(body).items?.find((item) => !item.metadata?.deletionTimestamp);
 }
 
 /** Parses what the API server answers; a body that is not JSON reads as an empty object. */

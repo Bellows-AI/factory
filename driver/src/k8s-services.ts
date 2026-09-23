@@ -2,6 +2,8 @@ import type { BoardJob } from './board.js';
 import type { RunOutcome } from './runner.js';
 import {
     jobPath,
+    jobPodsPath,
+    podLogPath,
     podsByLeasePath,
     podsPath,
     servicesByLeasePath,
@@ -11,8 +13,8 @@ import {
 } from './k8s-auxspec.js';
 import { bellowsJobSpec, jobsPath } from './k8s-podspec.js';
 import { pollJobToTerminal, readVerdict } from './k8s-poll.js';
-import { ERROR_PREVIEW_CHARS, HTTP_CONFLICT, HTTP_ERROR_STATUS, parse } from './k8s-transport.js';
-import type { K8sDeps, K8sPodList, K8sResponse } from './k8s-transport.js';
+import { ERROR_PREVIEW_CHARS, HTTP_CONFLICT, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
+import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import { collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
 
@@ -48,16 +50,16 @@ async function readBellows(deps: K8sDeps, job: BoardJob): Promise<string> {
         if (pollFailure !== null) throw new Error(pollFailure);
         const podsResponse = await readVerdict(
             deps,
-            `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+            jobPodsPath(deps.config.k8sNamespace, jobName),
             'listing the readout pods'
         );
-        const pod = parse<K8sPodList>(podsResponse.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+        const pod = livePod(podsResponse.body);
         if (!pod?.metadata?.name) {
             throw new Error('the .bellows.yaml readout left no pod to read its output from');
         }
         const log = await readVerdict(
             deps,
-            `${podsPath(deps.config.k8sNamespace)}/${pod.metadata.name}/log`,
+            podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
             'reading the readout log'
         );
         if (log.status >= HTTP_ERROR_STATUS) {

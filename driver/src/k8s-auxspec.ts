@@ -2,7 +2,7 @@ import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession } from './claim.js';
 import { hash16, jobsPath, type AuxJobSpec, workspaceSubPathOf } from './k8s-podspec.js';
-import { JOB_ID, TTL_SECONDS } from './k8s-transport.js';
+import { JOB_ID, LOG_TAIL_LINES, TTL_SECONDS } from './k8s-transport.js';
 import {
     CREDENTIAL_HELPER,
     gitWorktreeRemoveScript,
@@ -371,6 +371,14 @@ export function serviceDnsSpec(
 }
 
 export const podsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/pods`;
+
+/** The pods of one Job, by the `job-name` label the Job controller stamps on every pod it owns. */
+export const jobPodsPath = (namespace: string, jobName: string): string =>
+    `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`;
+
+/** One pod's log, tailed to `LOG_TAIL_LINES` by default — the full log when `tail` is null. */
+export const podLogPath = (namespace: string, pod: string, tail: number | null = LOG_TAIL_LINES): string =>
+    `${podsPath(namespace)}/${pod}/log${tail !== null ? `?tailLines=${tail}` : ''}`;
 
 export const secretsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/secrets`;
 

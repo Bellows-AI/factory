@@ -7,8 +7,9 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import {
     jobPath,
+    jobPodsPath,
+    podLogPath,
     podsByLeasePath,
-    podsPath,
     publishEnvSecretName,
     publishStepJobName,
     publishStepJobSpec,
@@ -39,12 +40,12 @@ import { startServiceFleet, teardownServices } from './k8s-services.js';
 import {
     ERROR_PREVIEW_CHARS,
     HTTP_ERROR_STATUS,
-    parse,
+    livePod,
     parsePodMetrics,
     parseServicePods,
     wait,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sPodList, K8sRequest, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { publishCheckout, publishFailed, repoPath, withPublishToken, worktreeDir } from './publish.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 
@@ -107,16 +108,16 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         try {
             pods = await readVerdict(
                 deps,
-                `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`,
+                jobPodsPath(deps.config.k8sNamespace, jobName),
                 'listing the session readout pods'
             );
             if (pods.status >= HTTP_ERROR_STATUS)
                 return fail(`listing the session readout pods answered ${pods.status}`);
-            const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+            const pod = livePod(pods.body);
             if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
             log = await readVerdict(
                 deps,
-                `${podsPath(deps.config.k8sNamespace)}/${pod.metadata.name}/log`,
+                podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
                 'reading the session readout log'
             );
             if (log.status >= HTTP_ERROR_STATUS)
@@ -235,16 +236,12 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
         : undefined;
     let pods: K8sResponse;
     try {
-        pods = await deps.request(
-            'GET',
-            `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${runnerName(job)}`)}`
-        );
+        pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, runnerName(job)));
     } catch {
         return composeRuntimeSample(null, services);
     }
     if (pods.status >= HTTP_ERROR_STATUS) return composeRuntimeSample(null, services);
-    const runnerPod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp)?.metadata
-        ?.name;
+    const runnerPod = livePod(pods.body)?.metadata?.name;
     if (!runnerPod) return composeRuntimeSample(null, services);
     let metrics: K8sResponse;
     try {

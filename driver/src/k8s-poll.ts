@@ -3,7 +3,8 @@ import { claimContinuesSession, envFileBody } from './claim.js';
 import { reportTail } from './runner.js';
 import {
     jobPath,
-    podsPath,
+    jobPodsPath,
+    podLogPath,
     reclaimJobName,
     reclaimJobSpec,
     secretsPath,
@@ -18,12 +19,12 @@ import {
     HTTP_NOT_FOUND,
     HTTP_SERVER_ERROR_STATUS,
     HTTP_TOO_MANY_REQUESTS,
-    LOG_TAIL_LINES,
+    livePod,
     parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sPodList, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sJobStatus, K8sResponse } from './k8s-transport.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 
 /**
@@ -115,22 +116,16 @@ async function readAuxVerdictOutput(
     jobName: string,
     succeeded: boolean
 ): Promise<{ exitCode: number | null; output: string }> {
-    const pods = await deps.request(
-        'GET',
-        `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${jobName}`)}`
-    );
+    const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, jobName));
     if (pods.status >= HTTP_ERROR_STATUS) {
         throw new Error(`listing the pods of ${jobName} answered ${pods.status}`);
     }
-    const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+    const pod = livePod(pods.body);
     const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
     let output = '';
     if (pod?.metadata?.name) {
         const log = await deps
-            .request(
-                'GET',
-                `${podsPath(deps.config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`
-            )
+            .request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name))
             .catch(() => ({ status: 0, body: '' }));
         if (log.status < HTTP_ERROR_STATUS) output = log.body;
     }
@@ -176,25 +171,17 @@ async function tailRunnerOutput(
     let resolvedPodName = podName;
     if (resolvedPodName === null) {
         try {
-            const pods = await deps.request(
-                'GET',
-                `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${runnerName(job)}`)}`
-            );
+            const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, runnerName(job)));
             // Skipping terminating pods for the same reason the final read does: a replaced
             // attempt's pod carries the same label, and its log is not this run's output.
-            resolvedPodName =
-                parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp)?.metadata?.name ??
-                null;
+            resolvedPodName = livePod(pods.body)?.metadata?.name ?? null;
         } catch {
             // Not scheduled yet, or the API server blinked. The next poll looks again.
         }
     }
     if (resolvedPodName !== null) {
         try {
-            const log = await deps.request(
-                'GET',
-                `${podsPath(deps.config.k8sNamespace)}/${resolvedPodName}/log?tailLines=${LOG_TAIL_LINES}`
-            );
+            const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, resolvedPodName));
             if (log.status < HTTP_ERROR_STATUS) onOutput(reportTail(log.body));
         } catch {
             // The log endpoint hiccups on a pod that is only starting. Freshness waits a poll.
@@ -257,7 +244,7 @@ export async function readRunnerVerdict(
 ): Promise<{ exitCode: number | null; output: string }> {
     const podsResponse = await readVerdict(
         deps,
-        `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${runnerName(job)}`)}`,
+        jobPodsPath(deps.config.k8sNamespace, runnerName(job)),
         'listing the runner pods'
     );
     if (podsResponse.status >= HTTP_ERROR_STATUS) {
@@ -268,7 +255,7 @@ export async function readRunnerVerdict(
     // A re-claim replaced the previous attempt's Job, and its pod can still be listed while it
     // terminates — carrying the same job-name label. Skip terminating pods, so the exit code and
     // the log are always this run's.
-    const pod = parse<K8sPodList>(podsResponse.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+    const pod = livePod(podsResponse.body);
     const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (jobSucceeded ? 0 : null);
     let output = '';
     if (pod?.metadata?.name) {
@@ -276,10 +263,7 @@ export async function readRunnerVerdict(
         // the answer is already known to be "whatever we can get".
         let log: K8sResponse;
         try {
-            log = await deps.request(
-                'GET',
-                `${podsPath(deps.config.k8sNamespace)}/${pod.metadata.name}/log?tailLines=${LOG_TAIL_LINES}`
-            );
+            log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name));
         } catch {
             log = { status: 0, body: '' };
         }
@@ -351,13 +335,10 @@ export async function pollSyncJobToTerminal(deps: K8sDeps, job: BoardJob, failur
  */
 async function readSyncJobLog(deps: K8sDeps, job: BoardJob): Promise<string> {
     try {
-        const pods = await deps.request(
-            'GET',
-            `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${syncJobName(job)}`)}`
-        );
-        const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+        const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, syncJobName(job)));
+        const pod = livePod(pods.body);
         if (pod?.metadata?.name) {
-            const log = await deps.request('GET', `${podsPath(deps.config.k8sNamespace)}/${pod.metadata.name}/log`);
+            const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, null));
             if (log.status < HTTP_ERROR_STATUS) return log.body;
         }
     } catch {
@@ -459,13 +440,10 @@ export async function pollReclaimJobToTerminal(deps: K8sDeps, job: BoardJob, fai
 /** The reclaim Job's verdict line, off its pod's log — the sync log read's twin. */
 async function readReclaimJobLog(deps: K8sDeps, job: BoardJob): Promise<string> {
     try {
-        const pods = await deps.request(
-            'GET',
-            `${podsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`job-name=${reclaimJobName(job)}`)}`
-        );
-        const pod = parse<K8sPodList>(pods.body).items?.find((item) => !item.metadata?.deletionTimestamp);
+        const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, reclaimJobName(job)));
+        const pod = livePod(pods.body);
         if (pod?.metadata?.name) {
-            const log = await deps.request('GET', `${podsPath(deps.config.k8sNamespace)}/${pod.metadata.name}/log`);
+            const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, null));
             if (log.status < HTTP_ERROR_STATUS) return log.body;
         }
     } catch {
