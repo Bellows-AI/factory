@@ -13,6 +13,9 @@ const entry = (id: string): TaskSummary => ({
     author: null,
     activity: null,
     summary: null,
+    waitReason: null,
+    waitingSince: null,
+    waitTerminalReason: null,
     createdAt: '2026-09-02T12:00:00.000Z',
     activityAt: '2026-09-02T12:10:00.000Z',
 });

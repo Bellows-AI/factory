@@ -25,6 +25,8 @@ const OTHER_AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, 8), 16);
 
 const db = useTestDb({
     max: 8,
+    // workflow_wait FKs to organization — the wait tests below need both planted.
+    orgs: [ORG, OTHER_ORG],
     users: [
         { id: AUTHOR, githubUserId: AUTHOR_GITHUB_ID, login: 'tasks-cat' },
         { id: OTHER_AUTHOR, githubUserId: OTHER_AUTHOR_GITHUB_ID, login: 'tasks-other' },
@@ -104,6 +106,29 @@ const craft = async (
     return id;
 };
 
+/** Writes a `workflow_wait` row for a root, straight SQL — the 036 wait store's own shape. */
+const enterWait = async (
+    root: string,
+    shape: {
+        reason?: string;
+        activeMinutesAgo?: number;
+        terminalReason?: string | null;
+        completed?: boolean;
+        cancelled?: boolean;
+    } = {}
+): Promise<void> => {
+    await sql`
+        insert into workflow_wait (org_id, root_job_id, reason, repo, pr_number, active_at, completed_at, cancelled_at, terminal_reason)
+        values (
+            ${ORG}, ${root}, ${shape.reason ?? 'review'}, 'acme/widgets', 1,
+            now() - (${shape.activeMinutesAgo ?? 5} * interval '1 minute'),
+            ${shape.completed ? sql`now()` : null},
+            ${shape.cancelled ? sql`now()` : null},
+            ${shape.terminalReason ?? null}
+        )
+    `;
+};
+
 describe.skipIf(!enabled)('listTasks', () => {
     it('folds a thread with follow-ups into one summary: root identity, head present tense', async () => {
         const root = await craft({
@@ -152,6 +177,37 @@ describe.skipIf(!enabled)('listTasks', () => {
         const { navigation, page } = await store.listTasks({ state: 'running', sort: 'newest', limit: 30 });
         expect(navigation.counts).toEqual({ running: 3, review: 0, past: 0 });
         expect(page.items).toHaveLength(3);
+    });
+
+    it('buckets a non-terminal head with an open wait as review, not running', async () => {
+        const root = await craft({ status: 'standby', command: 'waiting task', createdMinutesAgo: 30 });
+        await enterWait(root, { activeMinutesAgo: 10 });
+
+        const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
+        expect(navigation.counts).toEqual({ running: 0, review: 1, past: 0 });
+        const review = await store.listTasks({ state: 'review', sort: 'newest', limit: 30 });
+        expect(review.page.items).toHaveLength(1);
+        expect(review.page.items[0]).toMatchObject({
+            id: root,
+            waitReason: 'review',
+            waitTerminalReason: null,
+        });
+        expect(review.page.items[0]!.waitingSince).not.toBeNull();
+    });
+
+    it('falls back to the ordinary bucket once the wait has gone terminal', async () => {
+        const root = await craft({ status: 'standby', command: 'exhausted wait task', createdMinutesAgo: 30 });
+        await enterWait(root, { activeMinutesAgo: 20, completed: true, terminalReason: 'exhausted' });
+
+        const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
+        // standby is not itself terminal, and the wait no longer overrides it — back to running.
+        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
+        const running = await store.listTasks({ state: 'running', sort: 'newest', limit: 30 });
+        expect(running.page.items[0]).toMatchObject({
+            id: root,
+            waitReason: 'review',
+            waitTerminalReason: 'exhausted',
+        });
     });
 
     it('buckets terminal heads by the head done stamp — review without it, past with it', async () => {

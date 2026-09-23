@@ -27,6 +27,9 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => ({
     author: over.author ?? null,
     activity: over.activity ?? null,
     summary: over.summary ?? null,
+    waitReason: over.waitReason ?? null,
+    waitingSince: over.waitingSince ?? null,
+    waitTerminalReason: over.waitTerminalReason ?? null,
     createdAt: over.createdAt ?? '2026-09-01T12:00:00.000Z',
     activityAt: over.activityAt ?? '2026-09-01T12:10:00.000Z',
 });
@@ -47,6 +50,8 @@ describe('taskStatusLabel', () => {
         status: over.status ?? null,
         cancelRequestedAt: over.cancelRequestedAt ?? null,
         doneAt: over.doneAt ?? null,
+        waitReason: over.waitReason ?? null,
+        waitTerminalReason: over.waitTerminalReason ?? null,
     });
 
     it('names the moving states, a stop request louder than the run itself', () => {
@@ -69,6 +74,27 @@ describe('taskStatusLabel', () => {
         expect(taskStatusLabel(status({ status: 'succeeded', doneAt: '2026-09-01T13:00:00.000Z' }))).toBe('Done');
         expect(taskStatusLabel(status({ status: 'failed', doneAt: '2026-09-01T13:00:00.000Z' }))).toBe('Done');
     });
+
+    it('reads an open PR-review wait as waiting, whatever non-terminal status it is parked under', () => {
+        for (const s of ['queued', 'standby'] as const) {
+            expect(taskStatusLabel(status({ status: s, waitReason: 'review' }))).toBe('Waiting for review');
+        }
+        // Never as running, queued or parked while a wait is genuinely open.
+        expect(taskStatusLabel(status({ status: 'standby', waitReason: 'review' }))).not.toBe('Parked');
+    });
+
+    it('never overrides a live run with a waiting label — running stays the loudest state', () => {
+        expect(taskStatusLabel(status({ status: 'running', waitReason: 'review' }))).toBe('Running');
+    });
+
+    it('appends the terminal wait reason to the ordinary needs-review copy once the wait has ended', () => {
+        expect(taskStatusLabel(status({ status: 'succeeded', waitReason: 'review', waitTerminalReason: 'exhausted' }))).toBe(
+            'Succeeded · Needs review · exhausted'
+        );
+        expect(taskStatusLabel(status({ status: 'failed', waitReason: 'review', waitTerminalReason: 'cancelled' }))).toBe(
+            'Failed · Needs review · cancelled'
+        );
+    });
 });
 
 describe('taskDotClass', () => {
@@ -76,6 +102,8 @@ describe('taskDotClass', () => {
         status: over.status ?? null,
         cancelRequestedAt: over.cancelRequestedAt ?? null,
         doneAt: over.doneAt ?? null,
+        waitReason: over.waitReason ?? null,
+        waitTerminalReason: over.waitTerminalReason ?? null,
     });
 
     it('breathes green for a live run, grey while a stop request travels', () => {
@@ -97,6 +125,15 @@ describe('taskDotClass', () => {
         expect(taskDotClass(status({ status: 'failed', doneAt: '2026-09-01T13:00:00.000Z' }))).toBe('sidenav-dot-done');
         expect(taskDotClass(status({ status: 'stopped' }))).toBe('');
         expect(taskDotClass(status({}))).toBe('');
+    });
+
+    it('holds grey for an open wait, never green or red, whatever status it is parked under', () => {
+        expect(taskDotClass(status({ status: 'standby', waitReason: 'review' }))).toBe('sidenav-dot-paused');
+        expect(taskDotClass(status({ status: 'queued', waitReason: 'review' }))).toBe('sidenav-dot-paused');
+    });
+
+    it('leaves a live run breathing even with a stray wait — running stays the loudest state', () => {
+        expect(taskDotClass(status({ status: 'running', waitReason: 'review' }))).toBe('sidenav-dot-running');
     });
 });
 
@@ -126,6 +163,9 @@ describe('taskSummary', () => {
         summary: null,
         sessionId: null,
         remoteSessionId: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
         ...overrides,
     });
 

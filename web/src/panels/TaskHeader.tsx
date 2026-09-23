@@ -62,6 +62,10 @@ export function TaskHeader({
     // The task's live summary — the newest run's activity line, while there is one — beside the
     // title, the same line the sidebar's "Task" row and the sidenav read.
     const summary = taskSummary(latestTask.id, jobs);
+    // An open PR-review wait (206), straight off the structured contract — never inferred from
+    // output or a node name. A terminal wait carries no special weight here: the pill stays the
+    // ordinary status word, the same as a thread that never waited.
+    const waiting = latestTask.waitReason !== null && latestTask.waitTerminalReason === null;
 
     return (
         <PageHeader
@@ -69,7 +73,11 @@ export function TaskHeader({
             title={taskTitleFromCommand(rootTask.command)}
             meta={
                 <>
-                    <span className="pill">{latestTask.status}</span>
+                    {/* Polite, not assertive: a poll that lands the same text announces nothing —
+                    the live region only speaks when the status word itself actually changes. */}
+                    <span className="pill" aria-live="polite">
+                        {waiting ? 'Waiting for review' : latestTask.status}
+                    </span>
                     {/* The overall wall clock: everything the board has banked for the task,
                     plus the head run's live segment while it is going — the 2s poll is the
                     ticker. A task that has never run says so with a dash, not a zero. */}
@@ -105,6 +113,11 @@ export function TaskHeader({
                                 Stop run
                             </button>
                         )
+                    ) : null}
+                    {stoppable && waiting ? (
+                        <p className="muted">
+                            Stopping cancels remaining automation. It does not close or merge the pull request.
+                        </p>
                     ) : null}
                     {open ? (
                         <button

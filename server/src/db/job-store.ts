@@ -216,6 +216,16 @@ export interface Job {
      * has accumulated — never zero, which would claim a measurement that was never made.
      */
     taskWallClockMs: number | null;
+    /**
+     * The thread's PR-review wait (036), when it has one — the open wait first, else the most
+     * recently active terminal one, the same rule the task-summary read model follows. Carried on
+     * every member of the thread alike, since the wait belongs to the ROOT, not the run: the task
+     * view renders it beside whichever member it is looking at. Served by `thread()` only — `get`
+     * and the per-run lists answer null, exactly as they do for a thread that never waited.
+     */
+    waitReason: string | null;
+    waitingSince: string | null;
+    waitTerminalReason: string | null;
 }
 
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */
@@ -810,6 +820,10 @@ interface JobRow {
     /** Only thread() and the grouped terminal list select it; bigint (and the sum over it) read
      * back as a string. */
     task_wall_clock_ms?: string | null;
+    /** Only thread() joins the wait lateral; absent everywhere else. */
+    wait_reason?: string | null;
+    waiting_since?: Date | null;
+    wait_terminal_reason?: string | null;
 }
 
 const iso = (value: Date | null): string | null => (value === null ? null : value.toISOString());
@@ -1137,6 +1151,9 @@ export function createJobStore({
         finishedAt: iso(row.finished_at),
         wallClockMs: row.wall_clock_ms == null ? null : Number(row.wall_clock_ms),
         taskWallClockMs: row.task_wall_clock_ms == null ? null : Number(row.task_wall_clock_ms),
+        waitReason: row.wait_reason ?? null,
+        waitingSince: row.waiting_since ? row.waiting_since.toISOString() : null,
+        waitTerminalReason: row.wait_terminal_reason ?? null,
     });
 
     // The task summary mapper. Deliberately NOT toJob with synthetic fields: a summary is a
@@ -2271,9 +2288,20 @@ export function createJobStore({
                        -- scoped: every member carries the total, so the view reads it off any of
                        -- them. A sum over all-null banks is null — nothing measurable, never zero.
                        sum(wall_clock_ms) over () as task_wall_clock_ms,
-                       wall_clock_ms, summary
+                       wall_clock_ms, summary,
+                       wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
                        ${authorColumns}
                 from job ${authorJoin}
+                -- The thread's wait (036), carried on every member alike — the open wait first,
+                -- else the most recently active terminal one, the same rule listTasks() applies.
+                left join lateral (
+                    select w.reason as wait_reason, w.active_at as waiting_since,
+                           w.terminal_reason as wait_terminal_reason
+                    from workflow_wait w
+                    where w.org_id = ${orgId} and w.root_job_id = job.root_job_id
+                    order by (w.completed_at is null and w.cancelled_at is null) desc, w.active_at desc
+                    limit 1
+                ) wl on true
                 where org_id = ${orgId}
                   and root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
                 order by job.created_at, job.id
@@ -2458,7 +2486,14 @@ export function createJobStore({
                            -- differs from the boundary below the millisecond.
                            date_trunc('milliseconds',
                                       greatest(h.created_at, h.started_at, h.finished_at, h.done_at)) as activity_at,
-                           (h.status in ('succeeded', 'failed', 'dead', 'stopped')) as terminal,
+                           -- An open wait (a wait row with no terminal reason yet) is terminal for
+                           -- bucketing the same way a settled status is: a thread parked on a
+                           -- human's review is never "running", whatever status the row itself
+                           -- carries while parked on it (206). A wait that has gone terminal
+                           -- carries no extra weight here — the status/done rule alone decides,
+                           -- same as a thread that never waited.
+                           (h.status in ('succeeded', 'failed', 'dead', 'stopped')
+                               or (wl.wait_reason is not null and wl.wait_terminal_reason is null)) as terminal,
                            cu.id as creator_id, cu.github_login as creator_login,
                            cu.display_name as creator_name, cu.avatar_url as creator_avatar_url,
                            wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason

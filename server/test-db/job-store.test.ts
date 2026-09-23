@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore, createOrgOfLease, type JobStore } from '../src/db/job-store.js';
+import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
@@ -947,6 +948,45 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         // And the org guard holds: another org's store reads nothing of this conversation.
         expect(await otherOrgStore.thread(parent)).toBeNull();
         expect(await store.thread(ABSENT)).toBeNull();
+    });
+
+    /**
+     * The thread's PR-review wait (036) is a property of the ROOT, and every member of the
+     * conversation must read the same one — the task view renders whichever member it is looking
+     * at. Open first, then terminal, exactly as the read model's own contract states.
+     */
+    it("carries the thread's PR-review wait on every member — open, then terminal, then none", async () => {
+        const parent = await finishWithSession('drive me');
+        const first = await mustFollowUp(parent, 'first adjustment', null);
+        const prLifecycle = createPrLifecycleStore({ sql, orgId: ORG });
+
+        for (const member of [parent, first.id]) {
+            const chain = await store.thread(member);
+            for (const job of chain!) {
+                expect(job.waitReason).toBeNull();
+                expect(job.waitingSince).toBeNull();
+                expect(job.waitTerminalReason).toBeNull();
+            }
+        }
+
+        await prLifecycle.enterWait({ root: parent, reason: 'review', repo: 'acme/widgets', prNumber: 7 });
+        for (const member of [parent, first.id]) {
+            const chain = await store.thread(member);
+            for (const job of chain!) {
+                expect(job.waitReason).toBe('review');
+                expect(job.waitingSince).not.toBeNull();
+                expect(job.waitTerminalReason).toBeNull();
+            }
+        }
+
+        await prLifecycle.finishWait(parent, 'review', 'exhausted');
+        for (const member of [parent, first.id]) {
+            const chain = await store.thread(member);
+            for (const job of chain!) {
+                expect(job.waitReason).toBe('review');
+                expect(job.waitTerminalReason).toBe('exhausted');
+            }
+        }
     });
 
     // The whole point: the worker gets the parent session back AND the new command to deliver

@@ -41,6 +41,9 @@ const job = (id: string): Job =>
         finishedAt: '2026-08-21T12:20:00.000Z',
         wallClockMs: null,
         taskWallClockMs: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
     }) as Job;
 
 const json = (body: unknown, status = 200): Response =>

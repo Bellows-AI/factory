@@ -329,7 +329,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
 | `TaskComposer.tsx` | panel, composer, composer-field, composer-grid, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, kbd, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, task-conversation, panel-head, panel, composer, status, muted |
-| `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done |
+| `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done, muted |
 | `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
 | `TaskRun.tsx` | chat-exchange, run-label, run-summary, run-output, run-well, run-work, run-publish, msg-user, msg-meta, chat-runtime, chat-activity, chat-exit, chat-done, chat-stop, chat-gates, chat-gate-list, gate-passed, gate-failed, gate-running, chat-output, pill, muted, code |
 | `TaskUsagePanel.tsx` | data, align-end, muted |

@@ -44,6 +44,9 @@ const job = (over: Partial<Job>): Job => ({
     finishedAt: '2026-08-21T13:40:00.000Z',
     wallClockMs: null,
     taskWallClockMs: null,
+    waitReason: null,
+    waitingSince: null,
+    waitTerminalReason: null,
     ...over,
 });
 

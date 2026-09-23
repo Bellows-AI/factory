@@ -78,6 +78,9 @@ function job(overrides: Partial<Job> = {}): Job {
         // offered for exactly these, and the sessionless case has its own test below.
         sessionId: '33333333-3333-4333-8333-333333333333',
         remoteSessionId: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
         ...overrides,
     };
 }
@@ -869,7 +872,42 @@ describe('the task page header', () => {
     it('shows the status beside the title', () => {
         const html = renderHeader({ jobs: [job()] });
         expect(html).toContain('page-header-meta');
-        expect(html).toContain('<span class="pill">succeeded</span>');
+        expect(html).toContain('<span class="pill" aria-live="polite">succeeded</span>');
+    });
+
+    it('shows Waiting for review instead of the raw status while a PR-review wait is open', () => {
+        const html = renderHeader({
+            jobs: [
+                job({
+                    status: 'standby',
+                    waitReason: 'review',
+                    exitCode: null,
+                    finishedAt: null,
+                    startedAt: null,
+                    output: null,
+                }),
+            ],
+        });
+        expect(html).toContain('<span class="pill" aria-live="polite">Waiting for review</span>');
+        expect(html).not.toContain('>standby<');
+    });
+
+    it('preserves Stop run while waiting, with copy explaining it cancels automation but not the PR', () => {
+        const html = renderHeader({
+            jobs: [
+                job({
+                    status: 'standby',
+                    waitReason: 'review',
+                    exitCode: null,
+                    finishedAt: null,
+                    startedAt: null,
+                    output: null,
+                }),
+            ],
+        });
+        expect(html).toContain('>Stop run<');
+        expect(html).toMatch(/cancels remaining automation/i);
+        expect(html).toMatch(/not close|does not close/i);
     });
 
     /** The action matrix: stoppable = queued/running/standby, done = the one primary, closed = text. */
@@ -1468,6 +1506,46 @@ describe('TaskOutcome', () => {
         expect(html).toContain('done by kim');
         expect(html).toContain('stopped by lee');
         expect(html).toContain('exit 0');
+    });
+
+    it('explains an open PR-review wait: what Factory is waiting for, since when, and that no executor is occupied', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    status: 'standby',
+                    waitReason: 'review',
+                    waitingSince: '2026-09-01T11:00:00.000Z',
+                    exitCode: null,
+                    finishedAt: null,
+                }),
+            ],
+        });
+        expect(html).toContain('Waiting for review');
+        // The outcome's own pill reads waiting, not the raw status — the per-run pill inside the
+        // conversation below is a different component and legitimately still says "standby".
+        expect(html).toContain('<span class="pill">Waiting for review</span>');
+        expect(html).toMatch(/no executor|not occupied/i);
+    });
+
+    it('shows the terminal wait reason once the review wait has ended, beside the ordinary result', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    status: 'succeeded',
+                    waitReason: 'review',
+                    waitTerminalReason: 'exhausted',
+                }),
+            ],
+        });
+        expect(html).toContain('exhausted');
+        // A terminal wait does not relabel the pill — the status/done rule alone decides that.
+        expect(html).toContain('<span class="pill">succeeded</span>');
+    });
+
+    it('renders no waiting copy at all for a thread that never entered a wait', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html).not.toContain('Waiting for review');
+        expect(html).not.toContain('no executor is occupied');
     });
 
     it('names the root author as Started by, unknown when nobody is recorded', () => {
@@ -2409,6 +2487,9 @@ const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary>
     author: null,
     activity: null,
     summary: null,
+    waitReason: null,
+    waitingSince: null,
+    waitTerminalReason: null,
     createdAt: '2026-09-01T12:00:00.000Z',
     activityAt: '2026-09-01T12:10:00.000Z',
     ...over,
@@ -2516,6 +2597,34 @@ describe('TaskInboxPage rows', () => {
         expect(html).toContain('Failed · Needs review');
         expect(html).toContain('Stopped · Needs review');
         expect(html).toContain('Done');
+    });
+
+    it('renders an open PR-review wait as Waiting for review, with the grey paused dot', () => {
+        const html = renderInbox({
+            navigation: navigation({ review: 1 }),
+            items: [taskSummary({ status: 'standby', waitReason: 'review', waitingSince: '2026-09-01T12:05:00.000Z' })],
+            nextCursor: null,
+            initial: false,
+        });
+        expect(html).toContain('Waiting for review');
+        expect(html).not.toContain('>Parked<');
+        expect(html).toContain('sidenav-dot-paused');
+    });
+
+    it('appends the terminal wait reason to the needs-review row once the wait has ended', () => {
+        const html = renderInbox({
+            navigation: navigation({ review: 1 }),
+            items: [
+                taskSummary({
+                    status: 'succeeded',
+                    waitReason: 'review',
+                    waitTerminalReason: 'exhausted',
+                }),
+            ],
+            nextCursor: null,
+            initial: false,
+        });
+        expect(html).toContain('Succeeded · Needs review · exhausted');
     });
 
     it('makes the title the one link to the detail view, with repo, author and a precise age', () => {

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { wallClock } from '../format.js';
 import { KeyValues } from '../components/KeyValues.js';
+import { RelativeTime } from '../components/RelativeTime.js';
 import type { Job } from '../api/useJobs.js';
 import {
     closureOf,
@@ -44,6 +45,10 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
     const counts = gateCounts(latest.gates);
     const services = latest.runtime?.services ?? null;
     const issueLink = issueUrl(latest.repo, issue);
+    // An open PR-review wait (206), straight off the structured contract — never inferred from
+    // output or a node name. A terminal wait no longer relabels the pill; its reason rides beside
+    // the ordinary result instead.
+    const waiting = latest.waitReason !== null && latest.waitTerminalReason === null;
     // A row's link is a reference, not a command: the row's label already says what it is, so
     // the value names only WHICH one — the number.
     const prLink = publish !== null && publish.url !== null && isHttpUrl(publish.url) ? publish.url : null;
@@ -91,7 +96,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                 <section>
                     <h3 className="task-outcome-label">Result</h3>
                     <p className="msg-meta">
-                        <span className="pill">{latest.status}</span>
+                        <span className="pill">{waiting ? 'Waiting for review' : latest.status}</span>
                         {latest.doneAt !== null ? <span className="pill chat-done">done</span> : null}
                         {closure !== null && closure.kind !== 'done' ? (
                             <span className="pill chat-stop">
@@ -103,6 +108,15 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                         ) : null}
                         {exit !== null ? <span className="chat-exit">exit {exit}</span> : null}
                     </p>
+                    {waiting ? (
+                        <p className="muted">
+                            Factory is waiting for review — no executor is occupied while it waits. Waiting since{' '}
+                            <RelativeTime at={latest.waitingSince} />.
+                        </p>
+                    ) : null}
+                    {!waiting && latest.waitTerminalReason !== null ? (
+                        <p className="muted">Review wait ended: {latest.waitTerminalReason}.</p>
+                    ) : null}
                     {resultPairs.length > 0 ? <KeyValues pairs={resultPairs} /> : null}
                 </section>
                 {executionPairs.length > 0 ? (

@@ -48,6 +48,8 @@ function Row({ task }: { task: TaskSummary }) {
         status: task.status,
         cancelRequestedAt: task.cancelRequestedAt,
         doneAt: task.doneAt,
+        waitReason: task.waitReason,
+        waitTerminalReason: task.waitTerminalReason,
     };
     const dot = taskDotClass(status);
     const live = task.status === 'running' && task.activity !== null && task.activity.trim() !== '';
