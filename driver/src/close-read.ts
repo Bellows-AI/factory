@@ -9,7 +9,7 @@
 import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
 import type { DriverConfig } from './config.js';
-import type { RunSession } from './runner.js';
+import type { RunOutcome, RunSession } from './runner.js';
 
 /** What the readout answers: the session the run used, how it ended, and the context it reached. */
 export interface OpencodeRunOutcome {
@@ -80,6 +80,70 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
     } catch {
         return nothing;
     }
+}
+
+/** The empty `OpencodeRunOutcome` a failed or empty readout answers — every field unmeasured but `error`. */
+export function opencodeReadFailed(error: string | null): OpencodeRunOutcome {
+    return {
+        sessionId: null,
+        finishReason: null,
+        contextTokens: null,
+        costUsd: null,
+        agentTurns: null,
+        summary: null,
+        error,
+    };
+}
+
+/**
+ * Retries one opencode close-time session readout up to three times, half a second apart —
+ * shared by both executors' scrapes (docker: a throwaway container; kubernetes: a Job). NOT
+ * single-shot, and not only when the readout fails outright: the CLI exited a moment ago, and its
+ * session database may still be mid-checkpoint — a read-only open of a WAL that needs recovery
+ * fails, then succeeds milliseconds later. `readOnce` answers one of three ways — a session, an
+ * error, or nothing — and ALL but the first read as "no session yet", so the retries fire on the
+ * session being missing, whatever the reason. The reason carried back is the LATEST non-null
+ * error seen across attempts, for when every one of them came up empty.
+ */
+const OPENCODE_SESSION_READOUT_RETRIES = 3;
+const OPENCODE_SESSION_READOUT_RETRY_DELAY_MS = 500;
+
+export async function readOpencodeWithRetries(
+    readOnce: () => Promise<OpencodeRunOutcome>,
+    sleep: (ms: number) => Promise<void>
+): Promise<{ scraped: OpencodeRunOutcome; reason: string | null }> {
+    let scraped = opencodeReadFailed(null);
+    let reason: string | null = null;
+    for (let attempt = 0; attempt < OPENCODE_SESSION_READOUT_RETRIES && !scraped.sessionId; attempt += 1) {
+        if (attempt > 0) await sleep(OPENCODE_SESSION_READOUT_RETRY_DELAY_MS);
+        scraped = await readOnce();
+        reason = scraped.error ?? reason;
+    }
+    return { scraped, reason };
+}
+
+/**
+ * Merges one opencode session scrape onto the run's outcome, in place — shared by both executors,
+ * whose close-time reads answer the same `OpencodeRunOutcome` shape. A session-less scrape
+ * carries no verdict of its own: `reason` (the read's own failure, when it has one) or a generic
+ * "nothing in the database" rides `readoutError`. A scraped session's own trailing error is the
+ * RUN's last provider error, not the read's failure — carried as its own field so the verdict can
+ * name the cause of a premature stop.
+ */
+export function mergeOpencodeOutcome(outcome: RunOutcome, scraped: OpencodeRunOutcome, reason: string | null): void {
+    if (!scraped.sessionId) {
+        outcome.readoutError = reason ?? 'the readout answered nothing (no session in the database)';
+        return;
+    }
+    outcome.sessionId = scraped.sessionId;
+    if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
+    if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
+    if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
+    // The readout's turn count rides the same line: assistant response cycles of the root
+    // session, already scoped by the parent_id-is-null selection the script makes.
+    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
+    if (scraped.summary) outcome.summary = scraped.summary;
+    if (scraped.error) outcome.providerError = scraped.error;
 }
 
 /** What the claude close-time read answered: the turn count and the run's last words, or nulls. */

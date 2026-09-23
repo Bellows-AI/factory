@@ -2,7 +2,13 @@ import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { envFileBody } from './claim.js';
 import { composeRuntimeSample } from './runner.js';
-import { parseClaudeCloseRead, parseOpencodeRunOutcome } from './close-read.js';
+import {
+    mergeOpencodeOutcome,
+    opencodeReadFailed,
+    parseClaudeCloseRead,
+    parseOpencodeRunOutcome,
+    readOpencodeWithRetries,
+} from './close-read.js';
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import {
@@ -71,15 +77,7 @@ function forgetSecret(deps: K8sDeps, job: BoardJob): Promise<void> {
  * and a failed read is not a failed run.
  */
 async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: string): Promise<OpencodeRunOutcome> {
-    const fail = (error: string): OpencodeRunOutcome => ({
-        sessionId: null,
-        finishReason: null,
-        contextTokens: null,
-        costUsd: null,
-        agentTurns: null,
-        summary: null,
-        error,
-    });
+    const fail = opencodeReadFailed;
     let spec: ReturnType<typeof opencodeReadoutJobSpec>;
     try {
         spec = opencodeReadoutJobSpec(deps.config, job, startedAt);
@@ -159,60 +157,17 @@ async function scrapeClaudeCloseRead(
     }
 }
 
-/**
- * Three tries, half a second apart — the CLI exited a moment ago, and the database may still be
- * mid-checkpoint. `lastReason` is the last non-null error ANY attempt answered, carried across a
- * later attempt that answered none.
- */
-const OPENCODE_SESSION_SCRAPE_RETRIES = 3;
-const OPENCODE_SESSION_SCRAPE_DELAY_MS = 500;
-
-async function scrapeOpencodeSessionWithRetries(
-    deps: K8sDeps,
-    job: BoardJob,
-    startedAt: string
-): Promise<{ scraped: OpencodeRunOutcome; lastReason: string | null }> {
-    let scraped: OpencodeRunOutcome = {
-        sessionId: null,
-        finishReason: null,
-        contextTokens: null,
-        costUsd: null,
-        agentTurns: null,
-        summary: null,
-        error: null,
-    };
-    let lastReason: string | null = null;
-    for (let attempt = 0; attempt < OPENCODE_SESSION_SCRAPE_RETRIES && !scraped.sessionId; attempt += 1) {
-        if (attempt > 0) await deps.sleep(OPENCODE_SESSION_SCRAPE_DELAY_MS);
-        scraped = await scrapeOpencodeSession(deps, job, startedAt);
-        lastReason = scraped.error ?? lastReason;
-    }
-    return { scraped, lastReason };
-}
-
-/** Merges one opencode session scrape onto the run's outcome, in place. */
-function mergeOpencodeOutcome(scraped: OpencodeRunOutcome, lastReason: string | null, outcome: RunOutcome): void {
-    if (!scraped.sessionId) {
-        outcome.readoutError = lastReason ?? 'the readout answered nothing (no session in the database)';
-        return;
-    }
-    outcome.sessionId = scraped.sessionId;
-    if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
-    if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
-    if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
-    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
-    if (scraped.summary) outcome.summary = scraped.summary;
-    if (scraped.error) outcome.providerError = scraped.error;
-}
-
 async function attachOpencodeOutcome(
     deps: K8sDeps,
     job: BoardJob,
     startedAt: string,
     outcome: RunOutcome
 ): Promise<void> {
-    const { scraped, lastReason } = await scrapeOpencodeSessionWithRetries(deps, job, startedAt);
-    mergeOpencodeOutcome(scraped, lastReason, outcome);
+    const { scraped, reason } = await readOpencodeWithRetries(
+        () => scrapeOpencodeSession(deps, job, startedAt),
+        deps.sleep
+    );
+    mergeOpencodeOutcome(outcome, scraped, reason);
 }
 
 // The docker runner samples `docker stats`; the twin here is the metrics API, read from the

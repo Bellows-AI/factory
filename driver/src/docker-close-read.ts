@@ -8,8 +8,10 @@ import type { BoardJob } from './board.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
 import {
     CACHE_WATCH_TURNS,
-    type OpencodeRunOutcome,
+    mergeOpencodeOutcome,
+    opencodeReadFailed,
     parseOpencodeRunOutcome,
+    readOpencodeWithRetries,
     readsAgentTurns,
     parseClaudeCloseRead,
     parseOpencodeCacheProbe,
@@ -94,52 +96,6 @@ export interface CloseReadContext {
 }
 
 /**
- * Retries opencode's own close-time session readout up to OPENCODE_SESSION_READOUT_RETRIES
- * times, half a second apart. NOT single-shot, and not only when the container fails: the CLI
- * exited a moment ago, and its session database may still be mid-checkpoint — a read-only open
- * of a WAL that needs recovery fails outright, then succeeds milliseconds later. The readout
- * script answers one of three ways — a session line, an error line, or nothing — and ALL but the
- * first read as "no session yet", so the retries fire on the session being missing, whatever the
- * reason. `reason` carries the LATEST non-null error seen across attempts, for when every one of
- * them came up empty.
- */
-const OPENCODE_SESSION_READOUT_RETRIES = 3;
-
-const OPENCODE_SESSION_READOUT_RETRY_DELAY_MS = 500;
-
-async function readOpencodeSessionWithRetries(
-    ctx: CloseReadContext
-): Promise<{ scraped: OpencodeRunOutcome; reason: string | null }> {
-    let scraped: OpencodeRunOutcome = {
-        sessionId: null,
-        finishReason: null,
-        contextTokens: null,
-        costUsd: null,
-        agentTurns: null,
-        summary: null,
-        error: null,
-    };
-    let reason: string | null = null;
-    for (let attempt = 0; attempt < OPENCODE_SESSION_READOUT_RETRIES && !scraped.sessionId; attempt += 1) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, OPENCODE_SESSION_READOUT_RETRY_DELAY_MS));
-        scraped = await ctx.execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt)).then(
-            (read) => parseOpencodeRunOutcome(read.stdout),
-            (err: Error): OpencodeRunOutcome => ({
-                sessionId: null,
-                finishReason: null,
-                contextTokens: null,
-                costUsd: null,
-                agentTurns: null,
-                summary: null,
-                error: `the readout container failed: ${err.message}`,
-            })
-        );
-        reason = scraped.error ?? reason;
-    }
-    return { scraped, reason };
-}
-
-/**
  * Fills in what opencode's own exit code cannot answer: the session id the loop had none to
  * report at spawn, the finish reason (a zero exit with a finish reason that is not `stop` is the
  * model's context limit, or an abort, cutting a task short), and the context stats — all read
@@ -147,22 +103,13 @@ async function readOpencodeSessionWithRetries(
  * its follow-ups and this verdict-check, never its verdict.
  */
 async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext): Promise<void> {
-    const { scraped, reason } = await readOpencodeSessionWithRetries(ctx);
-    if (!scraped.sessionId) {
-        outcome.readoutError = reason ?? 'the readout answered nothing (no session in the database)';
-        return;
-    }
-    outcome.sessionId = scraped.sessionId;
-    if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
-    if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
-    if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
-    // The readout's turn count rides the same line: assistant response cycles of the root
-    // session, already scoped by the parent_id-is-null selection the script makes.
-    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
-    if (scraped.summary) outcome.summary = scraped.summary;
-    // With a session scraped, the line's error is the RUN's last provider error, not the read's
-    // failure — carried as its own field so the verdict can name the cause of a premature stop.
-    if (scraped.error) outcome.providerError = scraped.error;
+    const readOnce = () =>
+        ctx.execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt)).then(
+            (read) => parseOpencodeRunOutcome(read.stdout),
+            (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
+        );
+    const { scraped, reason } = await readOpencodeWithRetries(readOnce, (ms) => new Promise((r) => setTimeout(r, ms)));
+    mergeOpencodeOutcome(outcome, scraped, reason);
 }
 
 /**

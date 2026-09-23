@@ -71,10 +71,6 @@ export const HTTP_SERVER_ERROR_STATUS = 500;
 /** How much of a failed response body rides an error message — a preview, not the whole payload. */
 export const ERROR_PREVIEW_CHARS = 200;
 
-/** The close-time opencode session scrape's retries: three tries, half a second apart. */
-export const OPENCODE_SESSION_SCRAPE_RETRIES = 3;
-export const OPENCODE_SESSION_SCRAPE_DELAY_MS = 500;
-
 /** The shell convention for a killed process — the docker manager's timeout shape, matched here. */
 export const TIMEOUT_EXIT_CODE = 124;
 
