@@ -18,11 +18,13 @@ interface TaskUsageRow {
     tasks: number;
 }
 
+const MS_PER_HOUR = 3_600_000;
+
 const FORMATS: Record<TaskUsageRow['unit'], (value: number | null) => string> = {
     tokens: (value) => tokens(value),
     runs: (value) => num(value, 1),
     turns: (value) => num(value, 1),
-    duration: (value) => (value === null ? '—' : duration(value / 3_600_000)),
+    duration: (value) => (value === null ? '—' : duration(value / MS_PER_HOUR)),
 };
 
 /** The semantic order: what a task costs in tokens, then in board runs, agent turns, time. */

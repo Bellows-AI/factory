@@ -153,7 +153,8 @@ describe('analyticsState', () => {
     });
 
     it('keeps per-task usage visible when tasks were measured but telemetry is quiet', () => {
-        expect(analyticsState(telemetry(0), tasks(7))).toBe('partial');
+        const MEASURED_TASK_COUNT = 7;
+        expect(analyticsState(telemetry(0), tasks(MEASURED_TASK_COUNT))).toBe('partial');
     });
 
     it('is empty when neither side measured anything', () => {

@@ -158,11 +158,13 @@ function stubBoard(
 
 function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
-    remote: string | null = null,
-    sample: Omit<RuntimeSample, 'sampledAt'> | null = null,
-    publish: PublishResult | null = null,
-    sync: SyncResult | null = null,
-    reclaim: { ok: boolean; removed: boolean; reason: string | null } | null = null
+    options: {
+        remote?: string | null;
+        sample?: Omit<RuntimeSample, 'sampledAt'> | null;
+        publish?: PublishResult | null;
+        sync?: SyncResult | null;
+        reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null;
+    } = {}
 ): Runner & {
     killed: string[];
     lookups: number;
@@ -172,6 +174,7 @@ function stubRunner(
     synced: BoardJob[];
     reclaimed: BoardJob[];
 } {
+    const { remote = null, sample = null, publish = null, sync = null, reclaim = null } = options;
     const runner = {
         killed: [] as string[],
         lookups: 0,
@@ -496,15 +499,17 @@ describe('the poll loop', () => {
     // and its result changes the verdict — work that landed nowhere is not a success.
     it('publishes a succeeded run and says where the work landed', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, {
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: true,
+                published: true,
+                branch: 'fix/10',
+                prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+                reason: null,
+                repository: 'Bellows-AI/factory',
+                baseBranch: 'main',
+                prNumber: 42,
+            },
         });
 
         await drive({ ...board, runner });
@@ -529,15 +534,17 @@ describe('the poll loop', () => {
     // not record a thread as having shipped a PR it did not.
     it('reports no publication when the publish is a no-op', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, {
-            ok: true,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'no uncommitted changes and nothing unpushed',
-            repository: null,
-            baseBranch: null,
-            prNumber: null,
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: true,
+                published: false,
+                branch: null,
+                prUrl: null,
+                reason: 'no uncommitted changes and nothing unpushed',
+                repository: null,
+                baseBranch: null,
+                prNumber: null,
+            },
         });
 
         await drive({ ...board, runner });
@@ -548,12 +555,14 @@ describe('the poll loop', () => {
 
     it('fails the verdict when the publish does not land', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, {
-            ok: false,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'git step failed: authentication refused',
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: false,
+                published: false,
+                branch: null,
+                prUrl: null,
+                reason: 'git step failed: authentication refused',
+            },
         });
 
         await drive({ ...board, runner });
@@ -570,15 +579,17 @@ describe('the poll loop', () => {
     it('skips the publish when the claim says publish: false', async () => {
         const claimed = { ...job(1), publish: false };
         const board = stubBoard([claimed]);
-        const runner = stubRunner(async () => ok(), null, null, {
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
-            reason: null,
-            repository: 'Bellows-AI/factory',
-            baseBranch: 'main',
-            prNumber: 42,
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: true,
+                published: true,
+                branch: 'fix/10',
+                prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+                reason: null,
+                repository: 'Bellows-AI/factory',
+                baseBranch: 'main',
+                prNumber: 42,
+            },
         });
 
         await drive({ ...board, runner });
@@ -715,9 +726,11 @@ describe('the poll loop', () => {
 
     it('fails the attempt with the reason when the checkout sync fails', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, null, {
-            ok: false,
-            reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts',
+        const runner = stubRunner(async () => ok(), {
+            sync: {
+                ok: false,
+                reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts',
+            },
         });
 
         await drive({ ...board, runner });
@@ -792,7 +805,7 @@ describe('the poll loop', () => {
         // reclaim is the same downstream-of-the-verdict step it is for a run.
         const repoJob = { ...job(1), repo: 'Bellows-AI/factory', workspacePath: `bellows/${USER}` };
         const board = stubBoard([repoJob], { threadDone: true });
-        const runner = stubRunner(async () => ok(), null, null, null, { ok: false, reason: 'no disk' });
+        const runner = stubRunner(async () => ok(), { sync: { ok: false, reason: 'no disk' } });
 
         await drive({ ...board, runner });
 
@@ -804,10 +817,12 @@ describe('the poll loop', () => {
     it('reports the verdict untouched when the reclaim refuses, and logs the reason', async () => {
         const logs: string[] = [];
         const board = stubBoard([job(1)], { threadDone: true });
-        const runner = stubRunner(async () => ok(), null, null, null, null, {
-            ok: false,
-            removed: false,
-            reason: 'refusing to remove /workspaces/bellows/44444444-4444-4444-8444-444444444444/.worktrees/0000000',
+        const runner = stubRunner(async () => ok(), {
+            reclaim: {
+                ok: false,
+                removed: false,
+                reason: 'refusing to remove /workspaces/bellows/44444444-4444-4444-8444-444444444444/.worktrees/0000000',
+            },
         });
         const loop = createLoop({
             board: board.board,
@@ -1616,9 +1631,11 @@ describe('the poll loop', () => {
     // the claim down itself (Foreground Job delete, then release) before answering ok:false.
     it('does not release the fence when the sync itself fails — the runner released it', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, null, {
-            ok: false,
-            reason: 'conflict in driver/src/loop.ts',
+        const runner = stubRunner(async () => ok(), {
+            sync: {
+                ok: false,
+                reason: 'conflict in driver/src/loop.ts',
+            },
         });
         const { events } = releaseEvents(board.board, runner);
 
@@ -1711,10 +1728,13 @@ describe('the poll loop', () => {
      */
     it('reports the remote session id once the bridge has one', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 10));
-            return ok();
-        }, 'cse_015tb2nHhHNrBuL7ZDhn9Wx5');
+        const runner = stubRunner(
+            async () => {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+                return ok();
+            },
+            { remote: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5' }
+        );
 
         await drive({ ...board, runner }, { RUNNER_REMOTE_CONTROL: '1' });
 
@@ -1795,8 +1815,7 @@ describe('the poll loop', () => {
                 while (!board.board.progressed.some((p) => p.runtime)) await sleep();
                 return ok({ output: 'final' });
             },
-            null,
-            { cpuPercent: 93, memUsedMb: 544, memPercent: 7 }
+            { sample: { cpuPercent: 93, memUsedMb: 544, memPercent: 7 } }
         );
 
         await drive({ ...board, runner });
@@ -1829,12 +1848,13 @@ describe('the poll loop', () => {
                 while (!board.board.progressed.some((p) => p.runtime?.services)) await sleep();
                 return ok({ output: 'final' });
             },
-            null,
             {
-                cpuPercent: null,
-                memUsedMb: null,
-                memPercent: null,
-                services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+                sample: {
+                    cpuPercent: null,
+                    memUsedMb: null,
+                    memPercent: null,
+                    services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+                },
             }
         );
 

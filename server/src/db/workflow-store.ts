@@ -1,12 +1,13 @@
 import type { Sql, TransactionSql } from 'postgres';
 import {
-    type DefinitionRefusal,
     type WorkflowDefinition,
     type WorkflowParam,
     WORKFLOW_NAME,
     SCOPE_SEGMENT,
     validateDefinition,
 } from './workflow-schema.js';
+import { compileDefinition } from './workflow-blocks/index.js';
+import type { CompileRefusal } from './workflow-blocks/types.js';
 import { BASE_WORKFLOW } from './workflow-templates.js';
 
 /**
@@ -50,7 +51,9 @@ export interface WorkflowTarget {
 
 /** Why a create was refused. Every code is named — a bad definition is diagnosable from the answer. */
 export interface WorkflowRefusal {
-    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | DefinitionRefusal['code'];
+    // CompileRefusal['code'] already includes every DefinitionRefusal code — validateDefinition's
+    // own refusal is surfaced through compileDefinition's re-validation pass either way.
+    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | CompileRefusal['code'];
     message: string;
 }
 
@@ -86,6 +89,41 @@ const toRecord = (row: WorkflowRow): WorkflowRecord => ({
     ...toSummary(row),
     definition: { ...row.definition, params: row.definition.params ?? [] },
 });
+
+/**
+ * The structural refusals `create` checks before ever touching `validateDefinition` or the
+ * database: a bad name, a malformed scope segment, or a name reserved for the seeded base
+ * workflow. Pulled out of `create` so the method itself stays a straight line.
+ */
+function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal | null {
+    if (typeof name !== 'string' || !WORKFLOW_NAME.test(name.trim()) || name.trim() !== name) {
+        return { code: 'BAD_NAME', message: 'name must be 1..100 characters without padding' };
+    }
+    if (scope.kind === 'user' && !SCOPE_SEGMENT.test(scope.userId)) {
+        return { code: 'BAD_SCOPE', message: 'user scope must name an account id' };
+    }
+    if (scope.kind === 'repo') {
+        for (const [label, part] of [
+            ['owner', scope.owner],
+            ['name', scope.name],
+        ] as const) {
+            if (!SCOPE_SEGMENT.test(part)) {
+                return { code: 'BAD_SCOPE', message: `repo scope ${label} must be a checkout-safe segment` };
+            }
+        }
+    }
+    // The base workflow's org slot is the board's: seedBase refreshes that one row to the
+    // shipped template every boot, so an admin definition here would be silently replaced
+    // on the next start. The name stays reserved in the org scope; sibling scopes keep
+    // their own same-named definitions untouched.
+    if (scope.kind === 'org' && name.trim() === BASE_WORKFLOW.name) {
+        return {
+            code: 'NAME_TAKEN',
+            message: `"${BASE_WORKFLOW.name}" is reserved for the board's own org-level workflow`,
+        };
+    }
+    return null;
+}
 
 /**
  * The organization is bound at construction, the way every store is: one deployment, one org, and
@@ -135,39 +173,17 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
     return {
         async create({ name, scope, definition, createdBy }) {
             await gate();
-            if (typeof name !== 'string' || !WORKFLOW_NAME.test(name.trim()) || name.trim() !== name) {
-                return { refused: true, code: 'BAD_NAME', message: 'name must be 1..100 characters without padding' };
-            }
-            if (scope.kind === 'user' && !SCOPE_SEGMENT.test(scope.userId)) {
-                return { refused: true, code: 'BAD_SCOPE', message: 'user scope must name an account id' };
-            }
-            if (scope.kind === 'repo') {
-                for (const [label, part] of [
-                    ['owner', scope.owner],
-                    ['name', scope.name],
-                ] as const) {
-                    if (!SCOPE_SEGMENT.test(part)) {
-                        return {
-                            refused: true,
-                            code: 'BAD_SCOPE',
-                            message: `repo scope ${label} must be a checkout-safe segment`,
-                        };
-                    }
-                }
-            }
-            // The base workflow's org slot is the board's: seedBase refreshes that one row to the
-            // shipped template every boot, so an admin definition here would be silently replaced
-            // on the next start. The name stays reserved in the org scope; sibling scopes keep
-            // their own same-named definitions untouched.
-            if (scope.kind === 'org' && name.trim() === BASE_WORKFLOW.name) {
-                return {
-                    refused: true,
-                    code: 'NAME_TAKEN',
-                    message: `"${BASE_WORKFLOW.name}" is reserved for the board's own org-level workflow`,
-                };
-            }
+            const refusal = checkCreateInput(name, scope);
+            if (refusal) return { refused: true, ...refusal };
             const check = validateDefinition(definition);
             if (!check.ok) return { refused: true, code: check.refusal.code, message: check.refusal.message };
+            // A `kind: "block"` node never reaches storage: compileDefinition expands every block
+            // reference into its low-level agent-node subgraph and re-validates the result BEFORE
+            // this row exists, so what lands in `definition` — and later, unchanged, on a root
+            // job's frozen snapshot — is always the ordinary agent-only shape workflow-engine.ts
+            // and routes/jobs.ts already depend on (docs/workflows.md, "Built-in blocks").
+            const compiled = compileDefinition(check.definition);
+            if (!compiled.ok) return { refused: true, code: compiled.refusal.code, message: compiled.refusal.message };
 
             const values = {
                 org_id: orgId,
@@ -175,7 +191,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
                 user_id: scope.kind === 'user' ? scope.userId : null,
                 repo_owner: scope.kind === 'repo' ? scope.owner : null,
                 repo_name: scope.kind === 'repo' ? scope.name : null,
-                definition: check.definition as never,
+                definition: compiled.definition as never,
                 created_by: createdBy,
             };
             try {

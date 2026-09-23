@@ -41,6 +41,15 @@ export interface RepositorySetupSummaryProps {
     onSave: () => void;
 }
 
+/** The installation line's sentence, or null when there is no installation to name yet. */
+function installationNote(installation: RepositorySetupSummaryProps['installation']): string | null {
+    if (!installation) return null;
+    const scope = installation.repositorySelection
+        ? ` — access to ${installation.repositorySelection} repositories`
+        : '';
+    return `Installation: ${installation.account ?? 'GitHub App'}${scope}.`;
+}
+
 export function RepositorySetupSummary({
     counts,
     installation,
@@ -68,15 +77,7 @@ export function RepositorySetupSummary({
                     {counts.settingUp} setting up · {counts.failed} failed
                 </p>
             ) : null}
-            {installation ? (
-                <p className="muted">
-                    Installation: {installation.account ?? 'GitHub App'}
-                    {installation.repositorySelection
-                        ? ` — access to ${installation.repositorySelection} repositories`
-                        : ''}
-                    .
-                </p>
-            ) : null}
+            {installationNote(installation) ? <p className="muted">{installationNote(installation)}</p> : null}
             {cachedError ? (
                 <p className="status">
                     Showing a cached list{fetchedAt ? ` from ${commitDate(fetchedAt)}` : ''}: {cachedError}

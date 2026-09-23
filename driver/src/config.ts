@@ -213,6 +213,44 @@ export function executorImage(config: DriverConfig, executorType: ExecutorType |
     return config.executorImages[executorType];
 }
 
+/** One hour in milliseconds — the unit most of the bounds below are expressed in. */
+const MS_PER_HOUR = 3_600_000;
+/** One minute in milliseconds. */
+const MS_PER_MINUTE = 60_000;
+/** The upper bound on DRIVER_LEASE_SECONDS: one hour. */
+const MAX_LEASE_SECONDS = 3600;
+/** The lower bound on DRIVER_JOB_TIMEOUT_MS. */
+const MIN_JOB_TIMEOUT_MS = 1_000;
+/** The lower bound on RUNNER_IDLE_MS. */
+const MIN_IDLE_MS = 1_000;
+/** The upper bound on DRIVER_CONCURRENCY. */
+const MAX_CONCURRENCY = 32;
+/** The lower bound on DRIVER_POLL_MS. */
+const MIN_POLL_MS = 250;
+/** The upper bound on DRIVER_POLL_MS. */
+const MAX_POLL_MS = 300_000;
+/** The default GATE_COOLDOWN_MS: ten minutes, per the issue this cooldown implements. */
+const DEFAULT_GATE_COOLDOWN_MS = 600_000;
+/** The default GATE_TIMEOUT_MS. */
+const DEFAULT_GATE_TIMEOUT_MS = 600_000;
+/** The lower bound on GATE_TIMEOUT_MS. */
+const MIN_GATE_TIMEOUT_MS = 1_000;
+/** The default RUNNER_CACHE_WATCH_POLL_MS. */
+const DEFAULT_CACHE_WATCH_POLL_MS = 30_000;
+/** The lower bound on RUNNER_CACHE_WATCH_POLL_MS. */
+const MIN_CACHE_WATCH_POLL_MS = 250;
+/** The upper bound on RUNNER_CACHE_WATCH_POLL_MS. */
+const MAX_CACHE_WATCH_POLL_MS = 300_000;
+
+// An explicit enum, like the server's AUTH_MODE: a value this process does not know is fatal,
+// never a fallback to docker — the first symptom of a fallback would be a driver that claims
+// jobs and runs nothing, forever.
+const EXECUTORS = ['docker', 'kubernetes'] as const;
+
+// An explicit enum, like EXECUTOR: the API server would reject a bad policy only at job-create
+// time, which is attempt-burning — the failure this whole loader exists to move to startup.
+const PULL_POLICIES = ['Always', 'IfNotPresent', 'Never'] as const;
+
 const DEFAULTS = {
     boardUrl: 'http://127.0.0.1:8080',
     claudeExecutorImage: 'claude-executor',
@@ -222,18 +260,18 @@ const DEFAULTS = {
     concurrency: 2,
     pollMs: 5_000,
     leaseSeconds: 300,
-    jobTimeoutMs: 2 * 3600_000,
-    idleMs: 60 * 60_000,
+    jobTimeoutMs: 2 * MS_PER_HOUR,
+    idleMs: 60 * MS_PER_MINUTE,
     authVolume: 'claude-executor-auth',
     otelEndpoint: 'http://collector:4318',
     passEnv: 'CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY',
 } as const;
 
-function int(raw: string | undefined, label: string, fallback: number, min: number, max: number): number {
+function int(raw: string | undefined, label: string, fallback: number, bounds: { min: number; max: number }): number {
     if (raw === undefined || raw === '') return fallback;
     const value = Number(raw);
-    if (!Number.isInteger(value) || value < min || value > max) {
-        throw new Error(`${label} must be an integer ${min}..${max}, got "${raw}"`);
+    if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
+        throw new Error(`${label} must be an integer ${bounds.min}..${bounds.max}, got "${raw}"`);
     }
     return value;
 }
@@ -249,59 +287,39 @@ function text(raw: string | undefined, label: string, fallback: string): string 
     return value;
 }
 
-export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
-    const boardUrl = text(env.JOB_BOARD_URL, 'JOB_BOARD_URL', DEFAULTS.boardUrl).replace(/\/+$/, '');
-    // The protocol is checked, not just the parse: `new URL('dashboard:8080')` succeeds with
-    // 'dashboard:' as the scheme, and the first symptom would be every claim failing against a
-    // value that reads perfectly well.
+// The protocol is checked, not just the parse: `new URL('dashboard:8080')` succeeds with
+// 'dashboard:' as the scheme, and the first symptom would be every claim failing against a
+// value that reads perfectly well.
+function assertHttpUrl(url: string, label: string): void {
     const scheme = (() => {
         try {
-            return new URL(boardUrl).protocol;
+            return new URL(url).protocol;
         } catch {
             return null;
         }
     })();
     if (scheme !== 'http:' && scheme !== 'https:') {
-        throw new Error(`JOB_BOARD_URL must be an http(s) URL, got "${boardUrl}"`);
+        throw new Error(`${label} must be an http(s) URL, got "${url}"`);
     }
+}
 
-    // The branch reporter's endpoint, defaulted to the board itself — one URL, already checked
-    // and already trailing-slash-stripped. An explicit RUNNER_STATS_URL is validated under its
-    // own name (strip included, for the same reason: agents concatenate request paths onto this
-    // string, and a double slash 404s into the reporter's silence), so a bad override is blamed
-    // on the variable that caused it, not on the board URL it displaced.
-    const statsUrl = ((env.RUNNER_STATS_URL ?? '').trim() || boardUrl).replace(/\/+$/, '');
-    const statsScheme = (() => {
-        try {
-            return new URL(statsUrl).protocol;
-        } catch {
-            return null;
-        }
-    })();
-    if (statsScheme !== 'http:' && statsScheme !== 'https:') {
-        throw new Error(`RUNNER_STATS_URL must be an http(s) URL, got "${statsUrl}"`);
-    }
-
-    const leaseSeconds = int(env.DRIVER_LEASE_SECONDS, 'DRIVER_LEASE_SECONDS', DEFAULTS.leaseSeconds, 10, 3600);
-    const jobTimeoutMs = int(
-        env.DRIVER_JOB_TIMEOUT_MS,
-        'DRIVER_JOB_TIMEOUT_MS',
-        DEFAULTS.jobTimeoutMs,
-        1_000,
-        24 * 3600_000
-    );
-
-    // An explicit enum, like the server's AUTH_MODE: a value this process does not know is fatal,
-    // never a fallback to docker — the first symptom of a fallback would be a driver that claims
-    // jobs and runs nothing, forever.
-    const EXECUTORS = ['docker', 'kubernetes'] as const;
+function resolveExecutor(env: NodeJS.ProcessEnv): (typeof EXECUTORS)[number] {
     const executorRaw = (env.EXECUTOR ?? '').trim() || 'docker';
     if (!EXECUTORS.includes(executorRaw as (typeof EXECUTORS)[number])) {
         throw new Error(`EXECUTOR must be one of ${EXECUTORS.join(', ')}, got "${executorRaw}"`);
     }
-    const executor = executorRaw as (typeof EXECUTORS)[number];
+    return executorRaw as (typeof EXECUTORS)[number];
+}
 
-    const remoteControl = flag(env.RUNNER_REMOTE_CONTROL);
+function resolvePullPolicy(env: NodeJS.ProcessEnv): (typeof PULL_POLICIES)[number] {
+    const pullPolicyRaw = (env.RUNNER_IMAGE_PULL_POLICY ?? '').trim() || 'IfNotPresent';
+    if (!PULL_POLICIES.includes(pullPolicyRaw as (typeof PULL_POLICIES)[number])) {
+        throw new Error(`RUNNER_IMAGE_PULL_POLICY must be one of ${PULL_POLICIES.join(', ')}, got "${pullPolicyRaw}"`);
+    }
+    return pullPolicyRaw as (typeof PULL_POLICIES)[number];
+}
+
+function assertRemoteControlSupported(remoteControl: boolean, executor: (typeof EXECUTORS)[number]): void {
     if (remoteControl && executor === 'kubernetes') {
         throw new Error(
             'RUNNER_REMOTE_CONTROL is not supported under EXECUTOR=kubernetes: it needs a tty, an auth ' +
@@ -309,6 +327,49 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
                 'workloads on EXECUTOR=docker.'
         );
     }
+}
+
+// The cache watch is opencode's, so Claude Code tasks ignore it even when the same driver also
+// serves OpenCode work. The probe reads the opencode session database, whose message rows
+// record per-turn input and cache tokens; a claude-code transcript answers nothing. It stays
+// docker-only: each tick is one throwaway container on an already-warm daemon, while the
+// kubernetes equivalent would be a Job per tick — pod admission every poll period is a tax
+// no watch is worth paying the cluster.
+function assertCacheWatchSupported(cacheWatch: boolean, executor: (typeof EXECUTORS)[number]): void {
+    if (cacheWatch && executor === 'kubernetes') {
+        throw new Error(
+            'RUNNER_CACHE_WATCH is not supported under EXECUTOR=kubernetes: each watch tick is one ' +
+                'throwaway container on the docker daemon, and a Job per tick would put the cluster ' +
+                'under pod-admission load no watch is worth. Run the cache watch on EXECUTOR=docker.'
+        );
+    }
+}
+
+export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
+    const boardUrl = text(env.JOB_BOARD_URL, 'JOB_BOARD_URL', DEFAULTS.boardUrl).replace(/\/+$/, '');
+    assertHttpUrl(boardUrl, 'JOB_BOARD_URL');
+
+    // The branch reporter's endpoint, defaulted to the board itself — one URL, already checked
+    // and already trailing-slash-stripped. An explicit RUNNER_STATS_URL is validated under its
+    // own name (strip included, for the same reason: agents concatenate request paths onto this
+    // string, and a double slash 404s into the reporter's silence), so a bad override is blamed
+    // on the variable that caused it, not on the board URL it displaced.
+    const statsUrl = ((env.RUNNER_STATS_URL ?? '').trim() || boardUrl).replace(/\/+$/, '');
+    assertHttpUrl(statsUrl, 'RUNNER_STATS_URL');
+
+    const leaseSeconds = int(env.DRIVER_LEASE_SECONDS, 'DRIVER_LEASE_SECONDS', DEFAULTS.leaseSeconds, {
+        min: 10,
+        max: MAX_LEASE_SECONDS,
+    });
+    const jobTimeoutMs = int(env.DRIVER_JOB_TIMEOUT_MS, 'DRIVER_JOB_TIMEOUT_MS', DEFAULTS.jobTimeoutMs, {
+        min: MIN_JOB_TIMEOUT_MS,
+        max: 24 * MS_PER_HOUR,
+    });
+
+    const executor = resolveExecutor(env);
+
+    const remoteControl = flag(env.RUNNER_REMOTE_CONTROL);
+    assertRemoteControlSupported(remoteControl, executor);
 
     // Auxiliary services run under both executors: docker networks and sibling containers
     // there, service pods with headless DNS Services here. The RUNNER_SERVICES flag decides
@@ -319,28 +380,10 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     const servicesEnabled = flag(env.RUNNER_SERVICES, true);
 
-    // An explicit enum, like EXECUTOR: the API server would reject a bad policy only at job-create
-    // time, which is attempt-burning — the failure this whole loader exists to move to startup.
-    const PULL_POLICIES = ['Always', 'IfNotPresent', 'Never'] as const;
-    const pullPolicyRaw = (env.RUNNER_IMAGE_PULL_POLICY ?? '').trim() || 'IfNotPresent';
-    if (!PULL_POLICIES.includes(pullPolicyRaw as (typeof PULL_POLICIES)[number])) {
-        throw new Error(`RUNNER_IMAGE_PULL_POLICY must be one of ${PULL_POLICIES.join(', ')}, got "${pullPolicyRaw}"`);
-    }
+    const pullPolicyRaw = resolvePullPolicy(env);
 
-    // The cache watch is opencode's, so Claude Code tasks ignore it even when the same driver also
-    // serves OpenCode work. The probe reads the opencode session database, whose message rows
-    // record per-turn input and cache tokens; a claude-code transcript answers nothing. It stays
-    // docker-only: each tick is one throwaway container on an already-warm daemon, while the
-    // kubernetes equivalent would be a Job per tick — pod admission every poll period is a tax
-    // no watch is worth paying the cluster.
     const cacheWatch = flag(env.RUNNER_CACHE_WATCH);
-    if (cacheWatch && executor === 'kubernetes') {
-        throw new Error(
-            'RUNNER_CACHE_WATCH is not supported under EXECUTOR=kubernetes: each watch tick is one ' +
-                'throwaway container on the docker daemon, and a Job per tick would put the cluster ' +
-                'under pod-admission load no watch is worth. Run the cache watch on EXECUTOR=docker.'
-        );
-    }
+    assertCacheWatchSupported(cacheWatch, executor);
 
     return {
         boardUrl,
@@ -357,13 +400,19 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,
         statsUrl,
         network: (env.RUNNER_NETWORK ?? '').trim() || null,
-        concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, 1, 32),
-        pollMs: int(env.DRIVER_POLL_MS, 'DRIVER_POLL_MS', DEFAULTS.pollMs, 250, 300_000),
+        concurrency: int(env.DRIVER_CONCURRENCY, 'DRIVER_CONCURRENCY', DEFAULTS.concurrency, {
+            min: 1,
+            max: MAX_CONCURRENCY,
+        }),
+        pollMs: int(env.DRIVER_POLL_MS, 'DRIVER_POLL_MS', DEFAULTS.pollMs, { min: MIN_POLL_MS, max: MAX_POLL_MS }),
         leaseSeconds,
         jobTimeoutMs,
         skipPermissions: flag(env.RUNNER_SKIP_PERMISSIONS),
         remoteControl,
-        idleMs: int(env.RUNNER_IDLE_MS, 'RUNNER_IDLE_MS', DEFAULTS.idleMs, 1_000, 24 * 3600_000),
+        idleMs: int(env.RUNNER_IDLE_MS, 'RUNNER_IDLE_MS', DEFAULTS.idleMs, {
+            min: MIN_IDLE_MS,
+            max: 24 * MS_PER_HOUR,
+        }),
         authVolume: text(env.RUNNER_AUTH_VOLUME, 'RUNNER_AUTH_VOLUME', DEFAULTS.authVolume),
         passEnv: text(env.RUNNER_ENV, 'RUNNER_ENV', DEFAULTS.passEnv)
             .split(',')
@@ -377,14 +426,25 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // release's runners sharing the namespace.
         k8sRelease: (env.K8S_RELEASE ?? '').trim() || null,
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
-        imagePullPolicy: pullPolicyRaw as (typeof PULL_POLICIES)[number],
-        gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', 600_000, 0, 24 * 3600_000),
+        imagePullPolicy: pullPolicyRaw,
+        gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', DEFAULT_GATE_COOLDOWN_MS, {
+            min: 0,
+            max: 24 * MS_PER_HOUR,
+        }),
         gateListenHost: text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1'),
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
-        gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', 600_000, 1_000, 24 * 3600_000),
+        gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', DEFAULT_GATE_TIMEOUT_MS, {
+            min: MIN_GATE_TIMEOUT_MS,
+            max: 24 * MS_PER_HOUR,
+        }),
         servicesEnabled,
         cacheWatch,
-        cacheWatchPollMs: int(env.RUNNER_CACHE_WATCH_POLL_MS, 'RUNNER_CACHE_WATCH_POLL_MS', 30_000, 250, 300_000),
+        cacheWatchPollMs: int(
+            env.RUNNER_CACHE_WATCH_POLL_MS,
+            'RUNNER_CACHE_WATCH_POLL_MS',
+            DEFAULT_CACHE_WATCH_POLL_MS,
+            { min: MIN_CACHE_WATCH_POLL_MS, max: MAX_CACHE_WATCH_POLL_MS }
+        ),
     };
 }
 

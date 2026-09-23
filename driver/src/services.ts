@@ -87,35 +87,58 @@ const MARKER = /^###__bellows:(.*)$/;
  * cannot mis-toggle it: in a double-quoted span `\"` is a character the span holds, and in a
  * single-quoted one the doubled `''` is the whole escape, consumed as a pair.
  */
+/**
+ * Advances past one character of a double-quoted span. The backslash escapes the next
+ * character, so `\"` is a quoted quote and the span stays open — otherwise `"va\"" # note`
+ * cuts its comment inside the value.
+ */
+function stepDoubleQuoted(line: string, i: number): { advance: number; closed: boolean } {
+    const ch = line[i];
+    if (ch === '\\') return { advance: 2, closed: false };
+    if (ch === '"') return { advance: 1, closed: true };
+    return { advance: 1, closed: false };
+}
+
+/**
+ * Advances past one character of a single-quoted span. The doubled quote is the escape: consume
+ * the pair, and only a lone `'` closes the span.
+ */
+function stepSingleQuoted(line: string, i: number): { advance: number; closed: boolean } {
+    const ch = line[i];
+    if (ch === "'" && line[i + 1] === "'") return { advance: 2, closed: false };
+    if (ch === "'") return { advance: 1, closed: true };
+    return { advance: 1, closed: false };
+}
+
+/** Whether `line[i]` is a `#` that opens a comment: at line start, or after whitespace. */
+function isCommentStart(line: string, i: number): boolean {
+    if (line[i] !== '#') return false;
+    return i === 0 || line[i - 1] === ' ' || line[i - 1] === '\t';
+}
+
+/** Advances one character through the line's quote state, outside any comment. */
+function advanceQuoteState(line: string, i: number, quote: string | null): { i: number; quote: string | null } {
+    if (quote === '"') {
+        const step = stepDoubleQuoted(line, i);
+        return { i: i + step.advance, quote: step.closed ? null : quote };
+    }
+    if (quote === "'") {
+        const step = stepSingleQuoted(line, i);
+        return { i: i + step.advance, quote: step.closed ? null : quote };
+    }
+    const ch = line[i];
+    if (ch === '"' || ch === "'") return { i: i + 1, quote: ch };
+    return { i: i + 1, quote };
+}
+
 function stripComment(line: string): string {
     let quote: string | null = null;
-    for (let i = 0; i < line.length; i += 1) {
-        const ch = line[i];
-        if (quote === '"') {
-            // The backslash escapes the next character, so `\"` is a quoted quote and the span
-            // stays open — otherwise `"va\"" # note` cuts its comment inside the value.
-            if (ch === '\\') {
-                i += 1;
-                continue;
-            }
-            if (ch === '"') quote = null;
-            continue;
-        }
-        if (quote === "'") {
-            // The doubled quote is the escape: consume the pair, and only a lone `'` closes
-            // the span.
-            if (ch === "'" && line[i + 1] === "'") {
-                i += 1;
-                continue;
-            }
-            if (ch === "'") quote = null;
-            continue;
-        }
-        if (ch === '"' || ch === "'") {
-            quote = ch;
-            continue;
-        }
-        if (ch === '#' && (i === 0 || line[i - 1] === ' ' || line[i - 1] === '\t')) return line.slice(0, i);
+    let i = 0;
+    while (i < line.length) {
+        if (quote === null && isCommentStart(line, i)) return line.slice(0, i);
+        const next = advanceQuoteState(line, i, quote);
+        i = next.i;
+        quote = next.quote;
     }
     return line;
 }
@@ -156,11 +179,19 @@ const DOUBLE_QUOTED_ESCAPES = new Map<string, string>([
  * crash fromCodePoint as an infrastructure-looking error) is refused: all three would otherwise
  * decode a code point the author did not write.
  */
+/** The digit count §7.3.2 fixes for `\u` — a 16-bit code unit. */
+const HEX_ESCAPE_DIGITS_U = 4;
+/** The digit count §7.3.2 fixes for `\U` — a full 32-bit code point. */
+const HEX_ESCAPE_DIGITS_UPPER_U = 8;
+
 const HEX_ESCAPE_LENGTHS = new Map<string, number>([
     ['x', 2],
-    ['u', 4],
-    ['U', 8],
+    ['u', HEX_ESCAPE_DIGITS_U],
+    ['U', HEX_ESCAPE_DIGITS_UPPER_U],
 ]);
+
+/** Unicode's own cap — the highest code point `String.fromCodePoint` accepts. */
+const UNICODE_MAX_CODE_POINT = 0x10ffff;
 
 /**
  * A scalar. Unquoted values are kept as written (numbers included). A quoted value is decoded by
@@ -170,6 +201,33 @@ const HEX_ESCAPE_LENGTHS = new Map<string, number>([
  * full escape set above and refuse an escape outside it, under this file's standing posture that
  * a construct the parser does not understand is an error a human reads.
  */
+/**
+ * Decodes one backslash escape at `body[i]` (the backslash itself). Answers the decoded text and
+ * how many characters, counted from the backslash, it consumed.
+ */
+function decodeDoubleQuotedEscape(body: string, i: number): { text: string; length: number } {
+    const next = body[i + 1] ?? '';
+    const hexLength = HEX_ESCAPE_LENGTHS.get(next);
+    if (hexLength !== undefined) {
+        // slice() returns less than asked near the end of the string, so the length check is
+        // what makes "\u12" malformed rather than a silent short decode.
+        const digits = body.slice(i + 2, i + 2 + hexLength);
+        const point = digits.length === hexLength && /^[0-9a-fA-F]+$/.test(digits) ? parseInt(digits, 16) : NaN;
+        if (Number.isNaN(point) || point > UNICODE_MAX_CODE_POINT) {
+            throw new Error(
+                `.bellows.yaml: malformed escape "\\${next}${digits}" in a double-quoted value — ` +
+                    `"\\${next}" takes exactly ${hexLength} hex digits within Unicode`
+            );
+        }
+        return { text: String.fromCodePoint(point), length: 2 + hexLength };
+    }
+    const decoded = DOUBLE_QUOTED_ESCAPES.get(next);
+    if (decoded === undefined) {
+        throw new Error(`.bellows.yaml: unknown escape "\\${next}" in a double-quoted value`);
+    }
+    return { text: decoded, length: 2 };
+}
+
 function scalar(raw: string): string {
     const value = raw.trim();
     if (value.length < 2) return value;
@@ -179,35 +237,17 @@ function scalar(raw: string): string {
     if (value.startsWith('"') && value.endsWith('"')) {
         const body = value.slice(1, -1);
         let out = '';
-        for (let i = 0; i < body.length; i += 1) {
+        let i = 0;
+        while (i < body.length) {
             const ch = body[i];
             if (ch !== '\\') {
                 out += ch;
+                i += 1;
                 continue;
             }
-            const next = body[i + 1] ?? '';
-            const hexLength = HEX_ESCAPE_LENGTHS.get(next);
-            if (hexLength !== undefined) {
-                // slice() returns less than asked near the end of the string, so the length
-                // check is what makes "\u12" malformed rather than a silent short decode.
-                const digits = body.slice(i + 2, i + 2 + hexLength);
-                const point = digits.length === hexLength && /^[0-9a-fA-F]+$/.test(digits) ? parseInt(digits, 16) : NaN;
-                if (Number.isNaN(point) || point > 0x10ffff) {
-                    throw new Error(
-                        `.bellows.yaml: malformed escape "\\${next}${digits}" in a double-quoted value — ` +
-                            `"\\${next}" takes exactly ${hexLength} hex digits within Unicode`
-                    );
-                }
-                out += String.fromCodePoint(point);
-                i += 1 + hexLength;
-                continue;
-            }
-            const decoded = DOUBLE_QUOTED_ESCAPES.get(next);
-            if (decoded === undefined) {
-                throw new Error(`.bellows.yaml: unknown escape "\\${next}" in a double-quoted value`);
-            }
-            out += decoded;
-            i += 1;
+            const decoded = decodeDoubleQuotedEscape(body, i);
+            out += decoded.text;
+            i += decoded.length;
         }
         return out;
     }
@@ -252,74 +292,160 @@ const ERROR_PREFIX = '###__bellows_error:';
  * grammar, and a gates-only file parses to no services — while every other unknown top-level
  * key is still refused.
  */
-export function parseBellows(text: string): ServiceSpec[] {
-    interface Item {
-        itemIndent: number;
-        name: string;
-        image: string;
-        environment: { key: string; value: string }[];
-        inEnvironment: boolean;
-        keys: Set<string>;
-        envKeys: Set<string>;
+
+interface BellowsItem {
+    itemIndent: number;
+    name: string;
+    image: string;
+    environment: { key: string; value: string }[];
+    inEnvironment: boolean;
+    keys: Set<string>;
+    envKeys: Set<string>;
+}
+
+/** Validates and files the just-finished item, when there is one. A no-op on a null item. */
+function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
+    if (!item) return;
+    const { name, image, environment } = item;
+    if (!name) throw new Error('.bellows.yaml: a service is missing "name"');
+    if (!image) throw new Error('.bellows.yaml: a service is missing "image"');
+    if (!SERVICE_NAME.test(name)) {
+        throw new Error(
+            `.bellows.yaml: service name "${name}" must be a lowercase DNS label ` +
+                '(letters, digits and hyphens, at most 30 characters, none at either end)'
+        );
     }
+    if (!IMAGE.test(image)) {
+        throw new Error(`.bellows.yaml: image "${image}" does not look like an image reference`);
+    }
+    if (specs.some((s) => s.name === name)) {
+        throw new Error(`.bellows.yaml: duplicate service name "${name}"`);
+    }
+    specs.push({ name, image, environment });
+}
+
+/** Applies one `name:`/`image:`/`environment:` field to the item mid-parse. */
+function applyServiceField(item: BellowsItem, key: string, value: string): void {
+    if (key === 'name') {
+        item.name = value;
+        return;
+    }
+    if (key === 'image') {
+        item.image = value;
+        return;
+    }
+    if (key === 'environment') {
+        if (value !== '') {
+            throw new Error('.bellows.yaml: "environment" must be a mapping of "KEY: value" lines');
+        }
+        item.inEnvironment = true;
+        return;
+    }
+    throw new Error(`.bellows.yaml: unknown service key "${key}" — supported: name, image, environment`);
+}
+
+function applyField(item: BellowsItem, chunk: string): void {
+    const m = chunk.match(/^([^:]+):\s*(.*)$/);
+    if (!m) throw new Error(`.bellows.yaml: cannot parse line "${chunk.trim()}"`);
+    // The regex guarantees both groups when it matched; `?? ''` only satisfies
+    // noUncheckedIndexedAccess, and scalar('') reads as the empty value it would be.
+    const key = scalar(m[1] ?? '');
+    const value = scalar(m[2] ?? '');
+    if (item.keys.has(key)) throw new Error(`.bellows.yaml: duplicate key "${key}" in one service`);
+    item.keys.add(key);
+    applyServiceField(item, key, value);
+}
+
+function refuseTopLevel(content: string): never {
+    const key = scalar(content.split(':')[0] ?? content);
+    if (key === 'services') {
+        throw new Error('.bellows.yaml: "services" must be a list of "- name: …" items');
+    }
+    throw new Error(`.bellows.yaml: unknown key "${key}" — only "services" is supported`);
+}
+
+/**
+ * Applies one environment-mapping line under a service's `environment:` key. Environment
+ * entries sit deeper than the item's keys (`environment:` at itemIndent+2, its keys below
+ * that) — the caller enforces that depth before calling this.
+ */
+function applyEnvironmentEntry(item: BellowsItem, content: string): void {
+    const m = content.match(/^([^:]+):\s*(.*)$/);
+    if (!m) throw new Error(`.bellows.yaml: cannot parse line "${content}"`);
+    const key = scalar(m[1] ?? '');
+    const value = scalar(m[2] ?? '');
+    if (!ENV_KEY.test(key)) {
+        throw new Error(`.bellows.yaml: "${key}" is not a valid environment variable name`);
+    }
+    if (key.length > MAX_ENV_KEY || value.length > MAX_ENV_VALUE) {
+        throw new Error(
+            `.bellows.yaml: "${key}" is too long — keys at most ${MAX_ENV_KEY} and values at most ` +
+                `${MAX_ENV_VALUE} characters`
+        );
+    }
+    if (item.envKeys.has(key)) {
+        throw new Error(`.bellows.yaml: duplicate environment key "${key}" in one service`);
+    }
+    item.envKeys.add(key);
+    item.environment.push({ key, value });
+}
+
+/**
+ * Handles one top-level line before any service item has been seen: the `services:` header, the
+ * gates-half `environment:` block, or a refusal. Answers whether `services:` was just found.
+ */
+function applyPreamble(content: string): { seenServices: boolean; inGatesBlock: boolean } {
+    const emptyList = content.match(/^services:\s*\[\s*\]$/);
+    if (content === 'services:' || emptyList) return { seenServices: true, inGatesBlock: false };
+    if (content.startsWith('environment:')) return { seenServices: false, inGatesBlock: true };
+    refuseTopLevel(content);
+}
+
+/**
+ * Advances the gates-block state for one line, and whether the main loop should skip it: every
+ * line of the gates block's body is deeper than the top level, so indentation alone ends the
+ * block and hands the next top-level key back to the loop.
+ */
+function advanceGatesBlock(inGatesBlock: boolean, indent: number): { inGatesBlock: boolean; skipLine: boolean } {
+    if (!inGatesBlock) return { inGatesBlock, skipLine: false };
+    if (indent > 0) return { inGatesBlock: true, skipLine: true };
+    return { inGatesBlock: false, skipLine: false };
+}
+
+/** Handles a line back at indentation 0 while parsing service items — a new top-level key. */
+function applyTopLevelDuringServices(content: string): boolean {
+    if (content.startsWith('environment:')) return true;
+    refuseTopLevel(content);
+}
+
+/** Whether this line is an environment-mapping entry under the current item's `environment:` key. */
+function isEnvironmentEntryLine(item: BellowsItem, indent: number): boolean {
+    return item.inEnvironment && indent > item.itemIndent + 2;
+}
+
+/** Applies one line already known to belong to the current item: an environment entry, or a top-level field. */
+function applyItemLine(current: BellowsItem, indent: number, content: string): void {
+    if (isEnvironmentEntryLine(current, indent)) {
+        applyEnvironmentEntry(current, content);
+        return;
+    }
+    if (indent === current.itemIndent + 2) {
+        current.inEnvironment = false;
+        applyField(current, content);
+        return;
+    }
+    throw new Error(`.bellows.yaml: cannot parse line "${content}"`);
+}
+
+export function parseBellows(text: string): ServiceSpec[] {
     const specs: ServiceSpec[] = [];
     let seenServices = false;
     /** Inside a top-level `environment:` block — the gates half, not this parser's grammar. */
     let inGatesBlock = false;
-    let current: Item | null = null;
+    let current: BellowsItem | null = null;
     // A Windows editor's byte-order mark would otherwise make the first line `\uFEFFservices:`
     // and the refusal would print an invisible character at the user.
     const source = text.replace(/^\uFEFF/, '');
-
-    const finishItem = () => {
-        if (!current) return;
-        const { name, image, environment } = current;
-        if (!name) throw new Error('.bellows.yaml: a service is missing "name"');
-        if (!image) throw new Error('.bellows.yaml: a service is missing "image"');
-        if (!SERVICE_NAME.test(name)) {
-            throw new Error(
-                `.bellows.yaml: service name "${name}" must be a lowercase DNS label ` +
-                    '(letters, digits and hyphens, at most 30 characters, none at either end)'
-            );
-        }
-        if (!IMAGE.test(image)) {
-            throw new Error(`.bellows.yaml: image "${image}" does not look like an image reference`);
-        }
-        if (specs.some((s) => s.name === name)) {
-            throw new Error(`.bellows.yaml: duplicate service name "${name}"`);
-        }
-        specs.push({ name, image, environment });
-        current = null;
-    };
-
-    const applyField = (item: Item, chunk: string) => {
-        const m = chunk.match(/^([^:]+):\s*(.*)$/);
-        if (!m) throw new Error(`.bellows.yaml: cannot parse line "${chunk.trim()}"`);
-        // The regex guarantees both groups when it matched; `?? ''` only satisfies
-        // noUncheckedIndexedAccess, and scalar('') reads as the empty value it would be.
-        const key = scalar(m[1] ?? '');
-        const value = scalar(m[2] ?? '');
-        if (item.keys.has(key)) throw new Error(`.bellows.yaml: duplicate key "${key}" in one service`);
-        item.keys.add(key);
-        if (key === 'name') item.name = value;
-        else if (key === 'image') item.image = value;
-        else if (key === 'environment') {
-            if (value !== '') {
-                throw new Error('.bellows.yaml: "environment" must be a mapping of "KEY: value" lines');
-            }
-            item.inEnvironment = true;
-        } else {
-            throw new Error(`.bellows.yaml: unknown service key "${key}" — supported: name, image, environment`);
-        }
-    };
-
-    const refuseTopLevel = (content: string): never => {
-        const key = scalar(content.split(':')[0] ?? content);
-        if (key === 'services') {
-            throw new Error('.bellows.yaml: "services" must be a list of "- name: …" items');
-        }
-        throw new Error(`.bellows.yaml: unknown key "${key}" — only "services" is supported`);
-    };
 
     for (const rawLine of source.split('\n')) {
         const line = stripComment(rawLine);
@@ -327,28 +453,19 @@ export function parseBellows(text: string): ServiceSpec[] {
         const indent = line.length - line.trimStart().length;
         const content = line.trim();
 
-        // The gates half of the file: every line of its body is deeper than the top level, so
-        // indentation alone ends the block and hands the next top-level key back to this loop.
-        if (inGatesBlock) {
-            if (indent > 0) continue;
-            inGatesBlock = false;
-        }
+        const gates = advanceGatesBlock(inGatesBlock, indent);
+        inGatesBlock = gates.inGatesBlock;
+        if (gates.skipLine) continue;
 
         if (!seenServices) {
-            const emptyList = content.match(/^services:\s*\[\s*\]$/);
-            if (content !== 'services:' && !emptyList) {
-                if (content.startsWith('environment:')) {
-                    inGatesBlock = true;
-                    continue;
-                }
-                refuseTopLevel(content);
-            }
-            seenServices = true;
+            const preamble = applyPreamble(content);
+            seenServices = preamble.seenServices;
+            inGatesBlock = preamble.inGatesBlock;
             continue;
         }
 
         if (content.startsWith('- ')) {
-            finishItem();
+            finishItem(current, specs);
             current = {
                 itemIndent: indent,
                 name: '',
@@ -363,50 +480,16 @@ export function parseBellows(text: string): ServiceSpec[] {
         }
 
         if (indent === 0) {
-            if (content.startsWith('environment:')) {
-                inGatesBlock = true;
-                continue;
-            }
-            refuseTopLevel(content);
+            inGatesBlock = applyTopLevelDuringServices(content);
+            continue;
         }
 
         if (!current) {
             throw new Error(`.bellows.yaml: expected a "- name: …" list item under services, got "${content}"`);
         }
-
-        // Environment entries sit deeper than the item's keys (`environment:` at itemIndent+2,
-        // its keys below that). Anything back at the item's own depth ends the mapping — YAML
-        // allows keys after a nested block, and so does this.
-        if (current.inEnvironment && indent > current.itemIndent + 2) {
-            const m = content.match(/^([^:]+):\s*(.*)$/);
-            if (!m) throw new Error(`.bellows.yaml: cannot parse line "${content}"`);
-            const key = scalar(m[1] ?? '');
-            const value = scalar(m[2] ?? '');
-            if (!ENV_KEY.test(key)) {
-                throw new Error(`.bellows.yaml: "${key}" is not a valid environment variable name`);
-            }
-            if (key.length > MAX_ENV_KEY || value.length > MAX_ENV_VALUE) {
-                throw new Error(
-                    `.bellows.yaml: "${key}" is too long — keys at most ${MAX_ENV_KEY} and values at most ` +
-                        `${MAX_ENV_VALUE} characters`
-                );
-            }
-            if (current.envKeys.has(key)) {
-                throw new Error(`.bellows.yaml: duplicate environment key "${key}" in one service`);
-            }
-            current.envKeys.add(key);
-            current.environment.push({ key, value });
-            continue;
-        }
-        if (indent === current.itemIndent + 2) {
-            current.inEnvironment = false;
-            applyField(current, content);
-            continue;
-        }
-
-        throw new Error(`.bellows.yaml: cannot parse line "${content}"`);
+        applyItemLine(current, indent, content);
     }
-    finishItem();
+    finishItem(current, specs);
     return specs;
 }
 

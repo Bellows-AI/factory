@@ -1,8 +1,50 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
+import type { UseEnv } from '../api/useEnv.js';
+import type { WorkspacePayload } from '../api/useWorkspace.js';
 import { useSettingsPage } from './SettingsLayout.js';
+
+/** The header's description: the missing-root notice, the checkout root once a poll has
+ * answered, or nothing while the first poll is still unresolved. */
+function workspaceRootDescription(data: WorkspacePayload | null, noRoot: boolean): ReactNode {
+    if (noRoot) {
+        return (
+            <>
+                This deployment has no workspace root. Tasks cannot run until an operator sets{' '}
+                <code>ORG_WORKSPACE_ROOT</code>.
+            </>
+        );
+    }
+    if (data) {
+        return (
+            <>
+                Your checkouts live at <code>{data.root}</code>. Agents you start run here.
+            </>
+        );
+    }
+    return undefined;
+}
+
+/** The member's own environment editor: a loading line while the read is in flight, or the
+ * panel once it has landed. Split out of `SettingsWorkspacePage` so its own loading/data check
+ * does not add to the page's cognitive complexity. */
+function WorkspaceEnvEditor({ env }: { env: UseEnv }) {
+    if (env.loading && !env.data) return <p className="status">Loading environment…</p>;
+    if (!env.data) return null;
+    return (
+        <EnvVarsPanel
+            title="My workspace"
+            hint="Your own defaults, on every task you queue."
+            initialVars={env.data.workspace}
+            onSave={env.saveWorkspace}
+            draftId="workspace"
+            draftLabel="My workspace"
+        />
+    );
+}
 
 /**
  * The Workspace section of the settings tree, simplified to what is personal (issue 181): the
@@ -36,18 +78,7 @@ export function SettingsWorkspacePage() {
             <PageHeader
                 eyebrow="Settings"
                 title="Workspace"
-                description={
-                    noRoot ? (
-                        <>
-                            This deployment has no workspace root. Tasks cannot run until an operator sets{' '}
-                            <code>ORG_WORKSPACE_ROOT</code>.
-                        </>
-                    ) : data ? (
-                        <>
-                            Your checkouts live at <code>{data.root}</code>. Agents you start run here.
-                        </>
-                    ) : undefined
-                }
+                description={workspaceRootDescription(data, noRoot)}
                 actions={
                     // The link exists only when there is a workspace to check out into; over a
                     // failed poll there is no root to reason about, so nothing offers management.
@@ -91,18 +122,7 @@ export function SettingsWorkspacePage() {
             {env.error ? <p className="status">{env.error}</p> : null}
             {/* Same data gate as the organization page: the editor mounts only when the scope's
                 rows exist, never as an enabled empty draft over a failed read. */}
-            {env.loading && !env.data ? (
-                <p className="status">Loading environment…</p>
-            ) : env.data ? (
-                <EnvVarsPanel
-                    title="My workspace"
-                    hint="Your own defaults, on every task you queue."
-                    initialVars={env.data.workspace}
-                    onSave={env.saveWorkspace}
-                    draftId="workspace"
-                    draftLabel="My workspace"
-                />
-            ) : null}
+            <WorkspaceEnvEditor env={env} />
         </>
     );
 }

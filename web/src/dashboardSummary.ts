@@ -35,11 +35,18 @@ function shortDay(day: string): string {
     return at.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }) + ` ${at.getUTCDate()}`;
 }
 
+/** The length of a `YYYY-MM` prefix within a `YYYY-MM-DD` day — same-month bounds share it. */
+const YEAR_MONTH_PREFIX_LENGTH = 7;
+/** Where the `DD` portion starts within a `YYYY-MM-DD` day. */
+const DAY_OF_MONTH_START_INDEX = 8;
+
 function boundedDays(from: string, to: string): string {
     const start = utcDay(from);
     const end = inclusiveEndDay(to);
     if (start === end) return shortDay(start);
-    if (start.slice(0, 7) === end.slice(0, 7)) return `${shortDay(start)}–${end.slice(8)}`;
+    if (start.slice(0, YEAR_MONTH_PREFIX_LENGTH) === end.slice(0, YEAR_MONTH_PREFIX_LENGTH)) {
+        return `${shortDay(start)}–${end.slice(DAY_OF_MONTH_START_INDEX)}`;
+    }
     return `${shortDay(start)} – ${shortDay(end)}`;
 }
 

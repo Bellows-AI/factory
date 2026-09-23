@@ -42,7 +42,8 @@ describe('nav model', () => {
         // so the tree must not also grow an "Overview" child.
         expect(NAV_ITEMS.some((item) => item.to === '/settings')).toBe(true);
         expect(SETTINGS_SECTIONS.some((item) => item.to === '/settings')).toBe(false);
-        expect(SETTINGS_SECTIONS).toHaveLength(5);
+        const EXPECTED_SETTINGS_SECTION_COUNT = 5;
+        expect(SETTINGS_SECTIONS).toHaveLength(EXPECTED_SETTINGS_SECTION_COUNT);
     });
 
     it('marks /settings as the page only on the overview itself (#180)', () => {
@@ -58,7 +59,8 @@ describe('nav model', () => {
         const entries = Array.from({ length: 100 }, (_, i) => entry(`id-${i}`));
         const rows = preview(entries);
         expect(rows).toHaveLength(MAX_PREVIEW);
-        expect(MAX_PREVIEW).toBe(5);
+        const EXPECTED_MAX_PREVIEW = 5;
+        expect(MAX_PREVIEW).toBe(EXPECTED_MAX_PREVIEW);
         expect(rows.map((row) => row.id)).toEqual(['id-0', 'id-1', 'id-2', 'id-3', 'id-4']);
     });
 
@@ -68,12 +70,15 @@ describe('nav model', () => {
     });
 
     it('writes counts a screen reader can speak, singular and plural', () => {
-        expect(countLabel('running', 3)).toBe('3 running tasks');
+        const RUNNING_COUNT = 3;
+        const REVIEW_COUNT = 38;
+        const PAST_COUNT = 2;
+        expect(countLabel('running', RUNNING_COUNT)).toBe('3 running tasks');
         expect(countLabel('running', 1)).toBe('1 running task');
         expect(countLabel('running', 0)).toBe('0 running tasks');
-        expect(countLabel('review', 38)).toBe('38 tasks need review');
+        expect(countLabel('review', REVIEW_COUNT)).toBe('38 tasks need review');
         expect(countLabel('review', 1)).toBe('1 task needs review');
-        expect(countLabel('past', 2)).toBe('2 past tasks');
+        expect(countLabel('past', PAST_COUNT)).toBe('2 past tasks');
         expect(countLabel('past', 1)).toBe('1 past task');
     });
 });

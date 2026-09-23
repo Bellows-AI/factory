@@ -68,7 +68,19 @@ const recording = exec((args) => {
     return { stdout: '', stderr: '' };
 });
 
-describe('the gate environment manager', () => {
+/** docker's own "no such container" exit code — the harness state every rejection here reports. */
+const CONTAINER_GONE_CODE = 125;
+const OK_STATUS = 200;
+const UNAUTHORIZED_STATUS = 401;
+const NOT_FOUND_STATUS = 404;
+const BAD_REQUEST_STATUS = 400;
+const CONFLICT_STATUS = 409;
+const PAYLOAD_TOO_LARGE_STATUS = 413;
+
+/** The margin past a 5ms cooldown that every "did the teardown fire" assertion waits out. */
+const COOLDOWN_SETTLE_MS = 40;
+
+describe('the gate environment manager: lifecycle', () => {
     it('creates the environment container on first acquire and reuses it after', async () => {
         logs.length = 0;
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
@@ -105,7 +117,7 @@ describe('the gate environment manager', () => {
         manager.release(KEY);
         // The acquire fence above is also an `rm -f`; only counts AFTER release are teardowns.
         const atRelease = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
-        await new Promise((resolve) => setTimeout(resolve, 40));
+        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
         const afterCooldown = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
         expect(afterCooldown).toBe(atRelease + 1);
     });
@@ -117,7 +129,7 @@ describe('the gate environment manager', () => {
         manager.release(KEY);
         const atRelease = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
         await manager.acquire(KEY, 'node:24', '');
-        await new Promise((resolve) => setTimeout(resolve, 40));
+        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
         const afterCooldown = logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME).length;
         expect(afterCooldown).toBe(atRelease);
         await manager.stop();
@@ -128,17 +140,20 @@ describe('the gate environment manager', () => {
         const manager = createGateManager({ config, cooldownMs: 5, execDocker: recording });
         await manager.acquire(KEY, 'node:24', '');
         manager.release(KEY);
-        await new Promise((resolve) => setTimeout(resolve, 40));
+        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_SETTLE_MS));
         await manager.acquire(KEY, 'node:24', '');
         expect(logs.filter((args) => args[0] === 'run')).toHaveLength(2);
         await manager.stop();
     });
+});
 
+describe('the gate environment manager: running gates', () => {
     it('runs a gate by exec and answers its exit code with a tailed output', async () => {
+        const GATE_FAIL_EXIT_CODE = 3;
         const gateExec = exec((args) => {
             if (args[0] === 'exec') {
                 if (args[4] === 'pass') return { stdout: 'all green\n', stderr: '' };
-                return fails(3, '2 problems\n');
+                return fails(GATE_FAIL_EXIT_CODE, '2 problems\n');
             }
             return { stdout: '', stderr: '' };
         });
@@ -150,7 +165,7 @@ describe('the gate environment manager', () => {
             output: 'all green',
         });
         await expect(manager.runGate(KEY, 'test', 'fail')).resolves.toEqual({
-            exitCode: 3,
+            exitCode: GATE_FAIL_EXIT_CODE,
             output: '2 problems',
         });
         await manager.stop();
@@ -195,7 +210,9 @@ describe('the gate environment manager', () => {
         // The drain removes exactly the containers the manager still tracks.
         expect(logs.slice(stoppedAt).filter((args) => args[0] === 'rm' && args[1] === '-f')).toHaveLength(2);
     });
+});
 
+describe('the gate environment manager: acquire serialization and timeouts', () => {
     // Two gated claims on one member+repo while neither container exists yet (the concurrency-2
     // default makes this ordinary): the cold acquires must line up, or they race two `docker run`s
     // on one name and the loser fails the job outright.
@@ -254,7 +271,9 @@ describe('the gate environment manager', () => {
         expect(seenOptions.at(-1)).toEqual({ timeout: 30_000 });
         await manager.stop();
     });
+});
 
+describe('the gate environment manager: failure and edge cases', () => {
     // Docker failing to exec at all — the container was torn down under the caller — is a
     // HARNESS state, not a gate verdict: it rejects with the container-gone code, which is what
     // the ad-hoc endpoint's 409 and the loop's failed-gate path both key on.
@@ -264,7 +283,7 @@ describe('the gate environment manager', () => {
                 const error = new Error('Error response from daemon: No such container') as Error & {
                     code?: number;
                 };
-                error.code = 125;
+                error.code = CONTAINER_GONE_CODE;
                 return Promise.reject(error);
             }
             return { stdout: '', stderr: '' };
@@ -320,6 +339,8 @@ describe('the gate environment manager', () => {
     // would delete the RE-CREATED environment when it fires, failing an innocent job, and hold
     // the event loop open past shutdown.
     it('does not arm a cooldown on an entry that was torn down while a gate ran', async () => {
+        const COOLDOWN_FIRE_WAIT_MS = 20;
+        const REARM_CHECK_WAIT_MS = 30;
         logs.length = 0;
         let releaseExec!: () => void;
         const pendingExec = new Promise<{ stdout: string; stderr: string }>((resolve) => {
@@ -336,12 +357,12 @@ describe('the gate environment manager', () => {
         const gate = manager.runGate(KEY, 'test', 'npm test');
         // The environment is torn down (and re-created by nobody in this test) while the exec runs.
         manager.release(KEY);
-        await new Promise((resolve) => setTimeout(resolve, 20)); // the cooldown timer fires on the dead entry
+        await new Promise((resolve) => setTimeout(resolve, COOLDOWN_FIRE_WAIT_MS)); // the cooldown timer fires on the dead entry
         releaseExec();
         await expect(gate).resolves.toMatchObject({ exitCode: 0 });
 
         // The re-armed cooldown on the dead entry never fires: no rm beyond the fence+teardown.
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await new Promise((resolve) => setTimeout(resolve, REARM_CHECK_WAIT_MS));
         expect(logs.filter((args) => args[0] === 'rm' && args[1] === '-f' && args[2] === NAME)).toHaveLength(2);
     });
 });
@@ -369,7 +390,7 @@ describe('the gate server', () => {
             headers: { authorization: 'Bearer tok-1' },
             body: JSON.stringify({ gate: 'test' }),
         });
-        expect(response.status).toBe(200);
+        expect(response.status).toBe(OK_STATUS);
         await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'ok' });
         expect(seen).toEqual([{ key: KEY, name: 'test', command: 'npm test' }]);
         await server.close();
@@ -390,12 +411,14 @@ describe('the gate server', () => {
         const url = `http://127.0.0.1:${port}/run`;
         const post = (headers: Record<string, string>, body: string) => fetch(url, { method: 'POST', headers, body });
 
-        expect((await post({ authorization: 'Bearer nope' }, '{"gate":"test"}')).status).toBe(401);
-        expect((await post({ authorization: 'Bearer tok-2' }, '{"gate":"deploy"}')).status).toBe(404);
-        expect((await post({ authorization: 'Bearer tok-2' }, 'not json')).status).toBe(400);
-        expect((await post({ authorization: 'Bearer tok-2' }, '{}')).status).toBe(400);
+        expect((await post({ authorization: 'Bearer nope' }, '{"gate":"test"}')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await post({ authorization: 'Bearer tok-2' }, '{"gate":"deploy"}')).status).toBe(NOT_FOUND_STATUS);
+        expect((await post({ authorization: 'Bearer tok-2' }, 'not json')).status).toBe(BAD_REQUEST_STATUS);
+        expect((await post({ authorization: 'Bearer tok-2' }, '{}')).status).toBe(BAD_REQUEST_STATUS);
         // Only the declared name ever reaches the manager — never an arbitrary command string.
-        expect((await post({ authorization: 'Bearer tok-2' }, '{"command":"rm -rf /"}')).status).toBe(400);
+        expect((await post({ authorization: 'Bearer tok-2' }, '{"command":"rm -rf /"}')).status).toBe(
+            BAD_REQUEST_STATUS
+        );
         await server.close();
     });
 
@@ -406,7 +429,7 @@ describe('the gate server', () => {
                 const error = new Error('Error response from daemon: No such container') as Error & {
                     code?: number;
                 };
-                error.code = 125;
+                error.code = CONTAINER_GONE_CODE;
                 throw error;
             },
         };
@@ -422,7 +445,7 @@ describe('the gate server', () => {
             headers: { authorization: 'Bearer tok-3' },
             body: JSON.stringify({ gate: 'test' }),
         });
-        expect(response.status).toBe(409);
+        expect(response.status).toBe(CONFLICT_STATUS);
         await server.close();
     });
 
@@ -450,14 +473,17 @@ describe('the gate server', () => {
             headers: { authorization: 'Bearer tok-enoent' },
             body: JSON.stringify({ gate: 'test' }),
         });
-        expect(response.status).toBe(409);
+        expect(response.status).toBe(CONFLICT_STATUS);
         await manager.stop();
         await server.close();
     });
+});
 
+describe('the gate server: body size and bind resilience', () => {
     // The endpoint is reachable from runner containers running repo-controlled instructions; an
     // unbounded body there is an OOM on the driver, which supervises every in-flight job.
     it('refuses an oversized body instead of reading it', async () => {
+        const OVERSIZED_PADDING_LENGTH = 10_000;
         const manager = {
             acquire: async () => {},
             runGate: async () => ({ exitCode: 0, output: '' }),
@@ -472,9 +498,9 @@ describe('the gate server', () => {
         const response = await fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok-4', 'content-type': 'application/json' },
-            body: JSON.stringify({ gate: 'test', padding: 'x'.repeat(10_000) }),
+            body: JSON.stringify({ gate: 'test', padding: 'x'.repeat(OVERSIZED_PADDING_LENGTH) }),
         });
-        expect(response.status).toBe(413);
+        expect(response.status).toBe(PAYLOAD_TOO_LARGE_STATUS);
         await server.close();
     });
 

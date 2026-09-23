@@ -1233,11 +1233,9 @@ describe('publishing the produced work', () => {
     const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
 
     it('runs one step as an aux Job in the worktree, fenced by the attempt labels', () => {
-        const spec = publishStepJobSpec(
-            cfg(),
-            ISSUE_JOB,
-            2,
-            {
+        const spec = publishStepJobSpec(cfg(), ISSUE_JOB, {
+            step: 2,
+            publish: {
                 label: 'git push',
                 entrypoint: 'git',
                 args: [
@@ -1252,9 +1250,9 @@ describe('publishing the produced work', () => {
                 env: true,
                 inRepo: true,
             },
-            publishEnvSecretName(ISSUE_JOB),
-            WT
-        );
+            envSecret: publishEnvSecretName(ISSUE_JOB),
+            repo: WT,
+        });
         expect(spec.metadata.name).toBe(publishStepJobName(ISSUE_JOB, 2));
         expect(spec.metadata.labels).toEqual({ 'factory.job': ISSUE_JOB.id, 'factory.lease': ISSUE_JOB.leaseToken });
         expect(spec.spec.template.metadata.labels).toEqual(spec.metadata.labels);
@@ -1288,11 +1286,9 @@ describe('publishing the produced work', () => {
     });
 
     it('takes no workingDir and only the REPO literal for the probe', () => {
-        const probe = publishStepJobSpec(
-            cfg(),
-            ISSUE_JOB,
-            1,
-            {
+        const probe = publishStepJobSpec(cfg(), ISSUE_JOB, {
+            step: 1,
+            publish: {
                 label: 'probe',
                 entrypoint: 'node',
                 args: ['-e', gitProbeScript],
@@ -1300,23 +1296,21 @@ describe('publishing the produced work', () => {
                 envLiterals: { REPO: WT },
                 inRepo: false,
             },
-            publishEnvSecretName(ISSUE_JOB),
-            WT
-        ).spec.template.spec.containers[0];
+            envSecret: publishEnvSecretName(ISSUE_JOB),
+            repo: WT,
+        }).spec.template.spec.containers[0];
         expect(probe.workingDir).toBeUndefined();
         expect(probe.envFrom).toBeUndefined();
         expect(probe.env).toEqual([{ name: 'REPO', value: WT }]);
     });
 
     it('names no Secret at all for a step that needs no env', () => {
-        const plain = publishStepJobSpec(
-            cfg(),
-            ISSUE_JOB,
-            4,
-            { label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true },
-            publishEnvSecretName(ISSUE_JOB),
-            WT
-        ).spec.template.spec.containers[0];
+        const plain = publishStepJobSpec(cfg(), ISSUE_JOB, {
+            step: 4,
+            publish: { label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true },
+            envSecret: publishEnvSecretName(ISSUE_JOB),
+            repo: WT,
+        }).spec.template.spec.containers[0];
         expect(plain.envFrom).toBeUndefined();
         expect(plain.env).toBeUndefined();
     });
@@ -4616,18 +4610,16 @@ const gatedConfig = loadDriverConfig({
 
 describe('the gate job spec', () => {
     const ROOT_KEY = '55555555-5555-4555-8555-555555555555';
-    const gateSpec = (overrides: Parameters<typeof gateJobSpec>[6] = 1, envSecret: string | null = 'the-secret') =>
-        gateJobSpec(
-            gatedConfig,
-            job,
-            `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            'node:24',
-            'test',
-            'npm test',
-            overrides,
-            envSecret,
-            30_000
-        );
+    const gateSpec = (overrides = 1, envSecret: string | null = 'the-secret') =>
+        gateJobSpec(gatedConfig, job, {
+            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            image: 'node:24',
+            gateName: 'test',
+            command: 'npm test',
+            run: overrides,
+            envSecretName: envSecret,
+            gateTimeoutMs: 30_000,
+        });
 
     it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
         expect(gateSpec().apiVersion).toBe('batch/v1');
@@ -4704,17 +4696,15 @@ describe('the gate job spec', () => {
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
-        const s = gateJobSpec(
-            gatedConfig,
-            job,
-            `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            'node:24',
-            'UPPER Case!!',
-            'npm test',
-            1,
-            null,
-            30_000
-        );
+        const s = gateJobSpec(gatedConfig, job, {
+            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            image: 'node:24',
+            gateName: 'UPPER Case!!',
+            command: 'npm test',
+            run: 1,
+            envSecretName: null,
+            gateTimeoutMs: 30_000,
+        });
         expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{16}$/);
         expect(s.metadata.name).not.toContain('UPPER');
         expect(s.metadata.name).not.toContain('Case');
@@ -4723,20 +4713,26 @@ describe('the gate job spec', () => {
     it('refuses a checkout key or image that is not the shape the board legally produces', () => {
         expect(() => gateSpec(1, null)).not.toThrow();
         expect(() =>
-            gateJobSpec(gatedConfig, job, '../other-member/repo', 'node:24', 'test', 'npm test', 1, null, 30_000)
+            gateJobSpec(gatedConfig, job, {
+                key: '../other-member/repo',
+                image: 'node:24',
+                gateName: 'test',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            })
         ).toThrow(/checkout key/);
         expect(() =>
-            gateJobSpec(
-                gatedConfig,
-                job,
-                `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-                '-flag-image',
-                'test',
-                'npm test',
-                1,
-                null,
-                30_000
-            )
+            gateJobSpec(gatedConfig, job, {
+                key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+                image: '-flag-image',
+                gateName: 'test',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            })
         ).toThrow(/image reference/);
     });
 });
@@ -5180,30 +5176,26 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
     it('mounts nothing broader than the member subtree — every spec names the exact target', () => {
         const specs = [
             runnerJobSpec(cfg(), job, { id: SESSION, resume: false }),
-            gateJobSpec(
-                cfg(),
-                job,
-                `bellows/${USER}/.worktrees/${job.id}`,
-                'node:24',
-                't',
-                'npm test',
-                1,
-                null,
-                30_000
-            ),
+            gateJobSpec(cfg(), job, {
+                key: `bellows/${USER}/.worktrees/${job.id}`,
+                image: 'node:24',
+                gateName: 't',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            }),
             bellowsJobSpec(cfg(), job),
             opencodeReadoutJobSpec(cfg(), job, '2026-09-01T00:00:00Z'),
             claudeTurnsJobSpec(cfg(), job, SESSION, '2026-09-01T00:00:00Z'),
             syncJobSpec(cfg(), repoJob, null),
             reclaimJobSpec(cfg(), repoJob),
-            publishStepJobSpec(
-                cfg(),
-                repoJob,
-                1,
-                { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                null,
-                '/wt'
-            ),
+            publishStepJobSpec(cfg(), repoJob, {
+                step: 1,
+                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                envSecret: null,
+                repo: '/wt',
+            }),
         ];
         for (const s of specs) {
             const mount = s.spec.template.spec.containers[0].volumeMounts.find((m) => m.name === 'workspaces');
@@ -5226,10 +5218,12 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
             publishStepJobSpec(
                 cfg(),
                 { ...broken, repo: 'Bellows-AI/factory' },
-                1,
-                { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                null,
-                '/wt'
+                {
+                    step: 1,
+                    publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                    envSecret: null,
+                    repo: '/wt',
+                }
             )
         ).toThrow(/workspace path/);
     });

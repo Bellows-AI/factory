@@ -5,7 +5,6 @@ import {
     firstPageError,
     inboxFiltersFromSearch,
     inboxQueryString,
-    queueBody,
 } from '../src/api/useTasks.js';
 
 /**
@@ -38,7 +37,9 @@ describe('inboxFiltersFromSearch', () => {
 
     it('trims the search and caps it at 200 characters', () => {
         expect(inboxFiltersFromSearch('?q=%20%20login%20').q).toBe('login');
-        expect(inboxFiltersFromSearch(`?q=${'x'.repeat(300)}`).q).toHaveLength(200);
+        const OVER_QUERY_MAX = 300;
+        const QUERY_MAX = 200;
+        expect(inboxFiltersFromSearch(`?q=${'x'.repeat(OVER_QUERY_MAX)}`).q).toHaveLength(QUERY_MAX);
         expect(inboxFiltersFromSearch('?q=%20%20').q).toBeNull();
     });
 
@@ -62,38 +63,6 @@ describe('inboxQueryString', () => {
 
     it('never sends an empty or clamped value', () => {
         expect(inboxQueryString({ ...DEFAULT_FILTERS, q: null, author: null, repo: null })).toBe('');
-    });
-});
-
-describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
-    // The wire contract the issue's acceptance criteria name: "Preflight and submitted JSON
-    // agree" and "Custom workflow selection sends no defaultWorkflow object" — pinned here so the
-    // omission is a property of the body builder, not something a fetch mock has to observe.
-    it('carries no defaultWorkflow key beside a named custom workflow', () => {
-        const body = queueBody('fix the bug', 'acme/web', 'main', 'fix-issue', { issue: '#12' }, null);
-        expect(body).toEqual({
-            command: 'fix the bug',
-            repo: 'acme/web',
-            executor: 'main',
-            workflow: 'fix-issue',
-            workflowParams: { issue: '#12' },
-        });
-        expect('defaultWorkflow' in body).toBe(false);
-    });
-
-    it('carries the effective step pair beside Default workflow', () => {
-        const body = queueBody('fix the bug', 'acme/web', 'main', null, null, {
-            reviewReconciliation: true,
-            mergeConflictAutofix: false,
-        });
-        expect(body).toEqual({
-            command: 'fix the bug',
-            repo: 'acme/web',
-            executor: 'main',
-            workflow: null,
-            workflowParams: null,
-            defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: false },
-        });
     });
 });
 
@@ -141,20 +110,22 @@ describe('fetchDepthPages', () => {
             if (url.includes('c1')) return page(['b', 'c'], 'c2');
             return page(['d'], null);
         };
-        const rebuilt = await fetchDepthPages(fetchPage, 'state=past', 3);
-        expect(seen).toHaveLength(3);
+        const REQUESTED_DEPTH = 3;
+        const rebuilt = await fetchDepthPages(fetchPage, 'state=past', REQUESTED_DEPTH);
+        expect(seen).toHaveLength(REQUESTED_DEPTH);
         expect(seen[1]).toContain('cursor=c1');
         expect(seen[2]).toContain('cursor=c2');
         // 'b' moved between pages between reads — first occurrence wins.
         expect(rebuilt.items.map((t) => t.id)).toEqual(['a', 'b', 'c', 'd']);
         expect(rebuilt.nextCursor).toBeNull();
-        expect(rebuilt.pages).toBe(3);
+        expect(rebuilt.pages).toBe(REQUESTED_DEPTH);
         expect(rebuilt.navigation).toBe(navigation);
     });
 
     it('stops early when the list shrank below the loaded depth', async () => {
         const fetchPage = async (url: string) => (url.includes('cursor=') ? page([], null) : page(['a'], 'c1'));
-        const rebuilt = await fetchDepthPages(fetchPage, '', 5);
+        const REQUESTED_DEPTH = 5;
+        const rebuilt = await fetchDepthPages(fetchPage, '', REQUESTED_DEPTH);
         expect(rebuilt.items.map((t) => t.id)).toEqual(['a']);
         expect(rebuilt.nextCursor).toBeNull();
         expect(rebuilt.pages).toBe(2);

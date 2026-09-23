@@ -32,10 +32,12 @@ describe('task-selected executor images', () => {
 });
 
 describe('RUNNER_CACHE_WATCH', () => {
+    const DEFAULT_CACHE_WATCH_POLL_MS = 30_000;
+
     it('defaults to off, and the poll period keeps its default', () => {
         const off = loadDriverConfig({});
         expect(off.cacheWatch).toBe(false);
-        expect(off.cacheWatchPollMs).toBe(30_000);
+        expect(off.cacheWatchPollMs).toBe(DEFAULT_CACHE_WATCH_POLL_MS);
     });
 
     it('accepts an explicit poll period for OpenCode tasks on the docker executor', () => {

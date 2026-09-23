@@ -42,7 +42,7 @@ const PLAN_SCHEMA = 'review-reply/plan/v1';
 const TRUNCATED_MARKER = ' […truncated by the board] ';
 const ERROR_MAX = 300;
 const PLAN_TARGETS_MAX = 32;
-const PLAN_BYTES_MAX = 128 * 1024;
+const PLAN_BYTES_MAX = 131072;
 
 const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -56,6 +56,8 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
 const RESOLVE_MUTATION = `mutation($threadId: ID!) {
   resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } }
 }`;
+
+const GH_OUTPUT_MAX_BUFFER_BYTES = 16777216;
 
 const KINDS = ['general', 'inline', 'thread', 'resolve'];
 const STATUSES = ['planned', 'refused'];
@@ -72,7 +74,7 @@ function gh(args) {
     return execFileSync('gh', args, {
         env: process.env,
         encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
+        maxBuffer: GH_OUTPUT_MAX_BUFFER_BYTES,
         stdio: ['ignore', 'pipe', 'pipe'],
     });
 }
@@ -96,13 +98,8 @@ function refusal(error, ref) {
     return JSON.stringify({ ok: false, version: VERSION, schema: SCHEMA, ref, error: bound(error) });
 }
 
-function reply() {
-    const ref = validateRef(process.env.REPO, process.env.PR);
-    if (!ref) return refusal('invalid REPO/PR: expected owner/name and a pull request number', null);
-    if (!(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim()) {
-        return refusal('missing credential: GH_TOKEN or GITHUB_TOKEN must be set', ref);
-    }
-
+/** Parse and shape-check REPLY_PLAN against `ref`; returns a plan or a refusal string. */
+function parsePlan(ref) {
     let plan;
     try {
         plan = JSON.parse(process.env.REPLY_PLAN ?? '');
@@ -121,114 +118,144 @@ function reply() {
     if (Buffer.byteLength(process.env.REPLY_PLAN ?? '', 'utf8') > PLAN_BYTES_MAX) {
         return refusal(`REPLY_PLAN oversized: > ${PLAN_BYTES_MAX} bytes`, ref);
     }
+    return plan;
+}
 
+/** The gh args for a reply target's mutation, or an ERROR_MAX-bounded refusal string. */
+function replyArgs(target, ref) {
     const pulls = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const issues = `repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
+    if (typeof target.reply !== 'string' || !target.reply.trim()) {
+        return refusal(`malformed REPLY_PLAN target: no reply body for ${target.kind} ${target.id}`, ref);
+    }
+    if (target.kind === 'general') return ['api', `${issues}/comments`, '-f', `body=${target.reply}`];
+    if (target.kind === 'inline') {
+        const anchorId = /^\d{1,10}$/.test(target.id) ? Number(target.id) : null;
+        if (anchorId === null) {
+            return refusal(`malformed REPLY_PLAN target: no anchor comment for inline ${target.id}`, ref);
+        }
+        return ['api', `${pulls}/comments/${anchorId}/replies`, '-f', `body=${target.reply}`];
+    }
+    const anchorId = target.firstCommentId;
+    if (typeof anchorId !== 'number') {
+        return refusal(`malformed REPLY_PLAN target: no anchor comment for thread ${target.id}`, ref);
+    }
+    return ['api', `${pulls}/comments/${anchorId}/replies`, '-f', `body=${target.reply}`];
+}
 
-    // Pass 1 — validate EVERY target into an executable list before the first gh call. A malformed
-    // target anywhere is ONE terminal refusal: never a partially-executed plan whose refusals a
-    // retry would replay on top of already-landed mutations.
+/** One plan target -> one execution, or an ERROR_MAX-bounded refusal string on malformed input. */
+function toExecution(target, ref) {
+    if (
+        typeof target.id !== 'string' ||
+        !target.id ||
+        !KINDS.includes(target.kind) ||
+        !STATUSES.includes(target.status)
+    ) {
+        return refusal(`malformed REPLY_PLAN target: ${JSON.stringify(target).slice(0, ERROR_MAX)}`, ref);
+    }
+    const base = { id: target.id, kind: target.kind };
+    if (target.status === 'refused') {
+        return { ...base, action: 'refused', reason: str(target.reason) ?? 'refused by plan' };
+    }
+    if (target.kind === 'resolve') return { ...base, action: 'resolve' };
+    const args = replyArgs(target, ref);
+    if (typeof args === 'string') return args;
+    return { ...base, action: 'reply', args };
+}
+
+// Pass 1 — validate EVERY target into an executable list before the first gh call. A malformed
+// target anywhere is ONE terminal refusal: never a partially-executed plan whose refusals a
+// retry would replay on top of already-landed mutations.
+function toExecutions(targets, ref) {
     const executions = [];
-    for (const target of plan.targets) {
-        if (
-            typeof target.id !== 'string' ||
-            !target.id ||
-            !KINDS.includes(target.kind) ||
-            !STATUSES.includes(target.status)
-        ) {
-            return refusal(`malformed REPLY_PLAN target: ${JSON.stringify(target).slice(0, ERROR_MAX)}`, ref);
-        }
-        const base = { id: target.id, kind: target.kind };
-        if (target.status === 'refused') {
-            executions.push({ ...base, action: 'refused', reason: str(target.reason) ?? 'refused by plan' });
-            continue;
-        }
-        if (target.kind === 'resolve') {
-            executions.push({ ...base, action: 'resolve' });
-            continue;
-        }
-        if (typeof target.reply !== 'string' || !target.reply.trim()) {
-            return refusal(`malformed REPLY_PLAN target: no reply body for ${target.kind} ${target.id}`, ref);
-        }
-        let args;
-        if (target.kind === 'general') {
-            args = ['api', `${issues}/comments`, '-f', `body=${target.reply}`];
-        } else if (target.kind === 'inline') {
-            const anchorId = /^\d{1,10}$/.test(target.id) ? Number(target.id) : null;
-            if (anchorId === null) {
-                return refusal(`malformed REPLY_PLAN target: no anchor comment for inline ${target.id}`, ref);
-            }
-            args = ['api', `${pulls}/comments/${anchorId}/replies`, '-f', `body=${target.reply}`];
-        } else {
-            const anchorId = target.firstCommentId;
-            if (typeof anchorId !== 'number') {
-                return refusal(`malformed REPLY_PLAN target: no anchor comment for thread ${target.id}`, ref);
-            }
-            args = ['api', `${pulls}/comments/${anchorId}/replies`, '-f', `body=${target.reply}`];
-        }
-        executions.push({ ...base, action: 'reply', args });
+    for (const target of targets) {
+        const x = toExecution(target, ref);
+        if (typeof x === 'string') return x;
+        executions.push(x);
     }
+    return executions;
+}
 
-    // Preflight resolve state — before any mutation, so a still-planning resolve never resolves
-    // something a human already resolved (or re-opened) mid-flight.
+/** Live resolution state of every thread a resolve execution targets, read via GraphQL. */
+function preflightResolveState(resolveExecutions, ref) {
     const threadState = {};
-    const resolveExecutions = executions.filter((x) => x.action === 'resolve');
-    if (resolveExecutions.length) {
-        const gql = JSON.parse(
-            gh([
-                'api',
-                'graphql',
-                '-f',
-                `query=${THREADS_QUERY}`,
-                '-f',
-                `owner=${ref.owner}`,
-                '-f',
-                `repo=${ref.repo}`,
-                '-F',
-                `number=${ref.number}`,
-            ])
-        );
-        const pr = gql && gql.data && gql.data.repository && gql.data.repository.pullRequest;
-        const nodes = pr && pr.reviewThreads && Array.isArray(pr.reviewThreads.nodes) ? pr.reviewThreads.nodes : [];
-        for (const node of nodes) {
-            if (node && typeof node.id === 'string')
-                threadState[node.id] = { found: true, isResolved: node.isResolved === true };
-        }
-        for (const x of resolveExecutions) {
-            if (!(x.id in threadState)) threadState[x.id] = { found: false, isResolved: false };
-        }
+    if (!resolveExecutions.length) return threadState;
+    const gql = JSON.parse(
+        gh([
+            'api',
+            'graphql',
+            '-f',
+            `query=${THREADS_QUERY}`,
+            '-f',
+            `owner=${ref.owner}`,
+            '-f',
+            `repo=${ref.repo}`,
+            '-F',
+            `number=${ref.number}`,
+        ])
+    );
+    const pr = gql && gql.data && gql.data.repository && gql.data.repository.pullRequest;
+    const nodes = pr && pr.reviewThreads && Array.isArray(pr.reviewThreads.nodes) ? pr.reviewThreads.nodes : [];
+    for (const node of nodes) {
+        if (node && typeof node.id === 'string')
+            threadState[node.id] = { found: true, isResolved: node.isResolved === true };
     }
+    for (const x of resolveExecutions) {
+        if (!(x.id in threadState)) threadState[x.id] = { found: false, isResolved: false };
+    }
+    return threadState;
+}
 
-    // Pass 2 — execute, appending one result per target in plan order.
+function executeResolve(x, threadState) {
+    const st = threadState[x.id];
+    if (!st || !st.found) return { id: x.id, kind: 'resolve', status: 'noop', reason: 'not_found' };
+    if (st.isResolved) return { id: x.id, kind: 'resolve', status: 'noop', reason: 'already_resolved' };
+    try {
+        gh(['api', 'graphql', '-f', `query=${RESOLVE_MUTATION}`, '-F', `threadId=${x.id}`]);
+        return { id: x.id, kind: 'resolve', status: 'done', reason: null };
+    } catch (e) {
+        return classify(x.id, 'resolve', e);
+    }
+}
+
+// Pass 2 — execute, appending one result per target in plan order.
+function executeAll(executions, threadState) {
     const results = [];
     for (const x of executions) {
         if (x.action === 'refused') {
             results.push({ id: x.id, kind: x.kind, status: 'refused', reason: x.reason });
-            continue;
-        }
-        if (x.action === 'resolve') {
-            const st = threadState[x.id];
-            if (!st || !st.found) {
-                results.push({ id: x.id, kind: 'resolve', status: 'noop', reason: 'not_found' });
-            } else if (st.isResolved) {
-                results.push({ id: x.id, kind: 'resolve', status: 'noop', reason: 'already_resolved' });
-            } else {
-                try {
-                    gh(['api', 'graphql', '-f', `query=${RESOLVE_MUTATION}`, '-F', `threadId=${x.id}`]);
-                    results.push({ id: x.id, kind: 'resolve', status: 'done', reason: null });
-                } catch (e) {
-                    results.push(classify(x.id, 'resolve', e));
-                }
+        } else if (x.action === 'resolve') {
+            results.push(executeResolve(x, threadState));
+        } else {
+            try {
+                gh(x.args);
+                results.push({ id: x.id, kind: x.kind, status: 'done', reason: null });
+            } catch (e) {
+                results.push(classify(x.id, x.kind, e));
             }
-            continue;
-        }
-        try {
-            gh(x.args);
-            results.push({ id: x.id, kind: x.kind, status: 'done', reason: null });
-        } catch (e) {
-            results.push(classify(x.id, x.kind, e));
         }
     }
+    return results;
+}
+
+function reply() {
+    const ref = validateRef(process.env.REPO, process.env.PR);
+    if (!ref) return refusal('invalid REPO/PR: expected owner/name and a pull request number', null);
+    if (!(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim()) {
+        return refusal('missing credential: GH_TOKEN or GITHUB_TOKEN must be set', ref);
+    }
+
+    const plan = parsePlan(ref);
+    if (typeof plan === 'string') return plan;
+
+    const executions = toExecutions(plan.targets, ref);
+    if (typeof executions === 'string') return executions;
+
+    const threadState = preflightResolveState(
+        executions.filter((x) => x.action === 'resolve'),
+        ref
+    );
+    const results = executeAll(executions, threadState);
 
     return JSON.stringify({ version: VERSION, schema: SCHEMA, ref, results, error: null });
 }

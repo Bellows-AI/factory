@@ -5,6 +5,7 @@
  * function here is testable without a DOM, which is what lets the offline suite pin the launch
  * contract the board enforces.
  */
+import type { QueueTaskInput } from './api/useTasks.js';
 
 /**
  * One declared launch parameter of a workflow, as the list route serves it: the name the prompts
@@ -221,6 +222,13 @@ export function defaultWorkflowPayload(
     effective: DefaultWorkflowSteps | null
 ): DefaultWorkflowSteps | null {
     return workflow === '' ? effective : null;
+}
+
+type QueueBase = Omit<QueueTaskInput, 'defaultWorkflow'>;
+
+/** The `POST /api/jobs` body: `defaultWorkflow` omitted beside a named custom workflow (issue 208). */
+export function queueBody(base: QueueBase, defaultWorkflow: DefaultWorkflowSteps | null): QueueTaskInput {
+    return { ...base, ...(defaultWorkflow !== null ? { defaultWorkflow } : {}) };
 }
 
 /** "prompt, gates, publish[, plus …]" — the final step set, shared by the preflight sentence. */

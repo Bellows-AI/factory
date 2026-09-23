@@ -11,14 +11,18 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const biomeBin = () =>
     join(dirname(createRequire(import.meta.url).resolve('@biomejs/biome/package.json')), 'bin', 'biome');
 
+// A tree-wide format drift prints a diff per file; the 1 MiB default would overflow
+// exactly when the failure message matters most.
+const BYTES_PER_KIB = 1024;
+const SPAWN_MAX_BUFFER_MIB = 16;
+const SPAWN_MAX_BUFFER_BYTES = SPAWN_MAX_BUFFER_MIB * BYTES_PER_KIB * BYTES_PER_KIB;
+
 const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}) =>
     spawnSync(process.execPath, [biomeBin(), ...args], {
         encoding: 'utf8',
         cwd: options.cwd ?? root,
         input: options.input,
-        // A tree-wide format drift prints a diff per file; the 1 MiB default would overflow
-        // exactly when the failure message matters most.
-        maxBuffer: 16 * 1024 * 1024,
+        maxBuffer: SPAWN_MAX_BUFFER_BYTES,
     });
 
 describe('biome', () => {
@@ -66,11 +70,12 @@ describe('biome', () => {
     });
 
     it('passes biome check on the repository', () => {
+        // A vacuous pass (mis-shaped includes checking nothing) must fail, not pass.
+        const MIN_FILES_CHECKED = 50;
         const result = runBiome(['check', '.']);
         expect(result.status, `biome check output:\n${result.stdout}${result.stderr}`).toBe(0);
-        // A vacuous pass (mis-shaped includes checking nothing) must fail, not pass.
         const checked = /Checked (\d+) files/.exec(result.stdout)?.[1];
         expect(checked, `biome check output:\n${result.stdout}${result.stderr}`).toBeDefined();
-        expect(Number(checked)).toBeGreaterThan(50);
+        expect(Number(checked)).toBeGreaterThan(MIN_FILES_CHECKED);
     });
 });

@@ -20,14 +20,16 @@ describe('session tokens', () => {
     it('stores the hash and never the token', () => {
         const token = mintToken();
         const hash = hashToken(token);
-        expect(hash.length).toBe(32);
+        const HASH_BYTES = 32;
+        expect(hash.length).toBe(HASH_BYTES);
         expect(hash.toString('hex')).not.toContain(token);
         // Same token, same hash — the lookup is by hash, so this is what makes it work at all.
         expect(hashToken(token).equals(hash)).toBe(true);
     });
 
     it('mints a different token every time', () => {
-        expect(new Set(Array.from({ length: 50 }, mintToken)).size).toBe(50);
+        const SAMPLE_SIZE = 50;
+        expect(new Set(Array.from({ length: SAMPLE_SIZE }, mintToken)).size).toBe(SAMPLE_SIZE);
     });
 
     it('round-trips a signed value', () => {
@@ -60,7 +62,8 @@ describe('cookie attributes', () => {
      * navigation from github.com, so the state cookie would simply not be sent.
      */
     it('is httpOnly, lax, root-scoped and host-only', () => {
-        const options = sessionCookieOptions(false, 1209600);
+        const FORTNIGHT_SECONDS = 1209600;
+        const options = sessionCookieOptions(false, FORTNIGHT_SECONDS);
         expect(options).toEqual({
             path: '/',
             httpOnly: true,

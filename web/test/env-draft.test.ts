@@ -92,8 +92,9 @@ describe('row validation — the server rules, mirrored for early feedback', () 
     });
 
     it('refuses over-limit and reserved names', () => {
-        const long = rowErrors([storedVar('A'.repeat(256))]);
-        expect(long.get('A'.repeat(256))?.[0]).toMatch(/255 characters/);
+        const OVER_NAME_LIMIT = 256;
+        const long = rowErrors([storedVar('A'.repeat(OVER_NAME_LIMIT))]);
+        expect(long.get('A'.repeat(OVER_NAME_LIMIT))?.[0]).toMatch(/255 characters/);
         const reserved = rowErrors([storedVar('WORKDIR')]);
         expect(reserved.get('WORKDIR')?.[0]).toMatch(/reserved by the runner/);
     });
@@ -106,7 +107,8 @@ describe('row validation — the server rules, mirrored for early feedback', () 
 
     it('refuses a value with a newline or past the value limit', () => {
         expect(rowErrors([storedVar('A', 'one\ntwo')]).get('A')?.[0]).toMatch(/newline/);
-        expect(rowErrors([storedVar('A', 'x'.repeat(32 * 1024 + 1))]).get('A')?.[0]).toMatch(/32.*768 characters/);
+        const OVER_VALUE_LIMIT = 32_769;
+        expect(rowErrors([storedVar('A', 'x'.repeat(OVER_VALUE_LIMIT))]).get('A')?.[0]).toMatch(/32.*768 characters/);
     });
 
     it('marks a new secret with no value Not set, and a stored blank secret is the keep marker', () => {

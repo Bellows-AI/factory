@@ -45,7 +45,11 @@ export interface RepoSource {
  * a new repository shows up without a restart, which is the whole workflow this replaced
  * ORG_REPOS to enable.
  */
-export const INSTALLATION_REPOS_TTL_MS = 10 * 60 * 1000;
+const MS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
+const INSTALLATION_REPOS_TTL_MINUTES = 10;
+
+export const INSTALLATION_REPOS_TTL_MS = INSTALLATION_REPOS_TTL_MINUTES * SECONDS_PER_MINUTE * MS_PER_SECOND;
 
 // Re-exported so the test helpers keep one import site.
 export { fullName };

@@ -171,6 +171,7 @@ export interface AppConfig {
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
 // hot loop.
 const MIN_TELEMETRY_TTL_SECONDS = 5;
+const DEFAULT_TELEMETRY_TTL_SECONDS = 30;
 
 /**
  * A database whose name ends here is disposable — the db suite truncates it, and `npm run seed`
@@ -212,6 +213,9 @@ function int(raw: string | undefined, fallback: number, label: string): number {
     }
     return value;
 }
+
+const DEFAULT_PORT = 8080;
+const DEFAULT_DB_POOL_MAX = 50;
 
 /**
  * `~` expands against `env.HOME` rather than `os.homedir()`, and a relative path is rejected rather
@@ -297,7 +301,11 @@ function loadGitHub(env: NodeJS.ProcessEnv): Extract<GitHubConfig, { mode: 'app'
  */
 const MIN_SESSION_SECRET_LENGTH = 32;
 
-const DEFAULT_SESSION_TTL_HOURS = 24 * 14;
+const HOURS_PER_DAY = 24;
+const SESSION_TTL_DEFAULT_DAYS = 14;
+const DEFAULT_SESSION_TTL_HOURS = HOURS_PER_DAY * SESSION_TTL_DEFAULT_DAYS;
+const SECONDS_PER_HOUR = 3600;
+const MS_PER_SECOND = 1000;
 
 /**
  * Addresses that are only reachable from the machine itself, which is the entire access control an
@@ -314,39 +322,31 @@ function bool(raw: string | undefined, fallback: boolean, label: string): boolea
 }
 
 /**
- * Every key of `[auth]`, or the one field `none` mode has.
+ * Refusing the pairing is stronger than warning about it: it makes "open to the network"
+ * inexpressible rather than merely discouraged, which is more than docs/security.md guaranteed
+ * when the bind address was the only protection there was.
  *
- * Pure, like the rest of loadConfig: no I/O, and the GitHub endpoints are read from the environment
- * rather than reached.
+ * The hatch is required, not decorative. docker/Dockerfile sets HOST=0.0.0.0, because inside a
+ * container that is normal and the isolation is compose's `127.0.0.1:8080:8080` publish —
+ * something loadConfig cannot see and must not guess at. Compose pins AUTH_MODE=github instead, so
+ * a human who sets the hatch has typed the sentence once.
  */
-function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfig {
-    const ingestToken = env.INGEST_TOKEN?.trim() || null;
-    const mode = env.AUTH_MODE?.trim() || 'none';
-    if (mode !== 'none' && mode !== 'github') {
-        throw new Error(`AUTH_MODE must be "github" or "none", got "${env.AUTH_MODE}"`);
-    }
+function assertNoneModeBindable(env: NodeJS.ProcessEnv, host: string): void {
+    if (LOOPBACK_HOSTS.has(host) || bool(env.AUTH_ALLOW_PUBLIC_BIND, false, 'AUTH_ALLOW_PUBLIC_BIND')) return;
+    throw new Error(
+        `AUTH_MODE is "none" but HOST is "${host}", which is reachable from off this machine. With no auth every route is open to anyone who can reach the port, including POST /api/jobs, which runs shell commands. Set AUTH_MODE=github, or bind to 127.0.0.1, or set AUTH_ALLOW_PUBLIC_BIND=1 if something else in front of this port is doing the authenticating.`
+    );
+}
 
-    if (mode === 'none') {
-        /*
-         * Refusing the pairing is stronger than warning about it: it makes "open to the network"
-         * inexpressible rather than merely discouraged, which is more than docs/security.md
-         * guaranteed when the bind address was the only protection there was.
-         *
-         * The hatch is required, not decorative. docker/Dockerfile sets HOST=0.0.0.0, because inside
-         * a container that is normal and the isolation is compose's `127.0.0.1:8080:8080` publish —
-         * something loadConfig cannot see and must not guess at. Compose pins AUTH_MODE=github
-         * instead, so a human who sets the hatch has typed the sentence once.
-         */
-        if (!LOOPBACK_HOSTS.has(host) && !bool(env.AUTH_ALLOW_PUBLIC_BIND, false, 'AUTH_ALLOW_PUBLIC_BIND')) {
-            throw new Error(
-                `AUTH_MODE is "none" but HOST is "${host}", which is reachable from off this machine. With no auth every route is open to anyone who can reach the port, including POST /api/jobs, which runs shell commands. Set AUTH_MODE=github, or bind to 127.0.0.1, or set AUTH_ALLOW_PUBLIC_BIND=1 if something else in front of this port is doing the authenticating.`
-            );
-        }
-        return Object.freeze({ mode, ingestToken });
-    }
-
-    // Named individually rather than as "auth is incomplete": the operator has one key to fix and
-    // should not have to diff the example file to find out which.
+/**
+ * Named individually rather than as "auth is incomplete": the operator has one key to fix and
+ * should not have to diff the example file to find out which.
+ */
+function requireGithubAuthFields(env: NodeJS.ProcessEnv): {
+    clientId: string;
+    clientSecret: string;
+    sessionSecret: string;
+} {
     const clientId = env.GITHUB_OAUTH_CLIENT_ID?.trim();
     const clientSecret = env.GITHUB_OAUTH_CLIENT_SECRET?.trim();
     const sessionSecret = env.SESSION_SECRET?.trim();
@@ -366,12 +366,17 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
             `SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${sessionSecret!.length}`
         );
     }
+    return { clientId: clientId!, clientSecret: clientSecret!, sessionSecret: sessionSecret! };
+}
 
-    // Required in this mode, not optional: a github-mode board authenticates its driver with this
-    // one secret, and a board that boots without it fails every claim with 401s the driver logs
-    // forever and nobody reads — the exact silent-forever failure fatal-at-boot replaces. The
-    // length floor is the webhook secret's: a short shared secret is an enumerable credential
-    // however constant-time the comparison is.
+/**
+ * Required in this mode, not optional: a github-mode board authenticates its driver with this one
+ * secret, and a board that boots without it fails every claim with 401s the driver logs forever
+ * and nobody reads — the exact silent-forever failure fatal-at-boot replaces. The length floor is
+ * the webhook secret's: a short shared secret is an enumerable credential however constant-time
+ * the comparison is.
+ */
+function requireJobBoardToken(env: NodeJS.ProcessEnv): string {
     const jobBoardToken = env.JOB_BOARD_TOKEN?.trim();
     if (!jobBoardToken) {
         throw new Error(
@@ -383,10 +388,15 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
             `JOB_BOARD_TOKEN must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${jobBoardToken.length}. Generate one with: openssl rand -hex 32.`
         );
     }
+    return jobBoardToken;
+}
 
-    // Defaulted only for a loopback bind, where the origin is unambiguous. A deployment reachable
-    // from elsewhere has to say what its origin is, because `http://0.0.0.0:8080` is not a URL any
-    // browser will ever be redirected back to and a wrong one fails at GitHub with an opaque error.
+/**
+ * Defaulted only for a loopback bind, where the origin is unambiguous. A deployment reachable from
+ * elsewhere has to say what its origin is, because `http://0.0.0.0:8080` is not a URL any browser
+ * will ever be redirected back to and a wrong one fails at GitHub with an opaque error.
+ */
+function resolvePublicOrigin(env: NodeJS.ProcessEnv, host: string, port: number): URL {
     const publicUrl = env.PUBLIC_URL?.trim() || (LOOPBACK_HOSTS.has(host) ? `http://${host}:${port}` : '');
     if (!publicUrl) {
         throw new Error(
@@ -402,15 +412,38 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
     if (origin.protocol !== 'http:' && origin.protocol !== 'https:') {
         throw new Error(`PUBLIC_URL must be http or https, got "${publicUrl}"`);
     }
+    return origin;
+}
 
+/**
+ * Every key of `[auth]`, or the one field `none` mode has.
+ *
+ * Pure, like the rest of loadConfig: no I/O, and the GitHub endpoints are read from the environment
+ * rather than reached.
+ */
+function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfig {
+    const ingestToken = env.INGEST_TOKEN?.trim() || null;
+    const mode = env.AUTH_MODE?.trim() || 'none';
+    if (mode !== 'none' && mode !== 'github') {
+        throw new Error(`AUTH_MODE must be "github" or "none", got "${env.AUTH_MODE}"`);
+    }
+
+    if (mode === 'none') {
+        assertNoneModeBindable(env, host);
+        return Object.freeze({ mode, ingestToken });
+    }
+
+    const { clientId, clientSecret, sessionSecret } = requireGithubAuthFields(env);
+    const jobBoardToken = requireJobBoardToken(env);
+    const origin = resolvePublicOrigin(env, host, port);
     const sessionTtlHours = int(env.SESSION_TTL_HOURS, DEFAULT_SESSION_TTL_HOURS, 'SESSION_TTL_HOURS');
 
     return Object.freeze({
         mode,
-        clientId: clientId!,
-        clientSecret: clientSecret!,
-        sessionSecret: sessionSecret!,
-        sessionTtlMs: sessionTtlHours * 3600 * 1000,
+        clientId,
+        clientSecret,
+        sessionSecret,
+        sessionTtlMs: sessionTtlHours * SECONDS_PER_HOUR * MS_PER_SECOND,
         cookieSecure: bool(env.COOKIE_SECURE, false, 'COOKIE_SECURE'),
         publicUrl: origin.origin,
         ingestToken,
@@ -430,7 +463,14 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
  * the environment, which always yields the App — deliberately evaluated in the body, after the
  * retired-variable refusals.
  */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?: GitHubConfig): AppConfig {
+/**
+ * The keys retired variables that must fail loudly rather than be silently ignored — each one used
+ * to decide what the page was made of or which organization the process served, so an ignored one
+ * boots a deployment whose operator believes it is reading something else. Grouped in one function
+ * purely to keep `loadConfig` under the repo's complexity ceiling; the order and the messages are
+ * unchanged.
+ */
+function assertNoRetiredEnvVars(env: NodeJS.ProcessEnv): void {
     // DATA_SOURCE selected between the live API and a replayed 203-PR payload. It is gone, and
     // fatal rather than ignored for the same reason GITHUB_REPOS is: it used to change what the
     // whole page was made of, so an ignored one would boot a dashboard the operator believes is
@@ -513,6 +553,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
             'AUTH_BOOTSTRAP_ADMIN is no longer supported: there is no first-admin problem when membership comes from GitHub — the first person who can see the installation signs in. Remove the line.'
         );
     }
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?: GitHubConfig): AppConfig {
+    assertNoRetiredEnvVars(env);
 
     const workspaceRoot = workspaceRootOf(env);
 
@@ -531,7 +575,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         throw new Error(`TELEMETRY_SOURCE must be "postgres", "fixture", or "off", got "${env.TELEMETRY_SOURCE}"`);
     }
 
-    const telemetryTtlSeconds = int(env.TELEMETRY_TTL_SECONDS, 30, 'TELEMETRY_TTL_SECONDS');
+    const telemetryTtlSeconds = int(env.TELEMETRY_TTL_SECONDS, DEFAULT_TELEMETRY_TTL_SECONDS, 'TELEMETRY_TTL_SECONDS');
     if (telemetryTtlSeconds < MIN_TELEMETRY_TTL_SECONDS) {
         throw new Error(`TELEMETRY_TTL_SECONDS must be at least ${MIN_TELEMETRY_TTL_SECONDS}`);
     }
@@ -578,9 +622,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
 
     // Bound before the return because loadAuth reads both: whether a deployment is reachable from
     // off the machine is what decides if running without auth is allowed at all.
-    const port = int(env.PORT, 8080, 'PORT');
+    const port = int(env.PORT, DEFAULT_PORT, 'PORT');
     const host = env.HOST ?? '127.0.0.1';
-    const dbPoolMax = int(env.DB_POOL_MAX, 50, 'DB_POOL_MAX');
+    const dbPoolMax = int(env.DB_POOL_MAX, DEFAULT_DB_POOL_MAX, 'DB_POOL_MAX');
 
     return Object.freeze({
         github,
@@ -590,7 +634,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         telemetrySource,
         databaseUrl,
         dbPoolMax,
-        telemetryTtlMs: telemetryTtlSeconds * 1000,
+        telemetryTtlMs: telemetryTtlSeconds * MS_PER_SECOND,
         workspaceRoot,
         auth: loadAuth(env, host, port),
         webhookSecret,

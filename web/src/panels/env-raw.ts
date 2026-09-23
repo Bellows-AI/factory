@@ -39,7 +39,7 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
 ];
 
 /** Mirrors VALUE_LIMIT in server/src/routes/env.ts. */
-export const VALUE_LIMIT = 32 * 1024;
+export const VALUE_LIMIT = 32_768;
 
 /** Mirrors NAME_LIMIT in server/src/routes/env.ts. */
 export const NAME_LIMIT = 255;
@@ -54,6 +54,67 @@ export interface EnvVarRow {
 }
 
 export type EnvRawResult = { ok: true; vars: EnvVarRow[] } | { ok: false; errors: string[] };
+
+/** Whether the value is itself one matched pair of quotes, which the parser would strip. */
+function isQuotePair(value: string): boolean {
+    return value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[0] === value[value.length - 1];
+}
+
+/** One line's parse: `null` for a skipped blank/comment line, otherwise the pair or the error. */
+type LineParseResult = { ok: true; name: string; value: string } | { ok: false; error: string };
+
+/**
+ * One line of the raw editor's text, checked in the server's own order: shape, name, value,
+ * duplicate, secret collision, scope cap. Split out of `parseEnvRaw` so its own line count and
+ * complexity stay under the limit — every check here is a flat early return, never nested.
+ */
+function parseEnvLine(
+    rawLine: string,
+    lineNo: number,
+    context: { secrets: ReadonlySet<string>; firstSeen: ReadonlyMap<string, number>; activeCount: number }
+): LineParseResult | null {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) return null;
+    const withoutExport = line.replace(/^export\s+/, '').trim();
+    const eq = withoutExport.indexOf('=');
+    if (eq === -1) return { ok: false, error: `line ${lineNo}: expected KEY=value` };
+    const name = withoutExport.slice(0, eq).trim();
+    let value = withoutExport.slice(eq + 1).trim();
+    if (name === '') return { ok: false, error: `line ${lineNo}: expected KEY=value` };
+    if (isQuotePair(value)) value = value.slice(1, -1);
+    if (!ENV_NAME.test(name)) {
+        return { ok: false, error: `line ${lineNo}: "${name}" is not a legal environment variable name` };
+    }
+    if (name.length > NAME_LIMIT) return { ok: false, error: `line ${lineNo}: name exceeds ${NAME_LIMIT} characters` };
+    if (RESERVED_ENV_NAMES.includes(name)) {
+        return { ok: false, error: `line ${lineNo}: "${name}" is reserved by the runner` };
+    }
+    if (value.includes('\n')) {
+        // Structurally unreachable after line-splitting; kept as parity with the server's
+        // newline refusal (BAD_ENV_VALUE) in case this parser is ever fed differently.
+        return { ok: false, error: `line ${lineNo}: value for "${name}" contains a newline` };
+    }
+    if (value.length > VALUE_LIMIT) {
+        return { ok: false, error: `line ${lineNo}: value for "${name}" exceeds ${VALUE_LIMIT} characters` };
+    }
+    const seenAt = context.firstSeen.get(name);
+    if (seenAt !== undefined) {
+        return { ok: false, error: `line ${lineNo}: duplicate name "${name}" (first seen on line ${seenAt})` };
+    }
+    if (context.secrets.has(name)) {
+        return {
+            ok: false,
+            error: `line ${lineNo}: "${name}" is already a secret in this scope — edit it on the Secrets tab`,
+        };
+    }
+    if (context.secrets.size + context.activeCount >= MAX_ENV_VARS_PER_SCOPE) {
+        return {
+            ok: false,
+            error: `line ${lineNo}: raw text would exceed the limit of ${MAX_ENV_VARS_PER_SCOPE} variables per scope`,
+        };
+    }
+    return { ok: true, name, value };
+}
 
 /**
  * Parse the raw editor's text against the scope's secret names.
@@ -73,62 +134,14 @@ export function parseEnvRaw(text: string, secretNames: readonly string[]): EnvRa
     const lines = text.replace(/\r\n?/g, '\n').split('\n');
     for (const [index, rawLine] of lines.entries()) {
         const lineNo = index + 1;
-        const line = rawLine.trim();
-        if (line === '' || line.startsWith('#')) continue;
-        const withoutExport = line.replace(/^export\s+/, '').trim();
-        const eq = withoutExport.indexOf('=');
-        if (eq === -1) {
-            errors.push(`line ${lineNo}: expected KEY=value`);
+        const result = parseEnvLine(rawLine, lineNo, { secrets, firstSeen, activeCount: pairs.length });
+        if (result === null) continue;
+        if (!result.ok) {
+            errors.push(result.error);
             continue;
         }
-        const name = withoutExport.slice(0, eq).trim();
-        let value = withoutExport.slice(eq + 1).trim();
-        if (name === '') {
-            errors.push(`line ${lineNo}: expected KEY=value`);
-            continue;
-        }
-        if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[0] === value[value.length - 1]) {
-            value = value.slice(1, -1);
-        }
-        if (!ENV_NAME.test(name)) {
-            errors.push(`line ${lineNo}: "${name}" is not a legal environment variable name`);
-            continue;
-        }
-        if (name.length > NAME_LIMIT) {
-            errors.push(`line ${lineNo}: name exceeds ${NAME_LIMIT} characters`);
-            continue;
-        }
-        if (RESERVED_ENV_NAMES.includes(name)) {
-            errors.push(`line ${lineNo}: "${name}" is reserved by the runner`);
-            continue;
-        }
-        if (value.includes('\n')) {
-            // Structurally unreachable after line-splitting; kept as parity with the server's
-            // newline refusal (BAD_ENV_VALUE) in case this parser is ever fed differently.
-            errors.push(`line ${lineNo}: value for "${name}" contains a newline`);
-            continue;
-        }
-        if (value.length > VALUE_LIMIT) {
-            errors.push(`line ${lineNo}: value for "${name}" exceeds ${VALUE_LIMIT} characters`);
-            continue;
-        }
-        const seenAt = firstSeen.get(name);
-        if (seenAt !== undefined) {
-            errors.push(`line ${lineNo}: duplicate name "${name}" (first seen on line ${seenAt})`);
-            continue;
-        }
-        firstSeen.set(name, lineNo);
-        if (secrets.has(name)) {
-            errors.push(`line ${lineNo}: "${name}" is already a secret in this scope — edit it on the Secrets tab`);
-            continue;
-        }
-        if (secrets.size + pairs.length >= MAX_ENV_VARS_PER_SCOPE) {
-            errors.push(
-                `line ${lineNo}: raw text would exceed the limit of ${MAX_ENV_VARS_PER_SCOPE} variables per scope`
-            );
-            continue;
-        }
-        pairs.push({ name, value });
+        firstSeen.set(result.name, lineNo);
+        pairs.push({ name: result.name, value: result.value });
     }
 
     if (errors.length > 0) return { ok: false, errors };
@@ -151,9 +164,4 @@ export function serializeEnv(rows: readonly EnvVarRow[]): string {
             return `${row.name}=${needsQuotes ? `"${value}"` : value}`;
         })
         .join('\n');
-}
-
-/** Whether the value is itself one matched pair of quotes, which the parser would strip. */
-function isQuotePair(value: string): boolean {
-    return value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[0] === value[value.length - 1];
 }

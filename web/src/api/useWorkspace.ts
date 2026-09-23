@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed';
 
@@ -63,6 +63,12 @@ export interface UseWorkspace {
 const settled = (data: WorkspacePayload | null): boolean =>
     !data || data.repos.every((repo) => repo.status === 'ready' || repo.status === 'failed');
 
+const POLL_BACKOFF_FAST_WINDOW_MS = 60_000;
+const POLL_BACKOFF_FAST_DELAY_MS = 2_000;
+const POLL_BACKOFF_SLOW_WINDOW_MS = 300_000;
+const POLL_BACKOFF_SLOW_DELAY_MS = 5_000;
+const POLL_BACKOFF_MAX_DELAY_MS = 15_000;
+
 /**
  * How long to wait before polling again, given how long we have been waiting already.
  *
@@ -72,9 +78,29 @@ const settled = (data: WorkspacePayload | null): boolean =>
  * next twenty minutes is a query per member per tick for a value that changes once.
  */
 export function pollDelay(elapsedMs: number): number {
-    if (elapsedMs < 60_000) return 2_000;
-    if (elapsedMs < 5 * 60_000) return 5_000;
-    return 15_000;
+    if (elapsedMs < POLL_BACKOFF_FAST_WINDOW_MS) return POLL_BACKOFF_FAST_DELAY_MS;
+    if (elapsedMs < POLL_BACKOFF_SLOW_WINDOW_MS) return POLL_BACKOFF_SLOW_DELAY_MS;
+    return POLL_BACKOFF_MAX_DELAY_MS;
+}
+
+/**
+ * Re-arms the poll unless every repo has settled, in which case the back-off clock resets so the
+ * next `save()` starts counting from zero rather than picking up wherever the last run left off.
+ */
+function scheduleNextPoll(
+    body: WorkspacePayload,
+    waitingSince: { current: number | null },
+    scheduleTimeout: (delay: number) => void
+): void {
+    if (settled(body)) {
+        waitingSince.current = null;
+        return;
+    }
+    waitingSince.current ??= Date.now();
+    // Nothing to see while the tab is hidden, and a background tab polling forever is the most
+    // common way a dashboard becomes somebody's battery complaint.
+    const delay = document.hidden ? POLL_BACKOFF_MAX_DELAY_MS : pollDelay(Date.now() - waitingSince.current);
+    scheduleTimeout(delay);
 }
 
 /**
@@ -101,7 +127,7 @@ export const listExecutorConfigs = async (): Promise<
 > => {
     try {
         const response = await fetch('/api/workspace/executors');
-        if (response.status === 401) {
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
             return { ok: false as const, error: 'Your session expired' };
         }
@@ -140,7 +166,7 @@ export function useWorkspace(): UseWorkspace {
 
             // Handed to the gate rather than rendered as a banner, for the reason useStats gives:
             // every later poll would 401 too, so a banner would never clear.
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 reportUnauthenticated();
                 setLoading(false);
                 return;
@@ -159,17 +185,11 @@ export function useWorkspace(): UseWorkspace {
             setError(null);
             setLoading(false);
 
-            // Everything settled: stop entirely. This list only changes when the member acts, and
-            // they act through `save`, which re-arms the poll itself.
-            if (settled(body)) {
-                waitingSince.current = null;
-                return;
-            }
-            waitingSince.current ??= Date.now();
-            // Nothing to see while the tab is hidden, and a background tab polling forever is the
-            // most common way a dashboard becomes somebody's battery complaint.
-            const delay = document.hidden ? 15_000 : pollDelay(Date.now() - waitingSince.current);
-            timer.current = window.setTimeout(() => void poll(signal), delay);
+            // This list only changes when the member acts, and they act through `save`, which
+            // re-arms the poll itself — so a settled answer stops the chain entirely.
+            scheduleNextPoll(body, waitingSince, (delay) => {
+                timer.current = window.setTimeout(() => void poll(signal), delay);
+            });
         } catch (e) {
             if (signal.aborted) return;
             setError((e as Error).message);
@@ -213,7 +233,7 @@ export function useWorkspace(): UseWorkspace {
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ repos }),
                 });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return 'Your session expired';
                 }
@@ -247,7 +267,7 @@ export function useWorkspace(): UseWorkspace {
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ executors }),
                 });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return 'Your session expired';
                 }

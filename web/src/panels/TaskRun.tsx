@@ -90,6 +90,129 @@ function Runtime({ runtime }: { runtime: RuntimeVitals }) {
 }
 
 /**
+ * The agent response/activity body: a terminal run's summary and raw output, or a live run's
+ * vitals, activity line and output tail. Split out of `TaskRun` — the nested "which branch of the
+ * run's life is this" choice was the bulk of its cognitive complexity.
+ */
+function RunResponseBody({
+    terminal,
+    job,
+    liveRef,
+}: {
+    terminal: boolean;
+    job: Job;
+    liveRef?: Ref<HTMLPreElement> | undefined;
+}) {
+    const hasOutput = job.output !== null;
+    if (!terminal) {
+        return (
+            <>
+                {job.status === 'running' && job.runtime ? <Runtime runtime={job.runtime} /> : null}
+                {job.status === 'running' && job.runtime?.activity != null ? (
+                    <p className="chat-activity">{job.runtime.activity}</p>
+                ) : null}
+                {hasOutput ? (
+                    <OutputWell text={job.output!} labelled liveRef={liveRef} />
+                ) : (
+                    <p className="muted">Waiting for the executor…</p>
+                )}
+            </>
+        );
+    }
+    if (job.summary !== null) {
+        return (
+            <>
+                {/* The agent's own last words, flowing text — never a log wall. */}
+                <p className="run-summary">{job.summary}</p>
+                {hasOutput ? (
+                    <details className="run-output">
+                        <summary>View raw output</summary>
+                        <OutputWell text={job.output!} labelled />
+                    </details>
+                ) : null}
+            </>
+        );
+    }
+    if (hasOutput) {
+        return (
+            <>
+                <p className="muted">No agent summary was captured.</p>
+                <details className="run-output" open>
+                    <summary>View raw output</summary>
+                    <OutputWell text={job.output!} labelled />
+                </details>
+            </>
+        );
+    }
+    return (
+        <p className="muted">
+            This run finished without a captured agent response. Check its exit status and checks below.
+        </p>
+    );
+}
+
+/**
+ * The run's checks-and-published-work block: present when there are gates, a publication, or
+ * both; absent otherwise. Split out of `TaskRun` for the same reason as `RunResponseBody`.
+ */
+function RunChecksAndPublish({
+    index,
+    gates,
+    publish,
+}: {
+    index: number;
+    gates: GateCheck[] | null;
+    publish: { branch: string; url: string | null } | null;
+}) {
+    const hasGates = gates !== null && gates.length > 0;
+    if (!hasGates && publish === null) return null;
+    return (
+        <div className="run-work" id={`run-${index}-checks`} tabIndex={-1}>
+            <p className="run-label">Checks and published work</p>
+            {hasGates ? <Checks gates={gates} /> : null}
+            {publish !== null ? <Publication publish={publish} /> : null}
+        </div>
+    );
+}
+
+const COST_DECIMAL_PLACES = 4;
+
+/**
+ * The run's quiet metadata footer: status, timestamps, attribution — everything that follows the
+ * work it describes rather than leading the article. Split out of `TaskRun` because its many
+ * independent fields were the rest of its cognitive complexity.
+ */
+function RunMetaFooter({ job, parked }: { job: Job; parked: boolean }) {
+    return (
+        <p className="msg-meta">
+            <span className="pill">{job.status}</span>
+            <span className="muted">{timestamp(job.createdAt)}</span>
+            {job.executor !== null ? <span className="muted">{job.executor}</span> : null}
+            {job.workflowName != null ? <span className="muted">workflow {job.workflowName}</span> : null}
+            {job.workflowNode !== null ? <span className="muted">node {job.workflowNode}</span> : null}
+            {!parked ? <span className="muted">{runDuration(job.startedAt, job.finishedAt)}</span> : null}
+            {job.exitCode !== null ? <span className="chat-exit">exit {job.exitCode}</span> : null}
+            {job.runtime?.contextTokens != null ? (
+                <span className="chat-activity">
+                    ctx {tokenCount.format(job.runtime.contextTokens)} tok
+                    {job.runtime.costUsd != null && job.runtime.costUsd > 0
+                        ? ` · $${job.runtime.costUsd.toFixed(COST_DECIMAL_PLACES)}`
+                        : ''}
+                </span>
+            ) : null}
+            {job.stoppedBy !== null ? (
+                <span className="pill chat-stop">
+                    {job.status === 'stopped' ? 'stopped by' : 'stop requested by'} {job.stoppedBy.login}
+                </span>
+            ) : null}
+            {job.doneAt !== null ? <span className="pill chat-done">done</span> : null}
+            {job.doneBy !== null ? <span className="pill chat-done">done by {job.doneBy.login}</span> : null}
+            {job.status === 'standby' ? <span className="pill">parked</span> : null}
+        </p>
+    );
+}
+
+/**
  * One run of the conversation, as one article with a fixed reading order: the request, the
  * agent's response (or its live activity), the checks and published work this run produced, and
  * a quiet metadata footer last. The stored `summary` is the terminal response; raw output is
@@ -112,7 +235,6 @@ export function TaskRun({
 }) {
     const terminal = isTerminal(job.status);
     const parked = job.status === 'queued' || job.status === 'standby';
-    const hasOutput = job.output !== null;
     const gates = job.gates ?? null;
     const publish = publicationForRun(job);
     return (
@@ -121,83 +243,9 @@ export function TaskRun({
             {/* The member's words are prose, not code: normal text with its line breaks kept. */}
             <p className="msg-user">{job.command}</p>
             <p className="run-label">{terminal ? 'Agent response' : 'Agent activity'}</p>
-            {terminal ? (
-                job.summary !== null ? (
-                    <>
-                        {/* The agent's own last words, flowing text — never a log wall. */}
-                        <p className="run-summary">{job.summary}</p>
-                        {hasOutput ? (
-                            <details className="run-output">
-                                <summary>View raw output</summary>
-                                <OutputWell text={job.output!} labelled />
-                            </details>
-                        ) : null}
-                    </>
-                ) : hasOutput ? (
-                    <>
-                        <p className="muted">No agent summary was captured.</p>
-                        <details className="run-output" open>
-                            <summary>View raw output</summary>
-                            <OutputWell text={job.output!} labelled />
-                        </details>
-                    </>
-                ) : (
-                    <p className="muted">
-                        This run finished without a captured agent response. Check its exit status and checks below.
-                    </p>
-                )
-            ) : (
-                <>
-                    {job.status === 'running' && job.runtime ? <Runtime runtime={job.runtime} /> : null}
-                    {job.status === 'running' && job.runtime?.activity != null ? (
-                        <p className="chat-activity">{job.runtime.activity}</p>
-                    ) : null}
-                    {hasOutput ? (
-                        <OutputWell text={job.output!} labelled liveRef={liveRef} />
-                    ) : (
-                        <p className="muted">Waiting for the executor…</p>
-                    )}
-                </>
-            )}
-            {gates !== null && gates.length > 0 ? (
-                <div className="run-work" id={`run-${index}-checks`} tabIndex={-1}>
-                    <p className="run-label">Checks and published work</p>
-                    <Checks gates={gates} />
-                    {publish !== null ? <Publication publish={publish} /> : null}
-                </div>
-            ) : publish !== null ? (
-                <div className="run-work" id={`run-${index}-checks`} tabIndex={-1}>
-                    <p className="run-label">Checks and published work</p>
-                    <Publication publish={publish} />
-                </div>
-            ) : null}
-            <p className="msg-meta">
-                {/* The quiet footer: metadata follows the work it describes, in reading order —
-                status first, attribution last. Nothing here leads the article. */}
-                <span className="pill">{job.status}</span>
-                <span className="muted">{timestamp(job.createdAt)}</span>
-                {job.executor !== null ? <span className="muted">{job.executor}</span> : null}
-                {job.workflowName != null ? <span className="muted">workflow {job.workflowName}</span> : null}
-                {job.workflowNode !== null ? <span className="muted">node {job.workflowNode}</span> : null}
-                {!parked ? <span className="muted">{runDuration(job.startedAt, job.finishedAt)}</span> : null}
-                {job.exitCode !== null ? <span className="chat-exit">exit {job.exitCode}</span> : null}
-                {job.runtime?.contextTokens != null ? (
-                    <span className="chat-activity">
-                        ctx {tokenCount.format(job.runtime.contextTokens)} tok
-                        {job.runtime.costUsd != null && job.runtime.costUsd > 0
-                            ? ` · $${job.runtime.costUsd.toFixed(4)}`
-                            : ''}
-                    </span>
-                ) : null}
-                {job.stoppedBy !== null ? (
-                    <span className="pill chat-stop">
-                        {job.status === 'stopped' ? 'stopped by' : 'stop requested by'} {job.stoppedBy.login}
-                    </span>
-                ) : null}
-                {job.doneAt !== null ? <span className="pill chat-done">done</span> : null}
-                {job.doneBy !== null ? <span className="pill chat-done">done by {job.doneBy.login}</span> : null}
-                {job.status === 'standby' ? <span className="pill">parked</span> : null}
-            </p>
+            <RunResponseBody terminal={terminal} job={job} liveRef={liveRef} />
+            <RunChecksAndPublish index={index} gates={gates} publish={publish} />
+            <RunMetaFooter job={job} parked={parked} />
         </article>
     );
 }

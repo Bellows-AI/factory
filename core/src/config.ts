@@ -1,1 +1,3 @@
-export const HOUR = 3600 * 1000;
+const SECONDS_PER_HOUR = 3600;
+const MS_PER_SECOND = 1000;
+export const HOUR = SECONDS_PER_HOUR * MS_PER_SECOND;

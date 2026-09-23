@@ -25,6 +25,8 @@ export interface ByUserRow {
     barPct: number;
 }
 
+const BAR_PCT_MULTIPLIER = 100;
+
 export function byUserRows(byUser: TelemetryStats['byUser']): ByUserRow[] {
     const rows = byUser.map(({ user, sessions, tokens: t }) => ({
         id: user.id,
@@ -41,7 +43,7 @@ export function byUserRows(byUser: TelemetryStats['byUser']): ByUserRow[] {
     for (const row of rows) max = Math.max(max, row.newTokens ?? 0);
     return rows.map((row) => ({
         ...row,
-        barPct: row.newTokens === null || max === 0 ? 0 : Math.round((row.newTokens / max) * 100),
+        barPct: row.newTokens === null || max === 0 ? 0 : Math.round((row.newTokens / max) * BAR_PCT_MULTIPLIER),
     }));
 }
 

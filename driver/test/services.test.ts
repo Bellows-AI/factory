@@ -34,7 +34,7 @@ const job: BoardJob = {
  * written by somebody this process does not know, and argv arrays worth pinning the way
  * `dockerArgs` is pinned.
  */
-describe('parseBellows', () => {
+describe('parseBellows: shapes', () => {
     it('parses the drone-style shape', () => {
         const text = [
             '# databases and such, for the tests this repo wants to run',
@@ -121,7 +121,9 @@ describe('parseBellows', () => {
         ].join('\n');
         expect(parseBellows(text)).toEqual([]);
     });
+});
 
+describe('parseBellows: comments and basic escapes', () => {
     it('strips comments, including one after a value, but not inside quotes', () => {
         const text = [
             'services:',
@@ -171,7 +173,9 @@ describe('parseBellows', () => {
             parseBellows('services:\n  - name: db\n    image: postgres\n    environment:\n      BAD: "a\\qb"\n')
         ).toThrow(/escape/);
     });
+});
 
+describe('parseBellows: escape grammar', () => {
     it('decodes every valid YAML 1.2 double-quoted escape, including the variable-length hex forms', () => {
         // §7.3.2 in full: the one-character escapes beyond the common set, the escaped space, and
         // the hex forms — `\x` of exactly 2 digits, `\u` of 4, `\U` of 8, decoded through
@@ -234,7 +238,9 @@ describe('parseBellows', () => {
             { name: 'db', image: 'postgres', environment: [{ key: 'TOKEN', value: 'va"' }] },
         ]);
     });
+});
 
+describe('parseBellows: refusals', () => {
     it('refuses a service with no name or no image', () => {
         expect(() => parseBellows('services:\n  - image: redis\n')).toThrow(/missing "name"/);
         expect(() => parseBellows('services:\n  - name: cache\n')).toThrow(/missing "image"/);
@@ -244,13 +250,14 @@ describe('parseBellows', () => {
         // The name becomes a container name suffix and a network alias — what DNS answers with
         // inside the job's network. Uppercase, edge hyphens, separators and length are all
         // refused at parse, where the message can say why, rather than at the daemon.
-        for (const name of ['Cache', 'cache-2-x-', '-cache', 'ca che', 'ca/che', 'a'.repeat(31)]) {
+        const NAME_MAX_LENGTH = 30;
+        for (const name of ['Cache', 'cache-2-x-', '-cache', 'ca che', 'ca/che', 'a'.repeat(NAME_MAX_LENGTH + 1)]) {
             expect(() => parseBellows(`services:\n  - name: ${name}\n    image: redis\n`), name).toThrow(
                 /lowercase DNS label/
             );
         }
         expect(parseBellows('services:\n  - name: a\n    image: redis\n')).toHaveLength(1);
-        expect(parseBellows(`services:\n  - name: ${'a'.repeat(30)}\n    image: redis\n`)).toHaveLength(1);
+        expect(parseBellows(`services:\n  - name: ${'a'.repeat(NAME_MAX_LENGTH)}\n    image: redis\n`)).toHaveLength(1);
     });
 
     it('refuses an unknown top-level key', () => {
@@ -294,11 +301,13 @@ describe('parseBellows', () => {
         // `-e` values travel on a `docker run` argv, and execve caps a single argument far below
         // what a pasted certificate collection weighs — better a refusal that names the key than
         // a daemon error that reads as infrastructure.
-        const big = 'x'.repeat(8193);
+        const MAX_ENV_VALUE = 8192;
+        const MAX_ENV_KEY = 256;
+        const big = 'x'.repeat(MAX_ENV_VALUE + 1);
         expect(() =>
             parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      PEM: ${big}\n`)
         ).toThrow(/too long/);
-        const longKey = 'K'.repeat(257);
+        const longKey = 'K'.repeat(MAX_ENV_KEY + 1);
         expect(() =>
             parseBellows(`services:\n  - name: db\n    image: postgres\n    environment:\n      ${longKey}: 1\n`)
         ).toThrow(/too long/);
@@ -319,12 +328,15 @@ describe('parseBellows', () => {
         for (const image of ['redis', 'postgres:16', 'ghcr.io/team/db:1.2', 'registry:5000/team/db:1.2']) {
             expect(parseBellows(`services:\n  - name: db\n    image: ${image}\n`)[0]?.image, image).toBe(image);
         }
-        const digest = `${'a'.repeat(64)}`;
+        const SHA256_HEX_LENGTH = 64;
+        const digest = `${'a'.repeat(SHA256_HEX_LENGTH)}`;
         expect(parseBellows(`services:\n  - name: db\n    image: redis@sha256:${digest}\n`)[0]?.image).toBe(
             `redis@sha256:${digest}`
         );
     });
+});
 
+describe('parseBellows: BOM and caps', () => {
     it('tolerates a byte-order mark in front of the first key', () => {
         expect(parseBellows('\uFEFFservices:\n  - name: db\n    image: postgres\n')).toHaveLength(1);
     });
@@ -420,7 +432,8 @@ describe('the bellows readout arguments', () => {
     // busybox: every job already needs it present.
     it("cats every checkout's .bellows.yaml over the workspaces volume, marked per checkout", () => {
         const line = readBellowsArgs(loadDriverConfig({}), job);
-        expect(line.slice(0, 14)).toEqual([
+        const EXPECTED_ARGV_PREFIX_LENGTH = 14;
+        expect(line.slice(0, EXPECTED_ARGV_PREFIX_LENGTH)).toEqual([
             'run',
             '--rm',
             '--mount',

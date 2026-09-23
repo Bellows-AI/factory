@@ -39,32 +39,38 @@ describe('compareValues', () => {
     });
 
     it('ranks null after every real value, in either argument position', () => {
-        expect(compareValues(null, 5)).toBeGreaterThan(0);
-        expect(compareValues(5, null)).toBeLessThan(0);
+        const MEASURED = 5;
+        expect(compareValues(null, MEASURED)).toBeGreaterThan(0);
+        expect(compareValues(MEASURED, null)).toBeLessThan(0);
         expect(compareValues(null, 'a')).toBeGreaterThan(0);
         expect(compareValues(null, null)).toBe(0);
     });
 
     it('keeps a total order over mixed kinds, never NaN', () => {
-        const mixed = compareValues(5, 'a');
+        const MEASURED = 5;
+        const mixed = compareValues(MEASURED, 'a');
         expect(Number.isNaN(mixed)).toBe(false);
         expect(mixed).toBeLessThan(0); // numbers order before strings, deterministically
     });
 
     it('ranks a NaN like an unmeasured value, so one can never poison the order', () => {
-        expect(compareValues(Number.NaN, 5)).toBeGreaterThan(0);
-        expect(compareValues(5, Number.NaN)).toBeLessThan(0);
+        const MEASURED = 5;
+        expect(compareValues(Number.NaN, MEASURED)).toBeGreaterThan(0);
+        expect(compareValues(MEASURED, Number.NaN)).toBeLessThan(0);
         expect(Number.isNaN(compareValues(Number.NaN, Number.NaN))).toBe(false);
     });
 });
 
 describe('sortRows', () => {
     it('sorts numbers both directions', () => {
-        const rows = [row('a', 'a', 3), row('b', 'b', 1), row('c', 'c', 2)];
+        const SIZE_A = 3;
+        const SIZE_B = 1;
+        const SIZE_C = 2;
+        const rows = [row('a', 'a', SIZE_A), row('b', 'b', SIZE_B), row('c', 'c', SIZE_C)];
         const asc = sortRows(rows, COLUMNS, { key: 'size', direction: 'ascending' });
-        expect(asc.map((r) => r.size)).toEqual([1, 2, 3]);
+        expect(asc.map((r) => r.size)).toEqual([SIZE_B, SIZE_C, SIZE_A]);
         const desc = sortRows(rows, COLUMNS, { key: 'size', direction: 'descending' });
-        expect(desc.map((r) => r.size)).toEqual([3, 2, 1]);
+        expect(desc.map((r) => r.size)).toEqual([SIZE_A, SIZE_C, SIZE_B]);
     });
 
     it('sorts strings both directions', () => {
@@ -85,7 +91,10 @@ describe('sortRows', () => {
     });
 
     it('sorts numeric timestamps chronologically', () => {
-        const rows = [row('a', 'a', 1_700_000_000), row('b', 'b', 1_600_000_000), row('c', 'c', 1_800_000_000)];
+        const TIMESTAMP_MID = 1_700_000_000;
+        const TIMESTAMP_EARLY = 1_600_000_000;
+        const TIMESTAMP_LATE = 1_800_000_000;
+        const rows = [row('a', 'a', TIMESTAMP_MID), row('b', 'b', TIMESTAMP_EARLY), row('c', 'c', TIMESTAMP_LATE)];
         expect(sortRows(rows, COLUMNS, { key: 'size', direction: 'ascending' }).map((r) => r.id)).toEqual([
             'b',
             'a',
@@ -94,7 +103,8 @@ describe('sortRows', () => {
     });
 
     it('keeps nulls last in BOTH directions — never the -Infinity inversion', () => {
-        const rows = [row('a', 'a', null), row('b', 'b', 5), row('c', 'c', 1)];
+        const SIZE_B = 5;
+        const rows = [row('a', 'a', null), row('b', 'b', SIZE_B), row('c', 'c', 1)];
         const asc = sortRows(rows, COLUMNS, { key: 'size', direction: 'ascending' });
         const desc = sortRows(rows, COLUMNS, { key: 'size', direction: 'descending' });
         expect(asc.map((r) => r.id)).toEqual(['c', 'b', 'a']);
@@ -102,7 +112,8 @@ describe('sortRows', () => {
     });
 
     it('partitions a NaN with the unmeasured, so descending cannot float it to the top', () => {
-        const rows = [row('a', 'a', Number.NaN), row('b', 'b', 5), row('c', 'c', 1)];
+        const SIZE_B = 5;
+        const rows = [row('a', 'a', Number.NaN), row('b', 'b', SIZE_B), row('c', 'c', 1)];
         const desc = sortRows(rows, COLUMNS, { key: 'size', direction: 'descending' });
         expect(desc.map((r) => r.id)).toEqual(['b', 'c', 'a']);
     });
@@ -135,14 +146,16 @@ describe('sortRows', () => {
     });
 
     it('returns a copy and leaves the input untouched', () => {
-        const rows = [row('a', 'a', 3), row('b', 'b', 1)];
+        const SIZE_A = 3;
+        const rows = [row('a', 'a', SIZE_A), row('b', 'b', 1)];
         const sorted = sortRows(rows, COLUMNS, { key: 'size', direction: 'ascending' });
         expect(sorted).not.toBe(rows);
-        expect(rows.map((r) => r.size)).toEqual([3, 1]);
+        expect(rows.map((r) => r.size)).toEqual([SIZE_A, 1]);
     });
 
     it('falls back to the original order when the key names no sortable column', () => {
-        const rows = [row('a', 'a', 3), row('b', 'b', 1)];
+        const SIZE_A = 3;
+        const rows = [row('a', 'a', SIZE_A), row('b', 'b', 1)];
         expect(sortRows(rows, COLUMNS, { key: 'missing', direction: 'ascending' }).map((r) => r.id)).toEqual([
             'a',
             'b',
@@ -152,13 +165,15 @@ describe('sortRows', () => {
 
 describe('defaultDirectionFor', () => {
     it('opens numbers descending and text ascending', () => {
-        const rows = [row('a', 'alpha', 5), row('b', 'beta', null)];
+        const SIZE_A = 5;
+        const rows = [row('a', 'alpha', SIZE_A), row('b', 'beta', null)];
         expect(defaultDirectionFor(rows, COLUMNS, 'size')).toBe('descending');
         expect(defaultDirectionFor(rows, COLUMNS, 'name')).toBe('ascending');
     });
 
     it('skips unmeasured values to classify the column, and opens ascending when nothing is measured', () => {
-        const rows = [row('a', 'a', null), row('b', 'b', null), row('c', 'c', 7)];
+        const SIZE_C = 7;
+        const rows = [row('a', 'a', null), row('b', 'b', null), row('c', 'c', SIZE_C)];
         expect(defaultDirectionFor(rows, COLUMNS, 'size')).toBe('descending');
         const empty: Row[] = [];
         expect(defaultDirectionFor(empty, COLUMNS, 'size')).toBe('ascending');
@@ -166,7 +181,10 @@ describe('defaultDirectionFor', () => {
 });
 
 describe('DataTable markup', () => {
-    const ROWS: Row[] = [row('r1', 'alpha', 10), row('r2', 'beta', 30), row('r3', 'gamma', 20)];
+    const SIZE_ALPHA = 10;
+    const SIZE_BETA = 30;
+    const SIZE_GAMMA = 20;
+    const ROWS: Row[] = [row('r1', 'alpha', SIZE_ALPHA), row('r2', 'beta', SIZE_BETA), row('r3', 'gamma', SIZE_GAMMA)];
 
     const render = (props: {
         rows?: Row[];
@@ -262,7 +280,8 @@ describe('DataTable markup', () => {
                 name: (r) => (r.size === null ? undefined : `${r.size} bytes measured`),
             },
         ];
-        const html = render({ columns, rows: [row('r1', 'alpha', 4096)] });
+        const SIZE_BYTES = 4096;
+        const html = render({ columns, rows: [row('r1', 'alpha', SIZE_BYTES)] });
         expect(html).toContain('aria-label="4096 bytes measured"');
         const unnamed: DataTableColumn<Row>[] = [{ key: 'name', label: 'Name', cell: (r) => r.name }];
         expect(render({ columns: unnamed, rows: [row('r1', 'alpha', 1)] })).not.toContain('aria-label=');

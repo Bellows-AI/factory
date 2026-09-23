@@ -46,6 +46,8 @@ const META: StatsPayload['meta'] = {
 } as StatsPayload['meta'];
 
 /** A minimal "ready" telemetry: two measured sessions with real totals for the summary panel. */
+const ACCEPTED_EDITS = 2;
+const TOTAL_EDIT_DECISIONS = 3;
 const READY_TELEMETRY = {
     totals: {
         sessions: 2,
@@ -53,7 +55,12 @@ const READY_TELEMETRY = {
         activeHours: 1.5,
         linesAdded: 5,
         linesRemoved: 2,
-        editAcceptance: { accepted: 2, rejected: 1, decisions: 3, ratio: 2 / 3 },
+        editAcceptance: {
+            accepted: ACCEPTED_EDITS,
+            rejected: 1,
+            decisions: TOTAL_EDIT_DECISIONS,
+            ratio: ACCEPTED_EDITS / TOTAL_EDIT_DECISIONS,
+        },
     },
     otherRepoSessions: 1,
     sessionsWithoutHook: 1,
@@ -74,11 +81,12 @@ const NO_TELEMETRY = {
 } as unknown as TelemetryStats;
 
 const dist = (tasks: number) => ({ avg: null, p50: null, p95: null, tasks });
+const MEASURED_TASK_COUNT = 7;
 const MEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(7),
-    jobTurnsPerTask: dist(7),
-    agentTurnsPerTask: dist(7),
-    wallClockPerTask: dist(7),
+    tokensPerTask: dist(MEASURED_TASK_COUNT),
+    jobTurnsPerTask: dist(MEASURED_TASK_COUNT),
+    agentTurnsPerTask: dist(MEASURED_TASK_COUNT),
+    wallClockPerTask: dist(MEASURED_TASK_COUNT),
 } as unknown as TaskUsageStats;
 const UNMEASURED_TASKS: TaskUsageStats = {
     tokensPerTask: dist(0),

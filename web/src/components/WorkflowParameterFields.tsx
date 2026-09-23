@@ -1,6 +1,74 @@
 import type { ReactElement } from 'react';
 import { humanizeParamName, paramFieldVerdict, type WorkflowParamChoice } from '../task-composer.js';
 
+const PARAM_VALUE_MAX_LENGTH = 512;
+
+/**
+ * One declared parameter's field: label, optional author helper, the input itself, its error
+ * when invalid, and the raw pattern tucked behind Format details. Split out of
+ * `WorkflowParameterFields` so its own id-wiring and verdict logic stays under the complexity
+ * limit.
+ */
+function ParameterField({
+    param,
+    value,
+    touched,
+    onInput,
+    onBlur,
+}: {
+    param: WorkflowParamChoice;
+    value: string | undefined;
+    touched: boolean;
+    onInput: (name: string, value: string) => void;
+    onBlur: (name: string) => void;
+}) {
+    const id = `composer-param-${param.name}`;
+    const verdict = paramFieldVerdict(param, value, touched);
+    const failed =
+        verdict.kind === 'required' ||
+        verdict.kind === 'too-long' ||
+        verdict.kind === 'mismatch' ||
+        verdict.kind === 'uncompilable';
+    const describedBy =
+        [param.description ? `${id}-helper` : null, failed ? `${id}-error` : null]
+            .filter((part) => part !== null)
+            .join(' ') || undefined;
+    return (
+        <div className="composer-field">
+            <label className="composer-label" htmlFor={id}>
+                {humanizeParamName(param.name)}
+            </label>
+            {param.description ? (
+                <p className="composer-helper" id={`${id}-helper`}>
+                    {param.description}
+                </p>
+            ) : null}
+            <input
+                id={id}
+                className="composer-select"
+                placeholder={param.example ? `Example: ${param.example}` : 'Required'}
+                maxLength={PARAM_VALUE_MAX_LENGTH}
+                aria-invalid={failed || undefined}
+                aria-describedby={describedBy}
+                value={value ?? ''}
+                onChange={(e) => onInput(param.name, e.target.value)}
+                onBlur={() => onBlur(param.name)}
+            />
+            {failed ? (
+                <p className="composer-param-error" id={`${id}-error`}>
+                    {verdict.message}
+                </p>
+            ) : null}
+            {param.pattern !== undefined ? (
+                <details className="composer-param-details">
+                    <summary>Format details</summary>
+                    <code>{param.pattern}</code>
+                </details>
+            ) : null}
+        </div>
+    );
+}
+
 /**
  * The chosen workflow's declared parameters: one labelled input each, in words a member can act
  * on. Props in, markup out — no fetching, no effects; the touched map is owned by the composer
@@ -34,53 +102,16 @@ export function WorkflowParameterFields({
 }): ReactElement {
     return (
         <div className="composer-fields">
-            {params.map((param) => {
-                const id = `composer-param-${param.name}`;
-                const verdict = paramFieldVerdict(param, values[param.name], touched[param.name] === true);
-                const failed =
-                    verdict.kind === 'required' ||
-                    verdict.kind === 'too-long' ||
-                    verdict.kind === 'mismatch' ||
-                    verdict.kind === 'uncompilable';
-                const describedBy =
-                    [param.description ? `${id}-helper` : null, failed ? `${id}-error` : null]
-                        .filter((part) => part !== null)
-                        .join(' ') || undefined;
-                return (
-                    <div key={param.name} className="composer-field">
-                        <label className="composer-label" htmlFor={id}>
-                            {humanizeParamName(param.name)}
-                        </label>
-                        {param.description ? (
-                            <p className="composer-helper" id={`${id}-helper`}>
-                                {param.description}
-                            </p>
-                        ) : null}
-                        <input
-                            id={id}
-                            className="composer-select"
-                            placeholder={param.example ? `Example: ${param.example}` : 'Required'}
-                            maxLength={512}
-                            aria-invalid={failed || undefined}
-                            aria-describedby={describedBy}
-                            value={values[param.name] ?? ''}
-                            onChange={(e) => onInput(param.name, e.target.value)}
-                            onBlur={() => onBlur(param.name)}
-                        />
-                        {failed ? (
-                            <p className="composer-param-error" id={`${id}-error`}>
-                                {verdict.message}
-                            </p>
-                        ) : null}
-                        {param.pattern !== undefined ? (
-                            <details className="composer-param-details">
-                                <summary>Format details</summary>
-                                <code>{param.pattern}</code>
-                            </details>
-                        ) : null}
-                    </div>
-                );
-            })}
+            {params.map((param) => (
+                <ParameterField
+                    key={param.name}
+                    param={param}
+                    value={values[param.name]}
+                    touched={touched[param.name] === true}
+                    onInput={onInput}
+                    onBlur={onBlur}
+                />
+            ))}
         </div>
     );
 }

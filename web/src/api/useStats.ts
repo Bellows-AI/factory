@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DateRange, OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 export interface TelemetryMeta {
     /**
@@ -65,6 +65,8 @@ export interface UseStats {
 }
 
 const POLL_MS = 2000;
+/** The board's "still fetching from GitHub" status — distinct from a completed 200. */
+const HTTP_STATUS_ACCEPTED = 202;
 
 /** `query` is the range query string; changing it re-polls without clearing what is on screen. */
 export function useStats(query = 'range=all'): UseStats {
@@ -79,7 +81,7 @@ export function useStats(query = 'range=all'): UseStats {
             try {
                 const response = await fetch(`/api/stats?${query}`, { signal });
 
-                if (response.status === 202) {
+                if (response.status === HTTP_STATUS_ACCEPTED) {
                     const body = (await response.json()) as { fetch: FetchState };
                     setProgress(body.fetch);
                     setPending(true);
@@ -92,7 +94,7 @@ export function useStats(query = 'range=all'): UseStats {
                 // and in the generic branch it renders a banner that never clears, because every
                 // request that follows 401s too. Handing it to the gate is the only thing that can
                 // actually resolve it.
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     setPending(false);
                     return;

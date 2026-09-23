@@ -1,71 +1,43 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import type { NavigateFunction } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
+import type { Job } from '../api/useJobs.js';
+import type { UseTasks } from '../api/useTasks.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
 import { useTasksPage } from './TasksLayout.js';
 
 /**
- * `/tasks/:id`, one task — the WHOLE follow-up chain, from the root command to the newest
- * adjustment, as one conversation. Any member's id resolves to the same view, and a follow-up
- * does NOT navigate away: the board records it as a new row (an audit record of what ran), the
- * thread refetches, and the adjustment appears as the newest message of the task it continues.
- *
- * The page header (status, wall clock, activity, the task's actions) and the conversation panel
- * both read the same polled chain. The composer and the Done verdict act on the NEWEST run — the
- * only one that is finished and not yet closed — so the page reads it off the polled chain
- * rather than off the URL.
+ * The conversation-level actions: sending a follow-up, marking done, stopping — each guarded by
+ * its own in-flight mark and by the generation counter, so a retired request from a previous
+ * task id can never land on the one now on screen. Split out of `TaskDetailPage` so its own
+ * line count stays under the limit.
  */
-export function TaskDetailPage() {
-    const { tasks } = useTasksPage();
-    const navigate = useNavigate();
-    const params = useParams();
-    const id = params.id ?? null;
-    const detail = useThread(id);
+function useTaskConversationActions(
+    id: string | null,
+    tasks: UseTasks,
+    detail: { jobs: Job[] | null; refresh: () => void },
+    latest: Job | null
+) {
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
-    // The actions' in-flight guards — one mark at a time — live here, beside the mutations they
-    // guard; the header relabels them as in-flight, the panel none at all.
     const [stoppingId, setStoppingId] = useState<string | null>(null);
-    const [removingId, setRemovingId] = useState<string | null>(null);
     const [doneId, setDoneId] = useState<string | null>(null);
-    // The remove confirmation's own state: the header's menu item only opens the dialog, the
-    // dialog's Remove task is the one thing that mutates, and a refusal stays inside it.
-    const [removeOpen, setRemoveOpen] = useState(false);
-    const [removeError, setRemoveError] = useState<string | null>(null);
-
-    // One page instance serves every /tasks/:id, so a refusal earned on task A would sit above
-    // task B after a sidenav jump. A different id is a different conversation: forget the error,
-    // any in-flight mark, and a dialog left open. `key` on the panel does the same for the
-    // composer's own draft.
-    //
-    // The generation is what keeps a RETIRED request from haunting the new task: every action
-    // captures it at start, and after each await its tail (error, refresh, navigation, mark
-    // clearing) acts only while its own generation is still current — task A's completion can
-    // otherwise clear task B's in-flight mark or yank the reader off task B. Monotonic, so
-    // navigating back to A still counts as a new question.
+    // See the module-level note on the removal hook's generation ref — the same discipline,
+    // scoped to this hook's own state.
     const generation = useRef(0);
     useEffect(() => {
         generation.current += 1;
         setActionError(null);
         setSending(false);
         setStoppingId(null);
-        setRemovingId(null);
         setDoneId(null);
-        setRemoveOpen(false);
-        setRemoveError(null);
-        // Leaving the route invalidates every in-flight action too: without this, a late
-        // remove could pass the generation check after unmount and redirect a page the reader
-        // has already left (React runs this cleanup before the next id's effect, so a route
-        // change invalidates twice — harmless; the counter is only compared, never read).
         return () => {
             generation.current += 1;
         };
     }, [id]);
-
-    const latest =
-        detail.jobs !== null && detail.jobs.length > 0 ? (detail.jobs[detail.jobs.length - 1] ?? null) : null;
 
     const followUp = async (command: string): Promise<string | null> => {
         if (latest === null) return 'No task to follow up on';
@@ -92,6 +64,7 @@ export function TaskDetailPage() {
             if (generation.current === atStart) setSending(false);
         }
     };
+
     const doneTask = async (taskId: string) => {
         if (doneId !== null) return;
         const atStart = generation.current;
@@ -136,11 +109,44 @@ export function TaskDetailPage() {
         }
     };
 
-    // The confirmation lives in the dialog, and so does the refusal: Remove task confirms
-    // there, the request carries the in-flight mark the dialog disables itself with, and a
-    // refusal stays inside the open dialog as an alert instead of erroring somewhere the
-    // decision is no longer visible. Success is the one navigation — the rows are gone, this
-    // page has nothing left to render, and the inbox is where the task list lives.
+    return { sending, actionError, stoppingId, doneId, followUp, doneTask, stopTask };
+}
+
+/**
+ * The remove confirmation's own state: the header's menu item only opens the dialog, the
+ * dialog's Remove task is the one thing that mutates, and a refusal stays inside it. Success is
+ * the one navigation — the rows are gone, the page has nothing left to render, and the inbox is
+ * where the task list lives. Split out of `TaskDetailPage` for the same reason as
+ * `useTaskConversationActions`.
+ *
+ * One page instance serves every `/tasks/:id`, so a refusal earned on task A would sit above
+ * task B after a sidenav jump — the generation counter is what keeps a RETIRED request from
+ * haunting the new task: every action captures it at start, and after each await its tail
+ * (error, refresh, navigation, mark clearing) acts only while its own generation is still
+ * current. Monotonic, so navigating back to A still counts as a new question, and the effect's
+ * cleanup invalidates in-flight actions again on unmount.
+ */
+function useTaskRemoval(id: string | null, tasks: UseTasks, latest: Job | null, navigate: NavigateFunction) {
+    const [removingId, setRemovingId] = useState<string | null>(null);
+    const [removeOpen, setRemoveOpen] = useState(false);
+    const [removeError, setRemoveError] = useState<string | null>(null);
+    const generation = useRef(0);
+    useEffect(() => {
+        generation.current += 1;
+        setRemovingId(null);
+        setRemoveOpen(false);
+        setRemoveError(null);
+        return () => {
+            generation.current += 1;
+        };
+    }, [id]);
+
+    const openRemove = () => {
+        setRemoveError(null);
+        setRemoveOpen(true);
+    };
+    const closeRemove = () => setRemoveOpen(false);
+
     const removeTask = async () => {
         if (latest === null || removingId !== null) return;
         const taskId = latest.id;
@@ -161,6 +167,45 @@ export function TaskDetailPage() {
         }
     };
 
+    return { removingId, removeOpen, removeError, openRemove, closeRemove, removeTask };
+}
+
+/**
+ * `/tasks/:id`, one task — the WHOLE follow-up chain, from the root command to the newest
+ * adjustment, as one conversation. Any member's id resolves to the same view, and a follow-up
+ * does NOT navigate away: the board records it as a new row (an audit record of what ran), the
+ * thread refetches, and the adjustment appears as the newest message of the task it continues.
+ *
+ * The page header (status, wall clock, activity, the task's actions) and the conversation panel
+ * both read the same polled chain. The composer and the Done verdict act on the NEWEST run — the
+ * only one that is finished and not yet closed — so the page reads it off the polled chain
+ * rather than off the URL.
+ */
+export function TaskDetailPage() {
+    const { tasks } = useTasksPage();
+    const navigate = useNavigate();
+    const params = useParams();
+    const id = params.id ?? null;
+    const detail = useThread(id);
+
+    // A different id is a different conversation — the NEWEST run is the one the composer and
+    // the Done verdict act on, the only one that is finished and not yet closed.
+    const latest =
+        detail.jobs !== null && detail.jobs.length > 0 ? (detail.jobs[detail.jobs.length - 1] ?? null) : null;
+
+    const { sending, actionError, stoppingId, doneId, followUp, doneTask, stopTask } = useTaskConversationActions(
+        id,
+        tasks,
+        detail,
+        latest
+    );
+    const { removingId, removeOpen, removeError, openRemove, closeRemove, removeTask } = useTaskRemoval(
+        id,
+        tasks,
+        latest,
+        navigate
+    );
+
     return (
         <>
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
@@ -170,10 +215,7 @@ export function TaskDetailPage() {
                 doneId={doneId}
                 onStop={stopTask}
                 onDone={doneTask}
-                onRemoveRequest={() => {
-                    setRemoveError(null);
-                    setRemoveOpen(true);
-                }}
+                onRemoveRequest={openRemove}
             />
             <TaskDetail
                 key={id ?? 'none'}
@@ -190,7 +232,7 @@ export function TaskDetailPage() {
                     runCount={detail.jobs.length}
                     removing={removingId !== null}
                     error={removeError}
-                    onClose={() => setRemoveOpen(false)}
+                    onClose={closeRemove}
                     onConfirm={() => void removeTask()}
                 />
             ) : null}

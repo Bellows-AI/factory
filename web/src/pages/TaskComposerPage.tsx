@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDefaultWorkflowSettings } from '../api/useDefaultWorkflowSettings.js';
+import type { QueueTaskInput } from '../api/useTasks.js';
 import { useWorkflows } from '../api/useWorkflows.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { TaskComposer } from '../panels/TaskComposer.js';
-import type { DefaultWorkflowSteps } from '../task-composer.js';
 import { useTasksPage } from './TasksLayout.js';
 
 /**
@@ -32,25 +32,11 @@ export function TaskComposerPage() {
     const workflows = useWorkflows(repo);
     const defaultWorkflowSettings = useDefaultWorkflowSettings();
 
-    const send = async (
-        command: string,
-        chosenRepo: string | null,
-        executor: string,
-        workflow: string | null,
-        workflowParams: Record<string, string> | null,
-        defaultWorkflow: DefaultWorkflowSteps | null
-    ): Promise<string | null> => {
+    const send = async (input: QueueTaskInput): Promise<string | null> => {
         setActionError(null);
         setSending(true);
         try {
-            const result = await tasks.actions.queue(
-                command,
-                chosenRepo,
-                executor,
-                workflow,
-                workflowParams,
-                defaultWorkflow
-            );
+            const result = await tasks.actions.queue(input);
             if (result.error !== null) {
                 setActionError(result.error);
                 return result.error;

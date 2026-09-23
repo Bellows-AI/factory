@@ -1,6 +1,89 @@
 import type { Ref } from 'react';
 import { needsListing, type OrgDraft, type RepoMode } from '../onboarding.js';
 
+/** What the disclosure reads while collapsed: the org's repository mode, and the count only once
+ * a listing is there to count. */
+function collapsedSummary(draft: OrgDraft): string {
+    if (draft.mode === 'all') return 'All current and future repositories';
+    if (draft.listing.kind === 'ready') {
+        return `${draft.chosen.size} specific ${draft.chosen.size === 1 ? 'repository' : 'repositories'}`;
+    }
+    if (draft.listing.kind === 'idle' || draft.listing.kind === 'loading') return 'Specific repositories';
+    return 'Specific repositories (not reviewable right now)';
+}
+
+/**
+ * The repository listing's body, by the listing's own state: loading, failed, temporarily
+ * unavailable, or the ready checklist. Split out of `OnboardingOrganization` so its own 4-way
+ * branch does not add to the parent's cognitive complexity.
+ */
+function RepositoryListingBody({
+    draft,
+    countId,
+    reasonId,
+    empty,
+    onRetryListing,
+    onToggleRepo,
+}: {
+    draft: OrgDraft;
+    countId: string;
+    reasonId: string;
+    empty: boolean;
+    onRetryListing: () => void;
+    onToggleRepo: (repo: string) => void;
+}) {
+    if (draft.listing.kind === 'loading') return <p className="muted">Loading repositories…</p>;
+    if (draft.listing.kind === 'failed') {
+        return (
+            <>
+                <p className="status" role="alert">
+                    Could not load the repositories for this organization.
+                </p>
+                <button type="button" onClick={onRetryListing}>
+                    Retry
+                </button>
+            </>
+        );
+    }
+    if (draft.listing.kind === 'unavailable') {
+        return (
+            <>
+                <p className="status">
+                    {draft.mode === 'all'
+                        ? 'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
+                        : 'Your existing specific selection is preserved, but it cannot be reviewed right now. Try again before changing repository scope.'}
+                </p>
+                <button type="button" onClick={onRetryListing}>
+                    Retry
+                </button>
+            </>
+        );
+    }
+    if (draft.listing.kind === 'ready') {
+        return (
+            <>
+                <p className="onboarding-repo-count" id={countId}>
+                    {draft.chosen.size} of {draft.listing.repos.length} repositories selected
+                </p>
+                <div className="onboarding-repos">
+                    {draft.listing.repos.map((name) => (
+                        <label key={name} className="onboarding-repo">
+                            <input
+                                type="checkbox"
+                                checked={draft.chosen.has(name)}
+                                onChange={() => onToggleRepo(name)}
+                                aria-describedby={empty ? `${countId} ${reasonId}` : countId}
+                            />
+                            {name}
+                        </label>
+                    ))}
+                </div>
+            </>
+        );
+    }
+    return null;
+}
+
 /**
  * One reported installation on the selection screen: the organization choice, and — once the
  * organization is selected — its explicit repository mode with the checklist that backs the
@@ -40,16 +123,6 @@ export function OnboardingOrganization({
     const countId = `onboarding-repo-count-${index}`;
     const reasonId = `onboarding-repo-reason-${index}`;
     const empty = draft.mode === 'specific' && draft.listing.kind === 'ready' && draft.chosen.size === 0;
-    // What the disclosure reads while collapsed: the org's repository mode, and the count only
-    // once a listing is there to count.
-    const collapsed =
-        draft.mode === 'all'
-            ? 'All current and future repositories'
-            : draft.listing.kind === 'ready'
-              ? `${draft.chosen.size} specific ${draft.chosen.size === 1 ? 'repository' : 'repositories'}`
-              : draft.listing.kind === 'idle' || draft.listing.kind === 'loading'
-                ? 'Specific repositories'
-                : 'Specific repositories (not reviewable right now)';
 
     return (
         <li className="onboarding-org" ref={orgRef} tabIndex={-1}>
@@ -71,7 +144,7 @@ export function OnboardingOrganization({
                             if ((event.target as HTMLDetailsElement).open && needsListing(draft)) onOpenDetails();
                         }}
                     >
-                        <summary className="onboarding-org-summary">{collapsed}</summary>
+                        <summary className="onboarding-org-summary">{collapsedSummary(draft)}</summary>
                         <fieldset className="onboarding-mode">
                             <legend>Repository tracking</legend>
                             <div className="onboarding-mode-option">
@@ -107,49 +180,14 @@ export function OnboardingOrganization({
                                 </p>
                             </div>
                         </fieldset>
-                        {draft.listing.kind === 'loading' ? <p className="muted">Loading repositories…</p> : null}
-                        {draft.listing.kind === 'failed' ? (
-                            <>
-                                <p className="status" role="alert">
-                                    Could not load the repositories for this organization.
-                                </p>
-                                <button type="button" onClick={onRetryListing}>
-                                    Retry
-                                </button>
-                            </>
-                        ) : null}
-                        {draft.listing.kind === 'unavailable' ? (
-                            <>
-                                <p className="status">
-                                    {draft.mode === 'all'
-                                        ? 'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
-                                        : 'Your existing specific selection is preserved, but it cannot be reviewed right now. Try again before changing repository scope.'}
-                                </p>
-                                <button type="button" onClick={onRetryListing}>
-                                    Retry
-                                </button>
-                            </>
-                        ) : null}
-                        {draft.listing.kind === 'ready' ? (
-                            <>
-                                <p className="onboarding-repo-count" id={countId}>
-                                    {draft.chosen.size} of {draft.listing.repos.length} repositories selected
-                                </p>
-                                <div className="onboarding-repos">
-                                    {draft.listing.repos.map((name) => (
-                                        <label key={name} className="onboarding-repo">
-                                            <input
-                                                type="checkbox"
-                                                checked={draft.chosen.has(name)}
-                                                onChange={() => onToggleRepo(name)}
-                                                aria-describedby={empty ? `${countId} ${reasonId}` : countId}
-                                            />
-                                            {name}
-                                        </label>
-                                    ))}
-                                </div>
-                            </>
-                        ) : null}
+                        <RepositoryListingBody
+                            draft={draft}
+                            countId={countId}
+                            reasonId={reasonId}
+                            empty={empty}
+                            onRetryListing={onRetryListing}
+                            onToggleRepo={onToggleRepo}
+                        />
                     </details>
                     {/* Outside the disclosure, so the reason stays visible with it collapsed —
                         the state table's "per-group reason remains visible". */}

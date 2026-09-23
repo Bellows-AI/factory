@@ -24,7 +24,8 @@ const E2E_LOGIN = 'e2e-user';
  * Full millisecond precision — a modulus would make two runs collide by birthday bound and the
  * second would inherit the first's stored selection.
  */
-const E2E_USER_ID = 420000 + Date.now();
+const E2E_USER_ID_BASE = 420000;
+const E2E_USER_ID = E2E_USER_ID_BASE + Date.now();
 
 const shared = {
     WEB_ROOT: `${root}web/dist`,

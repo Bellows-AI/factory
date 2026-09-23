@@ -39,6 +39,10 @@ export interface Session {
  */
 const listeners = new Set<() => void>();
 
+/** The status code that means "the session is gone" — every data hook checks for it and hands the
+ * gate the news via {@link reportUnauthenticated} rather than rendering it as its own error. */
+export const HTTP_STATUS_UNAUTHORIZED = 401;
+
 export function reportUnauthenticated(): void {
     for (const listener of listeners) listener();
 }

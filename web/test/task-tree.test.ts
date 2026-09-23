@@ -165,25 +165,30 @@ describe('sidenavPreview', () => {
         review: over.review ?? [],
     });
 
+    const UUID_SUFFIX_WIDTH = 12;
     const running = (i: number) =>
-        summary({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, status: 'running' });
+        summary({ id: `00000000-0000-4000-8000-${String(i).padStart(UUID_SUFFIX_WIDTH, '0')}`, status: 'running' });
     const review = (i: number) =>
-        summary({ id: `10000000-0000-4000-8000-${String(i).padStart(12, '0')}`, status: 'failed' });
+        summary({ id: `10000000-0000-4000-8000-${String(i).padStart(UUID_SUFFIX_WIDTH, '0')}`, status: 'failed' });
+
+    const THIRD = 3;
+    const FOURTH = 4;
+    const MAX_PREVIEW_ROWS = 5;
 
     it('caps the preview at five rows and never shows past tasks', () => {
         const nav = navigation({
-            running: [running(1), running(2), running(3)],
-            review: [review(1), review(2), review(3), review(4)],
+            running: [running(1), running(2), running(THIRD)],
+            review: [review(1), review(2), review(THIRD), review(FOURTH)],
             counts: { running: 3, review: 4, past: 40 },
         });
         const { rows } = sidenavPreview(nav, null);
-        expect(rows).toHaveLength(5);
+        expect(rows).toHaveLength(MAX_PREVIEW_ROWS);
         expect(rows.every((task) => task.status !== 'succeeded' || task.doneAt === null || true)).toBe(true);
         // Three running first, then the newest review.
         expect(rows.map((task) => task.id)).toEqual([
             running(1).id,
             running(2).id,
-            running(3).id,
+            running(THIRD).id,
             review(1).id,
             review(2).id,
         ]);
@@ -191,13 +196,14 @@ describe('sidenavPreview', () => {
 
     it('fills the slots review tasks leave open with more running, and reports the overflow', () => {
         const nav = navigation({
-            running: [running(1), running(2), running(3)],
+            running: [running(1), running(2), running(THIRD)],
             review: [review(1), review(2)],
             counts: { running: 3, review: 12, past: 0 },
         });
         const preview = sidenavPreview(nav, null);
-        expect(preview.rows).toHaveLength(5);
-        expect(preview.moreReview).toBe(10);
+        expect(preview.rows).toHaveLength(MAX_PREVIEW_ROWS);
+        const EXPECTED_OVERFLOW = 10;
+        expect(preview.moreReview).toBe(EXPECTED_OVERFLOW);
     });
 
     it('reports zero overflow when every review task fits', () => {
@@ -207,18 +213,18 @@ describe('sidenavPreview', () => {
 
     it('injects the open task when it is running or in review but outside the five rows', () => {
         const nav = navigation({
-            running: [running(1), running(2), running(3)],
-            review: [review(1), review(2), review(3)],
+            running: [running(1), running(2), running(THIRD)],
+            review: [review(1), review(2), review(THIRD)],
             counts: { running: 3, review: 3, past: 0 },
         });
-        const { rows } = sidenavPreview(nav, review(3).id);
-        expect(rows).toHaveLength(5);
+        const { rows } = sidenavPreview(nav, review(THIRD).id);
+        expect(rows).toHaveLength(MAX_PREVIEW_ROWS);
         expect(rows.map((task) => task.id)).toEqual([
             running(1).id,
             running(2).id,
-            running(3).id,
+            running(THIRD).id,
             review(1).id,
-            review(3).id, // injected, displacing the last review slot
+            review(THIRD).id, // injected, displacing the last review slot
         ]);
     });
 
@@ -230,7 +236,8 @@ describe('sidenavPreview', () => {
             review(1).id,
         ]);
         const unknown = '99999999-9999-4999-8999-999999999999';
-        expect(sidenavPreview(nav, unknown).rows).toHaveLength(3);
+        const EXPECTED_ROW_COUNT = 3;
+        expect(sidenavPreview(nav, unknown).rows).toHaveLength(EXPECTED_ROW_COUNT);
     });
 
     it('answers an empty preview for a null navigation and a quiet board', () => {

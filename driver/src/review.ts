@@ -30,9 +30,12 @@ export const INLINE_LIMIT = 50;
 export const REVIEWS_LIMIT = 20;
 export const THREADS_LIMIT = 100;
 export const THREAD_COMMENTS_LIMIT = 10;
-export const TOTAL_OUTPUT_BYTES = 256 * 1024;
+const BYTES_PER_KB = 1024;
+const TOTAL_OUTPUT_MAX_KB = 256;
+const PLAN_BYTES_MAX_KB = 128;
+export const TOTAL_OUTPUT_BYTES = TOTAL_OUTPUT_MAX_KB * BYTES_PER_KB;
 export const PLAN_TARGETS_MAX = 32;
-export const PLAN_BYTES_MAX = 128 * 1024;
+export const PLAN_BYTES_MAX = PLAN_BYTES_MAX_KB * BYTES_PER_KB;
 
 export interface ReviewRef {
     owner: string;
@@ -379,6 +382,60 @@ function planReplyTarget(
     return { ...base, reply: truncateText(body, REPLY_BODY_MAX).text, status: 'planned', reason: null };
 }
 
+/** Plans the (up to two) targets a single thread intent produces: a reply, and/or a resolve. */
+function planThreadTargets(thread: ReviewThread, r: ReviewReplyRequest): ReviewPlanTarget[] {
+    const targets: ReviewPlanTarget[] = [];
+    const wantsReply = Boolean(r.reply && r.reply.trim());
+    if (!wantsReply && !r.resolve) {
+        targets.push({
+            id: r.id,
+            kind: 'thread',
+            reply: null,
+            resolve: false,
+            firstCommentId: null,
+            status: 'refused',
+            reason: 'no_action',
+        });
+        return targets;
+    }
+    if (wantsReply) {
+        const firstCommentId = thread.comments.at(0)?.databaseId ?? null;
+        if (firstCommentId === null) {
+            targets.push({
+                id: r.id,
+                kind: 'thread',
+                reply: null,
+                resolve: r.resolve,
+                firstCommentId: null,
+                status: 'refused',
+                reason: 'no_reply_target',
+            });
+        } else {
+            targets.push({
+                id: r.id,
+                kind: 'thread',
+                reply: truncateText(r.reply!, REPLY_BODY_MAX).text,
+                resolve: false,
+                firstCommentId,
+                status: 'planned',
+                reason: null,
+            });
+        }
+    }
+    if (r.resolve) {
+        targets.push({
+            id: r.id,
+            kind: 'resolve',
+            reply: null,
+            resolve: true,
+            firstCommentId: null,
+            status: thread.isResolved ? 'refused' : 'planned',
+            reason: thread.isResolved ? 'already_resolved' : null,
+        });
+    }
+    return targets;
+}
+
 /** Build a bounded mutation plan: dedupe intents, refuse anything the collection does not hold. */
 export function buildReviewReply(state: ReviewCollection, requested: ReviewReplyRequest[]): ReviewPlan {
     const targets: ReviewPlanTarget[] = [];
@@ -404,54 +461,7 @@ export function buildReviewReply(state: ReviewCollection, requested: ReviewReply
             });
             continue;
         }
-        const wantsReply = Boolean(r.reply && r.reply.trim());
-        if (!wantsReply && !r.resolve) {
-            targets.push({
-                id: r.id,
-                kind: 'thread',
-                reply: null,
-                resolve: false,
-                firstCommentId: null,
-                status: 'refused',
-                reason: 'no_action',
-            });
-            continue;
-        }
-        if (wantsReply) {
-            const firstCommentId = thread.comments.at(0)?.databaseId ?? null;
-            if (firstCommentId === null) {
-                targets.push({
-                    id: r.id,
-                    kind: 'thread',
-                    reply: null,
-                    resolve: r.resolve,
-                    firstCommentId: null,
-                    status: 'refused',
-                    reason: 'no_reply_target',
-                });
-            } else {
-                targets.push({
-                    id: r.id,
-                    kind: 'thread',
-                    reply: truncateText(r.reply!, REPLY_BODY_MAX).text,
-                    resolve: false,
-                    firstCommentId,
-                    status: 'planned',
-                    reason: null,
-                });
-            }
-        }
-        if (r.resolve) {
-            targets.push({
-                id: r.id,
-                kind: 'resolve',
-                reply: null,
-                resolve: true,
-                firstCommentId: null,
-                status: thread.isResolved ? 'refused' : 'planned',
-                reason: thread.isResolved ? 'already_resolved' : null,
-            });
-        }
+        targets.push(...planThreadTargets(thread, r));
     }
     return { version: 1, schema: 'review-reply/plan/v1', ref: state.ref, targets };
 }

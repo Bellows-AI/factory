@@ -19,6 +19,14 @@ import { UUID, bad, body as jsonBody, guard } from './helpers.js';
 /** A ceiling, not a policy: a label is a line in a list, far past any real one. */
 const LABEL_LIMIT = 128;
 
+/** No payload past a label or an id needs more than a control route's headroom. */
+const CONTROL_BODY_LIMIT = 4096;
+
+const HTTP_OK = 200;
+const HTTP_CREATED = 201;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_NOT_FOUND = 404;
+
 /** The trimmed label, or null when it is absent, blank, or over the ceiling. */
 function parseLabel(raw: unknown): string | null {
     const label = jsonBody(raw).label;
@@ -47,9 +55,9 @@ export const tokenRoutes =
             return caller.org.id;
         };
 
-        app.post('/api/tokens', { bodyLimit: 4096 }, async (request, reply) => {
+        app.post('/api/tokens', { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
             const label = parseLabel(request.body);
             if (label === null) return bad(reply, 'BAD_LABEL', `label must be 1 to ${LABEL_LIMIT} characters`);
 
@@ -70,24 +78,24 @@ export const tokenRoutes =
                 }
             );
             if (!created.ok) return reply;
-            return reply.code(201).send(created.value);
+            return reply.code(HTTP_CREATED).send(created.value);
         });
 
         app.get('/api/tokens', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
             const listed = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
                 () => store.listPersonalTokens(orgIdOf(request), caller.user.id)
             );
             if (!listed.ok) return reply;
-            return reply.code(200).send({ tokens: listed.value });
+            return reply.code(HTTP_OK).send({ tokens: listed.value });
         });
 
         app.post('/api/tokens/:id/revoke', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
             const { id } = request.params as { id: string };
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -99,13 +107,13 @@ export const tokenRoutes =
             if (!revoked.ok) return reply;
             // Not-found covers unknown, someone else's, and already revoked alike: a revoke that
             // changed nothing has no row to name.
-            if (revoked.value === 'missing') return bad(reply, 'NOT_FOUND', 'No such token', 404);
-            return reply.code(200).send({ id, revoked: true });
+            if (revoked.value === 'missing') return bad(reply, 'NOT_FOUND', 'No such token', HTTP_NOT_FOUND);
+            return reply.code(HTTP_OK).send({ id, revoked: true });
         });
 
-        app.post('/api/tokens/org', { bodyLimit: 4096 }, async (request, reply) => {
+        app.post('/api/tokens/org', { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
             const label = parseLabel(request.body);
             if (label === null) return bad(reply, 'BAD_LABEL', `label must be 1 to ${LABEL_LIMIT} characters`);
 
@@ -126,24 +134,24 @@ export const tokenRoutes =
                 }
             );
             if (!created.ok) return reply;
-            return reply.code(201).send(created.value);
+            return reply.code(HTTP_CREATED).send(created.value);
         });
 
         app.get('/api/tokens/org', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
             const listed = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
                 () => store.listOrgTokens(orgIdOf(request))
             );
             if (!listed.ok) return reply;
-            return reply.code(200).send({ tokens: listed.value });
+            return reply.code(HTTP_OK).send({ tokens: listed.value });
         });
 
         app.post('/api/tokens/org/:id/revoke', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
             const { id } = request.params as { id: string };
             if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
 
@@ -153,7 +161,7 @@ export const tokenRoutes =
                 () => store.revokeOrgToken(orgIdOf(request), id)
             );
             if (!revoked.ok) return reply;
-            if (revoked.value === 'missing') return bad(reply, 'NOT_FOUND', 'No such token', 404);
-            return reply.code(200).send({ id, revoked: true });
+            if (revoked.value === 'missing') return bad(reply, 'NOT_FOUND', 'No such token', HTTP_NOT_FOUND);
+            return reply.code(HTTP_OK).send({ id, revoked: true });
         });
     };

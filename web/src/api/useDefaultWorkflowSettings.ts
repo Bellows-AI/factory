@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+
+const HTTP_STATUS_SERVICE_UNAVAILABLE = 503;
+/** Foreground/background poll cadence — the value only changes when a member edits it. */
+const POLL_MS_VISIBLE = 30_000;
+const POLL_MS_HIDDEN = 60_000;
 
 /** The stored pair the board serves (`GET/PUT /api/workflows/default-settings`, issue 203). */
 export interface DefaultWorkflowSettings {
@@ -26,11 +31,11 @@ export type DefaultWorkflowSaveResult =
 export async function fetchDefaultWorkflowSettings(): Promise<DefaultWorkflowFetchResult> {
     try {
         const response = await fetch('/api/workflows/default-settings');
-        if (response.status === 401) {
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
             return { ok: false, unavailable: false, error: null };
         }
-        if (response.status === 503) {
+        if (response.status === HTTP_STATUS_SERVICE_UNAVAILABLE) {
             return { ok: false, unavailable: true, error: null };
         }
         if (!response.ok) {
@@ -58,11 +63,11 @@ export async function putDefaultWorkflowSettings(pair: {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(pair),
         });
-        if (response.status === 401) {
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
             return { ok: false, unavailable: false, error: 'Your session expired' };
         }
-        if (response.status === 503) {
+        if (response.status === HTTP_STATUS_SERVICE_UNAVAILABLE) {
             const body = (await response.json().catch(() => ({}))) as { error?: string };
             return {
                 ok: false,
@@ -127,7 +132,7 @@ export function useDefaultWorkflowSettings(): UseDefaultWorkflowSettings {
             setUnavailable(result.unavailable);
             setError(result.error);
         }
-        timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 60_000 : 30_000);
+        timer.current = window.setTimeout(() => void poll(signal), document.hidden ? POLL_MS_HIDDEN : POLL_MS_VISIBLE);
     }, []);
 
     // One live polling chain, enforced by aborting the previous one before starting the next —

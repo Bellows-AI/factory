@@ -4,6 +4,9 @@ import type { AppConfig } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad } from './helpers.js';
 
+const HTTP_OK = 200;
+const HTTP_UNAVAILABLE = 503;
+
 export interface RepoRouteDeps {
     /** The per-org runtimes; the repo list a request touches is the caller's org's. */
     orgs: OrgRegistry;
@@ -26,7 +29,7 @@ export const repoRoutes =
             const orgId = orgOf(request);
             const rt = await orgs.for(orgId);
             // Principal-carried org ids are FK-guaranteed, so null is a failed build, not a typo.
-            if (!rt) return bad(reply, 'REPOS_UNAVAILABLE', `No runtime for '${orgId}'; retry`, 503);
+            if (!rt) return bad(reply, 'REPOS_UNAVAILABLE', `No runtime for '${orgId}'; retry`, HTTP_UNAVAILABLE);
             const repos = rt.repos;
 
             const { repos: list, installation } = await repos.detail();
@@ -35,7 +38,7 @@ export const repoRoutes =
             // 200 with a named error and the last good list, never 503. Same rule /api/stats
             // follows: a failed refresh must keep the last good answer on screen and explain
             // itself, because an empty picker and an unreachable GitHub look identical otherwise.
-            return reply.code(200).send({
+            return reply.code(HTTP_OK).send({
                 repos: list.map((repo) => ({
                     owner: repo.owner,
                     name: repo.name,

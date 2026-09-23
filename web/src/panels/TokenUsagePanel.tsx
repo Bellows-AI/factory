@@ -6,6 +6,10 @@ import { TelemetryFrame } from './TelemetryFrame.js';
 
 /** One bucket: the compact treatment keeps a real bar — never one bar stretched across a 900px plot. */
 const COMPACT = { width: 480, height: 200 };
+/** Where `MM-DD` starts within a `YYYY-MM-DD` bucket start — the axis label drops the year. */
+const MONTH_DAY_START_INDEX = 5;
+/** The X-axis's target label count — roughly one label every N/12 bars, whatever N is. */
+const CHART_LABEL_TARGET_COUNT = 12;
 
 /**
  * The usage chart. The bucket size is the server's decision — daily up to 92 days of window,
@@ -74,7 +78,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                     <div className="chart-wrap">
                         <BarChart
                             ariaLabel={daily ? 'Tokens and sessions by day' : 'Tokens and sessions by ISO week'}
-                            labels={points.map((p) => p.start.slice(5))}
+                            labels={points.map((p) => p.start.slice(MONTH_DAY_START_INDEX))}
                             bucketLabels={points.map((p) => (daily ? p.start : `Week of ${p.start}`))}
                             partial={points.map((p) => p.partial)}
                             series={[
@@ -99,7 +103,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                             width={dims.width}
                             height={dims.height}
                             // 92 daily points ÷ 12 labels ≈ one label every 8 bars: still legible.
-                            labelEvery={Math.ceil(points.length / 12)}
+                            labelEvery={Math.ceil(points.length / CHART_LABEL_TARGET_COUNT)}
                         />
                     </div>
                     <p className="chart-caption">

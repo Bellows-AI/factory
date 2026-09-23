@@ -56,6 +56,9 @@ export interface UserRepoStore {
     requeueStranded(): Promise<number>;
 }
 
+/** A clone failure's stored message is capped, matching the column's practical display width. */
+const CLONE_ERROR_LIMIT = 2000;
+
 interface Row {
     repo_owner: string;
     repo_name: string;
@@ -188,7 +191,7 @@ export function createUserRepoStore({
         async markFailed(userId, repo, error) {
             await gate();
             await sql`
-                update user_repo set status = 'failed', error = ${error.slice(0, 2000)}
+                update user_repo set status = 'failed', error = ${error.slice(0, CLONE_ERROR_LIMIT)}
                 where org_id = ${orgId} and user_id = ${userId}
                   and repo_owner = ${repo.owner} and repo_name = ${repo.name}
             `;

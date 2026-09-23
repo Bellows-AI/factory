@@ -71,6 +71,75 @@ export interface OrgRegistryDeps {
     withStores: boolean;
 }
 
+/** The per-org write-side stores, built only under `withStores` (#99's route-test bypass). */
+function buildOrgStores({
+    sql,
+    orgId,
+    ready,
+    config,
+    tokens,
+}: {
+    sql: Sql;
+    orgId: string;
+    ready: Promise<unknown>;
+    config: AppConfig;
+    tokens: ReturnType<typeof installationTokenProvider> | undefined;
+}): {
+    envVars: EnvVarStore;
+    userExecutors: UserExecutorStore;
+    userRepos: UserRepoStore;
+    workflowDefaults: DefaultWorkflowSettingsStore;
+    prs: PrLifecycleStore;
+    cloneQueue: CloneQueue | undefined;
+    jobs: JobStore;
+    workflows: WorkflowStore;
+} {
+    const envVars = createEnvVarStore({ sql, orgId, ready });
+    const userExecutors = createUserExecutorStore({ sql, orgId, ready });
+    const userRepos = createUserRepoStore({ sql, orgId, ready });
+    const workflowDefaults = createDefaultWorkflowSettingsStore({ sql, orgId, ready });
+    // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
+    // transaction records the thread's publication identity through it.
+    const prs = createPrLifecycleStore({ sql, orgId, ready });
+    const cloneQueue = config.workspaceRoot
+        ? createCloneQueue({
+              store: userRepos,
+              root: config.workspaceRoot,
+              orgId,
+              tokens,
+              log: (m) => console.log(`[workspace] ${m}`),
+          })
+        : undefined;
+    const jobs = createJobStore({
+        sql,
+        orgId,
+        hasWorkspaces: config.workspaceRoot !== null,
+        ready,
+        env: envVars,
+        executorConfig: userExecutors,
+        // Gates are read off the server's own workspace mount, per claim, for the job's
+        // author and repo label — worktree-first, falling back to the clone.
+        ...(config.workspaceRoot
+            ? {
+                  gates: {
+                      readFor: (workspacePath: string, repo: string, worktreeId: string | null) =>
+                          readGatesFile({ root: config.workspaceRoot!, workspacePath, repo, worktreeId }),
+                  },
+              }
+            : {}),
+        // The claim mints the org's installation token under the runner env as its base
+        // layer. Per-org here is the whole point: a runner gets the installation of the
+        // org whose board it is working, and no other.
+        ...(tokens ? { githubToken: tokens } : {}),
+        // The completion surface records the thread's publication identity in the same
+        // transaction as the verdict (and cancel/remove sweep the thread's waits).
+        prs,
+    });
+    // Workflow definitions (027): the process a task walks, stored per scope inside this org.
+    const workflows = createWorkflowStore({ sql, orgId, ready });
+    return { envVars, userExecutors, userRepos, workflowDefaults, prs, cloneQueue, jobs, workflows };
+}
+
 export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistryDeps): OrgRegistry {
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
@@ -116,65 +185,25 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
         };
 
         if (withStores) {
-            const envVars = createEnvVarStore({ sql, orgId, ready });
-            const userExecutors = createUserExecutorStore({ sql, orgId, ready });
-            const userRepos = createUserRepoStore({ sql, orgId, ready });
-            const workflowDefaults = createDefaultWorkflowSettingsStore({ sql, orgId, ready });
-            // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
-            // transaction records the thread's publication identity through it.
-            const prs = createPrLifecycleStore({ sql, orgId, ready });
-            const cloneQueue = config.workspaceRoot
-                ? createCloneQueue({
-                      store: userRepos,
-                      root: config.workspaceRoot,
-                      orgId,
-                      tokens,
-                      log: (m) => console.log(`[workspace] ${m}`),
-                  })
-                : undefined;
-            const jobs = createJobStore({
-                sql,
-                orgId,
-                hasWorkspaces: config.workspaceRoot !== null,
-                ready,
-                env: envVars,
-                executorConfig: userExecutors,
-                // Gates are read off the server's own workspace mount, per claim, for the job's
-                // author and repo label — worktree-first, falling back to the clone.
-                ...(config.workspaceRoot
-                    ? {
-                          gates: {
-                              readFor: (workspacePath: string, repo: string, worktreeId: string | null) =>
-                                  readGatesFile({ root: config.workspaceRoot!, workspacePath, repo, worktreeId }),
-                          },
-                      }
-                    : {}),
-                // The claim mints the org's installation token under the runner env as its base
-                // layer. Per-org here is the whole point: a runner gets the installation of the
-                // org whose board it is working, and no other.
-                ...(tokens ? { githubToken: tokens } : {}),
-                // The completion surface records the thread's publication identity in the same
-                // transaction as the verdict (and cancel/remove sweep the thread's waits).
-                prs,
-            });
-            runtime.envVars = envVars;
-            runtime.userExecutors = userExecutors;
-            runtime.userRepos = userRepos;
-            runtime.workflowDefaults = workflowDefaults;
-            runtime.cloneQueue = cloneQueue;
-            runtime.jobs = jobs;
-            runtime.prs = prs;
-            // Workflow definitions (027): the process a task walks, stored per scope inside this
-            // org. The base `fix-issue` workflow seeds here too — org-level, idempotent by name,
-            // fired with the same posture as the clone queue: not awaited, because no route on
-            // the read path needs it, and a task naming `fix-issue` in the seeding's first
-            // seconds simply refuses with UNKNOWN_WORKFLOW yet.
-            const workflows = createWorkflowStore({ sql, orgId, ready });
-            runtime.workflows = workflows;
-            void workflows.seedBase().catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
+            const stores = buildOrgStores({ sql, orgId, ready, config, tokens });
+            runtime.envVars = stores.envVars;
+            runtime.userExecutors = stores.userExecutors;
+            runtime.userRepos = stores.userRepos;
+            runtime.workflowDefaults = stores.workflowDefaults;
+            runtime.cloneQueue = stores.cloneQueue;
+            runtime.jobs = stores.jobs;
+            runtime.prs = stores.prs;
+            runtime.workflows = stores.workflows;
+            // The base `fix-issue` workflow seeds here too — org-level, idempotent by name, fired
+            // with the same posture as the clone queue: not awaited, because no route on the read
+            // path needs it, and a task naming `fix-issue` in the seeding's first seconds simply
+            // refuses with UNKNOWN_WORKFLOW yet.
+            void stores.workflows
+                .seedBase()
+                .catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
             // Fired, not awaited: recovering stranded clones is minutes of network no route on
             // the read path needs. The org's queue only starts once — with the org's runtime.
-            void cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
+            void stores.cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
         }
 
         return runtime;

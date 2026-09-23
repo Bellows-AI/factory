@@ -28,7 +28,7 @@ by OUTCOME — they are never nodes with containers.
   "nodes": [
     {
       "name": "review",                        // /^[a-z0-9][a-z0-9-]{0,63}$/, unique in the graph
-      "kind": "agent",                         // the only kind; see below
+      "kind": "agent",                         // "agent" or "block"; see "Built-in blocks" below
       "session": "fresh",                      // "resume" | "fresh"
       "gates": false,                          // optional; default true — run the driver's gates
       "publish": true,                         // optional; default false — see "Publishing" below
@@ -50,13 +50,70 @@ The grammar is closed and the validator (`workflow-schema.ts`) refuses with NAME
 - unknown keys anywhere — a pasted foreign pipeline fails loudly (`UNKNOWN_KEY`), never silently;
 - unknown node references in edges or `entry`, and unknown nodes in `{{node.output}}` placeholders
   (`UNKNOWN_NODE`, `UNKNOWN_PLACEHOLDER`);
-- any node kind other than `agent` — checkout, gates and publish are driver machinery, and a node
-  with a container is exactly what a workflow must not grow (`BAD_NODE`);
+- any node kind other than `agent` or `block` — checkout, gates and publish are driver machinery,
+  and a node with an arbitrary container is exactly what a workflow must not grow (`BAD_NODE`); see
+  "Built-in blocks" below for what `block` is and is not;
 - a definition with no `publish: true` node, or with none reachable from the entry — a graph with
   no exit dooms every thread to rest mid-flight (`NO_PUBLISH_PATH`);
 - a malformed parameter declaration — a bad or duplicate name, or a pattern that is not a bounded,
   compiling regex source (`BAD_PARAMS`);
 - a definition over 16 KiB (`TOO_LARGE`) — the same body-limit discipline as commands.
+
+## Built-in blocks
+
+**Read this before touching** `server/src/db/workflow-blocks/`. A `block` node is the other half
+of the closed node grammar (issue #204): a reference to a board-owned, allowlisted process, without
+copying its prompts into every workflow that wants it.
+
+```jsonc
+{
+  "name": "review-comments",
+  "kind": "block",
+  "uses": "builtin/github-review-reconcile",
+  "with": { "maxRounds": 3 }
+}
+```
+
+`uses` names a reserved block id (`namespace/block-name`); `with` is an optional, bounded config
+object (scalar values, at most 16 keys, camelCase field names — `maxRounds` above, not
+`max-rounds`: a config field is a JS identifier, not a node name). A node is an `agent` node or a
+`block` node, never both — `prompt`, `session`, `gates` and `publish` on a `block` node refuse
+`UNKNOWN_KEY`, and `uses`/`with` on an `agent` node refuse the same way.
+
+The two initial reserved ids — `builtin/github-review-reconcile` and
+`builtin/merge-conflict-autofix` — are listed by the catalog (`GET /api/workflow-blocks`) but ship
+`available: false`: their own issues have not landed. Referencing either in a definition refuses
+`BLOCK_UNAVAILABLE` at create — an unavailable block cannot be stored, so it can never be launched.
+Naming an id the registry has never reserved refuses `UNKNOWN_BLOCK`; a `with` value the block's own
+`configSchema` rejects (unknown key, wrong type, out of range) refuses `BAD_BLOCK_CONFIG` — all
+three are compile-time refusals from `workflow-blocks/index.ts`'s `compileDefinition`, distinct
+from `workflow-schema.ts`'s own `DefinitionRefusal` codes: the schema validates `uses`/`with`
+SHAPE only (it stays registry-unaware, on purpose — see its own module comment) and knows no id.
+
+**Authored vs. expanded.** What a member POSTs to `POST /api/workflows` is the AUTHORED
+definition — block nodes intact. `workflow-store.ts`'s `create()` runs `compileDefinition`
+immediately after the schema validates: every block node is replaced by its descriptor's `expand()`
+output (an ordinary low-level `agent`-node subgraph), the expanded graph is validated AGAIN in
+full — reachability, the publish path, the placeholder vocabulary, positive bounds, all reused from
+`validateDefinition` itself, against the wider `EXPANDED_DEFINITION_LIMIT` cap rather than the
+authored `DEFINITION_LIMIT` — and the EXPANDED graph, never a live block reference, is what
+`workflow.definition` actually stores. This is deliberate, not an implementation detail to route
+around: `workflow-engine.ts` and `routes/jobs.ts` read `.prompt` off every node with no `kind`
+guard, so a stored `block` node would corrupt the first transition that ever walked into it — the
+one thing this issue's ownership boundary forbids fixing (`routes/jobs.ts` is out of scope). Storing
+the expansion instead means a root job's frozen snapshot is automatically the expanded graph with
+zero changes to either file, and a block descriptor's own future implementation only ever affects
+workflows CREATED after it lands — an already-created workflow's expansion is fixed at its own
+create time, exactly like every other frozen snapshot in this file.
+
+One consequence worth knowing: `GET`/`POST /api/workflows` responses show the EXPANDED graph for a
+definition that used a block, not the `uses`/`with` text originally posted — there is no
+update/edit endpoint today, so nothing currently needs to re-read the authored source. Expanded
+node names are namespaced under the referencing node's own name (`${blockName}--${internalName}`)
+so two uses of one block, or a name a block's own internal subgraph happens to reuse, cannot
+collide — collision-freedom is not trusted to the naming scheme alone, either: the expanded graph's
+own re-validation pass is what actually refuses a true clash, via the ordinary `DUPLICATE_NODE`
+check every workflow gets.
 
 ## Launch parameters
 
@@ -274,8 +331,12 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | Thing | Place |
 | --- | --- |
 | Grammar, validator, interpolation, param values | `server/src/db/workflow-schema.ts` |
+| The block registry, config resolution, the expansion compiler | `server/src/db/workflow-blocks/index.ts` |
+| Shared block types: `BlockDescriptor`, `BlockExpansion`, `CompileCheck` | `server/src/db/workflow-blocks/types.ts` |
+| The two reserved block descriptors (issue #204; each block's own implementation issue edits only its own file) | `server/src/db/workflow-blocks/github-review-reconcile.ts`, `server/src/db/workflow-blocks/merge-conflict-autofix.ts` |
+| The catalog route | `server/src/routes/workflows.ts` (`GET /api/workflow-blocks`) |
 | The transition engine (pure) | `server/src/db/workflow-engine.ts` |
-| The store: CRUD, scope visibility, seed | `server/src/db/workflow-store.ts` |
+| The store: CRUD, scope visibility, seed, block compilation at create | `server/src/db/workflow-store.ts` |
 | Templates and the base `fix-issue` workflow | `server/src/db/workflow-templates.ts` |
 | Columns (027, 030, 033) and the freeze-at-create snapshot | `server/migrations/027_workflows.sql`, `server/migrations/030_workflow_params.sql`, `server/migrations/033_job_workflow_name.sql` |
 | The transition in the verdict's transaction | `job-store.ts` `complete()` |
@@ -291,8 +352,16 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 
 - Offline units: `server/test/workflow-engine.test.ts` — the edge vocabulary, first-match order,
   loop bounds, dead-row counting, halt rules, bounded interpolation, the seeded definition.
-- HTTP contracts: `server/test/routes.workflows.test.ts`, the workflow-resolution block of
-  `routes.jobs.test.ts`.
+- Offline units: `server/test/workflow-schema.test.ts` — the `block` node grammar (`uses`/`with`
+  shape, the two node kinds never mixing, a block as an opaque reachability/publish-path hop, the
+  `sizeLimit` override) — registry-unaware, matching `workflow-schema.ts` itself.
+- Offline units: `server/test/workflow-block-compiler.test.ts` — expansion, namespacing, edge
+  rewriting into/out of a block, config resolution against a descriptor's `configSchema`, and the
+  real registry's `UNKNOWN_BLOCK`/`BLOCK_UNAVAILABLE` refusals against both shipped, unavailable
+  descriptors — via fake, dependency-injected descriptors, since both real blocks are unavailable.
+- HTTP contracts: `server/test/routes.workflows.test.ts` (including `GET /api/workflow-blocks` and
+  the compiler's refusal codes surfacing the same way a schema refusal does), the
+  workflow-resolution block of `routes.jobs.test.ts`.
 - Against a real database (`npm run test:db`): `server/test-db/workflow-store.test.ts` and
   `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds.
 - Driver: the publish-flag twins in `driver/test/loop.test.ts`, and the transport parity pins in

@@ -84,7 +84,8 @@ describe('the tracked-repo allowlist (#125)', () => {
         // The App gains a repo; the allowlist still names only acme/web, so the refresh narrows
         // again rather than leaking the new repo into the tracked set.
         names.push('acme/new');
-        clock += 2_000;
+        const PAST_TTL_ADVANCE_MS = 2_000;
+        clock += PAST_TTL_ADVANCE_MS;
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
     });
 
@@ -120,13 +121,14 @@ describe('the tracked-repo allowlist (#125)', () => {
 
         // Within the TTL, and with the underlying answer grown, the cache still serves old.
         names.push('acme/new');
-        clock += 100;
+        const WITHIN_TTL_ADVANCE_MS = 100;
+        clock += WITHIN_TTL_ADVANCE_MS;
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web', 'acme/other']);
 
         source.invalidate();
         // The stale entry still serves the snapshot while the refresh is pending — no empty window.
         expect(source.snapshotNames()).toEqual(['acme/web', 'acme/other']);
-        clock += 100;
+        clock += WITHIN_TTL_ADVANCE_MS;
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual([
             'acme/web',
             'acme/other',

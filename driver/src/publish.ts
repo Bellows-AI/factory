@@ -74,9 +74,12 @@ const commandIssue = (command: string): number | null => {
  * attacker-controlled content, but it still only ever becomes a `-m`/`--title` VALUE in direct
  * argv (execFile, no shell), never a fragment of one.
  */
+/** The commit title / PR-title-fallback's cap: the command's first line, held to one line's worth. */
+const COMMIT_TITLE_MAX_CHARS = 144;
+
 export function publishPlan(job: BoardJob, now: Date = new Date()): PublishPlan {
     const issue = commandIssue(job.command);
-    const firstLine = (job.command.trim().split('\n')[0] ?? '').trim().slice(0, 144);
+    const firstLine = (job.command.trim().split('\n')[0] ?? '').trim().slice(0, COMMIT_TITLE_MAX_CHARS);
     const title = issue ? `${firstLine} (#${issue})` : firstLine;
     const branch = issue ? `fix/${issue}` : `task/${now.toISOString().slice(0, 10).replace(/-/g, '')}`;
     return { branch, title, issueNumber: issue };
@@ -339,6 +342,145 @@ export interface PublishStep {
  */
 export type RunPublishStep = (step: PublishStep) => Promise<{ stdout: string }>;
 
+/** The step wrapper's error-message cap — a stray tool trace must not blow out the failure reason. */
+const STEP_ERROR_MAX_CHARS = 300;
+/** The final failure reason's cap — reported to the board, not a log; kept to one glance. */
+const PUBLISH_FAILURE_MAX_CHARS = 400;
+
+/**
+ * Probes the checkout. A probe that cannot run reads as no state at all — the caller's
+ * no-op-with-reason path, never a crash.
+ */
+async function probeCheckout(runStep: RunPublishStep, repo: string): Promise<GitState> {
+    const probe = await runStep({
+        label: 'probe',
+        entrypoint: 'node',
+        args: ['-e', gitProbeScript],
+        env: false,
+        envLiterals: { REPO: repo },
+        inRepo: false,
+    }).catch(() => null);
+    return parseGitState(probe?.stdout ?? '');
+}
+
+/**
+ * Resolves the branch to publish on, switching (or creating) it when the checkout is still on
+ * the default branch. A task never lands on the default branch, and an existing task branch is
+ * reused — `switch -c` only when the branch is not there yet, so earlier attempts' commits
+ * survive.
+ */
+async function ensureTaskBranch(
+    runStep: RunPublishStep,
+    step: RunPublishStep,
+    state: GitState,
+    plan: PublishPlan
+): Promise<string> {
+    const onDefault = !state.branch || state.branch === state.defaultBranch;
+    const branch = onDefault ? plan.branch : state.branch;
+    if (!isBranchName(branch)) {
+        throw new Error(`refusing to publish a branch named "${branch}"`);
+    }
+    if (onDefault) {
+        const switched = await runStep({
+            label: 'git switch',
+            entrypoint: 'git',
+            args: ['switch', branch],
+            env: false,
+            inRepo: true,
+        }).catch(() => null);
+        if (!switched) {
+            await step({
+                label: 'git switch',
+                entrypoint: 'git',
+                args: ['switch', '-c', branch],
+                env: false,
+                inRepo: true,
+            });
+        }
+    }
+    return branch;
+}
+
+/**
+ * Stages and commits the checkout's dirty tree. The checkout usually has no committer identity
+ * (the agent does not need one to edit); a fallback is applied only when the probe found none,
+ * so a member-configured identity is never overridden.
+ */
+async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string): Promise<void> {
+    await step({ label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true });
+    const identity = state.hasIdentity
+        ? []
+        : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
+    await step({
+        label: 'git commit',
+        entrypoint: 'git',
+        args: [...identity, 'commit', '-m', title],
+        env: false,
+        inRepo: true,
+    });
+}
+
+/**
+ * Reuses the branch's PR when one exists — a task that already shipped its PR gets idempotent
+ * publishes, not duplicates — or opens one summarized from the branch's own commits and diff.
+ */
+async function resolveOrCreatePr(
+    runStep: RunPublishStep,
+    step: RunPublishStep,
+    context: { branch: string; plan: PublishPlan; state: GitState }
+): Promise<string | null> {
+    const { branch, plan, state } = context;
+    // A `pr view` that fails is the ordinary "no PR yet", not a step failure: the next call
+    // creates one.
+    const existing = await runStep({
+        label: 'gh pr view',
+        entrypoint: 'gh',
+        args: ['pr', 'view', branch, '--json', 'url', '-q', '.url'],
+        env: true,
+        inRepo: true,
+    }).catch(() => null);
+    const reused = existing ? (existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null) : null;
+    if (reused) return reused;
+
+    // The PR speaks for the work, not for the command that started it (issue #82): a
+    // summarizer script reads the branch — its commits and the diff against the default
+    // — in the same throwaway-container shape as every other step. It needs no
+    // credential (local git reads only) and its failure is decoration: the
+    // command-derived plan title and the plain body stay the fallback.
+    const summarized = await runStep({
+        label: 'pr summary',
+        entrypoint: 'node',
+        args: ['-e', prSummaryScript],
+        env: false,
+        envLiterals: { BASE: `origin/${state.defaultBranch}` },
+        inRepo: true,
+    })
+        .then((r) => parsePrSummary(r.stdout))
+        .catch(() => null);
+    let title = summarized?.title ?? plan.title;
+    // The ref is appended only when the branch's own title does not already END with it
+    // — the driver's own backstop commit and the repo's commit convention both close
+    // with `(#N)`, and a subject that merely MENTIONS the issue must not suppress it.
+    if (summarized?.title && plan.issueNumber && !summarized.title.endsWith(`(#${plan.issueNumber})`)) {
+        title = `${summarized.title} (#${plan.issueNumber})`;
+    }
+    const body = [
+        summarized?.body,
+        plan.issueNumber ? `Closes #${plan.issueNumber}.` : null,
+        'Published by the factory board after the declared gates passed.',
+    ]
+        .filter(Boolean)
+        .join('\n\n');
+    const created = await step({
+        label: 'gh pr create',
+        entrypoint: 'gh',
+        args: ['pr', 'create', '--head', branch, '--title', title, '--body', body],
+        env: true,
+        inRepo: true,
+    });
+    return created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
+}
+
 /**
  * The publish workflow both executors run: probe the checkout, branch, commit, push, open (or
  * reuse) the PR — every decision that must not drift between platforms, over an injected
@@ -363,7 +505,7 @@ export async function publishCheckout(
         try {
             return await runStep(publish);
         } catch (e) {
-            throw new Error(`${publish.label}: ${(e as Error).message.slice(0, 300)}`);
+            throw new Error(`${publish.label}: ${(e as Error).message.slice(0, STEP_ERROR_MAX_CHARS)}`);
         }
     };
 
@@ -371,64 +513,17 @@ export async function publishCheckout(
         const plan = publishPlan(job);
 
         // What is there to publish? A checkout that was never cloned and a clean, fully-pushed
-        // tree are the two ordinary no-ops; everything else flows. A probe that cannot run
-        // reads as no state at all — the no-op with the reason, never a crash.
-        const probe = await runStep({
-            label: 'probe',
-            entrypoint: 'node',
-            args: ['-e', gitProbeScript],
-            env: false,
-            envLiterals: { REPO: repo },
-            inRepo: false,
-        }).catch(() => null);
-        const state = parseGitState(probe?.stdout ?? '');
+        // tree are the two ordinary no-ops; everything else flows.
+        const state = await probeCheckout(runStep, repo);
         if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
         if (!state.dirty && state.unpushed === 0) {
             return publishNothing('no uncommitted changes and nothing unpushed');
         }
 
-        // A task never lands on the default branch. An existing task branch is reused —
-        // `switch -c` only when the branch is not there yet, so earlier attempts' commits
-        // survive.
-        const onDefault = !state.branch || state.branch === state.defaultBranch;
-        const branch = onDefault ? plan.branch : state.branch;
-        if (!isBranchName(branch)) {
-            return publishFailed(`refusing to publish a branch named "${branch}"`);
-        }
-        if (onDefault) {
-            const switched = await runStep({
-                label: 'git switch',
-                entrypoint: 'git',
-                args: ['switch', branch],
-                env: false,
-                inRepo: true,
-            }).catch(() => null);
-            if (!switched) {
-                await step({
-                    label: 'git switch',
-                    entrypoint: 'git',
-                    args: ['switch', '-c', branch],
-                    env: false,
-                    inRepo: true,
-                });
-            }
-        }
+        const branch = await ensureTaskBranch(runStep, step, state, plan);
 
         if (state.dirty) {
-            await step({ label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true });
-            // The checkout usually has no committer identity (the agent does not need one to
-            // edit); a fallback is applied only when the probe found none, so a member-configured
-            // identity is never overridden.
-            const identity = state.hasIdentity
-                ? []
-                : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
-            await step({
-                label: 'git commit',
-                entrypoint: 'git',
-                args: [...identity, 'commit', '-m', plan.title],
-                env: false,
-                inRepo: true,
-            });
+            await commitDirtyTree(step, state, plan.title);
         }
 
         await step({
@@ -447,59 +542,9 @@ export async function publishCheckout(
             inRepo: true,
         });
 
-        // Reuse the branch's PR when one exists — a task that already shipped its PR gets
-        // idempotent publishes, not duplicates. A `pr view` that fails is the ordinary
-        // "no PR yet", not a step failure: the next call creates one.
-        let prUrl: string | null = null;
-        const existing = await runStep({
-            label: 'gh pr view',
-            entrypoint: 'gh',
-            args: ['pr', 'view', branch, '--json', 'url', '-q', '.url'],
-            env: true,
-            inRepo: true,
-        }).catch(() => null);
-        if (existing) {
-            prUrl = existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
-        }
-        if (!prUrl) {
-            // The PR speaks for the work, not for the command that started it (issue #82): a
-            // summarizer script reads the branch — its commits and the diff against the default
-            // — in the same throwaway-container shape as every other step. It needs no
-            // credential (local git reads only) and its failure is decoration: the
-            // command-derived plan title and the plain body stay the fallback.
-            const summarized = await runStep({
-                label: 'pr summary',
-                entrypoint: 'node',
-                args: ['-e', prSummaryScript],
-                env: false,
-                envLiterals: { BASE: `origin/${state.defaultBranch}` },
-                inRepo: true,
-            })
-                .then((r) => parsePrSummary(r.stdout))
-                .catch(() => null);
-            let title = summarized?.title ?? plan.title;
-            // The ref is appended only when the branch's own title does not already END with it
-            // — the driver's own backstop commit and the repo's commit convention both close
-            // with `(#N)`, and a subject that merely MENTIONS the issue must not suppress it.
-            if (summarized?.title && plan.issueNumber && !summarized.title.endsWith(`(#${plan.issueNumber})`)) {
-                title = `${summarized.title} (#${plan.issueNumber})`;
-            }
-            const body = [
-                summarized?.body,
-                plan.issueNumber ? `Closes #${plan.issueNumber}.` : null,
-                'Published by the factory board after the declared gates passed.',
-            ]
-                .filter(Boolean)
-                .join('\n\n');
-            const created = await step({
-                label: 'gh pr create',
-                entrypoint: 'gh',
-                args: ['pr', 'create', '--head', branch, '--title', title, '--body', body],
-                env: true,
-                inRepo: true,
-            });
-            prUrl = created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
-        }
+        // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
+        const prUrl = await resolveOrCreatePr(runStep, step, { branch, plan, state });
+
         return {
             ok: true,
             published: true,
@@ -511,6 +556,6 @@ export async function publishCheckout(
             prNumber: prNumberFromUrl(prUrl ?? ''),
         };
     } catch (e) {
-        return publishFailed(`${(e as Error).message}`.slice(0, 400));
+        return publishFailed(`${(e as Error).message}`.slice(0, PUBLISH_FAILURE_MAX_CHARS));
     }
 }
