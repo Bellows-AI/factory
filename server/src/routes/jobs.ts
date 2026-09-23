@@ -38,8 +38,6 @@ export interface JobRouteDeps {
  * `job-handlers-*.ts` files (one route handler per export) — split purely to keep each file under
  * the repo's line-count ceiling. See docs/jobs.md for the protocol these routes implement.
  */
-export { repoReason } from './job-limits.js';
-
 export const jobRoutes =
     ({ orgs }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {

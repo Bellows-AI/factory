@@ -9,7 +9,7 @@ import type { RuntimeSample, ServiceStatus } from './docker.js';
  * `K8sJobStatus`, `K8sPodList`, `K8sClaim`), the real transport (`inClusterRequest`), and the
  * protocol constants and status thresholds every other `k8s-*.ts` file reads by import — the
  * transport is injected, the way `createBoard` takes `fetch`, so nothing here needs a cluster to
- * test. See `k8s.ts` for the full module map.
+ * test. See docs/kubernetes.md for the full module map.
  */
 
 /** A uuid, and nothing else — asserted before an id is interpolated into an API path or a pod name. */

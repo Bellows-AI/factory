@@ -18,7 +18,7 @@ import type { ServiceSpec } from './services.js';
  * The kubernetes executor's auxiliary Job/pod spec builders: the startup sync, the terminal
  * reclaim, the publish steps and the declared-service pods — plus the shared naming and path
  * helpers (the checkout claim's ConfigMap, the runner's per-attempt Secret) every `k8s-*.ts` file
- * addresses these objects by. See `k8s.ts` for the full module map.
+ * addresses these objects by. See docs/kubernetes.md for the full module map.
  */
 
 /**

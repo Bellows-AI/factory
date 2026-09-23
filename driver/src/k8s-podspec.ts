@@ -25,7 +25,7 @@ import { bellowsReadEnv, bellowsReadScript } from './services.js';
  * `.bellows.yaml` / opencode-session / claude-turns aux readouts. Everything security-relevant
  * about a runner is decided here, and pinned by tests for that reason. The transport, polling,
  * fence and runner assembly live in the sibling `k8s-*.ts` files this one has no dependency on;
- * see `k8s.ts` for the full map.
+ * see docs/kubernetes.md for the full map.
  */
 
 /** One env entry for the runner container. A `valueFrom` entry names a Secret key; it never carries one. */

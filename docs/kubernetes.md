@@ -1,6 +1,6 @@
 # Kubernetes
 
-Read before: touching `driver/src/k8s.ts`, the `EXECUTOR`/`K8S_NAMESPACE`/`RUNNER_CREDENTIALS_SECRET`
+Read before: touching `driver/src/k8s-*.ts`, the `EXECUTOR`/`K8S_NAMESPACE`/`RUNNER_CREDENTIALS_SECRET`
 variables, anything under `charts/factory/`, or `scripts/test-k8s.sh`.
 
 The stack runs on Kubernetes three ways at once, and the issue that asked for it named all three:
@@ -12,9 +12,30 @@ factory, and an **operator for runners** — which, deliberately, is not a CRD c
 
 `EXECUTOR` selects the platform runners run on: `docker` (the default, the original path) or
 `kubernetes`. The seam is the `Runner` interface in `driver/src/docker.ts` — `run`, `kill`,
-`remoteSessionId` — which `driver/src/k8s.ts` implements a second time. **The loop, the board
-contract and the server change not at all**: `loop.ts` cannot tell which executor is under it, and
-that is the point. A third platform would add a third `Runner`, nothing else.
+`remoteSessionId` — which `driver/src/k8s-runner.ts` implements a second time. **The loop, the
+board contract and the server change not at all**: `loop.ts` cannot tell which executor is under
+it, and that is the point. A third platform would add a third `Runner`, nothing else.
+
+The kubernetes executor is split across `driver/src/k8s-*.ts`; import from the file that owns a
+name, there is no barrel:
+
+- `k8s-transport.ts` — the wire types (`K8sRequest`/`K8sResponse`), the real transport
+  (`inClusterRequest`), and the protocol constants and status thresholds every other file reads.
+- `k8s-podspec.ts` — the runner's own pure Job spec (`runnerJobSpec`, the `dockerArgs`
+  analogue) plus the gate/bellows/claude-turns/opencode-readout spec builders and naming.
+- `k8s-auxspec.ts` — the sync/reclaim/publish/service spec builders, and the shared checkout
+  claim / per-attempt Secret naming and path helpers.
+- `k8s-fence.ts` — the re-claim fence: claim acquire/release, the leftover sweep, and the
+  pre/post-create claim verifies around the runner Job POST.
+- `k8s-poll.ts` — Job-status polling to a terminal state, the live-output tail, and the
+  sync/reclaim aux Job runners built on it.
+- `k8s-services.ts` — the declared-service fleet: the `.bellows.yaml` readout, starting each
+  service as a Pod + headless Service, and the lease-scoped teardown.
+- `k8s-runner.ts` — `createKubernetesRunner` itself, composing the above into the `Runner`.
+- `k8s-gates.ts` — `createKubernetesGateManager`, the second `GateManager`.
+
+Remote Control has no counterpart here — a tty held open, an auth volume, idle parking — so
+`loadDriverConfig` refuses the combination outright rather than running a half-mode.
 
 The two implementations decide the same things and are pinned the same way:
 

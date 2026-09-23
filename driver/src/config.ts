@@ -124,7 +124,7 @@ export interface DriverConfig {
     passEnv: readonly string[];
     /**
      * What spawns the runner: the host's docker daemon (default, the original path), or the
-     * Kubernetes API server the driver's own pod talks to — see k8s.ts. An explicit enum, fatal on
+     * Kubernetes API server the driver's own pod talks to — see k8s-transport.ts. An explicit enum, fatal on
      * an unknown value, because a typo must not read as "docker is fine" and quietly spawn nothing.
      */
     executor: 'docker' | 'kubernetes';

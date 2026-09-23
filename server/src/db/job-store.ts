@@ -39,43 +39,10 @@ import {
  *
  * The types, row mappers, and the pure per-concern helpers (claim resolution, the workflow
  * transition, the task list's SQL fragments) live in `job-store-contract.ts`, `job-store-read-model.ts`,
- * `job-store-rows.ts`, `job-store-org-resolvers.ts` and `job-store-claim.ts` — split out purely to
- * keep every file under the repo's line-count ceiling, re-exported below so every existing import
- * of `./job-store.js` keeps resolving the same names. Read docs/jobs.md before touching any of
- * them: the decisions here look simplifiable and mostly are not.
+ * `job-store-rows.ts`, `job-store-org-resolvers.ts` and `job-store-claim.ts`; import them from
+ * there. Read docs/jobs.md before touching any of them: the decisions here look simplifiable and
+ * mostly are not.
  */
-export type {
-    Claim,
-    GateReport,
-    Job,
-    JobOutcome,
-    JobStatus,
-    RuntimeVitals,
-    ServiceStatus,
-} from './job-store-contract.js';
-export type {
-    FollowUpRefusal,
-    JobStore,
-    LeaseResult,
-    ReclaimClaim,
-    RemoveResult,
-    StopResult,
-    SuspendResult,
-    TaskBucket,
-    TaskListFilters,
-    TaskListResponse,
-    TaskNavigation,
-    TaskState,
-    TaskSummary,
-} from './job-store-read-model.js';
-export type { CreateJobStoreDeps, JobStorePrs } from './job-store-rows.js';
-export {
-    LEASE_TAIL_GRACE,
-    createOrgOfJob,
-    createOrgOfLease,
-    createOrgOfReclaim,
-    withMintedToken,
-} from './job-store-org-resolvers.js';
 
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a

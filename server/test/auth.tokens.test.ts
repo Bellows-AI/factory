@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { AuthConfig } from '../src/config.js';
-import type { JobStore } from '../src/db/job-store.js';
+import type { JobStore } from '../src/db/job-store-read-model.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { MemoryAuthStore } from './helpers.js';

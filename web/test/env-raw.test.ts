@@ -1,13 +1,6 @@
+import { ENV_NAME_LIMIT, ENV_VALUE_LIMIT, MAX_ENV_VARS_PER_SCOPE, RESERVED_ENV_NAMES } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
-import {
-    MAX_ENV_VARS_PER_SCOPE,
-    NAME_LIMIT,
-    RESERVED_ENV_NAMES,
-    VALUE_LIMIT,
-    parseEnvRaw,
-    serializeEnv,
-    type EnvVarRow,
-} from '../src/panels/env-raw.js';
+import { parseEnvRaw, serializeEnv, type EnvVarRow } from '../src/panels/env-raw.js';
 
 const noSecrets: string[] = [];
 
@@ -16,28 +9,16 @@ const ok = (vars: EnvVarRow[]) => ({ ok: true as const, vars });
 const variable = (name: string, value: string): EnvVarRow => ({ name, value, isSecret: false });
 
 describe('the raw .env editor parser', () => {
-    it('mirrors the server rules it duplicates', () => {
-        // Copied, not imported, from server/src/routes/env.ts — this pin makes drift loud.
-        const EXPECTED_MAX_ENV_VARS_PER_SCOPE = 100;
-        const EXPECTED_VALUE_LIMIT = 32_768;
-        const EXPECTED_NAME_LIMIT = 255;
-        expect(MAX_ENV_VARS_PER_SCOPE).toBe(EXPECTED_MAX_ENV_VARS_PER_SCOPE);
-        expect(VALUE_LIMIT).toBe(EXPECTED_VALUE_LIMIT);
-        expect(NAME_LIMIT).toBe(EXPECTED_NAME_LIMIT);
-        expect(RESERVED_ENV_NAMES).toEqual([
-            'WORKDIR',
-            'TRUST_WORKDIR',
-            'BELLOWS_GATE_URL',
-            'BELLOWS_GATE_TOKEN',
-            'CRED_HELPER',
-            'RESTORE',
-            'FACTORY_TRANSCRIPT_DIR',
-            'FACTORY_STATS_URL',
-            'RUNNER_JOB_ID',
-            'RUNNER_LEASE_TOKEN',
-            'BELLOWS_SESSION_ID',
-            'OPENCODE_CONFIG_CONTENT',
-        ]);
+    it('refuses every name the server reserves', () => {
+        // The editor once carried its own copy of the list and silently accepted
+        // CLAUDE_CODE_CONFIG_CONTENT, which the server's PUT refuses.
+        expect(RESERVED_ENV_NAMES).toContain('CLAUDE_CODE_CONFIG_CONTENT');
+        for (const name of RESERVED_ENV_NAMES) {
+            expect(parseEnvRaw(`${name}=x`, noSecrets)).toEqual({
+                ok: false,
+                errors: [`line 1: "${name}" is reserved by the runner`],
+            });
+        }
     });
 
     it('parses KEY=value pairs', () => {
@@ -114,9 +95,9 @@ describe('the raw .env editor parser — refusals', () => {
     });
 
     it('refuses a name over the length limit, with the line number', () => {
-        const name = 'A'.repeat(NAME_LIMIT + 1);
+        const name = 'A'.repeat(ENV_NAME_LIMIT + 1);
         const result = parseEnvRaw(`${name}=x`, noSecrets);
-        expect(result).toEqual({ ok: false, errors: [`line 1: name exceeds ${NAME_LIMIT} characters`] });
+        expect(result).toEqual({ ok: false, errors: [`line 1: name exceeds ${ENV_NAME_LIMIT} characters`] });
     });
 
     it('refuses reserved names, with the line number', () => {
@@ -127,8 +108,8 @@ describe('the raw .env editor parser — refusals', () => {
     });
 
     it('refuses a value over the size limit, with the line number', () => {
-        const result = parseEnvRaw(`A=${'x'.repeat(VALUE_LIMIT + 1)}`, noSecrets);
-        expect(result).toEqual({ ok: false, errors: [`line 1: value for "A" exceeds ${VALUE_LIMIT} characters`] });
+        const result = parseEnvRaw(`A=${'x'.repeat(ENV_VALUE_LIMIT + 1)}`, noSecrets);
+        expect(result).toEqual({ ok: false, errors: [`line 1: value for "A" exceeds ${ENV_VALUE_LIMIT} characters`] });
     });
 
     it('refuses a quoted value that runs over the next line, because parsing is line-structured', () => {

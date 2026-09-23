@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { withMintedToken } from '../src/db/job-store.js';
+import { withMintedToken } from '../src/db/job-store-org-resolvers.js';
 
 /**
  * The merge rule that puts the minted installation token on a claim's environment, pinned offline

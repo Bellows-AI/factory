@@ -11,7 +11,8 @@ import {
     validatePublication,
     validateWorkerField,
 } from './job-field-validation.js';
-import { UUID, bad, body, guard } from './helpers.js';
+import { bad, body, guard } from './helpers.js';
+import { UUID } from '../config.js';
 import {
     HTTP_ACCEPTED,
     HTTP_CONFLICT,

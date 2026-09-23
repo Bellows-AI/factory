@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { Job, JobStore, TaskListFilters, TaskListResponse } from '../src/db/job-store.js';
+import type { Job } from '../src/db/job-store-contract.js';
+import type { JobStore, TaskListFilters, TaskListResponse } from '../src/db/job-store-read-model.js';
 import { encodeCursor, memoryTaskList } from '../src/db/task-summary.js';
 import {
     TEST_JOB_BOARD_TOKEN,

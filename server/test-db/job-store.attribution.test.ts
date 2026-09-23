@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore, createOrgOfLease, type JobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/job-store.js';
+import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
+import type { JobStore } from '../src/db/job-store-read-model.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';

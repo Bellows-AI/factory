@@ -22,7 +22,6 @@ import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBel
 import type { ServiceSpec } from './services.js';
 import {
     CLOSE_READ_DEADLINE_MS,
-    cacheCollapse,
     claimCarriesGithubToken,
     claimContinuesSession,
     claimEnv,
@@ -31,25 +30,28 @@ import {
     dockerArgs,
     envFileBody,
     envFilePath,
-    claudeTurnsArgs,
-    opencodeCacheProbeArgs,
     opencodeSessionReadoutArgs,
-    parseClaudeCloseRead,
     parseDockerServicePs,
     parseDockerStats,
-    parseOpencodeCacheProbe,
-    parseOpencodeRunOutcome,
     parseRemoteSessionId,
-    readsAgentTurns,
     remoteSessionArgs,
     reportTail,
     workspacePath,
     workspacesMountArgs,
-    type OpencodeRunOutcome,
     type RunOutcome,
     type Runner,
     type RunSession,
 } from './docker.js';
+import {
+    cacheCollapse,
+    claudeTurnsArgs,
+    opencodeCacheProbeArgs,
+    parseClaudeCloseRead,
+    parseOpencodeCacheProbe,
+    parseOpencodeRunOutcome,
+    readsAgentTurns,
+    type OpencodeRunOutcome,
+} from './docker-close-read.js';
 import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
@@ -69,8 +71,6 @@ import {
     type Spawn,
     type ExecDocker,
 } from './docker-runner-support.js';
-
-export type { RunnerFiles } from './docker-runner-support.js';
 
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the

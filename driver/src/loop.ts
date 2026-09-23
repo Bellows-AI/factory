@@ -7,8 +7,6 @@ import { worktreeRelDir } from './publish.js';
 import type { GateStack, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
 
-export type { GateStack } from './loop-types.js';
-
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
     start(): Promise<void>;

@@ -3,7 +3,8 @@ import { mintAccessToken } from '../auth/access-token.js';
 import { callerOf } from '../auth/plugin.js';
 import { hashToken } from '../auth/session.js';
 import type { AuthStore } from '../auth/store.js';
-import { UUID, bad, body as jsonBody, guard } from './helpers.js';
+import { bad, body as jsonBody, guard } from './helpers.js';
+import { UUID } from '../config.js';
 
 /**
  * Access-token management for the settings page (#70): a member's personal tokens (`fat_`), and

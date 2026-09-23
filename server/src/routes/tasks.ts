@@ -1,10 +1,9 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
-import type { JobStore, TaskListFilters, TaskState } from '../db/job-store.js';
+import type { JobStore, TaskListFilters, TaskState } from '../db/job-store-read-model.js';
 import { decodeCursor, type TaskCursorFilters } from '../db/task-summary.js';
 import type { OrgRegistry } from '../orgs.js';
-import { bad, guard } from './helpers.js';
-import { repoReason } from './jobs.js';
+import { bad, guard, repoReason } from './helpers.js';
 
 export interface TaskRouteDeps {
     /** The per-org runtimes; the board a request reads is the CALLER's org's. */

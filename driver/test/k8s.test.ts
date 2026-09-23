@@ -3,39 +3,39 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript } from '../src/docker.js';
 import { CONTAINER_GONE } from '../src/exec-codes.js';
-import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import { POLL_MAX_CONSECUTIVE_FAILURES, parseServicePods, parsePodMetrics } from '../src/k8s-transport.js';
 import {
-    POLL_MAX_CONSECUTIVE_FAILURES,
     bellowsJobSpec,
-    claimName,
     claudeTurnsJobName,
     claudeTurnsJobSpec,
-    createKubernetesGateManager,
-    createKubernetesRunner,
     envBodyToData,
     gateEnvSecretName,
     gateJobName,
     gateJobSpec,
-    jobPath,
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
-    parseServicePods,
-    parsePodMetrics,
+    runnerJobName,
+    runnerJobSpec,
+    secretName,
+} from '../src/k8s-podspec.js';
+import {
+    claimName,
+    jobPath,
     publishEnvSecretName,
     publishStepJobName,
     publishStepJobSpec,
-    runnerJobName,
-    runnerJobSpec,
     reclaimJobName,
     reclaimJobSpec,
-    secretName,
     serviceDnsSpec,
     servicePodSpec,
     syncEnvSecretName,
     syncJobName,
     syncJobSpec,
-} from '../src/k8s.js';
+} from '../src/k8s-auxspec.js';
+import { createKubernetesGateManager } from '../src/k8s-gates.js';
+import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 

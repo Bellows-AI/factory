@@ -1,6 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
-import type { JobStore } from '../db/job-store.js';
+import type { JobStore } from '../db/job-store-read-model.js';
 import type { OrgRegistry } from '../orgs.js';
 
 /**

@@ -9,8 +9,6 @@ const HTTP_UNAVAILABLE = 503;
  * point the 503 body existed in four places and would have drifted in one of them.
  */
 
-export { UUID } from '../config.js';
-
 /** A JSON body, or an empty object for anything that is not one. Never throws. */
 export const body = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};

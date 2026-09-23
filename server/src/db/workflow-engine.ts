@@ -9,7 +9,7 @@
  * carried node — and a loop count is a count of the thread's rows for the target node, dead rows
  * included (attempts are retries, rounds are rows). No instance-state table exists to drift.
  */
-import type { GateReport } from './job-store.js';
+import type { GateReport } from './job-store-contract.js';
 import {
     type EdgeRule,
     type ParamValues,

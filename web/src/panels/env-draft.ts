@@ -3,8 +3,8 @@
  * panel's decisions live here so the offline suite can pin them without a DOM. It imports
  * `env-raw.ts`, the other pure module, for the advanced editor's serializer.
  *
- * Three contracts the server forces, each mirrored from `server/src/routes/env.ts` (whose
- * `parseVars` stays the sole authority; the copy is UX-only early feedback):
+ * Three contracts the server forces, each applied from `server/src/routes/env.ts` (whose
+ * `parseVars` stays the sole authority; the check here is UX-only early feedback):
  *
  * - The WHOLE list is the unit of save, and the only shape dirty comparison looks at is the API
  *   payload — `{ name, value, isSecret }` rows. React row ids never reach it, so a re-keyed table
@@ -15,38 +15,18 @@
  *   input. The distinction lives at row level — `secretState` and the new-row validation —
  *   because the wire has only one keep form: a blank input (typed or untouched) PUTs null, and
  *   clearing a typed value returns the editor to clean, which is what blank promised.
- * - The scope cap, name rules and value bounds here are the server's own; a validation error only
- *   disables Save early, never redefines legality.
+ * - The scope cap, name rules and value bounds are the server's own (core/src/env.ts, shared);
+ *   a validation error only disables Save early, never redefines legality.
  */
 
+import {
+    ENV_NAME,
+    ENV_NAME_LIMIT,
+    ENV_VALUE_LIMIT,
+    MAX_ENV_VARS_PER_SCOPE,
+    RESERVED_ENV_NAMES,
+} from '@factory-ai/core';
 import { serializeEnv } from './env-raw.js';
-
-export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Mirrors NAME_LIMIT in server/src/routes/env.ts — and env-raw.ts, which serializes for .env. */
-export const NAME_LIMIT = 255;
-
-/** Mirrors VALUE_LIMIT in server/src/routes/env.ts. */
-export const VALUE_LIMIT = 32_768;
-
-/** Mirrors MAX_ENV_VARS_PER_SCOPE in server/src/routes/env.ts. */
-export const MAX_ENV_VARS_PER_SCOPE = 100;
-
-/** Mirrors RESERVED_ENV_NAMES in server/src/routes/env.ts. */
-export const RESERVED_ENV_NAMES: readonly string[] = [
-    'WORKDIR',
-    'TRUST_WORKDIR',
-    'BELLOWS_GATE_URL',
-    'BELLOWS_GATE_TOKEN',
-    'CRED_HELPER',
-    'RESTORE',
-    'FACTORY_TRANSCRIPT_DIR',
-    'FACTORY_STATS_URL',
-    'RUNNER_JOB_ID',
-    'RUNNER_LEASE_TOKEN',
-    'BELLOWS_SESSION_ID',
-    'OPENCODE_CONFIG_CONTENT',
-];
 
 /** One editable row in the panel's draft state. `id` is a React key only — never in a payload. */
 export interface EnvRowState {
@@ -113,7 +93,7 @@ export function countActive(rows: readonly EnvRowState[], isSecret: boolean): nu
 function nameErrors(name: string, nameCounts: ReadonlyMap<string, number>): string[] {
     if (name === '') return ['Name is required.'];
     const list: string[] = [];
-    if (name.length > NAME_LIMIT) list.push(`Name exceeds ${NAME_LIMIT} characters.`);
+    if (name.length > ENV_NAME_LIMIT) list.push(`Name exceeds ${ENV_NAME_LIMIT} characters.`);
     if (!ENV_NAME.test(name)) list.push(`"${name}" is not a legal environment variable name.`);
     if (RESERVED_ENV_NAMES.includes(name)) list.push(`"${name}" is reserved by the runner.`);
     if ((nameCounts.get(name) ?? 0) > 1) {
@@ -130,7 +110,7 @@ function valueErrors(row: EnvRowState): string[] {
         list.push('Enter a value or remove the row.');
     }
     if (value.includes('\n') || value.includes('\r')) list.push('Value contains a newline.');
-    if (value.length > VALUE_LIMIT) list.push(`Value exceeds ${VALUE_LIMIT} characters.`);
+    if (value.length > ENV_VALUE_LIMIT) list.push(`Value exceeds ${ENV_VALUE_LIMIT} characters.`);
     return list;
 }
 

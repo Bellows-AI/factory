@@ -707,23 +707,6 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
     ];
 }
 
-// The opencode/claude-code close-time reads and the live cache probe: moved to
-// docker-close-read.ts (AGENTS.md's file-length budget), re-exported here so every existing
-// import of `./docker.js` keeps resolving the same names.
-export {
-    cacheCollapse,
-    CACHE_WATCH_MIN_INPUT_TOKENS,
-    CACHE_WATCH_MIN_TURN_MS,
-    CACHE_WATCH_TURNS,
-    claudeTurnsArgs,
-    opencodeCacheProbeArgs,
-    parseClaudeCloseRead,
-    parseOpencodeCacheProbe,
-    parseOpencodeRunOutcome,
-    readsAgentTurns,
-} from './docker-close-read.js';
-export type { OpencodeCacheProbe, OpencodeCacheTurn, OpencodeRunOutcome } from './docker-close-read.js';
-
 /**
  * Where the image sets CLAUDE_CONFIG_DIR. The login lives under it, so that whole directory is what
  * the auth volume has to cover — mounting anything narrower hides the baked configuration behind an
@@ -1114,5 +1097,3 @@ function pushClaudeCodeArgs(args: string[], config: DriverConfig, job: BoardJob,
     if (deliver) args.push(job.command);
     return args;
 }
-
-export { createDockerRunner, type RunnerFiles } from './docker-runner.js';
