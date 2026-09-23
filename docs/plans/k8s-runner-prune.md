@@ -1,9 +1,9 @@
 # Plan: simplify / prune the kubernetes runner
 
-Status: **Step 0 and #1, #2, #3, #4, #5, #6, #9, #10, #12 done** (7 commits on `main`, each with
-typecheck/lint/full test suite/`test:k8s` green). Remaining: #7 and #8 — STOP and confirm with the
-user first per the execution order below; they touch gate error codes and aux-read patience. #11
-and #13 were not attempted (low value / very low risk, left for a future pass if wanted).
+Status: **done, except #11 and #13** (low value / very low risk, left for a future pass if
+wanted). Step 0 and #1–#10, #12 landed as 9 commits on `main`, each with typecheck/lint/full test
+suite/`test:k8s` green; #7 and #8 (gate error codes, aux-read patience) were confirmed with the
+user before landing.
 
 Written 2026-09-23 after the architecture-simplification pass that landed on
 `main` at `1df03b6` (re-export shims removed, executor-neutral `runner.ts` / `claim.ts` /
