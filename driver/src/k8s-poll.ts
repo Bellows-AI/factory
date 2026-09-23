@@ -200,6 +200,38 @@ export async function auxVerdict(deps: K8sDeps, jobName: string): Promise<{ exit
 }
 
 /**
+ * A block-helper aux Job's verdict (issue #207) — `auxVerdict`'s shape, plus whether the
+ * kubelet's own `activeDeadlineSeconds` is what ended it, the same `DeadlineExceeded` condition
+ * check `pollRunnerJobUntilTerminal` makes for the runner Job. A helper that outlives its bound is
+ * reported as a named `timeout` failure by its caller, never an ordinary exit.
+ */
+export async function helperVerdict(
+    deps: K8sDeps,
+    jobName: string
+): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
+    const result = await readJobStatus(deps, jobName, `reading the helper job ${jobName}`);
+    if (result.kind === 'notFound') {
+        throw new Error(`the helper job ${jobName} no longer exists`);
+    }
+    if (result.kind === 'error') {
+        throw new Error(
+            `reading the helper job answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
+        );
+    }
+    if (result.kind === 'pending') {
+        await deps.sleep(POLL_MS);
+        return helperVerdict(deps, jobName);
+    }
+    const verdict = await readJobPodVerdict(
+        deps,
+        jobName,
+        result.outcome === 'succeeded',
+        `listing the pods of ${jobName}`
+    );
+    return { ...verdict, timedOut: timedOutOf(result.status) };
+}
+
+/**
  * The mid-run live output tail, best effort: discovers the runner's pod once and remembers it,
  * then reads its log tail on every poll that has one — every failure here (not scheduled yet, a
  * 503, a dropped connection) costs freshness, never the run.

@@ -11,6 +11,8 @@ import {
 } from './close-read.js';
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import type { OpencodeRunOutcome } from './close-read.js';
+import type { HelperPlan } from './helpers.js';
+import { runHelper } from './k8s-helper-runner.js';
 import {
     deleteJob,
     deleteSecret,
@@ -432,6 +434,7 @@ export function createKubernetesRunner(
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),
+        runHelper: (job: BoardJob, plan: HelperPlan, token?: string) => runHelper(deps, job, plan, token),
         syncCheckout: (job: BoardJob) => syncCheckout(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
         // The loop's terminal pre-run refusals complete the job failed WITHOUT runner.run, so

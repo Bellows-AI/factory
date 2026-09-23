@@ -388,6 +388,15 @@ makes a follow-up claimed while a reclaim is in flight wait out the removal befo
 sync. Docker's documented bound is one driver per daemon, so the barrier is all docker needs;
 the claim is what makes the exclusion hold across drivers under kubernetes.
 
+**A declared block-helper step is one more aux Job over the same PVC** (issue #207,
+docs/jobs.md's "Block-helper steps"): the identical entrypoint/argv/script-content shape
+`publishStepJobSpec` already uses for a publish step, with its own attempt-scoped Secret only
+when the helper writes to GitHub, and `HELPER_TIMEOUT_MS` as its `activeDeadlineSeconds` — a
+`DeadlineExceeded` condition reads back as the transport's own named `timeout` failure, the
+same check the runner Job's own poll makes. Docker runs the identical script by content in the
+task worktree over the existing runner image. Neither transport is wired to a real caller yet;
+see docs/jobs.md for the full contract.
+
 ## Testing
 
 - `driver/test/k8s.test.ts` — the whole executor, offline. The request function is injected (the

@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
+import { HELPER_TIMEOUT_MS, helperInputValue, lookupHelper, parseHelperOutput } from './helpers.js';
+import type { HelperPlan, HelperResult } from './helpers.js';
 import {
     gitWorktreeRemoveScript,
     parseLastJsonLine,
@@ -355,6 +358,81 @@ async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: 
     }
 }
 
+/**
+ * The docker transport for one block-helper step (issue #207): the same shape as
+ * `dockerPublishGit` — an attempt-scoped env file when the helper writes to GitHub, one
+ * `docker run` over the task worktree with the entrypoint swapped for `node`, the script passed
+ * by CONTENT (never a path), and the bounded input as one literal `-e` value (never a credential —
+ * the same class as the sync's `REPO`/`WORKTREE` literals). Unknown helper ids fail BEFORE any
+ * container starts, matching the k8s transport's own first check.
+ *
+ * NOT `--rm`, on purpose — the same reason `dockerRun`'s own runner container skips it: `--rm`
+ * removes the container only when the DAEMON sees it exit, and `execDocker`'s `timeout` option
+ * kills the `docker run` CLIENT process, not the container the daemon is still running. A killed
+ * client whose container keeps going would otherwise leak it forever — the job that timed out has
+ * no guaranteed later attempt to sweep it up (a pre-helper timeout fails the attempt terminally).
+ * The container gets its own attempt-scoped, per-call name instead, and the `finally` below
+ * removes it explicitly and unconditionally, tolerating one already gone — the exact idiom
+ * `dockerRunVerdict` uses for the runner container itself.
+ */
+async function dockerRunHelper(
+    deps: RunnerDeps,
+    job: BoardJob,
+    plan: HelperPlan,
+    token?: string
+): Promise<HelperResult> {
+    const descriptor = lookupHelper(plan.helperId);
+    if (!descriptor) {
+        return {
+            ok: false,
+            reason: 'unknown_helper',
+            message: `no allowlisted helper is registered as "${plan.helperId}"`,
+        };
+    }
+    const { config, execDocker, files } = deps;
+    // A per-call name, not the shared attempt name: a real future producer could declare more
+    // than one plan of a phase, and this must never collide with a sibling call, or with the
+    // runner/service containers this same attempt starts under its own name/labels.
+    const helperContainerName = `factory-helper-${job.id}-${job.leaseToken}-${randomUUID()}`;
+    let file: string | null = null;
+    try {
+        if (plan.githubWriting) {
+            file = envFilePath(job);
+            await files.writeFile(file, envFileBody(withPublishToken(job, token)), { mode: 0o600 });
+        }
+        const worktree = worktreeDir(config, job);
+        const args = ['run', '--name', helperContainerName, ...workspacesMountArgs(config, workspacePath(job))];
+        if (worktree) args.push('-w', worktree);
+        args.push(
+            '--label',
+            `factory.job=${job.id}`,
+            '--label',
+            `factory.lease=${job.leaseToken}`,
+            '-e',
+            `HELPER_INPUT=${helperInputValue(plan)}`
+        );
+        if (file) args.push('--env-file', file);
+        args.push('--entrypoint', 'node', executorImage(config, job.executorType), '-e', descriptor.scriptBody);
+        let out: { stdout: string };
+        try {
+            out = await execDocker(args, { timeout: HELPER_TIMEOUT_MS });
+        } catch (e) {
+            const timedOut = (e as { killed?: boolean }).killed === true;
+            return {
+                ok: false,
+                reason: timedOut ? 'timeout' : 'runner_error',
+                message: timedOut
+                    ? `the helper exceeded its ${HELPER_TIMEOUT_MS}ms bound`
+                    : dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS),
+            };
+        }
+        return parseHelperOutput(descriptor, out.stdout);
+    } finally {
+        if (file) await files.rm(file).catch(() => undefined);
+        await execDocker(['rm', '-f', helperContainerName]).catch(() => undefined);
+    }
+}
+
 async function dockerRemoteSessionId(job: BoardJob, sessionId: string): Promise<string | null> {
     // Every failure here is the ordinary case, not an error: the container may have exited,
     // the transcript may not exist yet, or the bridge may simply not have connected.
@@ -618,6 +696,7 @@ export function createDockerRunner(
         syncCheckout: (job) => dockerSyncCheckout(deps, job),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),
+        runHelper: (job, plan, token) => dockerRunHelper(deps, job, plan, token),
         remoteSessionId: (job, sessionId) => dockerRemoteSessionId(job, sessionId),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),

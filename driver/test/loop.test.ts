@@ -3,6 +3,7 @@ import type { Board, BoardJob, HeartbeatVerdict, LeaseState, Reclaim, RuntimeRep
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateServer } from '../src/gates.js';
+import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
 import type { GateStack } from '../src/loop-types.js';
@@ -2456,5 +2457,190 @@ describe('verification gates', () => {
         expect(stack.stack.released).toEqual([]);
         expect(board.board.gatesReported).toEqual([]);
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+});
+
+describe('block-helper steps (issue #207)', () => {
+    /** A runner whose `runHelper` records every call and answers scripted results in order. */
+    function runnerWithHelper(
+        run: (job: BoardJob, session: RunSession | null) => Promise<RunOutcome>,
+        results: HelperResult[]
+    ) {
+        const runner = stubRunner(run);
+        const calls: { jobId: string; plan: HelperPlan; token: string | undefined }[] = [];
+        const queue = [...results];
+        runner.runHelper = async (helperJob, plan, token) => {
+            calls.push({ jobId: helperJob.id, plan, token });
+            return queue.shift() ?? { ok: true, output: null };
+        };
+        return { runner, calls };
+    }
+
+    const helperPlan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
+        helperId: 'noop',
+        phase: 'pre',
+        input: null,
+        githubWriting: false,
+        ...over,
+    });
+
+    it('runs a declared pre-helper before the agent, and never launches the agent when it fails', async () => {
+        const runCalls: string[] = [];
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+        const { runner, calls } = runnerWithHelper(
+            async (helperJob) => {
+                runCalls.push(helperJob.id);
+                return ok();
+            },
+            [{ ok: false, reason: 'runner_error', message: 'the helper blew up' }]
+        );
+
+        await drive({ ...board, runner });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.plan.phase).toBe('pre');
+        // The agent never launches — the whole point of the pre-phase gate.
+        expect(runCalls).toEqual([]);
+        expect(board.board.completed).toEqual([
+            {
+                id: job(1).id,
+                status: 'failed',
+                exitCode: null,
+                output: expect.stringContaining('the helper blew up'),
+            },
+        ]);
+    });
+
+    it('runs the agent normally after a pre-helper succeeds', async () => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+        const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: null }]);
+
+        await drive({ ...board, runner });
+
+        expect(calls).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('asks the board for a fresh install token before a github-writing pre-helper, never a read-only one', async () => {
+        // publish: false isolates the assertion to the pre-helper's own ask — otherwise the
+        // ordinary publish flow (publishIfDue) asks for its own fresh token too, on a job this
+        // plain would otherwise publish (absent `publish` reads as "publish").
+        const board = stubBoard([{ ...job(1), publish: false, helperPlans: [helperPlan({ githubWriting: true })] }], {
+            publishToken: 'fresh-install-token',
+        });
+        const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: null }]);
+
+        await drive({ ...board, runner });
+
+        expect(board.board.publishTokenAsks).toEqual([job(1).id]);
+        expect(calls[0]!.token).toBe('fresh-install-token');
+
+        const readOnlyBoard = stubBoard([
+            { ...job(2), publish: false, helperPlans: [helperPlan({ githubWriting: false })] },
+        ]);
+        const { runner: readOnlyRunner, calls: readOnlyCalls } = runnerWithHelper(
+            async () => ok(),
+            [{ ok: true, output: null }]
+        );
+        await drive({ ...readOnlyBoard, runner: readOnlyRunner });
+        expect(readOnlyBoard.board.publishTokenAsks).toEqual([]);
+        expect(readOnlyCalls[0]!.token).toBeUndefined();
+    });
+
+    it('runs a declared post-helper after the agent, and fails the verdict — skipping publish — when it fails', async () => {
+        const board = stubBoard([
+            { ...job(1), repo: 'Bellows-AI/factory', helperPlans: [helperPlan({ phase: 'post' })] },
+        ]);
+        const { runner, calls } = runnerWithHelper(
+            async () => ok(),
+            [{ ok: false, reason: 'malformed_output', message: 'unreadable verdict' }]
+        );
+        runner.publishGit = async (publishedJob) => {
+            runner.published.push(publishedJob);
+            return {
+                ok: true,
+                published: true,
+                branch: 'fix/1',
+                prUrl: 'https://github.com/o/r/pull/1',
+                reason: null,
+                repository: 'o/r',
+                baseBranch: 'main',
+                prNumber: 1,
+            };
+        };
+
+        await drive({ ...board, runner });
+
+        expect(calls[0]!.plan.phase).toBe('post');
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(board.board.completed[0]!.output).toContain('unreadable verdict');
+        // Publish never runs: a failed post-helper dooms the verdict exactly like a failed gate.
+        expect(runner.published).toEqual([]);
+    });
+
+    it('a succeeding post-helper does not disturb an otherwise-succeeded verdict', async () => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'post' })] }]);
+        const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: { fine: true } }]);
+
+        await drive({ ...board, runner });
+
+        expect(calls).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('pays no helper work at all for a job with no declared plans, or a runner with no runHelper', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        expect(runner.runHelper).toBeUndefined();
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('stands a job down while a pre-helper is still running, without launching the agent', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }], options);
+        const runCalls: string[] = [];
+        const runner = stubRunner(async (helperJob) => {
+            runCalls.push(helperJob.id);
+            throw new Error('the agent must not launch');
+        });
+        const released: string[] = [];
+        runner.releaseFence = async (fencedJob) => {
+            released.push(fencedJob.id);
+        };
+        runner.runHelper = async () => {
+            // The stop lands while the pre-helper is in flight.
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return { ok: true, output: null };
+        };
+
+        const started = drive({ ...board, runner });
+        // Let the setup-poll heartbeat carry the stop in while the helper is pending.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await started;
+
+        expect(runCalls).toEqual([]);
+        expect(released).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('releases the kubernetes checkout fence when a pre-helper fails, since no runner launches to release it', async () => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+        const { runner } = runnerWithHelper(
+            async () => ok(),
+            [{ ok: false, reason: 'unknown_helper', message: 'nope' }]
+        );
+        const released: string[] = [];
+        runner.releaseFence = async (fencedJob) => {
+            released.push(fencedJob.id);
+        };
+
+        await drive({ ...board, runner });
+
+        expect(released).toEqual([job(1).id]);
     });
 });
