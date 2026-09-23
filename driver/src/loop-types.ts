@@ -2,6 +2,7 @@ import type { Board, BoardJob, LeaseState } from './board.js';
 import type { DriverConfig } from './config.js';
 import type { Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
+import type { JobState } from './loop-attempt.js';
 
 /**
  * The gate machinery, wired once at startup and handed to the loop only when it exists — an
@@ -32,3 +33,22 @@ export interface LoopRuntime {
     reclaims: Map<string, Promise<void>>;
     report: (job: BoardJob, result: Parameters<Board['complete']>[1]) => Promise<LeaseState>;
 }
+
+/**
+ * Everything a setup step or the run phase needs about the one attempt it belongs to. Shared
+ * between `loop-run.ts` and `loop-helpers.ts` (the block-helper steps, issue #207) rather than
+ * defined in either — both need it, and neither should import runtime state from the other.
+ */
+export interface AttemptCtx {
+    rt: LoopRuntime;
+    job: BoardJob;
+    state: JobState;
+    settle: () => Promise<void>;
+    standDown: () => Promise<void>;
+}
+
+/**
+ * A terminal outcome of a setup step: it already reported and settled, or stood the attempt down.
+ * Shared for the same reason `AttemptCtx` is.
+ */
+export const STOOD_DOWN = 'stood-down' as const;

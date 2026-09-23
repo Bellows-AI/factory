@@ -209,6 +209,25 @@ describe('the claimed job', () => {
         const oldBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
         expect((await oldBoard.claim('driver-1'))?.env).toEqual({});
     });
+
+    // Issue #207: declared block-helper plans, read the same way every field added after launch
+    // is — a board that predates the field, or a job with none, simply omits it.
+    it('carries the declared block-helper plans, reading a missing field as absent', async () => {
+        const plans = [{ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }];
+        const { fetch } = recorder(() => claimed({ helperPlans: plans }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.helperPlans).toEqual(plans);
+
+        const { fetch: bare } = recorder(() => claimed());
+        const oldBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
+        expect((await oldBoard.claim('driver-1'))?.helperPlans).toBeUndefined();
+    });
+
+    it('drops a malformed (non-array) helperPlans value rather than passing it through', async () => {
+        const { fetch } = recorder(() => claimed({ helperPlans: 'not-an-array' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.helperPlans).toBeUndefined();
+    });
 });
 
 describe('rereading the gates after the startup sync', () => {

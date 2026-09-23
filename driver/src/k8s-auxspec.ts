@@ -1,8 +1,10 @@
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession } from './claim.js';
+import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
+import type { HelperDescriptor, HelperPlan } from './helpers.js';
 import { hash16, jobsPath, type AuxJobSpec, workspaceSubPathOf } from './k8s-podspec.js';
-import { JOB_ID, TTL_SECONDS } from './k8s-transport.js';
+import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import {
     CREDENTIAL_HELPER,
     gitWorktreeRemoveScript,
@@ -248,6 +250,88 @@ export function publishStepJobSpec(config: DriverConfig, job: BoardJob, input: P
                             ...(publish.env && envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
                             // Read-write: add/commit write the tree the run edited. Scoped to the
                             // job's own subtree like every other mount — asserted before the spec.
+                            volumeMounts: [
+                                {
+                                    name: 'workspaces',
+                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
+                                    subPath: workspaceSubPathOf(job),
+                                },
+                            ],
+                        },
+                    ],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
+                },
+            },
+        },
+    };
+}
+
+/**
+ * One block-helper step (issue #207), as an aux Job — the kubernetes transport's twin of the
+ * docker runner's `dockerRunHelper`: the same entrypoint/argv/script-content shape as the publish
+ * steps above, over the same workspaces PVC, at the task worktree. `HELPER_TIMEOUT_MS` (shared
+ * with the docker transport, via `k8s-runner.ts`'s deadline check) is what keeps a hung helper from
+ * holding the worker slot past its bound on either platform.
+ */
+export const HELPER_JOB_DEADLINE_SECONDS = Math.max(1, Math.round(HELPER_TIMEOUT_MS / MS_PER_SECOND));
+
+/**
+ * One helper run's Job name, keyed by phase, helper id AND a caller-supplied nonce — a plain
+ * `(job, plan)` hash would collide the instant a real producer ever declares two plans of the same
+ * phase naming the same helper (called twice with different `input`, say): `gateJobName`'s sibling
+ * pattern closes the identical hole with an explicit run counter, and this closes it the same way,
+ * scoped to the one call that needs it rather than threading an index through the platform-neutral
+ * `Runner.runHelper` seam. The caller (`k8s-helper-runner.ts`) mints a fresh nonce per invocation —
+ * the same "never repeats" guarantee a lease token already carries — so no two calls, whatever
+ * their plans, can ever address the same object.
+ */
+export const helperJobName = (job: BoardJob, plan: HelperPlan, nonce: string): string =>
+    `factory-helper-${hash16(`${job.id}|${job.leaseToken}|${plan.phase}|${plan.helperId}|${nonce}`)}`;
+
+/** The helper run's per-attempt env Secret — same name discipline as the sync's and publish's. */
+export const helperEnvSecretName = (job: BoardJob, plan: HelperPlan, nonce: string): string =>
+    `factory-helper-${hash16(`${job.id}|${job.leaseToken}|${plan.phase}|${plan.helperId}|${nonce}`)}-env`;
+
+export interface HelperJobSpecInput {
+    plan: HelperPlan;
+    descriptor: HelperDescriptor;
+    envSecret: string | null;
+    nonce: string;
+}
+
+export function helperJobSpec(config: DriverConfig, job: BoardJob, input: HelperJobSpecInput): AuxJobSpec {
+    const { plan, descriptor, envSecret, nonce } = input;
+    if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
+        throw new Error(`refusing to run a helper for job ${job.id}: its ids are not the uuids the board claims`);
+    }
+    const worktree = worktreeDir(config, job);
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: helperJobName(job, plan, nonce), labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: HELPER_JOB_DEADLINE_SECONDS,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    containers: [
+                        {
+                            name: 'helper',
+                            image: executorImage(config, job.executorType),
+                            imagePullPolicy: config.imagePullPolicy,
+                            command: ['node', '-e', descriptor.scriptBody],
+                            // The bounded input travels as a literal, never a credential — the
+                            // same class as the sync's REPO/WORKTREE/BRANCH literals.
+                            env: [{ name: 'HELPER_INPUT', value: helperInputValue(plan) }],
+                            ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
+                            ...(worktree ? { workingDir: worktree } : {}),
                             volumeMounts: [
                                 {
                                     name: 'workspaces',

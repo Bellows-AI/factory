@@ -6,6 +6,7 @@
  */
 
 import type { BoardJob, ServiceStatus } from './board.js';
+import type { HelperPlan, HelperResult } from './helpers.js';
 import type { PublishResult, SyncResult, ReclaimResult } from './publish.js';
 
 /**
@@ -175,6 +176,16 @@ export interface Runner {
      * behind to release, so its runner implements nothing and a loop facing it never calls.
      */
     releaseFence?(job: BoardJob): Promise<void>;
+    /**
+     * Runs one declared block-helper step (issue #207): an allowlisted, board-owned script an
+     * expanded workflow `block` node names to run before or after its agent turn. `token` is a
+     * fresh GitHub installation token, minted by the loop immediately before a github-writing
+     * helper (`plan.githubWriting`); a read-only helper gets none and the transport runs it with
+     * the claim env untouched. Optional: a job with no `helperPlans` never calls it, and a runner
+     * that does not implement one simply cannot run helpers — the same "this platform does not
+     * support it" reading `publishGit`'s optionality already carries.
+     */
+    runHelper?(job: BoardJob, plan: HelperPlan, token?: string): Promise<HelperResult>;
 }
 
 /**
