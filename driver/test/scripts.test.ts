@@ -30,7 +30,7 @@ import {
     opencodeCacheProbeScript,
     opencodeReadoutScript,
     remoteSessionScript,
-} from '../src/docker.js';
+} from '../src/container-scripts.js';
 import { HELPER_REGISTRY } from '../src/helpers.js';
 import { SCRIPTS_DIR, pathOf } from './fixtures/scripts-support.js';
 

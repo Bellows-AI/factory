@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/job-store.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);

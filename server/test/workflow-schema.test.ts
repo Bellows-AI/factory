@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFINITION_LIMIT, EXPANDED_DEFINITION_LIMIT, validateDefinition } from '../src/db/workflow-schema.js';
+import { DEFINITION_LIMIT, EXPANDED_DEFINITION_LIMIT } from '../src/db/workflow-schema.js';
+import { validateDefinition } from '../src/db/workflow-schema-validate.js';
 
 /**
  * Grammar-level coverage for the `kind: "block"` node (issue #204): the authored shape a workflow

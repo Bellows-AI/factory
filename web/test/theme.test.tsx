@@ -18,7 +18,6 @@ import {
     type ResolvedTheme,
     type SystemThemePort,
     type ThemeDomPort,
-    type ThemePorts,
     type ThemePreference,
     type ThemeStoragePort,
 } from '../src/theme.js';

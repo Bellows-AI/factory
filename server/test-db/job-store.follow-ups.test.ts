@@ -1,9 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore, createOrgOfLease, type JobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/job-store.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
-import { createEnvVarStore } from '../src/db/env-var-store.js';
-import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -12,8 +11,6 @@ let sql: Sql;
 let store: JobStore;
 /** A second store on the same pool, bound to a different org. Only the org guard uses it. */
 let otherOrgStore: JobStore;
-/** The org-less lease resolver the branch-ingest credential is verified against. */
-let orgOfLease: (jobId: string, leaseToken: string) => Promise<string | null>;
 
 const ORG = 'test-org';
 const OTHER_ORG = 'other-org';
@@ -39,7 +36,6 @@ beforeAll(async () => {
     sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
     otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
-    orgOfLease = createOrgOfLease({ sql });
 });
 
 /**

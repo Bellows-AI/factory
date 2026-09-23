@@ -1,5 +1,5 @@
 import type { FastifyReply } from 'fastify';
-import type { JobStatus, RuntimeVitals, ServiceStatus } from '../db/job-store.js';
+import type { JobStatus, RuntimeVitals, ServiceStatus } from '../db/job-store-types.js';
 import { bad, badSegment } from './helpers.js';
 
 /**
@@ -29,25 +29,8 @@ export const BODY_LIMIT = BODY_LIMIT_KIB * BYTES_PER_KIB;
  * record, and the rows it would be validated against come and go with a PUT. A label that matches
  * no current row remains unresolved on the claim and is failed explicitly by the driver. A length cap would dead-end an executor name
  * the selection route accepted, so neither field has one here either — the body limit bounds them
- * the way it bounds the command. See docs/jobs.md.
+ * the way it bounds the command. The repo rule is `repoReason` in `helpers.ts`. See docs/jobs.md.
  */
-const REPO_SEGMENT_LIMIT = 100;
-
-/** Exported for the tasks route, whose `repo` filter is the same label under the same rules. */
-export function repoReason(value: string): string | null {
-    const parts = value.split('/');
-    if (parts.length !== 2) return 'repo must be owner/name';
-    for (const [label, part] of [
-        ['owner', parts[0]!],
-        ['name', parts[1]!],
-    ] as const) {
-        if (part.length > REPO_SEGMENT_LIMIT) return `${label} exceeds ${REPO_SEGMENT_LIMIT} characters`;
-        const reason = badSegment(label, part);
-        if (reason) return reason;
-    }
-    return null;
-}
-
 export function executorReason(value: string): string | null {
     return badSegment('executor', value);
 }

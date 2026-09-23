@@ -1,5 +1,5 @@
 import type { BoardJob } from './board.js';
-import { claimEnv } from './docker.js';
+import { claimEnv } from './claim.js';
 import {
     claimBody,
     claimPath,

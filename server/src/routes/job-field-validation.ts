@@ -1,5 +1,5 @@
 import type { FastifyReply } from 'fastify';
-import type { GateReport, JobOutcome, JobStatus } from '../db/job-store.js';
+import type { GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
     type WorkflowDefinition,
@@ -30,8 +30,8 @@ import {
     executorReason,
     leaseSeconds,
     notFoundJob,
-    repoReason,
 } from './job-limits.js';
+import { repoReason } from './helpers.js';
 
 /**
  * Field-by-field body/query validation for the job routes — everything that turns an untrusted

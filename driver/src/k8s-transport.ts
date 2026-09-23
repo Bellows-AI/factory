@@ -1,15 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { DriverConfig } from './config.js';
-import { OUTPUT_LIMIT } from './docker.js';
-import type { RuntimeSample, ServiceStatus } from './docker.js';
+import { OUTPUT_LIMIT } from './runner.js';
+import type { ServiceStatus } from './board.js';
+import type { RuntimeSample } from './runner.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
  * `K8sJobStatus`, `K8sPodList`, `K8sClaim`), the real transport (`inClusterRequest`), and the
  * protocol constants and status thresholds every other `k8s-*.ts` file reads by import — the
  * transport is injected, the way `createBoard` takes `fetch`, so nothing here needs a cluster to
- * test. See `k8s.ts` for the full module map.
+ * test. See docs/kubernetes.md for the full module map.
  */
 
 /** A uuid, and nothing else — asserted before an id is interpolated into an API path or a pod name. */

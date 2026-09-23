@@ -1,46 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claudeTurnsScript } from '../src/docker.js';
-import { CONTAINER_GONE } from '../src/exec-codes.js';
+import { claudeTurnsScript } from '../src/container-scripts.js';
 import { lookupHelper } from '../src/helpers.js';
 import type { HelperPlan } from '../src/helpers.js';
-import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import { POLL_MAX_CONSECUTIVE_FAILURES, parseServicePods, parsePodMetrics } from '../src/k8s-transport.js';
 import {
-    POLL_MAX_CONSECUTIVE_FAILURES,
     bellowsJobSpec,
-    claimName,
     claudeTurnsJobName,
     claudeTurnsJobSpec,
-    createKubernetesGateManager,
-    createKubernetesRunner,
     envBodyToData,
     gateEnvSecretName,
-    gateJobName,
     gateJobSpec,
+    jobsPath,
+    opencodeReadoutJobName,
+    opencodeReadoutJobSpec,
+    runnerJobName,
+    runnerJobSpec,
+    secretName,
+} from '../src/k8s-podspec.js';
+import {
+    claimName,
     helperEnvSecretName,
     helperJobName,
     helperJobSpec,
     jobPath,
-    jobsPath,
-    opencodeReadoutJobName,
-    opencodeReadoutJobSpec,
-    parseServicePods,
-    parsePodMetrics,
     publishEnvSecretName,
     publishStepJobName,
     publishStepJobSpec,
-    runnerJobName,
-    runnerJobSpec,
     reclaimJobName,
     reclaimJobSpec,
-    secretName,
     serviceDnsSpec,
     servicePodSpec,
     syncEnvSecretName,
     syncJobName,
     syncJobSpec,
-} from '../src/k8s.js';
+} from '../src/k8s-auxspec.js';
+import { createKubernetesGateManager } from '../src/k8s-gates.js';
+import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
@@ -481,10 +479,6 @@ interface Call {
     path: string;
     body?: unknown;
 }
-
-type Route = (path: string, body?: unknown) => K8sResponse | Promise<K8sResponse>;
-
-const ANSWER: Record<string, Route> = {};
 
 const namespace = 'factory';
 
@@ -3192,7 +3186,6 @@ describe('the kubernetes runner', () => {
      * attempt-scoped Job and standing down — never by touching anything of the winner's.
      */
     it('stands down and removes its own Job when the claim is taken over between the Job POST and the verify', async () => {
-        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
         const claimPath = claimPathFor(job.id);
         const calls: Call[] = [];
         let jobPosted = false;
@@ -3952,7 +3945,6 @@ describe('the kubernetes runner', () => {
      * must not turn a no-op release into a delete of a claim this attempt does not hold.
      */
     it('leaves a taken-over claim untouched when the stand-down deletes nothing', async () => {
-        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
         const claimPath = claimPathFor(job.id);
         const calls: Call[] = [];
         let jobPosted = false;
@@ -5014,7 +5006,6 @@ describe('the service pod and DNS specs', () => {
 });
 
 describe('the kubernetes services flow', () => {
-    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
     const BELLOWS_OUTPUT =
         '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
 
@@ -5157,7 +5148,7 @@ describe('the kubernetes services flow', () => {
             if (path.startsWith(`${jobsPath(namespace)}/`) && decodeURIComponent(path).includes('factory-bellows')) {
                 return Promise.resolve({ status: 404, body: '{}' });
             }
-            return servicesFake().request(method, path, body);
+            return request(method, path, body);
         };
         await expect(servicesRunner(failing).run(job, { id: SESSION, resume: false })).rejects.toThrow();
     });
@@ -5550,7 +5541,7 @@ describe('the kubernetes runner under opencode', () => {
                     body: scrapeRuns < 3 ? '' : JSON.stringify({ id: 'ses_late', finish: 'stop' }),
                 });
             }
-            return opencodeFake().request(method, path, body);
+            return request(method, path, body);
         };
         const outcome = await ocRunner(flaky).run(opencodeJob, null);
         expect(scrapeRuns).toBe(3);

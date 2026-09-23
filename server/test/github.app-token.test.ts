@@ -316,7 +316,7 @@ describe('the app slug', () => {
     it('does not cache a failure', async () => {
         // Called from the sign-in path (0 installations → install page); a transient miss must
         // not be remembered, or every sign-in for the next process lifetime would fail.
-        const { calls, fetchFn } = stubFetch({ app: { slug: 'acme-factory' } });
+        const { fetchFn } = stubFetch({ app: { slug: 'acme-factory' } });
         let appCalls = 0;
         const failing = (async (input: string | URL | Request, init?: RequestInit) => {
             if (String(input).endsWith('/app') && appCalls++ === 0) return new Response('nope', { status: 502 });

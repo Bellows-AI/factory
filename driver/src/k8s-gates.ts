@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { reportTail } from './docker.js';
+import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
 import { jobPath, podsPath } from './k8s-auxspec.js';

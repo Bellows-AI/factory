@@ -1,11 +1,6 @@
 import type { Sql, TransactionSql } from 'postgres';
-import {
-    type WorkflowDefinition,
-    type WorkflowParam,
-    WORKFLOW_NAME,
-    SCOPE_SEGMENT,
-    validateDefinition,
-} from './workflow-schema.js';
+import { type WorkflowDefinition, type WorkflowParam, WORKFLOW_NAME, SCOPE_SEGMENT } from './workflow-schema.js';
+import { validateDefinition } from './workflow-schema-validate.js';
 import { compileDefinition } from './workflow-blocks/index.js';
 import type { CompileRefusal } from './workflow-blocks/types.js';
 import { BASE_WORKFLOW } from './workflow-templates.js';

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { EngineRow } from '../src/db/workflow-engine.js';
 import { nextTransition } from '../src/db/workflow-engine.js';
 import { BASE_WORKFLOW } from '../src/db/workflow-templates.js';
-import { checkWorkflowParams, validateDefinition } from '../src/db/workflow-schema.js';
+import { checkWorkflowParams } from '../src/db/workflow-schema.js';
+import { validateDefinition } from '../src/db/workflow-schema-validate.js';
 import { done, gate, row } from './workflow-engine-fixtures.js';
 
 describe('the base workflow walkthrough', () => {

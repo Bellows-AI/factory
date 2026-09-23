@@ -1,9 +1,12 @@
 import { createBoard } from './board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
-import { createDockerRunner } from './docker.js';
+import { createDockerRunner } from './docker-runner.js';
 import { createGateManager, createGateServer } from './gates.js';
-import { createKubernetesGateManager, createKubernetesRunner, inClusterRequest } from './k8s.js';
-import { createLoop, type GateStack } from './loop.js';
+import { createKubernetesGateManager } from './k8s-gates.js';
+import { createKubernetesRunner } from './k8s-runner.js';
+import { inClusterRequest } from './k8s-transport.js';
+import { createLoop } from './loop.js';
+import type { GateStack } from './loop-types.js';
 
 const config = loadDriverConfig(process.env);
 

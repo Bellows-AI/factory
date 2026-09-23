@@ -3,7 +3,7 @@ import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
 import { LOCAL_ORG_ID, resolveConfig, type GitHubConfig } from './config.js';
-import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store.js';
+import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { createOrgRegistry } from './orgs.js';
 import { createPostgresStore } from './telemetry/store.js';

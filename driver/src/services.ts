@@ -12,9 +12,9 @@
  * therefore COPIED from docker.ts rather than shared — the same package-internal copy the
  * server's own rules get when they cross a boundary this file must not depend on.
  */
-import { readFileSync } from 'node:fs';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
+import { containerScript } from './container-scripts.js';
 
 /**
  * The readout's shell script: a real file (scripts/bellows-read.sh) read at load time and
@@ -24,7 +24,7 @@ import { executorImage, type DriverConfig } from './config.js';
  * copies the directory — forgetting THAT copy fails only in the container, the
  * server/migrations trap.
  */
-export const bellowsReadScript: string = readFileSync(new URL('./scripts/bellows-read.sh', import.meta.url), 'utf8');
+export const bellowsReadScript: string = containerScript('bellows-read.sh');
 
 /** One requested service, parsed. `environment` preserves the file's order. */
 export interface ServiceSpec {

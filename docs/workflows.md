@@ -1,7 +1,7 @@
 # Workflows
 
 **Read this before touching** `server/src/db/workflow-schema.ts`, `workflow-engine.ts`,
-`workflow-store.ts`, the workflow paths in `job-store.ts`, `server/src/routes/workflows.ts`, the
+`workflow-store.ts`, the workflow paths in `job-store-worker.ts` and `job-store-claim.ts`, `server/src/routes/workflows.ts`, the
 `workflow` field on `POST /api/jobs`, the driver's publish gate, or `027_workflows.sql`. Each
 decision below looks like it could be simplified; most are guarded by a test that fails obscurely.
 
@@ -345,9 +345,9 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The store: CRUD, scope visibility, seed, block compilation at create | `server/src/db/workflow-store.ts` |
 | Templates and the base `fix-issue` workflow | `server/src/db/workflow-templates.ts` |
 | Columns (027, 030, 033) and the freeze-at-create snapshot | `server/migrations/027_workflows.sql`, `server/migrations/030_workflow_params.sql`, `server/migrations/033_job_workflow_name.sql` |
-| The transition in the verdict's transaction | `job-store.ts` `complete()` |
-| The primary-session follow-up copy | `job-store.ts` `createFollowUp()` |
-| The claim's `publish` flag and the gates opt-out | `job-store.ts` `claim()` |
+| The transition in the verdict's transaction | `job-store-worker.ts` `completeJob()` → `runWorkflowTransition()` |
+| The primary-session follow-up copy | `job-store-actions.ts` `createFollowUpRow()` |
+| The claim's `publish` flag and the gates opt-out | `job-store-claim.ts` `resolveClaimPublish()` |
 | The driver's one publish gate | `driver/src/loop.ts` |
 | CRUD routes and `POST /api/jobs` resolution | `server/src/routes/workflows.ts`, `routes/jobs.ts` |
 | The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/task-composer.ts`, `web/src/api/useWorkflows.ts` |

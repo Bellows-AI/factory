@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { gateEnvArgs, gateEnvContainerName, gateExecArgs, reportTail } from './docker.js';
+import { gateEnvArgs, gateEnvContainerName, gateExecArgs } from './docker.js';
+import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 
 const run = promisify(execFile);

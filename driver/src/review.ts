@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { containerScript as script } from './container-scripts.js';
 
 /**
  * The deterministic GitHub review helpers: the collection and reply script VALUES plus the pure
@@ -14,8 +14,6 @@ import { readFileSync } from 'node:fs';
  * and hand the reply script a bounded plan. This issue ships the helpers only — nothing wires
  * to this module yet.
  */
-
-const script = (name: string): string => readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
 
 export const reviewCollectScript = script('review-collect.cjs');
 export const reviewReplyScript = script('review-reply.cjs');

@@ -51,9 +51,6 @@ const INSTALLATION_REPOS_TTL_MINUTES = 10;
 
 export const INSTALLATION_REPOS_TTL_MS = INSTALLATION_REPOS_TTL_MINUTES * SECONDS_PER_MINUTE * MS_PER_SECOND;
 
-// Re-exported so the test helpers keep one import site.
-export { fullName };
-
 export interface RepoSourceDeps {
     /** Absent under the code-only `none` arm (the offline tooling), where `stored` answers instead. */
     readonly client?: GitHubAppClient | undefined;

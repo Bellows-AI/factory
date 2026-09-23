@@ -239,11 +239,6 @@ export function tailMatches(output: string | null, marker: string): boolean {
     return last !== undefined && last === marker.trim();
 }
 
-// The strict validator and every section parser it composes: split out to
-// workflow-schema-validate.ts (AGENTS.md's file-length budget), re-exported here so every
-// existing import of `./workflow-schema.js` keeps resolving the same name.
-export { validateDefinition } from './workflow-schema-validate.js';
-
 /** A named node of a definition, or undefined. */
 export function nodeOf(definition: WorkflowDefinition, name: string): WorkflowNode | undefined {
     return definition.nodes.find((node) => node.name === name);

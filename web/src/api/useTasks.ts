@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import type { DefaultWorkflowSteps } from '../task-composer.js';
+import type { DefaultWorkflowSteps } from './useDefaultWorkflowSettings.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 

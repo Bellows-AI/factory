@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Board, BoardJob, LeaseState } from './board.js';
-import type { RunOutcome, RunSession } from './docker.js';
+import type { RunOutcome, RunSession } from './runner.js';
 import type { HelperFailureReport } from './helpers.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';

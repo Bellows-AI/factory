@@ -1,4 +1,4 @@
-import type { GateReport } from '../src/db/job-store.js';
+import type { GateReport } from '../src/db/job-store-types.js';
 import type { CompletedRun, EngineRow } from '../src/db/workflow-engine.js';
 
 /**

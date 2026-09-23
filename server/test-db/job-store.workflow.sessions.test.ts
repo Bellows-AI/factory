@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore, type Claim, type JobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/job-store.js';
+import type { Claim } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { ParamValues, WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
@@ -135,7 +137,7 @@ describe.skipIf(!enabled)('workflow execution: sessions and publish', () => {
     });
 
     it("copies the primary session — not the last row's — onto a user follow-up", async () => {
-        const root = await queueWorkflowJob(walk);
+        await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
         await store.session(first.id, first.leaseToken, 'sess-primary', null);
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });

@@ -5,7 +5,8 @@ import {
     type DefaultWorkflowSettingsStore,
 } from './db/default-workflow-settings-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
-import { createJobStore, type JobStore } from './db/job-store.js';
+import { createJobStore } from './db/job-store.js';
+import type { JobStore } from './db/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
 import { createUserRepoStore, type UserRepoStore } from './db/user-repo-store.js';

@@ -1,4 +1,5 @@
 export { HOUR } from './config.js';
+export { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, MAX_ENV_VARS_PER_SCOPE, RESERVED_ENV_NAMES } from './env.js';
 export type { ExecutorType } from './executors.js';
 export { EXECUTOR_TYPES } from './executors.js';
 export { dayKey, dayStart, isoWeekKey, ratio, weekStart } from './metrics.js';

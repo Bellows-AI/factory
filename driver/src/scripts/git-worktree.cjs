@@ -204,7 +204,7 @@ try {
         git('worktree', 'prune');
         try {
             git('worktree', 'add', wt, branch);
-        } catch (e) {
+        } catch {
             git('worktree', 'add', '-b', branch, wt, 'origin/' + def);
         }
     }

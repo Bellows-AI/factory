@@ -59,8 +59,8 @@
             },
             "correctness": {
                 "noUnusedFunctionParameters": "off",
-                "noUnusedImports": "off",
-                "noUnusedVariables": "off",
+                "noUnusedImports": "error",
+                "noUnusedVariables": "error",
                 "noUnsafeOptionalChaining": "off",
                 "useExhaustiveDependencies": "off",
                 "useJsxKeyInIterable": "off"

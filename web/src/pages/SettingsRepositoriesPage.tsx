@@ -17,7 +17,6 @@ import {
     repoKey,
     selectionPayload,
     selectionSaveState,
-    seedSelection,
     toggleSelection,
 } from '../components/repository-setup.js';
 import type { WorkspaceState } from '../components/repository-setup.js';
@@ -274,7 +273,7 @@ export function SettingsRepositoriesPage() {
     const guard = useUnsavedChanges();
     const { chosen, baseline, savedNote, failure, dirty, onToggle, onDeselectAbsent, saveSelection } =
         useRepositorySelectionDraft(workspace);
-    const { configured, detailDirty, setDetailDirty, headingRef, configure } = useConfiguredRepoDetail(guard);
+    const { configured, setDetailDirty, headingRef, configure } = useConfiguredRepoDetail(guard);
     const view = deriveRepositoryPageView({ workspace, repos, env, chosen, baseline, search, configured });
 
     return (

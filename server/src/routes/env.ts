@@ -1,3 +1,10 @@
+import {
+    ENV_NAME,
+    ENV_NAME_LIMIT,
+    ENV_VALUE_LIMIT,
+    MAX_ENV_VARS_PER_SCOPE,
+    RESERVED_ENV_NAMES,
+} from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
@@ -17,54 +24,9 @@ import type { OrgRegistry, OrgRuntime } from '../orgs.js';
  * seeing — or re-sending — the secrets it holds. An omitted name still deletes.
  */
 
-/** A bound on one scope's list, like MAX_EXECUTORS_PER_USER: a ceiling, not a policy. */
-export const MAX_ENV_VARS_PER_SCOPE = 100;
-
-/**
- * The names the driver's own contract with the runner claims. A claim env named WORKDIR would be
- * two different paths to one runner's working directory; TRUST_WORKDIR is how a Remote Control
- * runner is told its checkout is trusted; CRED_HELPER is the credential-helper CODE the sync
- * fetch runs — a member value there would be member-controlled code executed by the sync
- * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
- * starting claims into restore mode, silently skipping the fetch and rebase (issue #58). The
- * three reporter names steer the branch reporter — where it posts, which
- * attempt it speaks for, and which session it claims — and a member value in any of them is a
- * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the headless
- * transcript store lives: the driver composes it from the claim (transcriptDir in
- * driver/src/docker.ts), and a member value would steer transcripts — and, through the runner
- * entrypoint's redirect, the CLI's whole config dir — somewhere else. `OPENCODE_CONFIG_CONTENT` and
- * `CLAUDE_CODE_CONFIG_CONTENT` are not the driver's names to reserve but the BOARD's: the claim
- * synthesizes each from the author's own executor row (docs/workspace.md), and a member env var of
- * the same name would be silently shadowed by the synthesized value — refusing the PUT says so
- * instead. Reserved at the route; the driver's list (RESERVED_ENV_NAMES in driver/src/docker.ts —
- * copied, not imported, per that package's zero-dependency rule) deliberately does NOT carry
- * either, because the synthesized value must flow `claimEnv` to reach the runner.
- */
-export const RESERVED_ENV_NAMES = [
-    'WORKDIR',
-    'TRUST_WORKDIR',
-    'BELLOWS_GATE_URL',
-    'BELLOWS_GATE_TOKEN',
-    'CRED_HELPER',
-    'RESTORE',
-    'FACTORY_TRANSCRIPT_DIR',
-    'FACTORY_STATS_URL',
-    'RUNNER_JOB_ID',
-    'RUNNER_LEASE_TOKEN',
-    'BELLOWS_SESSION_ID',
-    'OPENCODE_CONFIG_CONTENT',
-    'CLAUDE_CODE_CONFIG_CONTENT',
-] as const;
-
-/**
- * A per-value ceiling. Far past any real variable, and the bound that keeps one value from being
- * an essay. Newlines are refused outright: the driver delivers values in a docker `--env-file`,
- * which is line-structured and has no quoting — a newline would arrive in the runner truncated,
- * with no error anywhere.
- */
+// The scope cap, reserved names and name/value bounds are core's (core/src/env.ts), shared with
+// the web editors.
 const BYTES_PER_KIB = 1024;
-const VALUE_LIMIT_KIB = 32;
-const VALUE_LIMIT = VALUE_LIMIT_KIB * BYTES_PER_KIB;
 
 /** JSON escaping's worst case: up to six bytes per byte of a control character. */
 const JSON_ESCAPE_WORST_CASE = 6;
@@ -80,17 +42,9 @@ const BODY_ENVELOPE_SLACK_KIB = 64;
  * a raw 413 and no code, which is the one failure this constant exists to prevent.
  */
 const BODY_LIMIT =
-    MAX_ENV_VARS_PER_SCOPE * (VALUE_LIMIT * JSON_ESCAPE_WORST_CASE + ENTRY_STRUCTURE_OVERHEAD) +
+    MAX_ENV_VARS_PER_SCOPE * (ENV_VALUE_LIMIT * JSON_ESCAPE_WORST_CASE + ENTRY_STRUCTURE_OVERHEAD) +
     BODY_ENVELOPE_SLACK_KIB * BYTES_PER_KIB;
 
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/**
- * A per-name ceiling, under the 2048-per-entry structure allowance the BODY_LIMIT arithmetic
- * assumes — and far under the kernel's per-environment-string limit, which a name past it would
- * turn every later `docker run` for this scope into an E2BIG.
- */
-const NAME_LIMIT = 255;
 /** How much of an over-long name the refusal message quotes back — a name, not a paragraph. */
 const NAME_PREVIEW_LIMIT = 16;
 
@@ -100,8 +54,8 @@ function parseVarEntry(entry: unknown): EnvVarEntry | string {
     if (typeof item?.name !== 'string' || typeof item?.isSecret !== 'boolean') {
         return 'each entry must be { name: string, value: string | null, isSecret: boolean }';
     }
-    if (item.name.length > NAME_LIMIT) {
-        return `name "${item.name.slice(0, NAME_PREVIEW_LIMIT)}…" exceeds ${NAME_LIMIT} characters`;
+    if (item.name.length > ENV_NAME_LIMIT) {
+        return `name "${item.name.slice(0, NAME_PREVIEW_LIMIT)}…" exceeds ${ENV_NAME_LIMIT} characters`;
     }
     if (typeof item.value !== 'string' && item.value !== null) {
         return `value for "${item.name}" must be a string or null`;
@@ -109,10 +63,10 @@ function parseVarEntry(entry: unknown): EnvVarEntry | string {
     if (!ENV_NAME.test(item.name)) {
         return `"${item.name}" is not a legal environment variable name`;
     }
-    if ((RESERVED_ENV_NAMES as readonly string[]).includes(item.name)) {
+    if (RESERVED_ENV_NAMES.includes(item.name)) {
         return `"${item.name}" is reserved by the runner`;
     }
-    if (item.value !== null && (item.value.length > VALUE_LIMIT || /[\r\n]/.test(item.value))) {
+    if (item.value !== null && (item.value.length > ENV_VALUE_LIMIT || /[\r\n]/.test(item.value))) {
         return `value for "${item.name}" exceeds the limit or contains a newline`;
     }
     // A null value is the keep-it marker, and only a secret can keep: a readable value always

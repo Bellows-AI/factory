@@ -33,10 +33,10 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping, per-repo rendering | [docs/repos.md](docs/repos.md) |
 | `config.ts`, compose env blocks, `.env.example` | [docs/configuration.md](docs/configuration.md) |
 | `server/src/workspace/*`, `011_user_workspace.sql`, `ORG_WORKSPACE_ROOT`, the `git` install in the runtime image | [docs/workspace.md](docs/workspace.md) |
-| `driver/src/k8s.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
+| `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh`, `scripts/test-k8s.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
-| `server/src/routes/jobs.ts`, `db/job-store.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
+| `server/src/routes/jobs.ts`, `db/job-store*.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
 | `driver/src/helpers.ts`, `k8s-helper-runner.ts`, `loop-helpers.ts`, `Runner.runHelper`, `BoardJob.helperPlans` | [docs/jobs.md](docs/jobs.md) ("Block-helper steps") |
 | `workflow`, `027_workflows.sql`, `db/workflow-*.ts`, `routes/workflows.ts`, the claim's `publish` flag | [docs/workflows.md](docs/workflows.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, the driver's env forwarding, the `/env` page | [docs/env.md](docs/env.md) |
@@ -176,7 +176,7 @@ lines, `es5` trailing commas; `core/test/biome.test.ts` pins all of it. Recommen
 deliberate carve-outs in `biome.json`, added because they fire on existing code that the
 enablement PR chose not to churn: non-null assertions are the house style under
 `noUncheckedIndexedAccess`, index keys drive chart ticks, bracket access preserves raw-JSON
-contracts (`otlp.ts` reads OTEL payloads field by field), `stripAnsi` in `driver/src/docker.ts`
+contracts (`otlp.ts` reads OTEL payloads field by field), `stripAnsi` in `driver/src/runner.ts`
 matches control characters on purpose, and the `.cjs` container scripts carry their own quirks.
 Every carve-out is a re-enable candidate: turn a rule back on only with the
 source change that retires its hits. Import sorting (assist) and CSS formatting are off; neither

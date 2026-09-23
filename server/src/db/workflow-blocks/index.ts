@@ -15,8 +15,8 @@ import {
     type BlockConfigValue,
     type BlockNode,
     type WorkflowDefinition,
-    validateDefinition,
 } from '../workflow-schema.js';
+import { validateDefinition } from '../workflow-schema-validate.js';
 import { GITHUB_REVIEW_RECONCILE } from './github-review-reconcile.js';
 import { MERGE_CONFLICT_AUTOFIX } from './merge-conflict-autofix.js';
 import type { BlockConfigField, BlockDescriptor, BlockRegistry, CompileCheck, CompileRefusal } from './types.js';

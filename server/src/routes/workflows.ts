@@ -4,7 +4,8 @@ import type { OrgRegistry } from '../orgs.js';
 import type { WorkflowStore, WorkflowSummary } from '../db/workflow-store.js';
 import type { Caller } from '../auth/store.js';
 import { blockCatalog } from '../db/workflow-blocks/index.js';
-import { UUID, bad, badSegment, body } from './helpers.js';
+import { bad, body, repoReason } from './helpers.js';
+import { UUID } from '../config.js';
 
 export interface WorkflowRouteDeps {
     /**
@@ -28,29 +29,6 @@ const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
-
-const REPO_SEGMENT_LIMIT = 100;
-
-/**
- * The repository context a list or a repo-scoped create names: `owner/name`, the same label a job
- * row carries. Shape only — the same discipline as the job's repo label; a repo nobody can see
- * simply has no workflows.
- */
-function repoReason(value: string): string | null {
-    const parts = value.split('/');
-    if (parts.length !== 2) return 'repo must be owner/name';
-    for (const [label, part] of [
-        ['owner', parts[0]!],
-        ['name', parts[1]!],
-    ] as const) {
-        if (part.length === 0 || part.length > REPO_SEGMENT_LIMIT) {
-            return `${label} must be 1..${REPO_SEGMENT_LIMIT} characters`;
-        }
-        const reason = badSegment(label, part);
-        if (reason) return reason;
-    }
-    return null;
-}
 
 /** No store behind the caller's org — every route here refuses the same way. */
 function noStore(reply: FastifyReply) {

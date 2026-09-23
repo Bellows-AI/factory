@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-    checkWorkflowParams,
-    interpolate,
-    INTERP_TAIL_LIMIT,
-    TRUNCATION_MARKER,
-    validateDefinition,
-} from '../src/db/workflow-schema.js';
+import { checkWorkflowParams, interpolate, INTERP_TAIL_LIMIT, TRUNCATION_MARKER } from '../src/db/workflow-schema.js';
+import { validateDefinition } from '../src/db/workflow-schema-validate.js';
 
 describe('parameter guidance metadata', () => {
     const nodes = [{ name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true }];

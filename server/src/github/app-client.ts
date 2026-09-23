@@ -81,27 +81,6 @@ export function createGitHubAppClient(
     };
 
     /**
-     * The standard page walk: 100 a page, a short page ends it (a partial batch is GitHub saying
-     * "this is the last one", so asking again would spend a rate-limit point to learn nothing),
-     * and exhausting the ceiling throws rather than returning a prefix. A caller that persists the
-     * result — a roster, a team's repos — would otherwise treat the first 10,000 entries as the
-     * whole answer and quietly de-scope everyone it never saw.
-     */
-    const pages = async function* <T>(path: string): AsyncGenerator<T[]> {
-        for (let page = 1; page <= MAX_PAGES; page += 1) {
-            const batch = (await call(
-                `${path}${path.includes('?') ? '&' : '?'}per_page=${PAGE_SIZE}&page=${page}`
-            )) as T[];
-            if (batch.length === 0) return;
-            yield batch;
-            if (batch.length < PAGE_SIZE) return;
-        }
-        throw new GitHubAppError(
-            `GET ${path}: more than ${MAX_PAGES * PAGE_SIZE} entries — refusing a truncated enumeration`
-        );
-    };
-
-    /**
      * Skipped rather than thrown: one malformed entry must not cost the whole list, and there is
      * nothing an operator could do about it from here anyway.
      */

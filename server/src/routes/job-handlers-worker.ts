@@ -12,7 +12,8 @@ import {
     validateGates,
     validateRepoField,
 } from './job-field-validation.js';
-import { UUID, bad, body, guard } from './helpers.js';
+import { bad, body, guard } from './helpers.js';
+import { UUID } from '../config.js';
 import {
     HTTP_CREATED,
     HTTP_NOT_FOUND,

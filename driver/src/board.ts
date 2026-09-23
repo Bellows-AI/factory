@@ -1,6 +1,17 @@
-import type { ServiceStatus } from './docker.js';
 import { isExecutorType, type ExecutorType } from './config.js';
 import type { HelperPlan } from './helpers.js';
+
+/**
+ * One declared service of the attempt's `.bellows.yaml`, as the platform reports it right now:
+ * the declared name (the DNS name inside the job), the image, and a lowercase state word —
+ * docker's container State, or the pod phase under kubernetes. Platform-native on purpose:
+ * `restarting` and `pending` carry real, platform-specific meaning the panel renders verbatim.
+ */
+export interface ServiceStatus {
+    name: string;
+    image: string;
+    state: string;
+}
 
 export interface BoardJob {
     id: string;

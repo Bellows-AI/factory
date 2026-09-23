@@ -1,64 +1,28 @@
+/**
+ * The docker runner's daemon plumbing and per-step helpers, beside `createDockerRunner` in
+ * docker-runner.ts: the `ExecDocker` seam every daemon call goes through (so a test can stand in
+ * for the daemon), error-detail and listing helpers, the worktree-sync argv, the aux-services
+ * setup, the `docker run` verdict, and the killed-job guards around the env-file write.
+ */
+
 import { execFile, spawn } from 'node:child_process';
-import { rm, writeFile } from 'node:fs/promises';
+import { writeFile, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
-import { executorImage, type DriverConfig } from './config.js';
+import { workspacePath, claimCarriesGithubToken } from './claim.js';
+import { type DriverConfig, executorImage } from './config.js';
+import { workspacesMountArgs, containerName } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
+import type { RunOutcome } from './runner.js';
 import {
-    CREDENTIAL_HELPER,
-    gitWorktreeRemoveScript,
-    gitWorktreeScript,
-    publishCheckout,
-    publishFailed,
-    repoPath,
-    withPublishToken,
-    worktreeBranch,
-    worktreeDir,
-    type PublishResult,
-    type ReclaimResult,
-    type SyncResult,
-} from './publish.js';
-import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBellowsSections } from './services.js';
-import type { ServiceSpec } from './services.js';
-import {
-    CLOSE_READ_DEADLINE_MS,
-    cacheCollapse,
-    claimCarriesGithubToken,
-    claimContinuesSession,
-    claimEnv,
-    composeRuntimeSample,
-    containerName,
-    dockerArgs,
-    envFileBody,
-    envFilePath,
-    claudeTurnsArgs,
-    opencodeCacheProbeArgs,
-    opencodeSessionReadoutArgs,
-    parseClaudeCloseRead,
-    parseDockerServicePs,
-    parseDockerStats,
-    parseOpencodeCacheProbe,
-    parseOpencodeRunOutcome,
-    parseRemoteSessionId,
-    readsAgentTurns,
-    remoteSessionArgs,
-    reportTail,
-    workspacePath,
-    workspacesMountArgs,
-    type OpencodeRunOutcome,
-    type RunOutcome,
-    type Runner,
-    type RunSession,
-} from './docker.js';
-
-/**
- * The docker executor's stateful runner: `createDockerRunner` and everything it alone needs — the
- * per-attempt fences and teardowns, the aux-services setup, the close-time reads, the spawn and
- * event wiring. Split from docker.ts (AGENTS.md's file-length budget) along the seam that was
- * already there: docker.ts keeps the pure, PINNED argv builders and parsers this module (and the
- * kubernetes runner, and the tests) import; this module is the one thing that actually holds a
- * docker daemon connection.
- */
+    readBellowsArgs,
+    type ServiceSpec,
+    collectServices,
+    splitBellowsSections,
+    networkName,
+    serviceRunArgs,
+} from './services.js';
 
 export const run = promisify(execFile);
 
@@ -68,8 +32,7 @@ export type Spawn = typeof spawn;
  * Everything the runner does through the daemon other than the `docker run` itself — the fence,
  * the post-run inspect and the cleanup — goes through this one seam, so a test can stand in for
  * the daemon instead of shelling out to it.
- */
-/**
+ *
  * One `docker` invocation off the hot paths. `timeout` (ms) bounds the whole exec — the process
  * is killed and the promise rejects — which is what keeps a close-time read from holding a
  * runner's verdict open forever when the daemon stalls.
@@ -317,29 +280,6 @@ export async function dockerRunVerdict(
 }
 
 /**
- * One cache-watch tick: probes the run's live opencode session and kills the job once
- * `cacheCollapse` says the provider has stopped serving cache hits. A probe that fails once (the
- * daemon is busy, the session is not there yet) just waits for the next tick — the trigger itself
- * needs consecutive damning turns, so no single answer is fatal. A no-op once `cacheLost` is
- * already set: the kill already fired, and there is nothing left to detect.
- */
-export async function tickCacheWatch(
-    ctx: { execDocker: ExecDocker; config: DriverConfig; job: BoardJob; kill: (job: BoardJob) => Promise<void> },
-    state: { cacheLost: string | null }
-): Promise<void> {
-    const probe = await ctx
-        .execDocker(opencodeCacheProbeArgs(ctx.config, ctx.job))
-        .then((read) => parseOpencodeCacheProbe(read.stdout))
-        .catch(() => null);
-    if (!probe || !probe.sessionId || state.cacheLost) return;
-    const collapse = cacheCollapse(probe.turns);
-    if (collapse) {
-        state.cacheLost = collapse;
-        void ctx.kill(ctx.job);
-    }
-}
-
-/**
  * Throws when this attempt's lease has already been killed. Checked after every awaited setup
  * step so a dying attempt stops CREATING resources over a lease it no longer holds — see
  * setupJobServices and run() for why the abort is deliberately teardown-free.
@@ -370,125 +310,4 @@ export async function assertNotKilledAfterEnvWrite(
 export interface RunnerFiles {
     writeFile: typeof writeFile;
     rm: typeof rm;
-}
-
-/** What every close-time read needs: how to reach the daemon, and which run it is reading. */
-export interface CloseReadContext {
-    execDocker: ExecDocker;
-    config: DriverConfig;
-    job: BoardJob;
-    startedAt: string;
-}
-
-/**
- * Retries opencode's own close-time session readout up to OPENCODE_SESSION_READOUT_RETRIES
- * times, half a second apart. NOT single-shot, and not only when the container fails: the CLI
- * exited a moment ago, and its session database may still be mid-checkpoint — a read-only open
- * of a WAL that needs recovery fails outright, then succeeds milliseconds later. The readout
- * script answers one of three ways — a session line, an error line, or nothing — and ALL but the
- * first read as "no session yet", so the retries fire on the session being missing, whatever the
- * reason. `reason` carries the LATEST non-null error seen across attempts, for when every one of
- * them came up empty.
- */
-const OPENCODE_SESSION_READOUT_RETRIES = 3;
-const OPENCODE_SESSION_READOUT_RETRY_DELAY_MS = 500;
-
-async function readOpencodeSessionWithRetries(
-    ctx: CloseReadContext
-): Promise<{ scraped: OpencodeRunOutcome; reason: string | null }> {
-    let scraped: OpencodeRunOutcome = {
-        sessionId: null,
-        finishReason: null,
-        contextTokens: null,
-        costUsd: null,
-        agentTurns: null,
-        summary: null,
-        error: null,
-    };
-    let reason: string | null = null;
-    for (let attempt = 0; attempt < OPENCODE_SESSION_READOUT_RETRIES && !scraped.sessionId; attempt += 1) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, OPENCODE_SESSION_READOUT_RETRY_DELAY_MS));
-        scraped = await ctx.execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt)).then(
-            (read) => parseOpencodeRunOutcome(read.stdout),
-            (err: Error): OpencodeRunOutcome => ({
-                sessionId: null,
-                finishReason: null,
-                contextTokens: null,
-                costUsd: null,
-                agentTurns: null,
-                summary: null,
-                error: `the readout container failed: ${err.message}`,
-            })
-        );
-        reason = scraped.error ?? reason;
-    }
-    return { scraped, reason };
-}
-
-/**
- * Fills in what opencode's own exit code cannot answer: the session id the loop had none to
- * report at spawn, the finish reason (a zero exit with a finish reason that is not `stop` is the
- * model's context limit, or an abort, cutting a task short), and the context stats — all read
- * from the database the run just closed. A failed read is not a failed run: it costs the task
- * its follow-ups and this verdict-check, never its verdict.
- */
-async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext): Promise<void> {
-    const { scraped, reason } = await readOpencodeSessionWithRetries(ctx);
-    if (!scraped.sessionId) {
-        outcome.readoutError = reason ?? 'the readout answered nothing (no session in the database)';
-        return;
-    }
-    outcome.sessionId = scraped.sessionId;
-    if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
-    if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
-    if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
-    // The readout's turn count rides the same line: assistant response cycles of the root
-    // session, already scoped by the parent_id-is-null selection the script makes.
-    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
-    if (scraped.summary) outcome.summary = scraped.summary;
-    // With a session scraped, the line's error is the RUN's last provider error, not the read's
-    // failure — carried as its own field so the verdict can name the cause of a premature stop.
-    if (scraped.error) outcome.providerError = scraped.error;
-}
-
-/**
- * The claude-code turn count: one throwaway container over the workspaces volume, reading the
- * transcript the CLI wrote onto it while it lived. Best-effort like every close-time read — a
- * failed read costs the task its agent-turn figure, never its verdict, and a missing transcript
- * answers null rather than zero. Remote Control is excluded by readsAgentTurns: its conversation
- * continues after this read would run, so its count stays unmeasured.
- */
-async function applyClaudeCloseRead(
-    outcome: RunOutcome,
-    ctx: CloseReadContext,
-    session: RunSession | null
-): Promise<void> {
-    if (!readsAgentTurns(ctx.config, ctx.job, session)) return;
-    const read = await ctx
-        .execDocker(claudeTurnsArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt), {
-            timeout: CLOSE_READ_DEADLINE_MS,
-        })
-        .then(
-            (out) => parseClaudeCloseRead(out.stdout),
-            (): { turns: number | null; summary: string | null } => ({ turns: null, summary: null })
-        );
-    outcome.agentTurns = read.turns;
-    if (read.summary) outcome.summary = read.summary;
-}
-
-/**
- * Every close-time read this runner performs after a container exits: opencode's session scrape
- * (job.executorType === 'opencode' only), then claude-code's agent-turn count (readsAgentTurns
- * decides). Mutates and answers the same outcome object verdict() produced.
- */
-export async function applyCloseTimeReadout(
-    outcome: RunOutcome,
-    ctx: CloseReadContext,
-    session: RunSession | null
-): Promise<RunOutcome> {
-    if (ctx.job.executorType === 'opencode') {
-        await applyOpencodeCloseRead(outcome, ctx);
-    }
-    await applyClaudeCloseRead(outcome, ctx, session);
-    return outcome;
 }

@@ -1,13 +1,11 @@
 import type { Board, BoardJob, LeaseState, Reclaim, ReclaimAck } from './board.js';
 import type { DriverConfig } from './config.js';
-import { workspacePathOf } from './docker.js';
-import type { Runner } from './docker.js';
+import { workspacePathOf } from './claim.js';
+import type { Runner } from './runner.js';
 import type { ReclaimResult } from './publish.js';
 import { worktreeRelDir } from './publish.js';
 import type { GateStack, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
-
-export type { GateStack } from './loop-types.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */

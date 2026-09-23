@@ -4,8 +4,6 @@ import type { DateRange } from '../src/range.js';
 import { taskUsageStats } from '../src/task-usage.js';
 import type { JobRun, SessionRollup, TokenTotals } from '../src/types.js';
 
-const NOW = new Date('2026-08-21T12:00:00.000Z');
-
 const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice', avatarUrl: null };
 const BOB = { id: 'u-bob', login: 'bob', name: null, avatarUrl: null };
 

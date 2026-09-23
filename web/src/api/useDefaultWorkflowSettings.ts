@@ -6,10 +6,18 @@ const HTTP_STATUS_SERVICE_UNAVAILABLE = 503;
 const POLL_MS_VISIBLE = 30_000;
 const POLL_MS_HIDDEN = 60_000;
 
-/** The stored pair the board serves (`GET/PUT /api/workflows/default-settings`, issue 203). */
-export interface DefaultWorkflowSettings {
+/**
+ * The default workflow's two optional steps (issue 208, riding issue 203's frozen settings API): the
+ * mandatory prompt → gates → publish spine is not a choice, so only these two travel — in the
+ * settings PUT and in a queued task's `defaultWorkflow`.
+ */
+export interface DefaultWorkflowSteps {
     reviewReconciliation: boolean;
     mergeConflictAutofix: boolean;
+}
+
+/** The stored pair the board serves (`GET/PUT /api/workflows/default-settings`, issue 203). */
+export interface DefaultWorkflowSettings extends DefaultWorkflowSteps {
     /** ISO 8601 once the member has saved; null over the missing-row defaults. */
     updatedAt: string | null;
 }
@@ -53,10 +61,7 @@ export async function fetchDefaultWorkflowSettings(): Promise<DefaultWorkflowFet
 }
 
 /** `PUT /api/workflows/default-settings` — the complete pair, no partial update. */
-export async function putDefaultWorkflowSettings(pair: {
-    reviewReconciliation: boolean;
-    mergeConflictAutofix: boolean;
-}): Promise<DefaultWorkflowSaveResult> {
+export async function putDefaultWorkflowSettings(pair: DefaultWorkflowSteps): Promise<DefaultWorkflowSaveResult> {
     try {
         const response = await fetch('/api/workflows/default-settings', {
             method: 'PUT',
@@ -93,10 +98,7 @@ export interface UseDefaultWorkflowSettings {
     error: string | null;
     saving: boolean;
     refresh: () => void;
-    save: (pair: {
-        reviewReconciliation: boolean;
-        mergeConflictAutofix: boolean;
-    }) => Promise<DefaultWorkflowSaveResult>;
+    save: (pair: DefaultWorkflowSteps) => Promise<DefaultWorkflowSaveResult>;
 }
 
 /**
@@ -157,7 +159,7 @@ export function useDefaultWorkflowSettings(): UseDefaultWorkflowSettings {
     }, [start]);
 
     const save = useCallback(
-        async (pair: { reviewReconciliation: boolean; mergeConflictAutofix: boolean }) => {
+        async (pair: DefaultWorkflowSteps) => {
             setSaving(true);
             try {
                 const result = await putDefaultWorkflowSettings(pair);

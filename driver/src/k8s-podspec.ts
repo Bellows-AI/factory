@@ -3,18 +3,17 @@ import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import {
     claimEnv,
-    claudeTurnsScript,
     GATE_GID,
     GATE_HOME,
     GATE_UID,
     opencodeDbPath,
-    opencodeReadoutScript,
     runWorkingDir,
     SESSION_ID,
     transcriptDir,
     workspacePathOf,
-} from './docker.js';
-import type { RunSession } from './docker.js';
+} from './claim.js';
+import { claudeTurnsScript, opencodeReadoutScript } from './container-scripts.js';
+import type { RunSession } from './runner.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import { worktreeDir } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript } from './services.js';
@@ -25,7 +24,7 @@ import { bellowsReadEnv, bellowsReadScript } from './services.js';
  * `.bellows.yaml` / opencode-session / claude-turns aux readouts. Everything security-relevant
  * about a runner is decided here, and pinned by tests for that reason. The transport, polling,
  * fence and runner assembly live in the sibling `k8s-*.ts` files this one has no dependency on;
- * see `k8s.ts` for the full map.
+ * see docs/kubernetes.md for the full map.
  */
 
 /** One env entry for the runner container. A `valueFrom` entry names a Secret key; it never carries one. */

@@ -1,58 +1,42 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import { CONTAINER_GONE } from './exec-codes.js';
 import { HELPER_TIMEOUT_MS, helperInputValue, lookupHelper, parseHelperOutput } from './helpers.js';
 import type { HelperPlan, HelperResult } from './helpers.js';
 import {
-    CREDENTIAL_HELPER,
     gitWorktreeRemoveScript,
-    gitWorktreeScript,
     publishCheckout,
     publishFailed,
     repoPath,
     withPublishToken,
-    worktreeBranch,
     worktreeDir,
     type PublishResult,
     type ReclaimResult,
     type SyncResult,
 } from './publish.js';
-import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBellowsSections } from './services.js';
-import type { ServiceSpec } from './services.js';
+import { networkName } from './services.js';
 import {
-    CLOSE_READ_DEADLINE_MS,
-    cacheCollapse,
-    claimCarriesGithubToken,
-    claimContinuesSession,
-    claimEnv,
-    composeRuntimeSample,
     containerName,
     dockerArgs,
-    envFileBody,
     envFilePath,
-    claudeTurnsArgs,
-    opencodeCacheProbeArgs,
-    opencodeSessionReadoutArgs,
-    parseClaudeCloseRead,
     parseDockerServicePs,
     parseDockerStats,
-    parseOpencodeCacheProbe,
-    parseOpencodeRunOutcome,
     parseRemoteSessionId,
-    readsAgentTurns,
     remoteSessionArgs,
-    reportTail,
-    workspacePath,
     workspacesMountArgs,
-    type OpencodeRunOutcome,
+} from './docker.js';
+import { claimContinuesSession, envFileBody, workspacePath } from './claim.js';
+import {
+    composeRuntimeSample,
+    reportTail,
     type RunOutcome,
     type Runner,
     type RunSession,
-} from './docker.js';
+    type RuntimeSample,
+} from './runner.js';
+import { applyCloseTimeReadout, tickCacheWatch } from './docker-close-read.js';
 import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
@@ -66,21 +50,15 @@ import {
     run,
     setupJobServices,
     syncCheckoutArgs,
-    tickCacheWatch,
-    applyCloseTimeReadout,
     type RunnerFiles,
     type Spawn,
     type ExecDocker,
 } from './docker-runner-support.js';
 
-export type { RunnerFiles } from './docker-runner-support.js';
-
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
- * per-attempt fences and teardowns, the spawn and event wiring. The stateless primitives (argv
- * builders that need no daemon connection, the close-time readers) live in
- * `docker-runner-support.ts`, split out purely to keep both files under the repo's line-count
- * ceiling; this is the file that actually holds a docker daemon connection.
+ * per-attempt fences and teardowns, the spawn and event wiring. The daemon plumbing and per-step
+ * helpers live in `docker-runner-support.ts`, the close-time reads in `docker-close-read.ts`.
  */
 
 /** Everything a docker-runner method needs: the daemon transport, the config, and the per-attempt kill set. */
@@ -473,10 +451,7 @@ async function dockerRemoteSessionId(job: BoardJob, sessionId: string): Promise<
 // The service fleet is read in the same sampling round, scoped by the same label pair the
 // teardown tears down with and requiring the `factory.service` key, so the runner and
 // gate containers never answer it; a failed read costs the fleet, not the sample.
-async function dockerSampleRuntime(
-    deps: RunnerDeps,
-    job: BoardJob
-): Promise<Omit<import('./docker.js').RuntimeSample, 'sampledAt'> | null> {
+async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null> {
     const { config, execDocker } = deps;
     const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
         () => null
