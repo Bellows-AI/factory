@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
+import { useDownwardAnchor } from '../anchor.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
@@ -279,6 +280,9 @@ function ComposerWorkflowSection({
     effectiveDefaultSteps: DefaultWorkflowSteps | null;
     onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) => void;
 }) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
     return (
         <>
             {workflows !== null ? (
@@ -299,10 +303,10 @@ function ComposerWorkflowSection({
                             // effect above.
                         }}
                     >
-                        <ListboxButton className="composer-select" aria-label="Reusable workflow">
+                        <ListboxButton ref={setReference} className="select-trigger" aria-label="Reusable workflow">
                             {workflow === '' ? 'Default workflow' : workflow}
                         </ListboxButton>
-                        <ListboxOptions anchor="bottom start" className="popover">
+                        <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
                             <ListboxOption value="" className="popover-option">
                                 Default workflow
                             </ListboxOption>
@@ -354,6 +358,93 @@ function ComposerWorkflowSection({
                 </div>
             ) : null}
         </>
+    );
+}
+
+function ComposerExecutionContext({
+    repos,
+    repo,
+    setRepo,
+    setRepoTouched,
+    executor,
+    setExecutor,
+    executors,
+}: {
+    repos: readonly { owner: string; name: string }[];
+    repo: string;
+    setRepo: (value: string) => void;
+    setRepoTouched: (value: boolean) => void;
+    executor: string;
+    setExecutor: (value: string) => void;
+    executors: readonly { name: string; type: string }[];
+}) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const repoAnchor = useDownwardAnchor('start');
+    const executorAnchor = useDownwardAnchor('start');
+    return (
+        <div className="composer-grid">
+            <div className="composer-field">
+                <span className="composer-label">Repository</span>
+                <p className="composer-helper">Run without a repository checkout.</p>
+                <Listbox
+                    value={repo}
+                    onChange={(next) => {
+                        setRepoTouched(true);
+                        setRepo(next);
+                        // Reporting upward is the reporting effect's job — one path.
+                    }}
+                >
+                    <ListboxButton ref={repoAnchor.setReference} className="select-trigger" aria-label="Repository">
+                        {repo === '' ? 'No repository' : repo}
+                    </ListboxButton>
+                    <ListboxOptions
+                        ref={repoAnchor.setFloating}
+                        style={repoAnchor.floatingStyles}
+                        portal
+                        className="popover"
+                    >
+                        <ListboxOption value="" className="popover-option">
+                            No repository
+                        </ListboxOption>
+                        {repos.map(({ owner, name }) => {
+                            const full = `${owner}/${name}`;
+                            return (
+                                <ListboxOption key={full} value={full} className="popover-option">
+                                    {full}
+                                </ListboxOption>
+                            );
+                        })}
+                    </ListboxOptions>
+                </Listbox>
+            </div>
+            <div className="composer-field">
+                <span className="composer-label">Executor</span>
+                <p className="composer-helper">The selected executor type chooses the runner for this task.</p>
+                <Listbox value={executor} disabled={executors.length === 0} onChange={setExecutor}>
+                    <ListboxButton ref={executorAnchor.setReference} className="select-trigger" aria-label="Executor">
+                        {executor === '' ? 'No executor configured' : executor}
+                    </ListboxButton>
+                    <ListboxOptions
+                        ref={executorAnchor.setFloating}
+                        style={executorAnchor.floatingStyles}
+                        portal
+                        className="popover"
+                    >
+                        {executors.map((candidate) => (
+                            <ListboxOption key={candidate.name} value={candidate.name} className="popover-option">
+                                {candidate.name}
+                            </ListboxOption>
+                        ))}
+                    </ListboxOptions>
+                </Listbox>
+                {executors.length === 0 ? (
+                    <p className="muted">
+                        Add an executor in <Link to="/settings/executors">Settings</Link> before starting a task.
+                    </p>
+                ) : null}
+            </div>
+        </div>
     );
 }
 
@@ -551,63 +642,15 @@ export function TaskComposer({
                 </div>
 
                 <h2>Execution context</h2>
-                <div className="composer-grid">
-                    <div className="composer-field">
-                        <span className="composer-label">Repository</span>
-                        <p className="composer-helper">Run without a repository checkout.</p>
-                        <Listbox
-                            value={repo}
-                            onChange={(next) => {
-                                setRepoTouched(true);
-                                setRepo(next);
-                                // Reporting upward is the reporting effect's job — one path.
-                            }}
-                        >
-                            <ListboxButton className="composer-select" aria-label="Repository">
-                                {repo === '' ? 'No repository' : repo}
-                            </ListboxButton>
-                            <ListboxOptions anchor="bottom start" className="popover">
-                                <ListboxOption value="" className="popover-option">
-                                    No repository
-                                </ListboxOption>
-                                {repos.map(({ owner, name }) => {
-                                    const full = `${owner}/${name}`;
-                                    return (
-                                        <ListboxOption key={full} value={full} className="popover-option">
-                                            {full}
-                                        </ListboxOption>
-                                    );
-                                })}
-                            </ListboxOptions>
-                        </Listbox>
-                    </div>
-                    <div className="composer-field">
-                        <span className="composer-label">Executor</span>
-                        <p className="composer-helper">The selected executor type chooses the runner for this task.</p>
-                        <Listbox value={executor} disabled={executors.length === 0} onChange={setExecutor}>
-                            <ListboxButton className="composer-select" aria-label="Executor">
-                                {executor === '' ? 'No executor configured' : executor}
-                            </ListboxButton>
-                            <ListboxOptions anchor="bottom start" className="popover">
-                                {executors.map((candidate) => (
-                                    <ListboxOption
-                                        key={candidate.name}
-                                        value={candidate.name}
-                                        className="popover-option"
-                                    >
-                                        {candidate.name}
-                                    </ListboxOption>
-                                ))}
-                            </ListboxOptions>
-                        </Listbox>
-                        {executors.length === 0 ? (
-                            <p className="muted">
-                                Add an executor in <Link to="/settings/executors">Settings</Link> before starting a
-                                task.
-                            </p>
-                        ) : null}
-                    </div>
-                </div>
+                <ComposerExecutionContext
+                    repos={repos}
+                    repo={repo}
+                    setRepo={setRepo}
+                    setRepoTouched={setRepoTouched}
+                    executor={executor}
+                    setExecutor={setExecutor}
+                    executors={executors}
+                />
                 {repos.length === 0 ? (
                     <p className="muted">
                         Select repositories in <Link to="/settings/repositories">Settings</Link> to run against a

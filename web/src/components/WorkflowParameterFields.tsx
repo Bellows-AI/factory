@@ -45,7 +45,7 @@ function ParameterField({
             ) : null}
             <input
                 id={id}
-                className="composer-select"
+                className="composer-param-input"
                 placeholder={param.example ? `Example: ${param.example}` : 'Required'}
                 maxLength={PARAM_VALUE_MAX_LENGTH}
                 aria-invalid={failed || undefined}
