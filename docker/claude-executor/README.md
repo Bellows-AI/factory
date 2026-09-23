@@ -198,7 +198,9 @@ branch or commit (path-scoped `git checkout -- <paths>` stays allowed), `git wor
 `git reset --hard`, and `git rebase` outright — rebasing onto the default branch is
 the driver sync's job, and a rebase rewrites the published task-branch commits. `git merge` is
 allowed in exactly one shape: every operand is an origin remote-tracking ref (`git merge
-origin/main`, flags like `--no-edit` included; `-m`'s value is not read as an operand) — merging
+origin/main`, flags like `--no-edit` included; `-m`'s value is not read as an operand, and
+neither is a redirection — `git merge origin/main 2>&1 | tail` is the shape agents type, and the
+`&` of `2>&1` is no command separator) — merging
 the remote default in is the one exit from a conflicts dead-end the sync's rebase refuses (job
 `3e85c499`, 2026-09-20), and a merge can neither move HEAD off the task branch nor rewrite the
 published commits, so the invariant survives it. `--abort`/`--quit`/`--continue` stay allowed,

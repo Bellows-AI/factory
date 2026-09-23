@@ -381,9 +381,11 @@ deny globs, because opencode resolves rules last-match-wins). Read-only git, `gi
 commit` stay allowed on both: a commit endangers no checkout, and publishing is the driver's
 publish flow. `git rebase` stays denied outright — a rebase rewrites the published task-branch
 commits — but `git merge` of an **origin remote-tracking ref** is allowed (the claude guard parses
-it: every operand must be `origin/<ref>`; the opencode table allows the exact `git merge
-origin/main` forms, `--continue` included, so a repo whose default is not `main` needs the table
-widened): merging the remote default in is the one exit from a conflicts dead-end (job
+it: every operand must be `origin/<ref>`, redirections like `2>&1` are not operands; the opencode
+table allows the exact `git merge origin/main` forms, `--continue` included, and the entrypoint
+appends the same exact forms for the checkout's `origin/HEAD` when that default is not `main`; a
+redirected or piped merge stays denied there):
+merging the remote default in is the one exit from a conflicts dead-end (job
 `3e85c499`, 2026-09-20 — the agent reconciled the files but could not produce the merge commit),
 and a merge can neither move HEAD off the task branch nor rewrite the published commits, so the
 invariant survives it. This is a guardrail, not a security boundary — the agent is root in its

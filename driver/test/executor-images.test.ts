@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -543,6 +543,56 @@ describe('the opencode-executor git guard policy', () => {
         expect(policy.permission.webfetch).toBe('deny');
         expect(policy.permission.external_directory['*']).toBe('deny');
         expect(policy.permission.bash['*']).toBe('allow');
+    });
+
+    // The baked allows name origin/main only; the entrypoint adds the same exact allows for a
+    // repo whose origin/HEAD names another default, appended so they still rank last.
+    const MERGE_ALLOWS = (ref: string) => [
+        `git merge ${ref}`,
+        `git merge --no-edit ${ref}`,
+        `git merge ${ref} --no-edit`,
+    ];
+
+    const runWithDefault = async (defaultBranch: string | null) => {
+        const sandbox = makeSandbox();
+        try {
+            const git = (...args: string[]) => execFileSync('git', args, { cwd: sandbox.work, stdio: 'ignore' });
+            git('init', '-q');
+            if (defaultBranch) {
+                git('symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${defaultBranch}`);
+            }
+            const config = join(sandbox.env.HOME!, '.config', 'opencode');
+            mkdirSync(config, { recursive: true });
+            writeFileSync(join(config, 'opencode.json'), read(PATH));
+            const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig') };
+            const child = spawn('/bin/sh', [join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run'], {
+                env,
+                stdio: 'ignore',
+            });
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            return JSON.parse(readFileSync(join(config, 'opencode.json'), 'utf8')).permission.bash as Record<
+                string,
+                string
+            >;
+        } finally {
+            sandbox.cleanup();
+        }
+    };
+
+    it('allows merging the origin/HEAD default when it is not main, ranked last', async () => {
+        const bash = await runWithDefault('develop');
+        const keys = Object.keys(bash);
+        expect(keys.slice(-3)).toEqual(MERGE_ALLOWS('origin/develop'));
+        for (const rule of MERGE_ALLOWS('origin/develop')) expect(bash[rule]).toBe('allow');
+        expect(bash['git merge *']).toBe('deny');
+    });
+
+    it.each([
+        ['main', 'main'],
+        ['no origin/HEAD', null],
+    ])('adds nothing when the default is %s', async (_label, defaultBranch) => {
+        const bash = await runWithDefault(defaultBranch);
+        expect(bash).toEqual(JSON.parse(read(PATH)).permission.bash);
     });
 });
 

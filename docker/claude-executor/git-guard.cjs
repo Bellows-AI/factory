@@ -90,6 +90,12 @@ function splitOuter(text) {
                 i += 1;
                 continue;
             }
+            // The `&` of a redirection (`2>&1`, `<&0`, `&>file`) duplicates a descriptor; it
+            // does not background anything, so it is no operator.
+            if (c === '&' && (text[i - 1] === '>' || text[i - 1] === '<' || text[i + 1] === '>')) {
+                buf += c;
+                continue;
+            }
             if (c === ';' || c === '|' || c === '&' || c === '\n') {
                 segments.push(buf);
                 buf = '';
@@ -202,8 +208,22 @@ function unquote(token) {
     return t;
 }
 
+// Redirections are the shell's, not the command's: `2>&1`, `>/tmp/log` and a bare `>` with
+// its target token dropped, so an operand scan never mistakes one for an argument.
+const REDIRECT_BARE = /^(\d*|&)(>>?|<)$/;
+const REDIRECT_ATTACHED = /^(\d*|&)(>>?|<)./;
+
+function withoutRedirections(tokens) {
+    const kept = [];
+    for (let t = 0; t < tokens.length; t++) {
+        if (REDIRECT_BARE.test(tokens[t])) t += 1;
+        else if (!REDIRECT_ATTACHED.test(tokens[t])) kept.push(tokens[t]);
+    }
+    return kept;
+}
+
 function analyze(segment, depth) {
-    const tokens = tokenize(segment);
+    const tokens = withoutRedirections(tokenize(segment));
     let i = 0;
     // Leading environment assignments, `env`, and sh -c wrappers: strip and re-scan.
     for (;;) {
@@ -320,9 +340,17 @@ function analyze(segment, depth) {
                     r += 1;
                 } else if (!rest[r].startsWith('-')) operands.push(rest[r]);
             }
-            return operands.length > 0 && operands.every((t) => /^origin\/[A-Za-z0-9._/-]+$/.test(t))
-                ? ALLOW
-                : denyOf("'git merge' of anything but an origin remote-tracking ref");
+            if (operands.length > 0 && operands.every((t) => /^origin\/[A-Za-z0-9._/-]+$/.test(t))) return ALLOW;
+            // The generic reason read as "merging is forbidden" and a thread asked to update from
+            // main gave up (job 72d9fa14) — name the shape that IS allowed.
+            return {
+                deny: true,
+                reason:
+                    "git guard: 'git merge' is allowed only from an origin remote-tracking ref. To bring " +
+                    'the default branch in, run `git fetch origin` then `git merge origin/<default>` ' +
+                    '(`git symbolic-ref --short refs/remotes/origin/HEAD` names it), resolve the ' +
+                    'conflicts, and commit. A local branch, a sha or FETCH_HEAD stays denied.',
+            };
         }
         default:
             return ALLOW;
@@ -474,6 +502,21 @@ const CASES = [
     ['allow', 'git merge origin/hotfix'],
     ['allow', 'git merge origin/feature/nested'],
     ['allow', 'git merge -m "merge main" origin/main'],
+    // Redirections are not operands (job 72d9fa14, 2026-09-23): `2>&1` once split on its `&`
+    // and left `2>` as a merge target, so the one allowed merge was denied in the shape agents
+    // actually type it.
+    ['allow', 'git merge origin/main 2>&1'],
+    ['allow', 'git merge origin/main 2>&1 | tail -50'],
+    ['allow', 'git merge --no-ff origin/main 2>&1 | head -100'],
+    ['allow', 'git merge origin/main > /tmp/merge.log 2>&1'],
+    ['allow', 'git merge origin/main >/tmp/merge.log 2>/dev/null'],
+    ['allow', 'git merge origin/main &> /tmp/merge.log'],
+    ['allow', 'git fetch origin 2>&1 && git merge --no-edit origin/main 2>&1'],
+    ['deny', 'git merge main 2>&1'],
+    ['deny', 'git merge main > /tmp/merge.log'],
+    ['deny', 'git switch main 2>&1'],
+    ['deny', 'git checkout main 2>&1 | tail'],
+    ['deny', 'git rebase origin/main 2>&1'],
     ['allow', 'git rebase --abort'],
     ['allow', 'git rebase --quit'],
     ['allow', 'git rebase --continue'],
