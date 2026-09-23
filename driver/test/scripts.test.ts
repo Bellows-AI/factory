@@ -27,6 +27,7 @@ import {
 } from '../src/review.js';
 import { claudeTurnsScript, opencodeCacheProbeScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { HELPER_REGISTRY } from '../src/helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
 import { SCRIPTS_DIR, pathOf } from './fixtures/scripts-support.js';
 
 /**
@@ -58,6 +59,10 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['review-reply.cjs', 'node'],
     ['helper-noop.cjs', 'node'],
     ['merge-conflict-probe.cjs', 'node'],
+    ['review-collect-probe-prelude.cjs', 'node'],
+    ['review-collect-probe-postlude.cjs', 'node'],
+    ['review-reply-probe-middle.cjs', 'node'],
+    ['review-reply-probe-postlude.cjs', 'node'],
 ];
 
 describe('the container scripts', () => {
@@ -107,6 +112,38 @@ describe('the container scripts', () => {
         expect(HELPER_REGISTRY.get('merge-conflict-probe')?.scriptBody).toBe(
             readFileSync(pathOf('merge-conflict-probe.cjs'), 'utf8')
         );
+    });
+
+    // The github-review-reconcile block's two helpers (issue #133) are COMPOSED bodies, never a
+    // single file's content — driver/src/review-helpers.ts assembles each from real adapter files
+    // plus the unmodified review-collect.cjs/review-reply.cjs, joined with the bare `{ }` blocks
+    // that keep the embedded script's own top-level names from colliding with the adapter's own.
+    // This pin is on the ASSEMBLY, not just the pieces: a byte drift in either adapter file, or in
+    // how review-helpers.ts joins them, fails here rather than only surfacing as a container-only
+    // parse or scope error.
+    it('assembles the review-block helper bodies from their real files, byte for byte', () => {
+        const read = (name: string): string => readFileSync(pathOf(name), 'utf8');
+        const collectBody = [
+            read('review-collect-probe-prelude.cjs'),
+            '{',
+            read('review-collect.cjs'),
+            '}',
+            read('review-collect-probe-postlude.cjs'),
+        ].join('\n');
+        expect(HELPER_REGISTRY.get(REVIEW_COLLECT_PROBE_ID)?.scriptBody).toBe(collectBody);
+
+        const replyBody = [
+            read('review-collect-probe-prelude.cjs'),
+            '{',
+            read('review-collect.cjs'),
+            '}',
+            read('review-reply-probe-middle.cjs'),
+            'if (!__reviewReplyProbeSkip) {',
+            read('review-reply.cjs'),
+            '}',
+            read('review-reply-probe-postlude.cjs'),
+        ].join('\n');
+        expect(HELPER_REGISTRY.get(REVIEW_REPLY_PROBE_ID)?.scriptBody).toBe(replyBody);
     });
 
     // The review scripts are not yet loaded by any argv builder, so a byte pin through a

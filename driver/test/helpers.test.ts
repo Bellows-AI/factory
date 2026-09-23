@@ -37,8 +37,8 @@ const DESCRIPTOR: HelperDescriptor = {
 const TIGHT_DESCRIPTOR: HelperDescriptor = { ...DESCRIPTOR, outputCapBytes: 64 };
 
 describe('the helper registry', () => {
-    it('ships the noop fixture and the merge-conflict-autofix probe, with their fixed schema/version', () => {
-        expect(HELPER_REGISTRY.size).toBe(2);
+    it('ships the noop fixture and the merge-conflict-autofix and github-review-reconcile probes, with their fixed schema/version', () => {
+        expect(HELPER_REGISTRY.size).toBe(4);
         const noop = lookupHelper('noop');
         expect(noop).not.toBeNull();
         expect(noop?.schema).toBe('helper-noop/v1');
@@ -48,6 +48,16 @@ describe('the helper registry', () => {
         expect(probe).not.toBeNull();
         expect(probe?.schema).toBe('merge-conflict-probe/v1');
         expect(probe?.version).toBe(1);
+
+        const collect = lookupHelper('review-collect-probe');
+        expect(collect).not.toBeNull();
+        expect(collect?.schema).toBe('review-collect-probe/v1');
+        expect(collect?.version).toBe(1);
+
+        const reply = lookupHelper('review-reply-probe');
+        expect(reply).not.toBeNull();
+        expect(reply?.schema).toBe('review-reply-probe/v1');
+        expect(reply?.version).toBe(1);
     });
 
     it('answers null for an id nothing registered — unknown BEFORE any container starts', () => {

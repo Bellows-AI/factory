@@ -50,8 +50,26 @@ export interface ScriptRun {
 export const runScript = async (
     name: string,
     env: Record<string, string>,
-    opts: { token?: boolean } = {}
-): Promise<ScriptRun> => {
+    opts: { token?: boolean; cwd?: string } = {}
+): Promise<ScriptRun> => runNodeScript(pathOf(name), env, opts);
+
+/**
+ * Run an arbitrary script FILE (never a review script under `src/scripts/` by name) against the
+ * stub `gh` — the github-review-reconcile block's composed helper bodies (issue #133,
+ * `driver/src/review-helpers.ts`) are assembled strings, not files under `src/scripts/`, so their
+ * own suite writes one to a temp file first and hands the path here.
+ */
+export const runSource = async (
+    path: string,
+    env: Record<string, string>,
+    opts: { token?: boolean; cwd?: string } = {}
+): Promise<ScriptRun> => runNodeScript(path, env, opts);
+
+async function runNodeScript(
+    path: string,
+    env: Record<string, string>,
+    opts: { token?: boolean; cwd?: string }
+): Promise<ScriptRun> {
     const dir = mkdtempSync(join(tmpdir(), 'review-'));
     tempDirs.add(dir);
     const bin = join(dir, 'bin');
@@ -66,14 +84,14 @@ export const runScript = async (
     Object.assign(childEnv, { GH_FIXTURES: fixture('gh-responses.json'), GH_ARGV_LOG: argvLog });
     if (token) childEnv.GITHUB_TOKEN = TEST_TOKEN;
     Object.assign(childEnv, env);
-    const { stdout, stderr } = await execFile('node', [pathOf(name)], { env: childEnv });
+    const { stdout, stderr } = await execFile('node', [path], { env: childEnv, cwd: opts.cwd });
     let args: string[][] = [];
     if (existsSync(argvLog)) {
         const raw = readFileSync(argvLog, 'utf8').trim();
         args = raw ? raw.split('\n').map((l) => JSON.parse(l) as string[]) : [];
     }
     return { stdout, stderr, args };
-};
+}
 
 /** A disposable extra gh fixture for the boundedness runs that outgrow the canned one. */
 export const writeFixture = (body: Record<string, unknown>): string => {

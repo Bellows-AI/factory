@@ -61,20 +61,17 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(await store.listVisible({ userId: null, repo: null })).toEqual([]);
     });
 
-    it('compiles a block node before storage, and refuses one that is not yet available, storing nothing', async () => {
-        // Both reserved ids ship `available: false` until their own implementation issues land
-        // (issue #204) — a block-referencing definition can never be stored, so it can never be
-        // launched. This exercises the real, wired registry through workflow-store.ts's create(),
-        // beyond workflow-block-compiler.test.ts's pure, dependency-injected coverage of the same
-        // refusal.
+    it('compiles the github-review-reconcile block before storage, storing the EXPANDED graph', async () => {
+        // The real, wired registry through workflow-store.ts's create() — beyond
+        // workflow-block-compiler.test.ts's pure, dependency-injected coverage of the same
+        // compile step. A block never publishes itself, so the downstream `ship` node is what
+        // keeps the graph past the NO_PUBLISH_PATH check.
         const created = await store.create({
             name: 'wants-a-block',
             scope: { kind: 'org' },
             definition: {
                 entry: 'review',
                 params: [],
-                // A block never publishes itself, so a downstream publishing agent keeps the graph
-                // past the NO_PUBLISH_PATH check and on to the block refusal this test is about.
                 nodes: [
                     { name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' },
                     { name: 'ship', kind: 'agent', session: 'fresh', prompt: 'ship', publish: true },
@@ -83,8 +80,20 @@ describe.skipIf(!enabled)('the workflow store', () => {
             },
             createdBy: ALICE,
         });
-        expect(created).toMatchObject({ refused: true, code: 'BLOCK_UNAVAILABLE' });
-        expect(await store.listVisible({ userId: null, repo: null })).toEqual([]);
+        expect(created).toHaveProperty('id');
+
+        const record = await store.get((created as { id: string }).id);
+        const nodeNames = record?.definition.nodes.map((n) => n.name).sort();
+        expect(nodeNames).toEqual(
+            ['review--collect', 'review--wait', 'review--repair', 'review--reply', 'ship'].sort()
+        );
+        const waitNode = record?.definition.nodes.find((n) => n.name === 'review--wait');
+        expect(waitNode?.runtime).toMatchObject({
+            runtime: 'pr-delivery-wait',
+            block: 'builtin/github-review-reconcile',
+        });
+        // The outer edge, rewritten to originate from the block's own exit node.
+        expect(record?.definition.edges).toContainEqual({ from: 'review--collect', to: 'ship', when: 'succeeded' });
     });
 
     it('refuses an edge naming an undeclared node, and a template referencing one', async () => {

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { REVIEW_HELPER_DESCRIPTORS } from './review-helpers.js';
 
 /**
  * The generic block-helper transport (issue #207): one allowlisted, board-owned script an
@@ -146,6 +147,9 @@ const DESCRIPTORS: readonly HelperDescriptor[] = [
         version: 1,
         outputCapBytes: MERGE_CONFLICT_PROBE_OUTPUT_CAP_BYTES,
     },
+    // The github-review-reconcile block's own helpers (issue #133), registered the same additive
+    // way — driver/src/review-helpers.ts owns their script assembly and caps.
+    ...REVIEW_HELPER_DESCRIPTORS,
 ];
 
 export const HELPER_REGISTRY: ReadonlyMap<string, HelperDescriptor> = new Map(DESCRIPTORS.map((d) => [d.id, d]));

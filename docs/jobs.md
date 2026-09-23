@@ -561,11 +561,16 @@ it onto the claim generically (docs/workflows.md, "Built-in blocks"); `BoardJob.
 still read defensively (absent on every claim outside a block's own expansion), exactly like
 `job.env` on a board that predates it. The `noop` fixture — echoing its bounded input back — stays
 shipped alongside the real one, proving the transport end to end independent of any block's own
-content, the same "ships the helpers only, nothing wired yet" honesty `driver/src/review.ts`
-states about its own scripts (issue #133's `github-review-reconcile` has not landed and still
-threads nothing). This issue's own scope was only the generic seam, both transports, and the
-loop's fencing — #122 added a helper descriptor (`driver/src/helpers.ts`) and the claim-side
-resolver, neither of which touched this seam.
+content. Issue #133's `github-review-reconcile` block is the second real producer: its own
+`review-collect-probe`/`review-reply-probe` descriptors (`driver/src/review-helpers.ts`) wrap
+issue #201's unmodified `review-collect.cjs`/`review-reply.cjs` — never edited — inside a small
+ADAPTER, composed at driver LOAD time (never in the container) from prelude/postlude files that
+map the transport's bounded `HELPER_INPUT` onto the env those scripts read and reshape their bare
+verdicts into this transport's `{schema, version, ok, output}` envelope; see
+docs/workflows.md, "The github-review-reconcile block". This issue's own scope was only the
+generic seam, both transports, and the loop's fencing — #122 and #133 each added their own helper
+descriptors (`driver/src/helpers.ts`, `driver/src/review-helpers.ts`) and #122 the claim-side
+resolver, none of which touched this seam.
 
 - **The loop owns WHEN a helper runs.** A PRE helper runs as the last step of `runSetup`
   (`driver/src/loop-helpers.ts`'s `preHelperStep`), fenced by the exact same lease/stop race

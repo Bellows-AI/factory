@@ -78,7 +78,14 @@ export function memoryPrLifecycleStore(): MemoryPrLifecycleStore {
             };
         },
         async finishWait() {
-            throw new Error('memory pr lifecycle: finishWait is not exercised by route tests');
+            // This fake tracks waits by (repo, prNumber) only, never (root, reason) — it was built
+            // for the webhook route suite, which never opens a root/reason-keyed wait. Answering
+            // `false` (no matching wait) is what the real store would say for the same input here,
+            // rather than a throw: issue #133's `settleBlockWaits` calls this generically on every
+            // workflow-transition completion that departs a block scope, so a future test that
+            // reuses this fake alongside `runWorkflowTransition` must see a harmless "did nothing"
+            // instead of an unrelated crash.
+            return false;
         },
         async cancelWait() {
             throw new Error('memory pr lifecycle: cancelWait is not exercised by route tests');

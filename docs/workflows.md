@@ -80,10 +80,10 @@ object (scalar values, at most 16 keys, camelCase field names — `maxRounds` ab
 `block` node, never both — `prompt`, `session`, `gates` and `publish` on a `block` node refuse
 `UNKNOWN_KEY`, and `uses`/`with` on an `agent` node refuse the same way.
 
-The two initial reserved ids are `builtin/github-review-reconcile` (issue #133, still
-`available: false` — its own issue has not landed) and `builtin/merge-conflict-autofix` (issue
-#122, `available: true` — see "The merge-conflict-autofix block" below). Both are listed by the
-catalog (`GET /api/workflow-blocks`) regardless of availability. Referencing an unavailable id in
+The two reserved ids are `builtin/github-review-reconcile` (issue #133, `available: true` — see
+"The github-review-reconcile block" below) and `builtin/merge-conflict-autofix` (issue #122,
+`available: true` — see "The merge-conflict-autofix block" below). Both are listed by the catalog
+(`GET /api/workflow-blocks`) regardless of availability. Referencing an unavailable id in
 a definition refuses `BLOCK_UNAVAILABLE` at create — an unavailable block cannot be stored, so it
 can never be launched. Naming an id the registry has never reserved refuses `UNKNOWN_BLOCK`; a
 `with` value the block's own
@@ -143,9 +143,9 @@ the `runtime` field on a compiled `WorkflowNode`, or the wake-sweep/cancellation
 executor held, coalesce matching GitHub webhook deliveries, and later make exactly one continuation
 claimable — turning #202's PR-lifecycle primitives (`pr-lifecycle-store.ts`'s `enterWait`,
 `recordDelivery`, `claimReview`, cancellation) into workflow-transition behavior. It owns no
-review-repair or merge-conflict policy; no shipped block uses it yet (`builtin/github-review-reconcile`
-is still `available: false`), so today it is exercised only by fake, dependency-injected descriptors
-in `workflow-block-compiler.test.ts` and `job-store.block-wait.test.ts`.
+review-repair or merge-conflict policy; `builtin/github-review-reconcile`'s `wait` node is its one
+shipped real user, alongside the fake, dependency-injected descriptors
+`workflow-block-compiler.test.ts` and `job-store.block-wait.test.ts` still exercise it with.
 
 **The private runtime descriptor.** A `BlockExpansion` may declare `runtime`, keyed by the block's
 own INTERNAL node name — `{ [internalName]: { runtime: BlockRuntimeId, params } }` — kept separate
@@ -222,6 +222,19 @@ buckets the thread as review regardless of the row's own status" rule, docs/jobs
 after the continuation runs finds the
 wait already active and simply adds a new round.
 
+**Who calls `finishWait`: `workflow-blocks/runtime-settle.ts`'s `settleBlockWaits` (issue #133),
+generic and block-agnostic like this file.** Called from `job-store-worker.ts`'s
+`runWorkflowTransition`, once per completion, right after `nextTransition` decides and BEFORE
+either branch (insert or rest) runs: it derives the halted node's SCOPE (the `${blockName}--`
+prefix a compiler-namespaced node name carries; null for a bare node) and, when the transition is
+either a REST or an INSERT into a node OUTSIDE that same scope, finishes every open wait any
+runtime-carrying node of that scope holds — `terminalReason` names why (`'block exited'` for a
+successor outside the scope, `` `rested (${reason})` `` for a rest). An insert that STAYS inside
+the scope (the block's own internal round-trip, or a re-park into its own wait node) settles
+nothing — exactly the "stays OPEN across a wake" rule above. `finishWait` is idempotent, so a scope
+with no wait ever entered (a block whose `collect`-equivalent concluded clean before ever reaching
+its `wait` node) costs one no-op call, never a refusal.
+
 **The cancellation fence: `job-store-claim.ts`'s `claimNextCandidate`, right after a row claims.**
 PR-close (`cancelForRepoPr`) and thread-stop/remove (`cancelWaitsForRoot`) cancel a `workflow_wait`
 row directly and do NOT take the per-root advisory lock — a close can land at any time, including
@@ -274,6 +287,51 @@ same thread (never a fresh thread's own entry) — restore mode (the sync's `RES
 the fetch/rebase that would otherwise race the block's own preflight) falls out of
 `claimContinuesSession` automatically once the claim carries a `resumeSessionId`, with no extra
 wiring. This block never merges, closes, or auto-merges the PR — it only reconciles and republishes.
+
+### The github-review-reconcile block
+
+`builtin/github-review-reconcile` (issue #133,
+`server/src/db/workflow-blocks/github-review-reconcile.ts`) waits for GitHub review activity on a
+published PR with no executor held, collects every supported feedback surface deterministically
+(issue #201's `review-collect.cjs`), addresses at most `with.maxRounds` rounds (1-10, default 3),
+and replies to exactly what it addressed (issue #201's `review-reply.cjs`). Four internal nodes:
+
+- `collect` (entry) and `wait` (the durable wait boundary, `runtime: pr-delivery-wait` — issue
+  #231) are identically shaped: both declare one pre-helper, `review-collect-probe`
+  (`driver/src/review-helpers.ts`, an ADAPTER around issue #201's unmodified script — never a
+  modification of it), which fetches full state and answers, as a PRE-helper `conclude` (issue
+  #230, so neither node ever spends an agent turn): `REVIEW-CLEAN` (approved, or nothing
+  outstanding and no reviewer requested), `REVIEW-WAIT` (a reviewer is requested or changes were
+  requested, nothing actionable yet), or — writing `.factory/review-reconcile/digest.json` first —
+  `REVIEW-ACTIONABLE`, which lets the outgoing marker edge launch `repair`.
+- `repair` (`session: resume`, gates default on, `publish: true`) is the only node that edits
+  code: it reads the digest, fixes what it can, and writes
+  `.factory/review-reconcile/intents.json` — one reply-or-decline note per digest item. It may
+  never comment, reply, resolve a thread, or run `gh pr create` itself; the driver's own claim
+  machinery runs gates and publishes automatically once claimed, reusing the thread's existing PR.
+- `reply` declares one pre-helper, `review-reply-probe` (also `driver/src/review-helpers.ts`):
+  re-fetches FRESH state (never trusting the repair agent's own claim that a comment or thread
+  still exists), builds a bounded mutation plan from the declared intents, executes it through
+  issue #201's unmodified `review-reply.cjs`, and always concludes `REVIEW-REPLIED` on a clean
+  run — this node never launches an agent turn either.
+
+`repair` reaches `reply` only on `succeeded`, never a marker — a publish failure fails the verdict
+(docs/jobs.md), so by the time `reply` runs the push has already landed, and a `[driver]
+published …` decorated output line can never masquerade as a marker the way it could if this edge
+matched on one. The loop bound: every edge into `repair` (the fresh-actionable entry from
+`collect`/`wait`, and `repair`'s own `gate-failed`/`failed` retries) shares `maxRounds` as its
+`max`, per "give EVERY edge into X the same max" above — a gate-failure retry counts toward the
+same three rounds a fresh actionable entry does, the same acceptable trade the
+merge-conflict-autofix block's own retry edge makes. A fourth required round rests the thread
+loudly (`loop_bound`), the last completed run's own output still visible. `collect`'s and
+`reply`'s own retry/self-loops, and `wait`'s repeated false-wake self-loop, get independent,
+generous bounds — never the round bound — so a transient fetch/reply failure or an ordinarily
+noisy PR never eats into the three real repair attempts.
+
+The block's `exit` is `collect` itself (also its `entry`): every internal path funnels back
+through a fresh `collect` fetch before the block can leave (`reply`'s own `REVIEW-REPLIED` marker
+routes there), so an outer edge attached to this block only ever fires on `collect`'s own
+`REVIEW-CLEAN` completion — the one marker with no internal edge of its own to intercept it first.
 
 ## Launch parameters
 
@@ -500,7 +558,9 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | Templates and the base `fix-issue` workflow | `server/src/db/workflow-templates.ts` |
 | Columns (027, 030, 033) and the freeze-at-create snapshot | `server/migrations/027_workflows.sql`, `server/migrations/030_workflow_params.sql`, `server/migrations/033_job_workflow_name.sql` |
 | The durable block-wait dispatcher: the allowlist, the park, the wake sweep, the cancellation fence (issue #231) | `server/src/db/workflow-blocks/runtime.ts` |
+| The generic `finishWait` settle rule (issue #133) | `server/src/db/workflow-blocks/runtime-settle.ts` |
 | The parked continuation and its wake audit (issue #231) | `server/migrations/038_workflow_round.sql` |
+| The github-review-reconcile block's own driver helpers: the adapter scripts, the composed bodies, the registry entries (issue #133) | `driver/src/review-helpers.ts`, `driver/src/scripts/review-collect-probe-*.cjs`, `driver/src/scripts/review-reply-probe-*.cjs` |
 | The transition in the verdict's transaction | `job-store-worker.ts` `completeJob()` → `runWorkflowTransition()` |
 | The primary-session follow-up copy | `job-store-actions.ts` `createFollowUpRow()` |
 | The claim's `publish` flag and the gates opt-out | `job-store-claim.ts` `resolveClaimPublish()` |
@@ -520,13 +580,22 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 - Offline units: `server/test/workflow-block-compiler.test.ts` — expansion, namespacing, edge
   rewriting into/out of a block, config resolution against a descriptor's `configSchema`, and the
   real registry's `UNKNOWN_BLOCK`/`BLOCK_UNAVAILABLE` refusals against fake, dependency-injected
-  descriptors, plus the still-unavailable `builtin/github-review-reconcile`.
+  descriptors.
 - Offline units: `server/test/workflow-block-merge-conflict-autofix.test.ts` — the real
   `builtin/merge-conflict-autofix` expansion: node/edge shape, namespacing, the declared
   `helperPlans`, the `maxAttempts`-bounded retry edge, and that a custom graph can reference it
   independently of any other workflow.
+- Offline units: `server/test/workflow-block-github-review-reconcile.test.ts` — the real
+  `builtin/github-review-reconcile` expansion (node/edge shape, namespacing, the shared
+  `maxRounds` bound, the `wait` node's runtime attachment, the repair prompt's own guardrails) plus
+  a pure orchestration walk of the expanded graph through the real `nextTransition`: initial
+  clean/wait/actionable, the repair->reply->collect round-trip, gate-failed/failed retries, and
+  round exhaustion resting `loop_bound`.
 - Offline units: `server/test/workflow-block-runtime.test.ts` — the runtime allowlist and params
   parser in isolation, no database or compiler involved.
+- Offline units: `server/test/workflow-block-runtime-settle.test.ts` — the generic `finishWait`
+  settle rule (issue #133): scope arithmetic, staying inside a block's own round-trip, resting vs.
+  leaving for an outer node, and touching only the departing scope's own runtime nodes.
 - Offline units (extended): `server/test/workflow-block-compiler.test.ts` — attaching a namespaced
   `runtime` descriptor onto the matching expanded node, the `BAD_BLOCK_CONFIG` refusals (unknown
   internal node, unknown runtime id, rejected params, a runtime-carrying node resolving to the
@@ -538,7 +607,9 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
   the compiler's refusal codes surfacing the same way a schema refusal does), the
   workflow-resolution block of `routes.jobs.test.ts`.
 - Against a real database (`npm run test:db`): `server/test-db/workflow-store.test.ts` and
-  `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds.
+  `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds; the
+  former also covers `create()` compiling `builtin/github-review-reconcile` and storing its
+  expanded, namespaced graph with the `wait` node's `runtime` intact.
 - Against a real database: `server/test-db/job-store.block-wait.test.ts` (issue #231) — parking
   (no runnable row, an open wait, the frozen continuation), resting when unpublished, the wake
   sweep's zero/one/many-and-redelivered-GUID coalescing, a thread with an active member never
@@ -551,6 +622,11 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 - Driver: the publish-flag twins in `driver/test/loop.test.ts`, and the transport parity pins in
   `docker.test.ts` / `k8s.test.ts`. Real offline git fixtures for the merge-conflict-autofix
   preflight (up-to-date, clean rebase, conflicted, stale/precondition-refused, and stale-rebase
-  cleanup) live in `driver/test/merge-conflict-probe-script.test.ts`.
+  cleanup) live in `driver/test/merge-conflict-probe-script.test.ts`. The github-review-reconcile
+  block's composed helper bodies run end to end against a stub `gh` in
+  `driver/test/review-helpers.test.ts` — REVIEW-CLEAN/WAIT/ACTIONABLE decisions, the digest write,
+  a reply plan built only from digest-presented, still-live targets, and the fresh-refetch failure
+  propagating as a helper failure, never a false REVIEW-REPLIED conclude; `driver/test/scripts.test.ts`
+  pins the composed-body ASSEMBLY (not just the pieces) byte for byte.
 - End to end: the `# workflows` phase of `scripts/test-jobs.sh` walks a stub workflow on a real
   board and driver.
