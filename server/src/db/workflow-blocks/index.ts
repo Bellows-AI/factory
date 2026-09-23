@@ -13,12 +13,13 @@ import {
     EXPANDED_DEFINITION_LIMIT,
     type AuthoredWorkflowDefinition,
     type BlockConfigValue,
+    type BlockNode,
     type WorkflowDefinition,
 } from '../workflow-schema.js';
 import { validateDefinition } from '../workflow-schema-validate.js';
 import { GITHUB_REVIEW_RECONCILE } from './github-review-reconcile.js';
 import { MERGE_CONFLICT_AUTOFIX } from './merge-conflict-autofix.js';
-import type { BlockConfigField, BlockDescriptor, BlockRegistry, CompileCheck } from './types.js';
+import type { BlockConfigField, BlockDescriptor, BlockRegistry, CompileCheck, CompileRefusal } from './types.js';
 
 export const BLOCK_REGISTRY: BlockRegistry = new Map(
     [GITHUB_REVIEW_RECONCILE, MERGE_CONFLICT_AUTOFIX].map((descriptor) => [descriptor.id, descriptor])
@@ -41,6 +42,31 @@ export function blockCatalog(registry: BlockRegistry = BLOCK_REGISTRY): BlockCat
     }));
 }
 
+type FieldResolution = { ok: true; value: BlockConfigValue | undefined } | { ok: false; message: string };
+
+/**
+ * One config field's value against its declared type and (for a number) its declared bounds — the
+ * default is resolved through the SAME checks as an authored value, since a descriptor whose own
+ * default falls outside its declared bounds is a descriptor bug, and must refuse loudly rather
+ * than ship a silently-unvalidated config value. `undefined` means the field stays unset.
+ */
+function resolveField(field: BlockConfigField, raw: Record<string, BlockConfigValue>): FieldResolution {
+    const value = field.name in raw ? raw[field.name] : field.default;
+    if (value === undefined) return { ok: true, value: undefined };
+    if (typeof value !== field.type) {
+        return { ok: false, message: `config "${field.name}" must be a ${field.type}` };
+    }
+    if (field.type === 'number') {
+        if (field.min !== undefined && (value as number) < field.min) {
+            return { ok: false, message: `config "${field.name}" must be >= ${field.min}` };
+        }
+        if (field.max !== undefined && (value as number) > field.max) {
+            return { ok: false, message: `config "${field.name}" must be <= ${field.max}` };
+        }
+    }
+    return { ok: true, value };
+}
+
 /**
  * Resolves an authored node's `with` against a descriptor's declared config: unknown keys and
  * type/bound mismatches refuse by name; an omitted field falls back to its declared default.
@@ -55,23 +81,9 @@ function resolveConfig(
     }
     const config: Record<string, BlockConfigValue> = {};
     for (const field of descriptor.configSchema) {
-        // A default is resolved through the SAME type/bound checks as an authored value — a
-        // descriptor whose own default falls outside its declared bounds is a descriptor bug, and
-        // must refuse loudly rather than ship a silently-unvalidated config value.
-        const value = field.name in raw ? raw[field.name] : field.default;
-        if (value === undefined) continue;
-        if (typeof value !== field.type) {
-            return { ok: false, message: `config "${field.name}" must be a ${field.type}` };
-        }
-        if (field.type === 'number') {
-            if (field.min !== undefined && (value as number) < field.min) {
-                return { ok: false, message: `config "${field.name}" must be >= ${field.min}` };
-            }
-            if (field.max !== undefined && (value as number) > field.max) {
-                return { ok: false, message: `config "${field.name}" must be <= ${field.max}` };
-            }
-        }
-        config[field.name] = value;
+        const resolved = resolveField(field, raw);
+        if (!resolved.ok) return resolved;
+        if (resolved.value !== undefined) config[field.name] = resolved.value;
     }
     return { ok: true, config };
 }
@@ -99,6 +111,63 @@ function namespacePrompt(prompt: string, prefix: string, internalNames: Readonly
         if (match && internalNames.has(match[1]!)) return `{{${prefix}${match[1]}.output}}`;
         return whole;
     });
+}
+
+type BlockExpansionResult =
+    | {
+          ok: true;
+          nodes: AuthoredWorkflowDefinition['nodes'];
+          edges: AuthoredWorkflowDefinition['edges'];
+          entry: string;
+          exit: string;
+      }
+    | { ok: false; refusal: CompileRefusal };
+
+/**
+ * One block node's expansion: the registry lookup, availability and config checks a block
+ * reference needs before `expand()` may run, then the namespaced nodes/edges and entry/exit the
+ * caller splices into the compiled graph. Split out of `compileDefinition` so its own four
+ * sequential refusals do not add to that function's complexity budget.
+ */
+function expandBlockNode(node: BlockNode, registry: BlockRegistry): BlockExpansionResult {
+    const descriptor = registry.get(node.uses);
+    if (!descriptor) {
+        return {
+            ok: false,
+            refusal: { code: 'UNKNOWN_BLOCK', message: `node "${node.name}" uses unknown block "${node.uses}"` },
+        };
+    }
+    if (!descriptor.available) {
+        return {
+            ok: false,
+            refusal: {
+                code: 'BLOCK_UNAVAILABLE',
+                message: `node "${node.name}" uses "${node.uses}", which is not yet available`,
+            },
+        };
+    }
+    const resolved = resolveConfig(descriptor, node.with ?? {});
+    if (!resolved.ok) {
+        return {
+            ok: false,
+            refusal: { code: 'BAD_BLOCK_CONFIG', message: `node "${node.name}": ${resolved.message}` },
+        };
+    }
+
+    const expansion = descriptor.expand(node.name, resolved.config);
+    const prefix = `${node.name}--`;
+    const internalNames = new Set(expansion.nodes.map((inner) => inner.name));
+    const nodes = expansion.nodes.map((inner) => ({
+        ...inner,
+        name: `${prefix}${inner.name}`,
+        prompt: namespacePrompt(inner.prompt, prefix, internalNames),
+    }));
+    const edges = expansion.edges.map((inner) => ({
+        ...inner,
+        from: `${prefix}${inner.from}`,
+        to: `${prefix}${inner.to}`,
+    }));
+    return { ok: true, nodes, edges, entry: `${prefix}${expansion.entry}`, exit: `${prefix}${expansion.exit}` };
 }
 
 /**
@@ -131,45 +200,12 @@ export function compileDefinition(
             continue;
         }
 
-        const descriptor = registry.get(node.uses);
-        if (!descriptor) {
-            return {
-                ok: false,
-                refusal: { code: 'UNKNOWN_BLOCK', message: `node "${node.name}" uses unknown block "${node.uses}"` },
-            };
-        }
-        if (!descriptor.available) {
-            return {
-                ok: false,
-                refusal: {
-                    code: 'BLOCK_UNAVAILABLE',
-                    message: `node "${node.name}" uses "${node.uses}", which is not yet available`,
-                },
-            };
-        }
-        const resolved = resolveConfig(descriptor, node.with ?? {});
-        if (!resolved.ok) {
-            return {
-                ok: false,
-                refusal: { code: 'BAD_BLOCK_CONFIG', message: `node "${node.name}": ${resolved.message}` },
-            };
-        }
-
-        const expansion = descriptor.expand(node.name, resolved.config);
-        const prefix = `${node.name}--`;
-        const internalNames = new Set(expansion.nodes.map((inner) => inner.name));
-        for (const inner of expansion.nodes) {
-            nodes.push({
-                ...inner,
-                name: `${prefix}${inner.name}`,
-                prompt: namespacePrompt(inner.prompt, prefix, internalNames),
-            });
-        }
-        for (const inner of expansion.edges) {
-            edges.push({ ...inner, from: `${prefix}${inner.from}`, to: `${prefix}${inner.to}` });
-        }
-        entryOf.set(node.name, `${prefix}${expansion.entry}`);
-        exitOf.set(node.name, `${prefix}${expansion.exit}`);
+        const result = expandBlockNode(node, registry);
+        if (!result.ok) return result;
+        nodes.push(...result.nodes);
+        edges.push(...result.edges);
+        entryOf.set(node.name, result.entry);
+        exitOf.set(node.name, result.exit);
     }
 
     for (const edge of authored.edges) {

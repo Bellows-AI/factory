@@ -1973,6 +1973,7 @@
         .env-tab,
         .composer-start button,
         .composer-select,
+        .settings-toggle,
         .legend-button {
             align-items: center;
             display: inline-flex;
@@ -2805,6 +2806,16 @@
     .panel-actions {
         display: flex;
         gap: 8px;
+    }
+
+    /* The default-workflow settings panel's two switches and the composer's matching pair
+       (issue 208): a labelled checkbox row, the one boolean-control primitive this design system
+       has — no dedicated toggle/switch family exists. */
+    .settings-toggle {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
     }
 
     .env-tabs {

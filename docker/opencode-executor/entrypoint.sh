@@ -23,6 +23,28 @@ if [ -e "$WORKDIR/.git" ]; then
     git config --global --add safe.directory "$WORKDIR" 2>/dev/null || true
 fi
 
+# The baked bash table allows merging only `origin/main`, by exact match — a glob allow would
+# bless compounds. A repo whose default is another name gets the same three exact allows for
+# its own default, read from origin/HEAD, appended so they rank after the deny globs
+# (last-match-wins). No origin/HEAD, or a default of main: nothing to add.
+OPENCODE_JSON="$HOME/.config/opencode/opencode.json"
+DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != main ] && [ -f "$OPENCODE_JSON" ]; then
+    DEFAULT_BRANCH="$DEFAULT_BRANCH" OPENCODE_JSON="$OPENCODE_JSON" node -e "
+        const fs = require('fs');
+        const f = process.env.OPENCODE_JSON;
+        const ref = 'origin/' + process.env.DEFAULT_BRANCH;
+        const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+        c.permission ??= {};
+        c.permission.bash ??= {};
+        for (const rule of ['git merge ' + ref, 'git merge --no-edit ' + ref, 'git merge ' + ref + ' --no-edit']) {
+            c.permission.bash[rule] = 'allow';
+        }
+        fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
+    " || echo "opencode-executor: could not allow merging $DEFAULT_BRANCH in opencode.json" >&2
+fi
+
 # The driver points XDG_DATA_HOME at a per-member directory on the workspaces volume so the
 # session database outlives the container — that persistence is what makes a follow-up's
 # `--session <id>` resumable at all. The directory may not exist yet for a member's first run;

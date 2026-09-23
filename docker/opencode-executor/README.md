@@ -96,8 +96,10 @@ HEAD off the task branch). `git merge` initiation stays denied except for the ex
 `git merge origin/main` forms (with `--continue`): merging the remote default in is the one exit
 from a conflicts dead-end the sync's rebase refuses, and a merge moves neither HEAD nor the
 published commits — the claude-executor's parser accepts any `origin/<ref>` operand, where this
-table's exact-match allows cannot glob, so a repo whose default is not `main` needs the table
-widened by hand. Because opencode
+table's exact-match allows cannot glob, so the entrypoint reads the checkout's `origin/HEAD` at
+start and, for a default other than `main`, appends the same three exact allows for
+`origin/<default>`. A redirected or piped merge (`git merge origin/main 2>&1 | tail`) is a
+different string and stays denied here. Because opencode
 resolves rules with the **last matching rule winning**, key order is load-bearing: the catch-all
 first, the deny globs next, the allows last — and the allows are **exact matches** (`git worktree
 list`, `git rebase --abort`, `git merge --quit`, …). A trailing-glob allow (say

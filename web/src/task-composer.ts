@@ -5,6 +5,7 @@
  * function here is testable without a DOM, which is what lets the offline suite pin the launch
  * contract the board enforces.
  */
+import type { QueueTaskInput } from './api/useTasks.js';
 
 /**
  * One declared launch parameter of a workflow, as the list route serves it: the name the prompts
@@ -170,42 +171,131 @@ export function paramFieldVerdict(
 }
 
 /**
+ * The default workflow's two optional steps (issue 208, riding issue 203's frozen settings API): the
+ * mandatory prompt → gates → publish spine is not a choice, so only these two travel.
+ */
+export interface DefaultWorkflowSteps {
+    reviewReconciliation: boolean;
+    mergeConflictAutofix: boolean;
+}
+
+/**
+ * One task's explicit inversions of the saved defaults — empty until the member touches a
+ * checkbox. A field present here always wins over the saved value; an absent field tracks it.
+ */
+export type DefaultStepOverrides = Partial<DefaultWorkflowSteps>;
+
+/**
+ * The checkboxes' displayed (and submitted) values: an untouched field tracks the latest saved
+ * settings live — a poll refresh updates it — and a touched field is locked to the member's
+ * explicit choice regardless of what the poll delivers next. Null before the saved settings have
+ * answered at all: there is nothing yet to show an effective value for.
+ */
+export function effectiveDefaultSteps(
+    saved: DefaultWorkflowSteps | null,
+    overrides: DefaultStepOverrides
+): DefaultWorkflowSteps | null {
+    if (saved === null) return null;
+    return {
+        reviewReconciliation: overrides.reviewReconciliation ?? saved.reviewReconciliation,
+        mergeConflictAutofix: overrides.mergeConflictAutofix ?? saved.mergeConflictAutofix,
+    };
+}
+
+/** One checkbox click: flips its EFFECTIVE value into an explicit override, the other untouched. */
+export function toggleDefaultStep(
+    overrides: DefaultStepOverrides,
+    key: keyof DefaultWorkflowSteps,
+    saved: DefaultWorkflowSteps | null
+): DefaultStepOverrides {
+    const current = effectiveDefaultSteps(saved, overrides)?.[key] ?? true;
+    return { ...overrides, [key]: !current };
+}
+
+/**
+ * The submitted `defaultWorkflow` field: the effective step set beside an explicit Default
+ * workflow choice, and nothing at all beside a named custom workflow — the issue's own contract
+ * ("Custom workflow selection sends no `defaultWorkflow` object").
+ */
+export function defaultWorkflowPayload(
+    workflow: string,
+    effective: DefaultWorkflowSteps | null
+): DefaultWorkflowSteps | null {
+    return workflow === '' ? effective : null;
+}
+
+type QueueBase = Omit<QueueTaskInput, 'defaultWorkflow'>;
+
+/** The `POST /api/jobs` body: `defaultWorkflow` omitted beside a named custom workflow (issue 208). */
+export function queueBody(base: QueueBase, defaultWorkflow: DefaultWorkflowSteps | null): QueueTaskInput {
+    return { ...base, ...(defaultWorkflow !== null ? { defaultWorkflow } : {}) };
+}
+
+/** "prompt, gates, publish[, plus …]" — the final step set, shared by the preflight sentence. */
+export function defaultWorkflowStepSummary(steps: DefaultWorkflowSteps): string {
+    const extra: string[] = [];
+    if (steps.reviewReconciliation) extra.push('iterate on PR review comments');
+    if (steps.mergeConflictAutofix) extra.push('repair merge conflicts');
+    return extra.length === 0 ? 'prompt, gates, publish' : `prompt, gates, publish, plus ${extra.join(' and ')}`;
+}
+
+/**
  * The one sentence before Start: what will run, where, guided by what — from the ACTUAL choices,
- * never claiming the workflow's interpolation has already happened. No workflow chosen is its
- * own sentence: the prompt runs as written.
+ * never claiming the workflow's interpolation has already happened. A named workflow is its own
+ * clause; Default workflow describes the final step set once the saved settings have answered,
+ * and falls back to the old raw-prompt sentence before they have — which stays true either way,
+ * since today's launch runs the raw prompt regardless of the checkboxes (docs/workflows.md: "no
+ * job behavior yet reads them").
  */
 export function preflightSentence(input: {
     /** `owner/name` of the chosen repository, or null for none. */
     repo: string | null;
     /** The chosen executor's name, or null while no configured executor can be selected. */
     executor: string | null;
-    /** The chosen workflow's name, or null for no process. */
+    /** The chosen workflow's name, or null for Default workflow. */
     workflow: string | null;
+    /** The default workflow's effective step set, present only beside a null `workflow`. */
+    defaultSteps?: DefaultWorkflowSteps | null;
 }): string {
     const where = input.repo === null ? 'Will run without a repository' : `Will run in ${input.repo}`;
     const who = input.executor === null ? 'after you configure an executor' : `using ${input.executor} executor`;
+    const defaultSteps = input.defaultSteps ?? null;
     const what =
-        input.workflow === null ? '. Your prompt will run as written.' : `, with the ${input.workflow} workflow.`;
+        input.workflow !== null
+            ? `, with the ${input.workflow} workflow.`
+            : // "Selected", never "will run": the mandatory spine already runs for every task (the
+              // driver's own checkout/gates/publish machinery, workflow or not), but the board
+              // reads no job behavior from the optional steps yet (docs/workflows.md) — a launch
+              // claim here would be false the moment a member turned one on.
+              defaultSteps !== null
+              ? `. Default workflow selected: ${defaultWorkflowStepSummary(defaultSteps)}.`
+              : '. Your prompt will run as written.';
     return `${where} ${who}${what}`;
 }
 
-/** The one reason Start is dark, in precedence order: in flight, executor, prompt, workflow params. */
-export type StartBlocker = 'in-flight' | 'missing-executor' | 'empty-prompt' | 'invalid-params';
+/** The one reason Start is dark, in precedence order: in flight, executor, prompt, defaults, workflow params. */
+export type StartBlocker = 'in-flight' | 'missing-executor' | 'empty-prompt' | 'defaults-unresolved' | 'invalid-params';
 
 /**
  * Why Start cannot start, or null when it can. The order is the message the member needs: an
  * in-flight queue must not be re-entered, a task cannot run without an executor profile, an empty
- * prompt is the missing task itself, and workflow details come last.
+ * prompt is the missing task itself, an unresolved Default workflow choice comes next — launching
+ * before the saved settings answer would silently omit the member's saved step pair from the
+ * submitted JSON — and a named workflow's own field validation comes last. `defaultsUnresolved`
+ * defaults to false: it means nothing beside a named custom workflow, which supplies its own
+ * `paramsInvalid` instead.
  */
 export function startBlocker(input: {
     sending: boolean;
     executorMissing: boolean;
     promptEmpty: boolean;
+    defaultsUnresolved?: boolean;
     paramsInvalid: boolean;
 }): StartBlocker | null {
     if (input.sending) return 'in-flight';
     if (input.executorMissing) return 'missing-executor';
     if (input.promptEmpty) return 'empty-prompt';
+    if (input.defaultsUnresolved) return 'defaults-unresolved';
     if (input.paramsInvalid) return 'invalid-params';
     return null;
 }
@@ -230,8 +320,9 @@ export function freshWorkflowDraft(): {
     workflow: string;
     storedParams: { workflowId: string | null; values: Record<string, string> };
     paramTouched: Record<string, boolean>;
+    defaultStepOverrides: DefaultStepOverrides;
 } {
-    return { workflow: '', storedParams: { workflowId: null, values: {} }, paramTouched: {} };
+    return { workflow: '', storedParams: { workflowId: null, values: {} }, paramTouched: {}, defaultStepOverrides: {} };
 }
 
 /**

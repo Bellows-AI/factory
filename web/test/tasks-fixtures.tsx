@@ -62,6 +62,8 @@ export interface ComposerArgs {
         | null;
     actionError?: string | null;
     sending?: boolean;
+    /** The saved default-workflow step settings; null while they have not answered yet. */
+    defaultWorkflowSettings?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean } | null;
 }
 
 export const renderComposer = ({
@@ -71,6 +73,7 @@ export const renderComposer = ({
     workflows = null,
     actionError = null,
     sending = false,
+    defaultWorkflowSettings = null,
 }: ComposerArgs = {}) =>
     // The Settings remediation is an SPA Link, so the panel needs a routing context to render.
     renderToStaticMarkup(
@@ -81,6 +84,7 @@ export const renderComposer = ({
                 onRetryWorkspace={() => {}}
                 executors={executors}
                 workflows={workflows}
+                defaultWorkflowSettings={defaultWorkflowSettings}
                 actionError={actionError}
                 sending={sending}
                 onSend={async () => null}
