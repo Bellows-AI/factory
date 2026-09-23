@@ -84,6 +84,25 @@ export const WORKFLOW_NAME = /^.{1,100}$/;
 /** A repo scope segment obeys the checkout-directory rules, the same ones `repoReason` enforces. */
 export const SCOPE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
+/**
+ * One declared pre/post block-helper step a node's claim carries (issue #207's transport;
+ * threaded onto a node by a block's own `expand()` — issue #122/#133). Registry-unaware, like the
+ * rest of this file: `helperId` names an allowlisted driver-side helper the claim resolver looks
+ * up nothing about beyond passing it through, and the claim's PR-identity injection (see
+ * `resolveClaimHelperPlans`) is generic to every helperId alike.
+ */
+export interface WorkflowNodeHelperPlan {
+    helperId: string;
+    phase: 'pre' | 'post';
+    /** Whether this helper needs a fresh GitHub credential minted immediately before it runs. */
+    githubWriting: boolean;
+}
+
+/** A helper id: lowercase-hyphenated, its own namespace — not a node name. */
+export const HELPER_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const HELPER_ID_LIMIT = 128;
+export const HELPER_PLANS_MAX = 4;
+
 /** One node of the graph. `kind` is closed on `agent` — see the module comment. */
 export interface WorkflowNode {
     name: string;
@@ -112,6 +131,11 @@ export interface WorkflowNode {
      * graph's exit — get the flag on their claim.
      */
     publish?: boolean;
+    /**
+     * Declared pre/post block-helper steps for this node's claim (issue #207/#122). Absent on
+     * every node that declares none, which is every node outside a block's own expansion today.
+     */
+    helperPlans?: WorkflowNodeHelperPlan[];
 }
 
 /** A block config value: a bounded JSON scalar — workflow-schema.ts knows no block's real shape. */

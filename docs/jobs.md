@@ -573,14 +573,18 @@ validated/bounded JSON input, and whether it writes to GitHub, never arbitrary s
 `BoardJob.helperPlans` carries the declared plans on a claim; `runWorkflowHelper`'s seam is
 `Runner.runHelper(job, plan, token?)`, one shared `HelperResult` either side answers.
 
-**This is transport only, and nothing produces a real plan yet.** Issue #204's compiler expands a
-`block` node into ordinary `agent` nodes and carries no helper-plan field on `WorkflowNode` —
-`BoardJob.helperPlans` is read defensively (absent on every claim today) exactly like `job.env` on
-a board that predates it. The one shipped, allowlisted helper is `noop` — a fixture that echoes its
-bounded input back, proving the transport end to end — the same "ships the helpers only, nothing
-wired yet" honesty `driver/src/review.ts` states about its own scripts. A later issue (#122/#133,
-which own the block-specific content) threads a real plan through the compiler and the claim; this
-one owns only the generic seam, both transports, and the loop's fencing.
+**This issue shipped transport only; issue #122 is the first real producer.** `WorkflowNode.helperPlans`
+(#122) is what a block's `expand()` populates — `builtin/merge-conflict-autofix`'s `repair` node
+declares one, `merge-conflict-probe` — and `job-store-claim.ts`'s `resolveClaimHelperPlans` resolves
+it onto the claim generically (docs/workflows.md, "Built-in blocks"); `BoardJob.helperPlans` is
+still read defensively (absent on every claim outside a block's own expansion), exactly like
+`job.env` on a board that predates it. The `noop` fixture — echoing its bounded input back — stays
+shipped alongside the real one, proving the transport end to end independent of any block's own
+content, the same "ships the helpers only, nothing wired yet" honesty `driver/src/review.ts`
+states about its own scripts (issue #133's `github-review-reconcile` has not landed and still
+threads nothing). This issue's own scope was only the generic seam, both transports, and the
+loop's fencing — #122 added a helper descriptor (`driver/src/helpers.ts`) and the claim-side
+resolver, neither of which touched this seam.
 
 - **The loop owns WHEN a helper runs.** A PRE helper runs as the last step of `runSetup`
   (`driver/src/loop-helpers.ts`'s `preHelperStep`), fenced by the exact same lease/stop race

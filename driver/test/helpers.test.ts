@@ -27,12 +27,17 @@ const DESCRIPTOR: HelperDescriptor = {
 const TIGHT_DESCRIPTOR: HelperDescriptor = { ...DESCRIPTOR, outputCapBytes: 64 };
 
 describe('the helper registry', () => {
-    it('ships exactly the noop fixture, with the fixed schema/version this issue pins', () => {
-        expect(HELPER_REGISTRY.size).toBe(1);
+    it('ships the noop fixture and the merge-conflict-autofix probe, with their fixed schema/version', () => {
+        expect(HELPER_REGISTRY.size).toBe(2);
         const noop = lookupHelper('noop');
         expect(noop).not.toBeNull();
         expect(noop?.schema).toBe('helper-noop/v1');
         expect(noop?.version).toBe(1);
+
+        const probe = lookupHelper('merge-conflict-probe');
+        expect(probe).not.toBeNull();
+        expect(probe?.schema).toBe('merge-conflict-probe/v1');
+        expect(probe?.version).toBe(1);
     });
 
     it('answers null for an id nothing registered — unknown BEFORE any container starts', () => {

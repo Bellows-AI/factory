@@ -1,4 +1,5 @@
 import { ERROR_CODES } from '@factory-ai/core';
+import { resolveHelperPlans } from './workflow-schema-validate-helper-plans.js';
 import { isSafePattern } from './workflow-pattern.js';
 import {
     BLOCK_CONFIG_KEY,
@@ -50,7 +51,7 @@ function stepRefuse<T>(code: DefinitionRefusal['code'], message: string): StepRe
     return { ok: false, refusal: { code, message } };
 }
 
-const KNOWN_AGENT_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish']);
+const KNOWN_AGENT_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish', 'helperPlans']);
 const KNOWN_BLOCK_NODE_KEYS = new Set(['name', 'kind', 'uses', 'with']);
 const KNOWN_EDGE_KEYS = new Set(['from', 'to', 'when', 'max']);
 const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges', 'params']);
@@ -307,6 +308,8 @@ function parseAgentNode(node: Record<string, unknown>, i: number, name: string):
     if (node.publish !== undefined && typeof node.publish !== 'boolean') {
         return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].publish must be a boolean`);
     }
+    const helperPlans = resolveHelperPlans(node, i);
+    if (!helperPlans.ok) return helperPlans;
     return {
         ok: true,
         value: {
@@ -316,6 +319,7 @@ function parseAgentNode(node: Record<string, unknown>, i: number, name: string):
             prompt: node.prompt,
             ...(node.gates !== undefined ? { gates: node.gates as boolean } : {}),
             ...(node.publish !== undefined ? { publish: node.publish as boolean } : {}),
+            ...(helperPlans.value !== undefined ? { helperPlans: helperPlans.value } : {}),
         },
     };
 }

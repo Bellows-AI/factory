@@ -358,33 +358,35 @@ describe('compileDefinition — unknown and unavailable blocks', () => {
 });
 
 describe('the real, shipped registry', () => {
-    it('lists both reserved ids as unavailable, with a catalog-facing description and configSchema', () => {
+    it('lists both reserved ids, with a catalog-facing description and configSchema', () => {
         const catalog = blockCatalog();
         expect(catalog.map((b) => b.id).sort()).toEqual(
             ['builtin/github-review-reconcile', 'builtin/merge-conflict-autofix'].sort()
         );
         for (const entry of catalog) {
-            expect(entry.available).toBe(false);
             expect(typeof entry.description).toBe('string');
             expect(entry.description.length).toBeGreaterThan(0);
             expect(Array.isArray(entry.configSchema)).toBe(true);
             expect(entry).not.toHaveProperty('expand');
         }
+        // github-review-reconcile is issue #133's own scope and has not landed; merge-conflict-autofix
+        // (issue #122) has — its own compiler coverage lives in
+        // workflow-block-merge-conflict-autofix.test.ts.
+        expect(catalog.find((b) => b.id === 'builtin/github-review-reconcile')?.available).toBe(false);
+        expect(catalog.find((b) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
     });
 
-    it('refuses BLOCK_UNAVAILABLE for both reserved ids against the real registry — unavailable blocks cannot launch', () => {
-        for (const uses of ['builtin/github-review-reconcile', 'builtin/merge-conflict-autofix']) {
-            const authored: AuthoredWorkflowDefinition = {
-                entry: 'step',
-                params: [],
-                nodes: [{ name: 'step', kind: 'block', uses }],
-                edges: [],
-            };
-            expect(compileDefinition(authored, BLOCK_REGISTRY)).toMatchObject({
-                ok: false,
-                refusal: { code: 'BLOCK_UNAVAILABLE' },
-            });
-        }
+    it('refuses BLOCK_UNAVAILABLE for the still-unimplemented reserved id against the real registry', () => {
+        const authored: AuthoredWorkflowDefinition = {
+            entry: 'step',
+            params: [],
+            nodes: [{ name: 'step', kind: 'block', uses: 'builtin/github-review-reconcile' }],
+            edges: [],
+        };
+        expect(compileDefinition(authored, BLOCK_REGISTRY)).toMatchObject({
+            ok: false,
+            refusal: { code: 'BLOCK_UNAVAILABLE' },
+        });
     });
 
     it('refuses UNKNOWN_BLOCK for an id the registry never reserved', () => {

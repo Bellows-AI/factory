@@ -283,13 +283,16 @@ describe('GET /api/workflow-blocks', () => {
             ['builtin/github-review-reconcile', 'builtin/merge-conflict-autofix'].sort()
         );
         for (const block of blocks) {
-            expect(block.available).toBe(false);
             expect(typeof block.description).toBe('string');
             expect(Array.isArray(block.configSchema)).toBe(true);
             expect(block).not.toHaveProperty('expand');
             expect(block).not.toHaveProperty('prompt');
             expect(block).not.toHaveProperty('script');
         }
+        // github-review-reconcile is issue #133's own scope and has not landed; merge-conflict-autofix
+        // (issue #122) has.
+        expect(blocks.find((b: { id: string }) => b.id === 'builtin/github-review-reconcile')?.available).toBe(false);
+        expect(blocks.find((b: { id: string }) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
     });
 });
 

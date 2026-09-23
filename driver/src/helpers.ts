@@ -75,20 +75,30 @@ export interface HelperDescriptor {
 
 const BYTES_PER_KB = 1024;
 const NOOP_OUTPUT_CAP_KB = 8;
+const MERGE_CONFLICT_PROBE_OUTPUT_CAP_KB = 16;
 
 /** The noop helper's own bound — generous for a fixture, far under any real helper's own cap. */
 const NOOP_OUTPUT_CAP_BYTES = NOOP_OUTPUT_CAP_KB * BYTES_PER_KB;
+
+/**
+ * The merge-conflict-autofix block's preflight (issue #122): bounded past a real conflict's worth
+ * of paths (CONFLICTING_PATHS_MAX in the script itself), far under any concern for the argv/env
+ * value it travels as.
+ */
+const MERGE_CONFLICT_PROBE_OUTPUT_CAP_BYTES = MERGE_CONFLICT_PROBE_OUTPUT_CAP_KB * BYTES_PER_KB;
 
 /** The wall-clock bound one helper run gets, on either executor — a batch-Job-shaped aux step. */
 export const HELPER_TIMEOUT_MS = 300_000;
 
 const NOOP_SCRIPT = script('helper-noop.cjs');
+const MERGE_CONFLICT_PROBE_SCRIPT = script('merge-conflict-probe.cjs');
 
 /**
- * The one shipped descriptor: a fixture that echoes its bounded input back as its output. It
- * proves the transport (argv/env secrecy, output parsing, cleanup, failure semantics) without any
- * real board-owned side effect — the real helpers (#122/#133's own files) register here the same
- * way, once their own issues land.
+ * The shipped descriptors: `noop` is a fixture that echoes its bounded input back as its output,
+ * proving the transport (argv/env secrecy, output parsing, cleanup, failure semantics) without any
+ * real board-owned side effect. `merge-conflict-probe` is the first real one (issue #122's
+ * merge-conflict-autofix block, `server/src/db/workflow-blocks/merge-conflict-autofix.ts`) —
+ * registered here exactly the same way, additive to the transport #207 shipped.
  */
 const DESCRIPTORS: readonly HelperDescriptor[] = [
     {
@@ -97,6 +107,13 @@ const DESCRIPTORS: readonly HelperDescriptor[] = [
         schema: 'helper-noop/v1',
         version: 1,
         outputCapBytes: NOOP_OUTPUT_CAP_BYTES,
+    },
+    {
+        id: 'merge-conflict-probe',
+        scriptBody: MERGE_CONFLICT_PROBE_SCRIPT,
+        schema: 'merge-conflict-probe/v1',
+        version: 1,
+        outputCapBytes: MERGE_CONFLICT_PROBE_OUTPUT_CAP_BYTES,
     },
 ];
 
