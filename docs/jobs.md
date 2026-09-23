@@ -617,6 +617,51 @@ resolver, neither of which touched this seam.
   `helperVerdict`, the same check `pollRunnerJobUntilTerminal` makes for the runner Job). Both
   transports clean up their Job/Secret and env file on every exit path.
 
+### Conclude control and composite helper programs (issue #230)
+
+**Neither transport changed for this issue.** `dockerRunHelper` and `k8s-helper-runner.ts`'s
+`runHelper` only ever resolve `lookupHelper(plan.helperId)` against a single plan — they know
+nothing of phases or composites — so both of the gaps below are closed entirely inside
+`driver/src/helpers.ts` (pure sequencing/registry) and `driver/src/loop-helpers.ts` (the loop's own
+fencing around each child call). Docker/kubernetes parity for both is therefore a property of the
+orchestration being platform-agnostic, not something either transport had to grow.
+
+- **A successful PRE helper may answer an explicit control outcome** (`HelperResult.control`):
+  `continue`, the default — absent from the wire verdict reads the same way, so every script that
+  never adopts the field keeps its exact pre-#230 result shape — or `conclude`. `conclude` is valid
+  only for a pre-helper; `preHelperStep` completes the job `succeeded` right there, through the
+  SAME `rt.report` call site an ordinary setup failure uses, with `formatConcludeOutput(result.output)`
+  as the verdict's `output` — a string passes through verbatim (so a helper's own marker
+  convention still lands on the exact final line the workflow engine's marker edges read; "The
+  edge vocabulary" in docs/workflows.md), anything else is JSON-stringified. The agent never
+  launches, no gates run, no post-helper runs, and publish is never asked for — `preHelperStep`
+  returns `STOOD_DOWN` exactly as a pre-helper failure does, just with a succeeded verdict instead
+  of a failed one. A POST helper naming `conclude` is invalid usage and fails the verdict with a
+  named `invalid_control` reason, exactly like any other post-helper failure — conclude is a
+  pre-only outcome, decided before the agent, never after it.
+- **`CompositeDescriptor` is an allowlisted, host-side helper PROGRAM**: a registered id (disjoint
+  from every script id, validated at module load — a collision, an empty or oversized step list, an
+  unregistered or nested step id, or a non-function planner/finalizer throws synchronously, so a
+  malformed registration never reaches a claim) naming an ordered list of registered SCRIPT steps
+  (never another composite — no nesting) plus two pure functions: `planStepInput` computes one
+  step's bounded input from the previous step's bounded output and the composite's own declared
+  input, and `finalize` folds every step's output, once all have succeeded, into the composite's
+  own bounded result and its own continue/conclude control. `runHelperPlan` (`helpers.ts`) is the
+  shared sequencing algorithm: a plain script plan is a single call through the caller-supplied
+  `invokeChild`, unchanged; a composite plan sequences its steps through the exact SAME
+  `invokeChild` — so every child still rides whatever fencing, per-call token-minting and bounded
+  I/O the caller already applies to a lone plan, one call per step, in declared order. A composite
+  plan cannot itself declare `githubWriting: true` (`invalid_composite_plan`, fails closed before
+  any child runs) — each step declares its own, minted only when that step actually runs, the same
+  "fresh write-token" rule every other github-writing helper follows. A child's own failure
+  propagates as the composite's own failure, unchanged and un-wrapped (its own named `reason`
+  survives, e.g. `timeout`) — no step past the failing one ever runs. `invokeChild` answering
+  `null` (a stop, a lost lease, mid-composite) abandons the remaining steps and `finalize`
+  immediately, observed BETWEEN children, not just around the composite as a whole. The one
+  shipped composite, `sequence-fixture` (two `noop` steps), exists for the same reason `noop` does:
+  proving sequencing, intermediate planning, output propagation and conclude/continue end to end
+  with no real block's own scope involved.
+
 ## The session id
 
 **The driver mints it; it never reads it back out of the container.** `claude --session-id
