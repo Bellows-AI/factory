@@ -1,11 +1,13 @@
 import type { ReactNode } from 'react';
 import { wallClock } from '../format.js';
 import { KeyValues } from '../components/KeyValues.js';
+import { RelativeTime } from '../components/RelativeTime.js';
 import type { AuthorRef, Job } from '../api/useJobs.js';
 import {
     closureOf,
     gateCounts,
     isHttpUrl,
+    isWaitingForReview,
     issueUrl,
     newestTerminalExit,
     prNumber,
@@ -24,17 +26,20 @@ function ResultSection({
     closure,
     exit,
     resultPairs,
+    waiting,
 }: {
     latest: Job;
     closure: Closure | null;
     exit: number | null;
     resultPairs: [string, ReactNode][];
+    /** An open PR-review wait (206) relabels the pill; a terminal one leaves it be. */
+    waiting: boolean;
 }) {
     return (
         <section>
             <h3 className="task-outcome-label">Result</h3>
             <p className="msg-meta">
-                <span className="pill">{latest.status}</span>
+                <span className="pill">{waiting ? 'Waiting for review' : latest.status}</span>
                 {latest.doneAt !== null ? <span className="pill chat-done">done</span> : null}
                 {closure !== null && closure.kind !== 'done' ? (
                     <span className="pill chat-stop">
@@ -46,6 +51,15 @@ function ResultSection({
                 ) : null}
                 {exit !== null ? <span className="chat-exit">exit {exit}</span> : null}
             </p>
+            {waiting ? (
+                <p className="muted">
+                    Factory is waiting for review — no executor is occupied while it waits. Waiting since{' '}
+                    <RelativeTime at={latest.waitingSince} />.
+                </p>
+            ) : null}
+            {!waiting && latest.waitTerminalReason !== null ? (
+                <p className="muted">Review wait ended: {latest.waitTerminalReason}.</p>
+            ) : null}
             {resultPairs.length > 0 ? <KeyValues pairs={resultPairs} /> : null}
         </section>
     );
@@ -193,6 +207,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
     const counts = gateCounts(latest.gates);
     const services = latest.runtime?.services ?? null;
     const issueLink = issueUrl(latest.repo, issue);
+    const waiting = isWaitingForReview(latest);
     // A row's link is a reference, not a command: the row's label already says what it is, so
     // the value names only WHICH one — the number.
     const prLink = publish !== null && publish.url !== null && isHttpUrl(publish.url) ? publish.url : null;
@@ -223,7 +238,13 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                 <h2>Outcome</h2>
             </summary>
             <div className="task-outcome-body">
-                <ResultSection latest={latest} closure={closure} exit={exit} resultPairs={resultPairs} />
+                <ResultSection
+                    latest={latest}
+                    closure={closure}
+                    exit={exit}
+                    resultPairs={resultPairs}
+                    waiting={waiting}
+                />
                 {executionPairs.length > 0 ? (
                     <section>
                         <h3 className="task-outcome-label">Execution</h3>

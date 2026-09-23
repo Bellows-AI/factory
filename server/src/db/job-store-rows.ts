@@ -70,6 +70,10 @@ export interface JobRow {
     /** Only thread() and the grouped terminal list select it; bigint (and the sum over it) read
      * back as a string. */
     task_wall_clock_ms?: string | null;
+    /** Only thread() joins the wait lateral; absent everywhere else. */
+    wait_reason?: string | null;
+    waiting_since?: Date | null;
+    wait_terminal_reason?: string | null;
 }
 
 export const iso = (value: Date | null): string | null => (value === null ? null : value.toISOString());
@@ -410,6 +414,9 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         finishedAt: iso(row.finished_at),
         wallClockMs: row.wall_clock_ms == null ? null : Number(row.wall_clock_ms),
         taskWallClockMs: row.task_wall_clock_ms == null ? null : Number(row.task_wall_clock_ms),
+        waitReason: row.wait_reason ?? null,
+        waitingSince: row.waiting_since ? row.waiting_since.toISOString() : null,
+        waitTerminalReason: row.wait_terminal_reason ?? null,
     };
 }
 

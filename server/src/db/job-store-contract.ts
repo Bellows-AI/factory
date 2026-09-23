@@ -219,6 +219,16 @@ export interface Job {
      * has accumulated — never zero, which would claim a measurement that was never made.
      */
     taskWallClockMs: number | null;
+    /**
+     * The thread's PR-review wait (036), when it has one — the open wait first, else the most
+     * recently active terminal one, the same rule the task-summary read model follows. Carried on
+     * every member of the thread alike, since the wait belongs to the ROOT, not the run: the task
+     * view renders it beside whichever member it is looking at. Served by `thread()` only — `get`
+     * and the per-run lists answer null, exactly as they do for a thread that never waited.
+     */
+    waitReason: string | null;
+    waitingSince: string | null;
+    waitTerminalReason: string | null;
 }
 
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */

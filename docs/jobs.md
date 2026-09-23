@@ -1243,7 +1243,10 @@ durable anchor a later block layer keys its waits on, and it is already what the
 a waiting thread's `workflow_wait` row is addressed to that same `(repo, prNumber)`, GitHub's
 webhook deliveries fold into it and cancel it on PR close, and the task read model surfaces it as
 `waitReason` / `waitingSince` / `waitTerminalReason` (an open wait first, else the most recent
-terminal one).
+terminal one). Both `listTasks()` and `thread()` join it (206): an OPEN wait buckets the thread as
+`review` regardless of the row's own status — a human-blocked thread is never "running", whatever
+status a future wait-entry mechanism parks it under — and `thread()` carries the same triple on
+every member of the conversation, since the wait belongs to the root, not the run.
 
 ## Decisions
 

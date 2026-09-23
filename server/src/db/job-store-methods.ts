@@ -921,9 +921,20 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
                -- scoped: every member carries the total, so the view reads it off any of
                -- them. A sum over all-null banks is null — nothing measurable, never zero.
                sum(wall_clock_ms) over () as task_wall_clock_ms,
-               wall_clock_ms, summary
+               wall_clock_ms, summary,
+               wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
                ${authorColumns}
         from job ${authorJoin}
+        -- The thread's wait (036), carried on every member alike — the open wait first, else
+        -- the most recently active terminal one, the same rule listTasksOf() applies.
+        left join lateral (
+            select w.reason as wait_reason, w.active_at as waiting_since,
+                   w.terminal_reason as wait_terminal_reason
+            from workflow_wait w
+            where w.org_id = ${orgId} and w.root_job_id = job.root_job_id
+            order by (w.completed_at is null and w.cancelled_at is null) desc, w.active_at desc
+            limit 1
+        ) wl on true
         where org_id = ${orgId}
           and root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
         order by job.created_at, job.id
@@ -1097,7 +1108,13 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
                    -- differs from the boundary below the millisecond.
                    date_trunc('milliseconds',
                               greatest(h.created_at, h.started_at, h.finished_at, h.done_at)) as activity_at,
-                   (h.status in ('succeeded', 'failed', 'dead', 'stopped')) as terminal,
+                   -- An open wait (a wait row with no terminal reason yet) is terminal for
+                   -- bucketing the same way a settled status is: a thread parked on a human's
+                   -- review is never "running", whatever status the row itself carries while
+                   -- parked on it (206). A wait that has gone terminal carries no extra weight
+                   -- here — the status/done rule alone decides, same as a thread that never waited.
+                   (h.status in ('succeeded', 'failed', 'dead', 'stopped')
+                       or (wl.wait_reason is not null and wl.wait_terminal_reason is null)) as terminal,
                    cu.id as creator_id, cu.github_login as creator_login,
                    cu.display_name as creator_name, cu.avatar_url as creator_avatar_url,
                    wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
