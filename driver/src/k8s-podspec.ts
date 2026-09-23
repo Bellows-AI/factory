@@ -414,6 +414,70 @@ export interface AuxJobSpec {
     };
 }
 
+/** One aux Job's container — the part every builder below decides for itself. */
+type AuxContainer = AuxJobSpec['spec']['template']['spec']['containers'][number];
+
+/** What one aux Job builder supplies beyond the skeleton every one of them shares. */
+interface AuxJobSpecInput {
+    name: string;
+    deadlineSeconds: number;
+    container: AuxContainer;
+    /** The uid:gid the gate writes the shared worktree as — GATE_UID/GATE_GID. Gate only. */
+    securityContext?: { runAsUser: number; runAsGroup: number };
+}
+
+/**
+ * The skeleton every aux Job builder shares: `factory.job`/`factory.lease` labels (twice — Job
+ * and pod template), no ServiceAccount token, `backoffLimit: 0` (the board owns retries, never
+ * the kubelet), the finished-Job TTL, and the workspaces PVC as the one named volume. Each
+ * builder supplies its own name, deadline and container body — command, env, envFrom,
+ * workingDir, volume mounts — which is the part that actually differs and that the spec tests
+ * read. `runnerJobSpec` stays separate: its shape is pinned field by field, and sharing a type
+ * with the aux Jobs would make "the runner has no envFrom" unreadable.
+ */
+export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpecInput): AuxJobSpec {
+    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: input.name, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: input.deadlineSeconds,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    ...(input.securityContext ? { securityContext: input.securityContext } : {}),
+                    containers: [input.container],
+                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
+                },
+            },
+        },
+    };
+}
+
+/**
+ * One `workspaces` volumeMount, scoped to `subPath` — the subtree every aux Job's container
+ * mounts, read-write unless the caller marks it read-only (the `.bellows.yaml` readout's own).
+ */
+export function workspaceMount(
+    config: DriverConfig,
+    subPath: string,
+    readOnly?: boolean
+): { name: 'workspaces'; mountPath: string; subPath: string; readOnly?: boolean } {
+    return {
+        name: 'workspaces',
+        mountPath: `${config.workspaceMount}/${subPath}`,
+        subPath,
+        ...(readOnly ? { readOnly } : {}),
+    };
+}
+
 /** Sixteen hex characters naming one attempt-scoped run: readable in `kubectl get jobs`, and — at 64 bits — collision-proof at any real concurrency. Eight characters (32 bits) let two simultaneous attempts collide on one Job name, and the apiserver rejects the loser with AlreadyExists. */
 const HASH_HEX_LENGTH = 16;
 export const hash16 = (input: string): string =>
@@ -488,56 +552,33 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
         throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
     }
     const jobName = gateJobName(job, gateName, run);
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
     // The mount is scoped to the checkout key's own `<orgId>/<userId>` half — the same subtree
     // the job's runner mounts. Both segments are asserted by GATE_KEY before the split.
     const subPath = key.split('/').slice(0, 2).join('/');
-    return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: jobName, labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: Math.max(1, Math.round(gateTimeoutMs / MS_PER_SECOND)),
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    // The gate writes the shared task worktree, so it writes as the same
-                    // uid:gid every other writer on that tree uses — the executor images'
-                    // `USER node` (uid 1000), which the sync, reclaim and runner Jobs run as.
-                    // The declared image's own default (root, usually) would leave gate-written
-                    // files the uid-1000 reclaim can never remove, and the tree would stick for
-                    // every later turn of the thread (observed 2026-09-13 on the docker twin).
-                    // HOME moves to /tmp with the uid: the image's own HOME (/root) is
-                    // unwritable for a non-root uid, and a gate that npm-installs needs a
-                    // writable cache directory.
-                    securityContext: { runAsUser: GATE_UID, runAsGroup: GATE_GID },
-                    containers: [
-                        {
-                            // A container name is a 63-char DNS label — the Job name's roomy
-                            // subdomain bound does not apply to it, so the short hash stands in.
-                            name: `gate-${hash16(`${jobName}|${command}`)}`,
-                            image,
-                            imagePullPolicy: config.imagePullPolicy,
-                            command: ['sh', '-c', command],
-                            workingDir: `${config.workspaceMount}/${key}`,
-                            env: [{ name: 'HOME', value: GATE_HOME }],
-                            ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
-                            volumeMounts: [
-                                { name: 'workspaces', mountPath: `${config.workspaceMount}/${subPath}`, subPath },
-                            ],
-                        },
-                    ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
+    return auxJobSpec(config, job, {
+        name: jobName,
+        deadlineSeconds: Math.max(1, Math.round(gateTimeoutMs / MS_PER_SECOND)),
+        // The gate writes the shared task worktree, so it writes as the same uid:gid every
+        // other writer on that tree uses — the executor images' `USER node` (uid 1000), which
+        // the sync, reclaim and runner Jobs run as. The declared image's own default (root,
+        // usually) would leave gate-written files the uid-1000 reclaim can never remove, and the
+        // tree would stick for every later turn of the thread (observed 2026-09-13 on the docker
+        // twin). HOME moves to /tmp with the uid: the image's own HOME (/root) is unwritable for
+        // a non-root uid, and a gate that npm-installs needs a writable cache directory.
+        securityContext: { runAsUser: GATE_UID, runAsGroup: GATE_GID },
+        container: {
+            // A container name is a 63-char DNS label — the Job name's roomy subdomain bound
+            // does not apply to it, so the short hash stands in.
+            name: `gate-${hash16(`${jobName}|${command}`)}`,
+            image,
+            imagePullPolicy: config.imagePullPolicy,
+            command: ['sh', '-c', command],
+            workingDir: `${config.workspaceMount}/${key}`,
+            env: [{ name: 'HOME', value: GATE_HOME }],
+            ...(envSecretName ? { envFrom: [{ secretRef: { name: envSecretName } }] } : {}),
+            volumeMounts: [workspaceMount(config, subPath)],
         },
-    };
+    });
 }
 
 /**
@@ -607,48 +648,21 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                 `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
-    const jobName = bellowsJobName(job);
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
-    return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: jobName, labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: BELLOWS_READ_DEADLINE_SECONDS,
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    containers: [
-                        {
-                            name: 'bellows-read',
-                            image: executorImage(config, job.executorType),
-                            imagePullPolicy: config.imagePullPolicy,
-                            command: ['sh', '-c', bellowsReadScript],
-                            // The readout's parameters as literal env values — a path and two
-                            // constants shared with the splitter, never a credential (the same
-                            // justification the sync's REPO/WORKTREE/BRANCH literals give).
-                            env: Object.entries(bellowsReadEnv(config, job)).map(([name, value]) => ({ name, value })),
-                            volumeMounts: [
-                                {
-                                    name: 'workspaces',
-                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
-                                    readOnly: true,
-                                    subPath: workspaceSubPathOf(job),
-                                },
-                            ],
-                        },
-                    ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
+    return auxJobSpec(config, job, {
+        name: bellowsJobName(job),
+        deadlineSeconds: BELLOWS_READ_DEADLINE_SECONDS,
+        container: {
+            name: 'bellows-read',
+            image: executorImage(config, job.executorType),
+            imagePullPolicy: config.imagePullPolicy,
+            command: ['sh', '-c', bellowsReadScript],
+            // The readout's parameters as literal env values — a path and two constants shared
+            // with the splitter, never a credential (the same justification the sync's
+            // REPO/WORKTREE/BRANCH literals give).
+            env: Object.entries(bellowsReadEnv(config, job)).map(([name, value]) => ({ name, value })),
+            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job), true)],
         },
-    };
+    });
 }
 
 /**
@@ -692,51 +706,25 @@ export function claudeTurnsJobSpec(
     if (!JOB_ID.test(sessionId)) {
         throw new Error(`refusing to count turns for job ${job.id}: not a session id: ${sessionId}`);
     }
-    const jobName = claudeTurnsJobName(job);
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
-    return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: jobName, labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    containers: [
-                        {
-                            name: 'claude-turns',
-                            image: executorImage(config, job.executorType),
-                            imagePullPolicy: config.imagePullPolicy,
-                            command: ['node', '-e', claudeTurnsScript],
-                            // Both travel as env VALUES — the script is static, so nothing
-                            // board-derived is ever part of its text.
-                            env: [
-                                { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
-                                { name: 'CLAUDE_SESSION_ID', value: sessionId },
-                                // The per-run delta bound, exactly as docker passes it.
-                                { name: 'RUN_STARTED_AT', value: startedAt },
-                            ],
-                            volumeMounts: [
-                                {
-                                    name: 'workspaces',
-                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
-                                    subPath: workspaceSubPathOf(job),
-                                },
-                            ],
-                        },
-                    ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
+    return auxJobSpec(config, job, {
+        name: claudeTurnsJobName(job),
+        deadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
+        container: {
+            name: 'claude-turns',
+            image: executorImage(config, job.executorType),
+            imagePullPolicy: config.imagePullPolicy,
+            command: ['node', '-e', claudeTurnsScript],
+            // Both travel as env VALUES — the script is static, so nothing board-derived is
+            // ever part of its text.
+            env: [
+                { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
+                { name: 'CLAUDE_SESSION_ID', value: sessionId },
+                // The per-run delta bound, exactly as docker passes it.
+                { name: 'RUN_STARTED_AT', value: startedAt },
+            ],
+            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
         },
-    };
+    });
 }
 
 export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, startedAt: string): AuxJobSpec {
@@ -746,54 +734,26 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
                 `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
-    const jobName = opencodeReadoutJobName(job);
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
-    return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: jobName, labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    containers: [
-                        {
-                            name: 'opencode-readout',
-                            image: executorImage(config, job.executorType),
-                            imagePullPolicy: config.imagePullPolicy,
-                            command: ['node', '-e', opencodeReadoutScript],
-                            // Both travel as env VALUES — the script is static, so nothing
-                            // board-derived is ever part of its text. The directory scope is the
-                            // run's own working directory (the same string opencode records on the
-                            // session), because the database is per MEMBER: without it, two
-                            // concurrent tasks of one member scrape each other's runs.
-                            env: [
-                                { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
-                                { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
-                                // The per-run delta bound, exactly as docker passes it: a
-                                // follow-up resumes the root conversation, and only the cycles
-                                // this run wrote may count as its turns.
-                                { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
-                            ],
-                            volumeMounts: [
-                                {
-                                    name: 'workspaces',
-                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
-                                    subPath: workspaceSubPathOf(job),
-                                },
-                            ],
-                        },
-                    ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
+    return auxJobSpec(config, job, {
+        name: opencodeReadoutJobName(job),
+        deadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
+        container: {
+            name: 'opencode-readout',
+            image: executorImage(config, job.executorType),
+            imagePullPolicy: config.imagePullPolicy,
+            command: ['node', '-e', opencodeReadoutScript],
+            // Both travel as env VALUES — the script is static, so nothing board-derived is
+            // ever part of its text. The directory scope is the run's own working directory
+            // (the same string opencode records on the session), because the database is per
+            // MEMBER: without it, two concurrent tasks of one member scrape each other's runs.
+            env: [
+                { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
+                { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
+                // The per-run delta bound, exactly as docker passes it: a follow-up resumes the
+                // root conversation, and only the cycles this run wrote may count as its turns.
+                { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
+            ],
+            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
         },
-    };
+    });
 }

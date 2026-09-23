@@ -1,8 +1,8 @@
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession } from './claim.js';
-import { hash16, jobsPath, type AuxJobSpec, workspaceSubPathOf } from './k8s-podspec.js';
-import { JOB_ID, LOG_TAIL_LINES, TTL_SECONDS } from './k8s-transport.js';
+import { auxJobSpec, hash16, jobsPath, workspaceMount, type AuxJobSpec, workspaceSubPathOf } from './k8s-podspec.js';
+import { JOB_ID, LOG_TAIL_LINES } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import {
     CREDENTIAL_HELPER,
@@ -55,63 +55,35 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
             `refusing to sync job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`
         );
     }
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
-    return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: syncJobName(job), labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: SYNC_DEADLINE_SECONDS,
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    containers: [
-                        {
-                            name: 'worktree-sync',
-                            image: executorImage(config, job.executorType),
-                            imagePullPolicy: config.imagePullPolicy,
-                            command: ['node', '-e', gitWorktreeScript],
-                            env: [
-                                { name: 'REPO', value: clone },
-                                { name: 'WORKTREE', value: worktree },
-                                { name: 'BRANCH', value: worktreeBranch(job) },
-                                // Restore mode, as a literal: a claim that continues a session
-                                // (a follow-up, or a parked job resumed) keeps the tree exactly
-                                // as the run before it left it — no fetch, no rebase, nothing
-                                // that touches the remote (issue #58).
-                                ...(claimContinuesSession(job) ? [{ name: 'RESTORE', value: '1' }] : []),
-                                // The fetch's credential helper CODE — a literal that is code,
-                                // the same class as the three path literals above (the pin on
-                                // literal credentials stays intact). Only when the claim env
-                                // carries the token the helper reads; the token itself travels
-                                // the Secret below, which git's spawned helper reads from the
-                                // pod's environment. A restore fetches nothing, so it never
-                                // carries one.
-                                ...(!claimContinuesSession(job) && claimCarriesGithubToken(job)
-                                    ? [{ name: 'CRED_HELPER', value: CREDENTIAL_HELPER }]
-                                    : []),
-                            ],
-                            ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
-                            volumeMounts: [
-                                {
-                                    name: 'workspaces',
-                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
-                                    subPath: workspaceSubPathOf(job),
-                                },
-                            ],
-                        },
-                    ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
+    return auxJobSpec(config, job, {
+        name: syncJobName(job),
+        deadlineSeconds: SYNC_DEADLINE_SECONDS,
+        container: {
+            name: 'worktree-sync',
+            image: executorImage(config, job.executorType),
+            imagePullPolicy: config.imagePullPolicy,
+            command: ['node', '-e', gitWorktreeScript],
+            env: [
+                { name: 'REPO', value: clone },
+                { name: 'WORKTREE', value: worktree },
+                { name: 'BRANCH', value: worktreeBranch(job) },
+                // Restore mode, as a literal: a claim that continues a session (a follow-up, or
+                // a parked job resumed) keeps the tree exactly as the run before it left it — no
+                // fetch, no rebase, nothing that touches the remote (issue #58).
+                ...(claimContinuesSession(job) ? [{ name: 'RESTORE', value: '1' }] : []),
+                // The fetch's credential helper CODE — a literal that is code, the same class as
+                // the three path literals above (the pin on literal credentials stays intact).
+                // Only when the claim env carries the token the helper reads; the token itself
+                // travels the Secret below, which git's spawned helper reads from the pod's
+                // environment. A restore fetches nothing, so it never carries one.
+                ...(!claimContinuesSession(job) && claimCarriesGithubToken(job)
+                    ? [{ name: 'CRED_HELPER', value: CREDENTIAL_HELPER }]
+                    : []),
+            ],
+            ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
+            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
         },
-    };
+    });
 }
 
 /**
@@ -139,46 +111,21 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
             `refusing to reclaim job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo ?? 'none'})`
         );
     }
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
-    return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: reclaimJobName(job), labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: RECLAIM_DEADLINE_SECONDS,
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    containers: [
-                        {
-                            name: 'worktree-reclaim',
-                            image: executorImage(config, job.executorType),
-                            imagePullPolicy: config.imagePullPolicy,
-                            command: ['node', '-e', gitWorktreeRemoveScript],
-                            env: [
-                                { name: 'REPO', value: clone },
-                                { name: 'WORKTREE', value: worktree },
-                            ],
-                            volumeMounts: [
-                                {
-                                    name: 'workspaces',
-                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
-                                    subPath: workspaceSubPathOf(job),
-                                },
-                            ],
-                        },
-                    ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
+    return auxJobSpec(config, job, {
+        name: reclaimJobName(job),
+        deadlineSeconds: RECLAIM_DEADLINE_SECONDS,
+        container: {
+            name: 'worktree-reclaim',
+            image: executorImage(config, job.executorType),
+            imagePullPolicy: config.imagePullPolicy,
+            command: ['node', '-e', gitWorktreeRemoveScript],
+            env: [
+                { name: 'REPO', value: clone },
+                { name: 'WORKTREE', value: worktree },
+            ],
+            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
         },
-    };
+    });
 }
 
 /**
@@ -218,51 +165,26 @@ export function publishStepJobSpec(config: DriverConfig, job: BoardJob, input: P
     if (!JOB_ID.test(job.id) || !JOB_ID.test(job.leaseToken)) {
         throw new Error(`refusing to publish job ${job.id}: its ids are not the uuids the board claims`);
     }
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
-    return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: publishStepJobName(job, step), labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: PUBLISH_STEP_DEADLINE_SECONDS,
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    containers: [
-                        {
-                            name: `publish-${step}`,
-                            image: executorImage(config, job.executorType),
-                            imagePullPolicy: config.imagePullPolicy,
-                            // The workflow's argv verbatim — the executable the docker runner
-                            // swaps in as --entrypoint is this command's head.
-                            command: [publish.entrypoint, ...publish.args],
-                            ...(publish.inRepo ? { workingDir: repo } : {}),
-                            ...(publish.envLiterals
-                                ? { env: Object.entries(publish.envLiterals).map(([name, value]) => ({ name, value })) }
-                                : {}),
-                            ...(publish.env && envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
-                            // Read-write: add/commit write the tree the run edited. Scoped to the
-                            // job's own subtree like every other mount — asserted before the spec.
-                            volumeMounts: [
-                                {
-                                    name: 'workspaces',
-                                    mountPath: `${config.workspaceMount}/${workspaceSubPathOf(job)}`,
-                                    subPath: workspaceSubPathOf(job),
-                                },
-                            ],
-                        },
-                    ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
+    return auxJobSpec(config, job, {
+        name: publishStepJobName(job, step),
+        deadlineSeconds: PUBLISH_STEP_DEADLINE_SECONDS,
+        container: {
+            name: `publish-${step}`,
+            image: executorImage(config, job.executorType),
+            imagePullPolicy: config.imagePullPolicy,
+            // The workflow's argv verbatim — the executable the docker runner swaps in as
+            // --entrypoint is this command's head.
+            command: [publish.entrypoint, ...publish.args],
+            ...(publish.inRepo ? { workingDir: repo } : {}),
+            ...(publish.envLiterals
+                ? { env: Object.entries(publish.envLiterals).map(([name, value]) => ({ name, value })) }
+                : {}),
+            ...(publish.env && envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
+            // Read-write: add/commit write the tree the run edited. Scoped to the job's own
+            // subtree like every other mount — asserted before the spec.
+            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
         },
-    };
+    });
 }
 
 /**
