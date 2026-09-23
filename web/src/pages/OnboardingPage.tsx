@@ -456,7 +456,7 @@ function useOnboardingSubmit(state: {
             }
             const done = (await response.json()) as { returnTo: string };
             window.location.assign(done.returnTo || '/');
-        } catch (e) {
+        } catch {
             setError('The selection could not be saved. Try again.');
             actionsRef.current?.focus();
         } finally {

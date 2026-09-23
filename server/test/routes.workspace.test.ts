@@ -11,7 +11,6 @@ import {
     memoryUserExecutorStore,
     memoryUserRepoStore,
     signedIn,
-    type MemoryUserExecutorStore,
     type MemoryUserRepoStore,
 } from './helpers.js';
 import { MAX_EXECUTORS_PER_USER } from '../src/routes/workspace.js';

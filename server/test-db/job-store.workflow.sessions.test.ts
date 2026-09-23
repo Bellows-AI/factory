@@ -137,7 +137,7 @@ describe.skipIf(!enabled)('workflow execution: sessions and publish', () => {
     });
 
     it("copies the primary session — not the last row's — onto a user follow-up", async () => {
-        const root = await queueWorkflowJob(walk);
+        await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
         await store.session(first.id, first.leaseToken, 'sess-primary', null);
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });

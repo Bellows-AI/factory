@@ -3,8 +3,6 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
 import type { JobStore } from '../src/db/job-store-types.js';
-import { createEnvVarStore } from '../src/db/env-var-store.js';
-import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -21,8 +19,6 @@ const OTHER_ORG = 'other-org';
 /** A well-formed uuid, only ever used where the job or the lease is expected not to exist. */
 const ABSENT = '00000000-0000-4000-8000-000000000000';
 const SESSION = '33333333-3333-4333-8333-333333333333';
-/** A second session, for proving a follow-up chains the NEWEST session and not the root's. */
-const CHAIN = '55555555-5555-4555-8555-555555555555';
 /** Shaped like a real one: opaque, prefixed, and not a uuid. */
 const REMOTE = 'cse_015tb2nHhHNrBuL7ZDhn9Wx5';
 /** A lease long enough that nothing in this suite outlives it by accident. */
@@ -62,12 +58,6 @@ const mustFollowUp = (root: string, command: string, userId: string | null): Pro
         if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
         return ref;
     });
-
-/** Reads the stamped moment off a markDone answer, refusing the refusal strings. */
-const doneAt = (result: Awaited<ReturnType<JobStore['markDone']>>): string => {
-    if (typeof result === 'string') throw new Error(`markDone refused: ${result}`);
-    return result.doneAt;
-};
 
 /** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
 const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;

@@ -105,7 +105,7 @@ describe.skipIf(!enabled)('the frozen workflow name', () => {
     });
 
     it('a user follow-up inherits the thread name', async () => {
-        const root = await queueWorkflowJob(walk);
+        await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
         await store.session(first.id, first.leaseToken, 'sess-primary', null);
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
@@ -125,7 +125,7 @@ describe.skipIf(!enabled)('the frozen workflow name', () => {
     });
 
     it('a follow-up of a follow-up inherits it too — the parent row always carries the name', async () => {
-        const root = await queueWorkflowJob(walk);
+        await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
         await store.session(first.id, first.leaseToken, 'sess-primary', null);
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });

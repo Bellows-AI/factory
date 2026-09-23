@@ -7,7 +7,6 @@ import { SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
 import type { Claim, Job } from '../src/db/job-store-types.js';
 import type { JobStore } from '../src/db/job-store-types.js';
-import { createStatsService } from '../src/stats-service.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
 import type { MemoryAuthStore } from './helpers.js';

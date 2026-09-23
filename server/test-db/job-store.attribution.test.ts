@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
-import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
@@ -11,20 +10,8 @@ const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
-/** A second store on the same pool, bound to a different org. Only the org guard uses it. */
-let otherOrgStore: JobStore;
-/** The org-less lease resolver the branch-ingest credential is verified against. */
-let orgOfLease: (jobId: string, leaseToken: string) => Promise<string | null>;
 
 const ORG = 'test-org';
-const OTHER_ORG = 'other-org';
-/** A well-formed uuid, only ever used where the job or the lease is expected not to exist. */
-const ABSENT = '00000000-0000-4000-8000-000000000000';
-const SESSION = '33333333-3333-4333-8333-333333333333';
-/** A second session, for proving a follow-up chains the NEWEST session and not the root's. */
-const CHAIN = '55555555-5555-4555-8555-555555555555';
-/** Shaped like a real one: opaque, prefixed, and not a uuid. */
-const REMOTE = 'cse_015tb2nHhHNrBuL7ZDhn9Wx5';
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 
@@ -39,8 +26,6 @@ beforeAll(async () => {
     if (!enabled) return;
     sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
-    otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
-    orgOfLease = createOrgOfLease({ sql });
 });
 
 /**
@@ -51,31 +36,6 @@ beforeAll(async () => {
  * attribution, so they pass null explicitly. The attribution cases below pass a real account.
  */
 const queue = (command: string) => store.create(command, null, { repo: null, executor: null });
-
-/**
- * Chains a follow-up that MUST be created. The refusal branches get their own dedicated cases
- * below; everywhere else a refusal is a failure of the setup, so it throws instead of hiding in
- * the union the store honestly returns.
- */
-const mustFollowUp = (root: string, command: string, userId: string | null): Promise<{ id: string }> =>
-    store.createFollowUp(root, command, userId).then((ref) => {
-        if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
-        return ref;
-    });
-
-/** Reads the stamped moment off a markDone answer, refusing the refusal strings. */
-const doneAt = (result: Awaited<ReturnType<JobStore['markDone']>>): string => {
-    if (typeof result === 'string') throw new Error(`markDone refused: ${result}`);
-    return result.doneAt;
-};
-
-/** Ages a lease into the past. Deterministic where sleeping for a one-second lease is not. */
-const expireLease = (id: string) => sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
-
-const row = (id: string) =>
-    sql<{ status: string; attempts: number; claimed_by: string | null; started_at: Date | null }[]>`
-        select status, attempts, claimed_by, started_at from job where id = ${id}
-    `;
 describe.runIf(enabled)('attribution', () => {
     /**
      * A real account for created_by to point at. Written directly rather than through the auth

@@ -5,7 +5,6 @@
  * these into `docker run` flags, the kubernetes runner into a Job spec — the values must match.
  */
 
-import { join } from 'node:path';
 import type { DriverConfig } from './config.js';
 import type { BoardJob } from './board.js';
 import { worktreeDir } from './publish.js';

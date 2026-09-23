@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { TEST_REPO, githubAuth, harness, memoryAuthStore, signedIn, stubTelemetryClient } from './helpers.js';
-
-const HTTP_OK = 200;
 const HTTP_ACCEPTED = 202;
 const HTTP_BAD_REQUEST = 400;
 
