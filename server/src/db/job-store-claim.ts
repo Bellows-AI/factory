@@ -9,7 +9,14 @@ import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import { withMintedToken } from './job-store-org-resolvers.js';
 import { workspacePathFor } from './job-store-rows.js';
-import type { JobStoreContext, JobStore, CreateJobStoreDeps, Claim } from './job-store-types.js';
+import type {
+    JobStoreContext,
+    JobStore,
+    CreateJobStoreDeps,
+    Claim,
+    ClaimHelperPlan,
+    JobStorePrs,
+} from './job-store-types.js';
 import { type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
 
 export interface ClaimCandidateRow {
@@ -37,7 +44,7 @@ async function claimNextCandidate(
     worker: string,
     leaseSeconds: number
 ): ReturnType<JobStore['claim']> {
-    const { sql, orgId, env, githubToken, gatesReader, executorConfig, hasWorkspaces } = ctx;
+    const { sql, orgId, env, githubToken, gatesReader, executorConfig, hasWorkspaces, prs } = ctx;
     return sql.begin(async (tx) => {
         // Retire what has burned its attempts, before looking for work. Without this a
         // command that kills its worker is reclaimed every time its lease expires, forever.
@@ -197,12 +204,15 @@ async function claimNextCandidate(
                 row
             );
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
-            const published = await resolveClaimPublish(
-                tx,
-                { orgId, rootJobId, workflowNode: row.workflow_node },
-                gates
-            );
-            return buildClaimResult(row, rootJobId, { claimEnv, executorType, ...gates, ...published });
+            const snapshot = row.workflow_node === null ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
+            const published = resolveClaimPublish(snapshot, row.workflow_node, gates);
+            const helperPlans = await resolveClaimHelperPlans(tx, {
+                rootJobId,
+                workflowNode: row.workflow_node,
+                snapshot,
+                prs,
+            });
+            return buildClaimResult(row, rootJobId, { claimEnv, executorType, ...gates, ...published, helperPlans });
         }
     });
 }
@@ -378,6 +388,24 @@ export interface ResolvedClaimPublish {
 }
 
 /**
+ * claim()'s ONE read of the root row's frozen workflow snapshot — the graph every per-node
+ * decision below is computed off. Shared by `resolveClaimPublish` and `resolveClaimHelperPlans`
+ * so a claim of a workflow node pays this query once, not once per resolver: both run inside the
+ * same claim transaction, which already holds the thread's advisory lock for its duration.
+ */
+async function readWorkflowSnapshot(
+    tx: TransactionSql,
+    orgId: string,
+    rootJobId: string
+): Promise<WorkflowDefinition | null> {
+    const [root] = await tx<{ workflow_snapshot: WorkflowDefinition | null }[]>`
+        select workflow_snapshot from job
+        where org_id = ${orgId} and id = ${rootJobId}
+    `;
+    return root?.workflow_snapshot ?? null;
+}
+
+/**
  * claim()'s workflow read: the graph's per-node decisions, computed off the ROOT row's snapshot.
  * `publish` is the board's answer to "may this run push" — true only out of a publish node, false
  * on every other workflow node, and ABSENT (undefined) on a workflow-less row, which the driver
@@ -385,18 +413,12 @@ export interface ResolvedClaimPublish {
  * — a fresh-eyes review need not pay suite minutes, and must not fail the thread on a gate it did
  * not touch — in which case neither gates nor a gate error ride the claim.
  */
-export async function resolveClaimPublish(
-    tx: TransactionSql,
-    ctx: { orgId: string; rootJobId: string; workflowNode: string | null },
+export function resolveClaimPublish(
+    snapshot: WorkflowDefinition | null,
+    workflowNode: string | null,
     gates: { claimGates: BellowsConfig | null; gateError: string | null }
-): Promise<ResolvedClaimPublish> {
-    const { orgId, rootJobId, workflowNode } = ctx;
+): ResolvedClaimPublish {
     if (workflowNode === null) return { publish: undefined, ...gates };
-    const [root] = await tx<{ workflow_snapshot: WorkflowDefinition | null }[]>`
-        select workflow_snapshot from job
-        where org_id = ${orgId} and id = ${rootJobId}
-    `;
-    const snapshot = root?.workflow_snapshot ?? null;
     if (snapshot === null) {
         // A node without a snapshot cannot happen on a live thread (the transition insert always
         // copies the id and the root carries the snapshot); answering "do not publish" is the
@@ -410,13 +432,47 @@ export async function resolveClaimPublish(
     return { publish, ...gates };
 }
 
+/**
+ * claim()'s block-helper read: the snapshot node's own declared `helperPlans` (issue #207's
+ * transport, #122's first producer), each resolved into a runtime plan by injecting ONE generic
+ * value every helperId alike may use — the thread's recorded PR publication, when it has one.
+ * This resolver knows no helperId's own meaning, exactly as `resolveClaimPublish` knows no
+ * block's: a block's `expand()` is the only place that decides what a helper does with its input.
+ * Absent (undefined) on a workflow-less claim and on any workflow node that declares no
+ * `helperPlans` — the ordinary case for every plain `agent` node today, unchanged from before
+ * this field existed.
+ */
+export async function resolveClaimHelperPlans(
+    tx: TransactionSql,
+    ctx: {
+        rootJobId: string;
+        workflowNode: string | null;
+        snapshot: WorkflowDefinition | null;
+        prs: JobStorePrs | undefined;
+    }
+): Promise<ClaimHelperPlan[] | undefined> {
+    const { rootJobId, workflowNode, snapshot, prs } = ctx;
+    if (workflowNode === null || snapshot === null) return undefined;
+    const declared = nodeOf(snapshot, workflowNode)?.helperPlans;
+    if (!declared || declared.length === 0) return undefined;
+    const publication = prs ? await prs.publicationOf(rootJobId, tx) : null;
+    return declared.map((plan) => ({
+        helperId: plan.helperId,
+        phase: plan.phase,
+        githubWriting: plan.githubWriting,
+        input: { publication },
+    }));
+}
+
 /** claim()'s answer, assembled from the claimed row plus its resolved env/gates/workflow halves. */
 export function buildClaimResult(
     row: ClaimCandidateRow,
     rootJobId: string,
-    resolved: ResolvedClaimExecutor & ResolvedClaimGates & ResolvedClaimPublish
+    resolved: ResolvedClaimExecutor &
+        ResolvedClaimGates &
+        ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined }
 ): Claim {
-    const { claimEnv, executorType, claimPath, claimGates, gateError, publish } = resolved;
+    const { claimEnv, executorType, claimPath, claimGates, gateError, publish, helperPlans } = resolved;
     return {
         id: row.id,
         command: row.command,
@@ -437,6 +493,7 @@ export function buildClaimResult(
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(claimGates || gateError ? { gates: claimGates, gateError } : {}),
         ...(publish !== undefined ? { publish } : {}),
+        ...(helperPlans !== undefined ? { helperPlans } : {}),
     };
 }
 

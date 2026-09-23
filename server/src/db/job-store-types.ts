@@ -7,6 +7,7 @@
 
 import type { UserRef, ExecutorType } from '@factory-ai/core';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
+import type { PublicationState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
@@ -217,6 +218,20 @@ export interface Job {
     waitTerminalReason: string | null;
 }
 
+/**
+ * One declared block-helper step, resolved onto a claim (issue #207's transport, #122's first
+ * producer): the driver's `HelperPlan` shape by wire convention — this package does not import
+ * driver's types, and never needs to; the field names alone are the contract. `input` is resolved
+ * here, generically for every helperId alike — today just the thread's recorded PR publication,
+ * when it has one.
+ */
+export interface ClaimHelperPlan {
+    helperId: string;
+    phase: 'pre' | 'post';
+    githubWriting: boolean;
+    input: unknown;
+}
+
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */
 export interface Claim {
     id: string;
@@ -313,6 +328,12 @@ export interface Claim {
      * review success never pushes (docs/workflows.md).
      */
     publish?: boolean;
+    /**
+     * Declared pre/post block-helper steps for this node's claim (issue #207/#122), resolved from
+     * the snapshot node's own `helperPlans` — absent on every claim outside a block's expansion,
+     * which is the ordinary case for every workflow-less and plain `agent`-node task today.
+     */
+    helperPlans?: ClaimHelperPlan[];
 }
 
 /**
@@ -848,6 +869,13 @@ export interface JobStorePrs {
         },
         exec?: Sql | TransactionSql
     ): Promise<void>;
+    /**
+     * The thread's recorded publication, when it has one (036) — the structured PR identity a
+     * block-helper claim injects generically (see `resolveClaimHelperPlans`), issue #122's
+     * merge-conflict-autofix block being the first consumer. Null on a thread that never
+     * published.
+     */
+    publicationOf(root: string, exec?: Sql | TransactionSql): Promise<PublicationState | null>;
     cancelWaitsForRoot(root: string, terminalReason?: string, exec?: Sql | TransactionSql): Promise<number>;
 }
 
