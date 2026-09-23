@@ -139,23 +139,37 @@ export async function pollJobToTerminal(
     return null;
 }
 
-/** The exit code and log tail off an aux Job's own pod, once its status has gone terminal. */
-async function readAuxVerdictOutput(
+/**
+ * The pod carries the exit code; the Job object does not. Found by the label the Job controller
+ * stamps on every pod it owns, not by guessing the generated name — the same discovery every
+ * verdict read below shares, with the same bounded patience `readVerdict` gives every other
+ * verdict-carrying read. When the Job succeeded but its pod is already gone (garbage-collected
+ * before the list), the Job status IS the exit code: this Job runs one pod and never retries it,
+ * so a success can only have counted an exit-0 termination. A re-claim's replaced attempt's pod
+ * can still be listed while it terminates, carrying the same job-name label — skipped, so the
+ * exit code and the log are always this run's. The log read has no retry at all: the pod may be
+ * gone for good, and the answer is already known to be "whatever we can get".
+ */
+export async function readJobPodVerdict(
     deps: K8sDeps,
     jobName: string,
-    succeeded: boolean
+    succeeded: boolean,
+    what: string
 ): Promise<{ exitCode: number | null; output: string }> {
-    const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, jobName));
-    if (pods.status >= HTTP_ERROR_STATUS) {
-        throw new Error(`listing the pods of ${jobName} answered ${pods.status}`);
+    const podsResponse = await readVerdict(deps, jobPodsPath(deps.config.k8sNamespace, jobName), what);
+    if (podsResponse.status >= HTTP_ERROR_STATUS) {
+        throw new Error(`${what} answered ${podsResponse.status}: ${podsResponse.body.slice(0, ERROR_PREVIEW_CHARS)}`);
     }
-    const pod = livePod(pods.body);
+    const pod = livePod(podsResponse.body);
     const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
     let output = '';
     if (pod?.metadata?.name) {
-        const log = await deps
-            .request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name))
-            .catch(() => ({ status: 0, body: '' }));
+        let log: K8sResponse;
+        try {
+            log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name));
+        } catch {
+            log = { status: 0, body: '' };
+        }
         if (log.status < HTTP_ERROR_STATUS) output = log.body;
     }
     return { exitCode, output };
@@ -182,7 +196,7 @@ export async function auxVerdict(deps: K8sDeps, jobName: string): Promise<{ exit
         await deps.sleep(POLL_MS);
         return auxVerdict(deps, jobName);
     }
-    return readAuxVerdictOutput(deps, jobName, result.outcome === 'succeeded');
+    return readJobPodVerdict(deps, jobName, result.outcome === 'succeeded', `listing the pods of ${jobName}`);
 }
 
 /**
@@ -261,34 +275,10 @@ export async function readRunnerVerdict(
     job: BoardJob,
     jobSucceeded: boolean
 ): Promise<{ exitCode: number | null; output: string }> {
-    const podsResponse = await readVerdict(
-        deps,
-        jobPodsPath(deps.config.k8sNamespace, runnerName(job)),
-        'listing the runner pods'
-    );
-    if (podsResponse.status >= HTTP_ERROR_STATUS) {
-        throw new Error(
-            `listing the runner pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
-    // A re-claim replaced the previous attempt's Job, and its pod can still be listed while it
-    // terminates — carrying the same job-name label. Skip terminating pods, so the exit code and
-    // the log are always this run's.
-    const pod = livePod(podsResponse.body);
-    const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (jobSucceeded ? 0 : null);
-    let output = '';
-    if (pod?.metadata?.name) {
-        // The tail, not the transcript. No retries here at all: the pod may be gone for good, and
-        // the answer is already known to be "whatever we can get".
-        let log: K8sResponse;
-        try {
-            log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name));
-        } catch {
-            log = { status: 0, body: '' };
-        }
-        if (log.status < HTTP_ERROR_STATUS) output = reportTail(log.body);
-    }
-    return { exitCode, output };
+    const verdict = await readJobPodVerdict(deps, runnerName(job), jobSucceeded, 'listing the runner pods');
+    // The tail, not the transcript — the one thing the runner's own read does beyond the shared
+    // shape, since only its output ever reaches the board's live tail.
+    return { exitCode: verdict.exitCode, output: reportTail(verdict.output) };
 }
 
 /**

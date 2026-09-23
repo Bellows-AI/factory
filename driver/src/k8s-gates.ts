@@ -3,8 +3,8 @@ import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
-import { deleteJob, deleteSecret, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import { readJobStatus, readVerdict, timedOutOf } from './k8s-poll.js';
+import { deleteJob, deleteSecret, jobPodsPath } from './k8s-auxspec.js';
+import { readJobPodVerdict, readJobStatus, timedOutOf } from './k8s-poll.js';
 import type { JobStatusResult } from './k8s-poll.js';
 import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath } from './k8s-podspec.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
@@ -17,7 +17,7 @@ import {
     TIMEOUT_EXIT_CODE,
     wait,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sRequest } from './k8s-transport.js';
 
 /**
  * The kubernetes gate manager: the second `GateManager`, the way `createKubernetesRunner` is the
@@ -130,29 +130,16 @@ async function readGateJobResult(
     jobName: string,
     succeeded: boolean
 ): Promise<{ exitCode: number; output: string }> {
-    let podsResponse: K8sResponse;
+    let verdict: { exitCode: number | null; output: string };
     try {
-        podsResponse = await readVerdict(deps, jobPodsPath(deps.config.k8sNamespace, jobName), 'listing the gate pods');
+        verdict = await readJobPodVerdict(deps, jobName, succeeded, 'listing the gate pods');
     } catch (e) {
         throw gateHarness((e as Error).message);
     }
-    if (podsResponse.status >= HTTP_ERROR_STATUS) {
-        throw gateHarness(
-            `listing the gate pods answered ${podsResponse.status}: ${podsResponse.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
-    const pod = livePod(podsResponse.body);
-    const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : 1);
-    let output = '';
-    if (pod?.metadata?.name) {
-        const log = await deps
-            .request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name))
-            .catch(() => ({ status: 0, body: '' }));
-        // Trimmed like the docker manager's exec stdout: a trailing newline is the command's,
-        // not the gate's message.
-        if (log.status < HTTP_ERROR_STATUS) output = reportTail(log.body.trim());
-    }
-    return { exitCode, output };
+    // The gate verdict needs a NUMBER, unlike the aux/runner null contract: no pod and no
+    // success is exit 1, never "no verdict". Trimmed like the docker manager's exec stdout: a
+    // trailing newline is the command's, not the gate's message.
+    return { exitCode: verdict.exitCode ?? 1, output: reportTail(verdict.output.trim()) };
 }
 
 interface GateEntry {
