@@ -5,7 +5,7 @@
  */
 
 import type { UserRef } from '@factory-ai/core';
-import type { Sql, Fragment } from 'postgres';
+import type { Sql, Fragment, TransactionSql } from 'postgres';
 import type { JobStatus, GateReport, RuntimeVitals, Job, TaskSummary, JobStoreContext } from './job-store-types.js';
 
 export interface JobRow {
@@ -202,6 +202,33 @@ export function toTask(row: TaskRow): TaskSummary {
 }
 
 export const toJobRow = (ctx: JobStoreContext, row: JobRow): Job => toJob(ctx.orgId, ctx.hasWorkspaces, row);
+
+/** One workflow successor's insert, shared by an ordinary transition and a block-wait wake (#231)
+ *  — an ordinary queued job, byte-identical either way; the caller decides which row triggers it. */
+export interface WorkflowSuccessorInput {
+    orgId: string;
+    command: string;
+    createdBy: string | null;
+    repo: string | null;
+    executor: string | null;
+    parentJobId: string;
+    sessionId: string | null;
+    rootJobId: string;
+    workflowId: string | null;
+    workflowName: string | null;
+    workflowNode: string;
+}
+
+export async function insertWorkflowSuccessor(tx: TransactionSql, input: WorkflowSuccessorInput): Promise<string> {
+    const rows = await tx<{ id: string }[]>`
+        insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node)
+        values (${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
+                ${input.executor}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
+                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode})
+        returning id
+    `;
+    return rows[0]!.id;
+}
 
 /** Separates "no such job" from "the lease is not yours" once a guarded update matched nothing. */
 export async function exists(sql: Sql, orgId: string, id: string): Promise<boolean> {

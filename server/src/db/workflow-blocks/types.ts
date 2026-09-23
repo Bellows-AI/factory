@@ -37,6 +37,14 @@ export interface BlockExpansion {
     entry: string;
     /** The internal node name outbound outer edges resolve from. */
     exit: string;
+    /**
+     * Private runtime boundaries this expansion declares (issue #231), keyed by the INTERNAL node
+     * name (pre-namespacing) — kept separate from `nodes` so it never travels through the authored
+     * node parser (which would refuse an unknown key). The compiler validates each entry against
+     * `workflow-blocks/runtime.ts`'s allowlist and attaches it to the matching namespaced node only
+     * AFTER the expanded graph has passed `validateDefinition`.
+     */
+    runtime?: Record<string, { runtime: string; params: Record<string, BlockConfigValue> }>;
 }
 
 export interface BlockDescriptor {

@@ -135,6 +135,109 @@ composite that sequences several registered script helpers with pure planning be
 are transparent to `helperId` itself — a block's `expand()` still just names an id, exactly as
 before.
 
+### Durable block waits (issue #231)
+
+**Read this before touching** `server/src/db/workflow-blocks/runtime.ts`, `038_workflow_round.sql`,
+the `runtime` field on a compiled `WorkflowNode`, or the wake-sweep/cancellation-fence code in
+`job-store-claim.ts`. This is the generic seam a block uses to park a thread after publish with no
+executor held, coalesce matching GitHub webhook deliveries, and later make exactly one continuation
+claimable — turning #202's PR-lifecycle primitives (`pr-lifecycle-store.ts`'s `enterWait`,
+`recordDelivery`, `claimReview`, cancellation) into workflow-transition behavior. It owns no
+review-repair or merge-conflict policy; no shipped block uses it yet (`builtin/github-review-reconcile`
+is still `available: false`), so today it is exercised only by fake, dependency-injected descriptors
+in `workflow-block-compiler.test.ts` and `job-store.block-wait.test.ts`.
+
+**The private runtime descriptor.** A `BlockExpansion` may declare `runtime`, keyed by the block's
+own INTERNAL node name — `{ [internalName]: { runtime: BlockRuntimeId, params } }` — kept separate
+from `expansion.nodes` so it never passes through the authored node parser (which would refuse it as
+`UNKNOWN_KEY`). `compileDefinition` validates each entry against `runtime.ts`'s allowlist (an unknown
+runtime id, or params its handler rejects, refuse `BAD_BLOCK_CONFIG`, naming the internal node),
+namespaces the key the same way it namespaces node names, and — critically — attaches the result onto
+`WorkflowNode.runtime` only AFTER the expanded graph has already passed `validateDefinition`. The
+validator's own key set has no `runtime` at all, on an `agent` node or a `block` node, so a member's
+authored JSON (or a pasted `GET /api/workflows` response) carrying one refuses `UNKNOWN_KEY` — the
+same closed-grammar guarantee every other authored field gets, at the one point (this attach step)
+that is deliberately downstream of the check that would otherwise refuse it.
+
+**Dispatch is by allowlisted id only.** `workflow-blocks/runtime.ts`'s `HANDLERS` map is the entire
+allowlist; nothing resolves a runtime by a user-provided module or script name. The one shipped id,
+`pr-delivery-wait`, takes no params (the wait's address — repo, PR number — comes from the thread's
+recorded publication, `job_pr`, never from block config). A node whose `runtime` names an id this
+build does not recognize, or whose params its handler rejects, is treated as `runtimeIsValid`
+answering false: the transition RESTS the thread rather than falling back to an ordinary insert,
+which would silently skip the wait — "Marker absence is a first-class outcome" holds here too. A
+runtime-carrying node also cannot resolve to the graph's own ENTRY — a thread's first row is
+inserted directly by `routes/jobs.ts`, never through a transition, so a wait boundary there would
+run immediately as an ordinary claimable job; `compileDefinition` refuses this `BAD_BLOCK_CONFIG` at
+compile time rather than let it happen at the first thread that ever launches one.
+
+**The park: `job-store-worker.ts`'s `runWorkflowTransition`.** Exactly where an ordinary transition
+would `insertWorkflowSuccessor`, a node carrying `runtime` calls `enterRuntimeBoundary` instead —
+same verdict transaction, same per-root `pg_advisory_xact_lock` the transition already holds, so no
+extra locking is needed for the park itself. It reads the thread's publication
+(`prs.publicationOf`); with none, the thread rests (never parks on nothing to wait for). With one,
+it calls `prs.enterWait` (idempotent: a re-entry of an already-open wait keeps its folded `pending`
+and cursor) and either inserts a new `workflow_round` row — command, session, repo, executor, the
+completed row as `parent_job_id`, `round = 1 + max(previous rounds)` — or, if this same wait node is
+still parked from an EARLIER transition that has not woken yet (an unusual but legal loop shape),
+refreshes that row in place rather than minting a second round. `038_workflow_round.sql`'s partial
+unique index (`woken_at is null`) is what makes "the currently parked round" one indexed lookup
+either way. A parked round is not a `job` row: waiting consumes no runner/executor lease, and the
+claim loop has nothing to poll for it beyond the sweep below.
+
+**The wake: `runtime.ts`'s `sweepRuntimeWakes`, called from `job-store-claim.ts`'s `claimJob` once
+at the top of every poll, before it looks for queued work.** It selects parked rounds whose wait is
+open with `pending > 0` and whose thread has no active member (queued, running, or already
+`done_at`) — a bounded batch (`WAKE_BATCH`), oldest-activity first — then wakes each candidate in
+ITS OWN transaction, never inside the claim transaction that triggered the sweep: a wake that
+already committed must survive a later candidate's or the claim's own failure. Each wake takes that
+thread's per-root advisory lock (the same one the park and every claim already use), RE-CHECKS the
+active-member predicate under that lock on a best-effort basis (the candidate list above ran
+unlocked, so this closes the common case of a follow-up queued or the thread marked done in
+between; neither of those two writers takes this same lock, so it narrows the race rather than
+closing it outright — `sameThreadRunning`, the claim's own ordinary same-thread exclusion, is what
+actually keeps two rows of one thread from running at once regardless), re-reads the round
+`for update` and bails if `woken_at` is already set, calls `prs.claimReview` (which atomically reads
+and resets `pending` — coalescing is inherent here: three deliveries folded since the last claim
+become one continuation whose audit `delivery_count` is 3, and a delivery landing after the reset
+starts the NEXT round's count from zero), inserts the continuation through the same
+`insertWorkflowSuccessor` an ordinary transition uses (byte-identical claim shape — no `runtime`
+key, no privileged metadata), and stamps the round `woken_at`/`job_id`/`delivery_count`/
+`last_delivery_id` — turning the parked row into its own bounded audit record rather than deleting
+it. **Two concurrent claimers cannot double-wake one round**: the advisory lock is what actually
+prevents it — it serializes every sweep and claim of one thread, so only one transaction can ever
+hold it, and the `for update` re-check under that lock is what catches a round another transaction
+already woke while THIS one was blocked waiting for the lock. `workflow_round_pk` guards against a
+double PARK (two rows of the same round), not a double WAKE — a second wake past the lock would
+still insert a second `job` row; its own `update ... where woken_at is null` would simply match zero
+rows, leaving that second row an orphan. The advisory lock is therefore the only thing standing
+between a correct wake and that orphan, which is exactly what
+`job-store.block-wait.test.ts`'s concurrent-claimers test counts directly (`count(*) from job
+where ... workflow_node = ...`), not just the round-row count. A crash mid-wake rolls the whole
+transaction back — `pending` and the parked row are untouched, and the very next poll retries it.
+The wait itself stays OPEN across a wake (only a block's own future `finishWait` call ends it —
+policy this seam does not have; today that also means the read model buckets a woken, actively
+RUNNING continuation as `review` rather than `running`, matching #202's existing "an open wait
+buckets the thread as review regardless of the row's own status" rule, docs/jobs.md): a re-park
+after the continuation runs finds the
+wait already active and simply adds a new round.
+
+**The cancellation fence: `job-store-claim.ts`'s `claimNextCandidate`, right after a row claims.**
+PR-close (`cancelForRepoPr`) and thread-stop/remove (`cancelWaitsForRoot`) cancel a `workflow_wait`
+row directly and do NOT take the per-root advisory lock — a close can land at any time, including
+between a wake committing and that continuation being claimed. So every claim of a workflow row
+checks, under its own already-held advisory lock, whether the just-claimed job is a `workflow_round`
+continuation (`job_id` match) whose wait was cancelled; if so it is settled `stopped` right there
+instead of handed to a worker, and the claim loop moves to the next candidate. This is what makes
+cancellation win the race against a wake rather than the other way around. Ordinary cancellation
+paths need no changes: a PR close arriving before any wake is simply never picked up by the sweep's
+"wait is open" predicate; stopping the QUEUED continuation (an ordinary `job` row once woken) already
+cancels the wait through the existing stop-settle path (`cancelWaitsForRoot`); removing the thread
+cancels the wait AND deletes its `workflow_round` rows in the same transaction. The one case this
+seam does not cover is stopping a thread that is parked and has NOT yet woken — there is no `job` row
+to address with `/stop` in that state, so cancelling before the first wake is `removeThread`'s job
+(which works regardless of park state) or `cancelForRepoPr`'s.
+
 ### The merge-conflict-autofix block
 
 `builtin/merge-conflict-autofix` (issue #122, `server/src/db/workflow-blocks/merge-conflict-autofix.ts`)
@@ -396,6 +499,8 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The store: CRUD, scope visibility, seed, block compilation at create | `server/src/db/workflow-store.ts` |
 | Templates and the base `fix-issue` workflow | `server/src/db/workflow-templates.ts` |
 | Columns (027, 030, 033) and the freeze-at-create snapshot | `server/migrations/027_workflows.sql`, `server/migrations/030_workflow_params.sql`, `server/migrations/033_job_workflow_name.sql` |
+| The durable block-wait dispatcher: the allowlist, the park, the wake sweep, the cancellation fence (issue #231) | `server/src/db/workflow-blocks/runtime.ts` |
+| The parked continuation and its wake audit (issue #231) | `server/migrations/038_workflow_round.sql` |
 | The transition in the verdict's transaction | `job-store-worker.ts` `completeJob()` → `runWorkflowTransition()` |
 | The primary-session follow-up copy | `job-store-actions.ts` `createFollowUpRow()` |
 | The claim's `publish` flag and the gates opt-out | `job-store-claim.ts` `resolveClaimPublish()` |
@@ -420,11 +525,29 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
   `builtin/merge-conflict-autofix` expansion: node/edge shape, namespacing, the declared
   `helperPlans`, the `maxAttempts`-bounded retry edge, and that a custom graph can reference it
   independently of any other workflow.
+- Offline units: `server/test/workflow-block-runtime.test.ts` — the runtime allowlist and params
+  parser in isolation, no database or compiler involved.
+- Offline units (extended): `server/test/workflow-block-compiler.test.ts` — attaching a namespaced
+  `runtime` descriptor onto the matching expanded node, the `BAD_BLOCK_CONFIG` refusals (unknown
+  internal node, unknown runtime id, rejected params, a runtime-carrying node resolving to the
+  graph's own entry), and that an expansion with none (the real merge-conflict-autofix block
+  included) stays byte-identical.
+- Offline units (extended): `server/test/workflow-schema.test.ts` — `runtime` refuses `UNKNOWN_KEY`
+  on both an authored agent node and a block node (issue #231's "never authorable" guarantee).
 - HTTP contracts: `server/test/routes.workflows.test.ts` (including `GET /api/workflow-blocks` and
   the compiler's refusal codes surfacing the same way a schema refusal does), the
   workflow-resolution block of `routes.jobs.test.ts`.
 - Against a real database (`npm run test:db`): `server/test-db/workflow-store.test.ts` and
   `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds.
+- Against a real database: `server/test-db/job-store.block-wait.test.ts` (issue #231) — parking
+  (no runnable row, an open wait, the frozen continuation), resting when unpublished, the wake
+  sweep's zero/one/many-and-redelivered-GUID coalescing, a thread with an active member never
+  waking, concurrent claimers unable to double-wake one round (asserted directly on `job` row
+  count, not just the round row), PR-close before and after a wake (the cancellation fence),
+  stopping a woken continuation, removing a parked thread, re-parking the same wait node before it
+  wakes, a second independent round after the first wakes and completes, a crash mid-wake (rolled
+  back, `pending` and the parked row untouched), and a continuation's stale lease reclaimed as the
+  same row.
 - Driver: the publish-flag twins in `driver/test/loop.test.ts`, and the transport parity pins in
   `docker.test.ts` / `k8s.test.ts`. Real offline git fixtures for the merge-conflict-autofix
   preflight (up-to-date, clean rebase, conflicted, stale/precondition-refused, and stale-rebase

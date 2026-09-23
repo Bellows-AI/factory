@@ -7,7 +7,7 @@
 
 import type { UserRef, ExecutorType } from '@factory-ai/core';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
-import type { PublicationState } from './pr-lifecycle-store.js';
+import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
@@ -865,6 +865,24 @@ export interface JobStorePrs {
      */
     publicationOf(root: string, exec?: Sql | TransactionSql): Promise<PublicationState | null>;
     cancelWaitsForRoot(root: string, terminalReason?: string, exec?: Sql | TransactionSql): Promise<number>;
+    /**
+     * Enters (or re-enters) a durable wait for a workflow-block runtime boundary (issue #231) —
+     * the transition's park, in the same transaction as the verdict that triggered it.
+     */
+    enterWait(
+        input: { root: string; reason: string; repo: string; prNumber: number },
+        exec?: Sql | TransactionSql
+    ): Promise<WaitState>;
+    /**
+     * Atomically claims a wait's folded deliveries for the wake sweep (issue #231): the pending
+     * count returns and resets to zero in the same lock, coalescing whatever folded since the last
+     * claim.
+     */
+    claimReview(
+        root: string,
+        reason: string,
+        exec?: Sql | TransactionSql
+    ): Promise<{ pending: number; lastDeliveryId: string | null }>;
 }
 
 /**

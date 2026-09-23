@@ -385,6 +385,10 @@ export async function removeJobThread(
         if (prs) {
             await prs.cancelWaitsForRoot(rootJobId, 'task removed', tx);
         }
+        // Any parked or already-woken block-wait round (issue #231) is this thread's audit data
+        // too — cancelWaitsForRoot above already makes it permanently unwakeable, this is just not
+        // leaving it behind forever.
+        await tx`delete from workflow_round where org_id = ${orgId} and root_job_id = ${rootJobId}`;
 
         // Queue the worktree reclaim. The driver polls this queue — nothing is holding a
         // lease on a removed thread, so no live driver would ever notice the deletion

@@ -68,6 +68,34 @@ describe('validateDefinition — block nodes', () => {
         ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_KEY' } });
     });
 
+    it('refuses `runtime` on an authored agent node — private, server-authored only (issue #231)', () => {
+        expect(
+            validateDefinition({
+                entry: 'a',
+                nodes: [
+                    agent('a', {
+                        publish: true,
+                        runtime: { runtime: 'pr-delivery-wait', block: 'builtin/fake', params: {} },
+                    }),
+                ],
+                edges: [],
+            })
+        ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_KEY' } });
+    });
+
+    it('refuses `runtime` on a block node too', () => {
+        expect(
+            validateDefinition({
+                entry: 'a',
+                nodes: [
+                    block('a', { runtime: { runtime: 'pr-delivery-wait', block: 'builtin/fake', params: {} } }),
+                    agent('p', { publish: true }),
+                ],
+                edges: [{ from: 'a', to: 'p', when: 'succeeded' }],
+            })
+        ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_KEY' } });
+    });
+
     it('refuses a missing or malformed `uses`', () => {
         for (const uses of [undefined, '', 'nope', 'builtin/', '/nope', 'Builtin/Nope', 42, 'a'.repeat(200)]) {
             const nodes = uses === undefined ? [{ name: 'a', kind: 'block' as const }] : [block('a', { uses })];
