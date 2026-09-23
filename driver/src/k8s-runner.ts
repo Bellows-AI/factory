@@ -6,7 +6,8 @@ import { parseClaudeCloseRead, parseOpencodeRunOutcome } from './close-read.js';
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import {
-    jobPath,
+    deleteJob,
+    deleteSecret,
     jobPodsPath,
     podLogPath,
     podsByLeasePath,
@@ -60,10 +61,7 @@ import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 
 /** Best-effort: a 404 is the ordinary end of a reaped Secret, and any other failure is the fence's business. */
 function forgetSecret(deps: K8sDeps, job: BoardJob): Promise<void> {
-    return deps.request('DELETE', `${secretsPath(deps.config.k8sNamespace)}/${secretName(job)}`).then(
-        () => undefined,
-        () => undefined
-    );
+    return deleteSecret(deps, secretName(job));
 }
 
 /**
@@ -127,10 +125,7 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         }
         return parseOpencodeRunOutcome(log.body);
     } finally {
-        void deps.request('DELETE', `${jobPath(deps.config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
-            () => undefined,
-            () => undefined
-        );
+        void deleteJob(deps, jobName);
     }
 }
 
@@ -160,10 +155,7 @@ async function scrapeClaudeCloseRead(
     } catch {
         return { turns: null, summary: null };
     } finally {
-        void deps.request('DELETE', `${jobPath(deps.config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
-            () => undefined,
-            () => undefined
-        );
+        void deleteJob(deps, jobName);
     }
 }
 
@@ -260,9 +252,7 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
 // ordinary end of a finished run, and one that fails is the kubelet's deadline doing this
 // function's work. No Secret delete here: run()'s finally owns the Secret's whole lifetime.
 async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
-    await deps
-        .request('DELETE', `${jobPath(deps.config.k8sNamespace, runnerName(job))}?propagationPolicy=Background`)
-        .catch(() => undefined);
+    await deleteJob(deps, runnerName(job));
     await teardownServices(deps, job);
 }
 
@@ -378,21 +368,11 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
                 }
                 return { stdout: verdict.output };
             } finally {
-                void deps
-                    .request('DELETE', `${jobPath(deps.config.k8sNamespace, jobName)}?propagationPolicy=Background`)
-                    .then(
-                        () => undefined,
-                        () => undefined
-                    );
+                void deleteJob(deps, jobName);
             }
         });
     } finally {
-        if (secret) {
-            void deps.request('DELETE', `${secretsPath(deps.config.k8sNamespace)}/${secret}`).then(
-                () => undefined,
-                () => undefined
-            );
-        }
+        if (secret) void deleteSecret(deps, secret);
     }
 }
 
@@ -413,14 +393,7 @@ async function syncCheckout(deps: K8sDeps, job: BoardJob): Promise<SyncResult> {
     // The deletion the FAILURE arms use, awaited, with Foreground propagation: the delete returns
     // only after the Job's dependents are gone, so the releaseClaim that follows can never hand
     // the checkout to a replacement while the sync's pod is still writing the worktree.
-    const takeSyncJobDown = async (): Promise<void> => {
-        await deps
-            .request('DELETE', `${jobPath(deps.config.k8sNamespace, syncJobName(job))}?propagationPolicy=Foreground`)
-            .then(
-                () => undefined,
-                () => undefined
-            );
-    };
+    const takeSyncJobDown = (): Promise<void> => deleteJob(deps, syncJobName(job), 'Foreground');
 
     const secretRef: { current: string | null } = { current: null };
     try {
@@ -442,18 +415,8 @@ async function syncCheckout(deps: K8sDeps, job: BoardJob): Promise<SyncResult> {
     } finally {
         // The sync Job goes on EVERY exit path, fire-and-forget: the name carries the lease
         // token, so this delete can never reach a replacement's Job.
-        void deps
-            .request('DELETE', `${jobPath(deps.config.k8sNamespace, syncJobName(job))}?propagationPolicy=Background`)
-            .then(
-                () => undefined,
-                () => undefined
-            );
-        if (secretRef.current) {
-            void deps.request('DELETE', `${secretsPath(deps.config.k8sNamespace)}/${secretRef.current}`).then(
-                () => undefined,
-                () => undefined
-            );
-        }
+        void deleteJob(deps, syncJobName(job));
+        if (secretRef.current) void deleteSecret(deps, secretRef.current);
     }
 }
 
@@ -474,14 +437,7 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
         // (acquireClaim says which and why in its message).
         return { ok: false, removed: false, reason: `the checkout is held (${worktree}): ${(e as Error).message}` };
     }
-    const takeReclaimJobDown = async (): Promise<void> => {
-        await deps
-            .request('DELETE', `${jobPath(deps.config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Foreground`)
-            .then(
-                () => undefined,
-                () => undefined
-            );
-    };
+    const takeReclaimJobDown = (): Promise<void> => deleteJob(deps, reclaimJobName(job), 'Foreground');
     try {
         const result = await runReclaimJob(deps, job);
         if (!result.ok) await takeReclaimJobDown();
@@ -494,12 +450,7 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
     } finally {
         // The failure arms' Foreground delete above has already taken it down; on the success
         // path this Background delete IS the delete. THEN the claim goes.
-        void deps
-            .request('DELETE', `${jobPath(deps.config.k8sNamespace, reclaimJobName(job))}?propagationPolicy=Background`)
-            .then(
-                () => undefined,
-                () => undefined
-            );
+        void deleteJob(deps, reclaimJobName(job));
         await releaseClaim(deps, job);
     }
 }

@@ -3,7 +3,7 @@ import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
-import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
+import { deleteJob, deleteSecret, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { readVerdict } from './k8s-poll.js';
 import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath } from './k8s-podspec.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
@@ -231,10 +231,7 @@ export function createKubernetesGateManager({
 
     /** The finished Job goes, on every path — its pod has read the env Secret by then. */
     const reap = (jobName: string): void => {
-        void request('DELETE', `${jobPath(config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
-            () => undefined,
-            () => undefined
-        );
+        void deleteJob(deps, jobName);
     };
 
     return {
@@ -319,10 +316,7 @@ export function createKubernetesGateManager({
             const entry = entries.get(key);
             if (!entry?.secretName) return;
             entries.delete(key);
-            void request('DELETE', `/api/v1/namespaces/${config.k8sNamespace}/secrets/${entry.secretName}`).then(
-                () => undefined,
-                () => undefined
-            );
+            void deleteSecret(deps, entry.secretName);
         },
 
         /** A drained driver has no more turns coming: whatever the cooldown would have kept is moot. */

@@ -1,7 +1,7 @@
 import type { BoardJob } from './board.js';
 import type { RunOutcome } from './runner.js';
 import {
-    jobPath,
+    deleteJob,
     jobPodsPath,
     podLogPath,
     podsByLeasePath,
@@ -67,10 +67,7 @@ async function readBellows(deps: K8sDeps, job: BoardJob): Promise<string> {
         }
         return log.body;
     } finally {
-        void deps.request('DELETE', `${jobPath(deps.config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
-            () => undefined,
-            () => undefined
-        );
+        void deleteJob(deps, jobName);
     }
 }
 

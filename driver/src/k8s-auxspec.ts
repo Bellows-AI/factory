@@ -3,6 +3,7 @@ import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession } from './claim.js';
 import { hash16, jobsPath, type AuxJobSpec, workspaceSubPathOf } from './k8s-podspec.js';
 import { JOB_ID, LOG_TAIL_LINES, TTL_SECONDS } from './k8s-transport.js';
+import type { K8sDeps } from './k8s-transport.js';
 import {
     CREDENTIAL_HELPER,
     gitWorktreeRemoveScript,
@@ -400,6 +401,34 @@ export const podsByLeasePath = (namespace: string, job: BoardJob): string => byL
 export const servicesByLeasePath = (namespace: string, job: BoardJob): string => byLease(servicesPath(namespace), job);
 
 export const jobPath = (namespace: string, name: string): string => `${jobsPath(namespace)}/${name}`;
+
+/**
+ * Delete one Job by name, swallowing the answer — the shape almost every aux/runner/gate Job's
+ * teardown wants: reaped once its verdict has been read, and nobody downstream branches on
+ * whether the delete actually landed. `Foreground` is what `takeSyncJobDown`/`takeReclaimJobDown`
+ * await before handing the checkout back — the delete returns only once the Job's dependents are
+ * gone, so a released claim can never overlap a pod still writing the tree.
+ */
+export function deleteJob(
+    deps: K8sDeps,
+    name: string,
+    propagationPolicy: 'Background' | 'Foreground' = 'Background'
+): Promise<void> {
+    return deps
+        .request('DELETE', `${jobPath(deps.config.k8sNamespace, name)}?propagationPolicy=${propagationPolicy}`)
+        .then(
+            () => undefined,
+            () => undefined
+        );
+}
+
+/** Delete one Secret by name, swallowing the answer — the same fire-and-forget shape as `deleteJob`. */
+export function deleteSecret(deps: K8sDeps, name: string): Promise<void> {
+    return deps.request('DELETE', `${secretsPath(deps.config.k8sNamespace)}/${name}`).then(
+        () => undefined,
+        () => undefined
+    );
+}
 
 /**
  * The label-scoped collection path every attempt of a job shares. The lease token never repeats,
