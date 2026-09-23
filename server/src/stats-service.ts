@@ -10,7 +10,7 @@ import type {
 import { createCache } from './cache.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
-import type { TelemetryClient } from './telemetry/client.js';
+import type { TelemetryClient, TelemetrySource } from './telemetry/client.js';
 import { TelemetryError } from './telemetry/errors.js';
 
 /**
@@ -126,6 +126,65 @@ function idleState(): FetchState {
  * POST /api/refresh bypasses it.
  */
 const ERROR_COOLDOWN_MS = 30_000;
+const MS_PER_SECOND = 1000;
+
+/**
+ * Extracted from `createStatsService` so the factory stays under the function-length gate; the
+ * failure/cache/config state it used to close over now travels as explicit parameters.
+ */
+function telemetryMeta({
+    telemetrySource,
+    telemetryFailure,
+    stale,
+    entry,
+    stats,
+    scopedNames,
+    now,
+}: {
+    telemetrySource: TelemetrySource;
+    telemetryFailure: { at: number; reason: string } | null;
+    stale: boolean;
+    entry: { value: TelemetrySnapshot; fetchedAt: number } | null;
+    stats: TelemetryStats | null;
+    scopedNames: readonly string[];
+    now: () => number;
+}): TelemetryMeta {
+    const source = telemetrySource === 'postgres' ? 'postgres' : 'fixture';
+    const base = {
+        source,
+        repoFilter: scopedNames,
+        otherRepoSessions: stats?.otherRepoSessions ?? 0,
+        sessionsWithoutHook: stats?.sessionsWithoutHook ?? 0,
+        unattributedSessions: stats?.unattributedSessions ?? 0,
+    } as const;
+
+    if (telemetrySource === 'off') {
+        return { ...base, status: 'disabled', reason: null, fetchedAt: null, ageSeconds: null, stale: false };
+    }
+    if (!entry) {
+        return {
+            ...base,
+            status: 'unreachable',
+            reason: telemetryFailure?.reason ?? 'No telemetry has been read yet',
+            fetchedAt: null,
+            ageSeconds: null,
+            stale: false,
+        };
+    }
+    return {
+        ...base,
+        // Reachable but silent is its own state: it lets the panels render their structure,
+        // which is how you see the pipeline is wired and just has nothing to say yet. Judged
+        // from the SCOPED stats — the status describes what THIS caller is looking at, so a
+        // member whose subset holds no sessions sees "empty" even when the org-wide cache
+        // does not.
+        status: (stats?.totals.sessions ?? 0) === 0 ? 'empty' : 'ok',
+        reason: telemetryFailure?.reason ?? null,
+        fetchedAt: new Date(entry.fetchedAt).toISOString(),
+        ageSeconds: Math.floor((now() - entry.fetchedAt) / MS_PER_SECOND),
+        stale,
+    };
+}
 
 export function createStatsService({ config, repos, telemetry, now = Date.now }: StatsServiceDeps): StatsService {
     /**
@@ -189,48 +248,6 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
         cache.refresh().catch(() => {});
     };
 
-    function telemetryMeta(
-        entry: { value: TelemetrySnapshot; fetchedAt: number } | null,
-        stats: TelemetryStats | null,
-        scopedNames: readonly string[]
-    ): TelemetryMeta {
-        const source = config.telemetrySource === 'postgres' ? 'postgres' : 'fixture';
-        const base = {
-            source,
-            repoFilter: scopedNames,
-            otherRepoSessions: stats?.otherRepoSessions ?? 0,
-            sessionsWithoutHook: stats?.sessionsWithoutHook ?? 0,
-            unattributedSessions: stats?.unattributedSessions ?? 0,
-        } as const;
-
-        if (config.telemetrySource === 'off') {
-            return { ...base, status: 'disabled', reason: null, fetchedAt: null, ageSeconds: null, stale: false };
-        }
-        if (!entry) {
-            return {
-                ...base,
-                status: 'unreachable',
-                reason: telemetryFailure?.reason ?? 'No telemetry has been read yet',
-                fetchedAt: null,
-                ageSeconds: null,
-                stale: false,
-            };
-        }
-        return {
-            ...base,
-            // Reachable but silent is its own state: it lets the panels render their structure,
-            // which is how you see the pipeline is wired and just has nothing to say yet. Judged
-            // from the SCOPED stats — the status describes what THIS caller is looking at, so a
-            // member whose subset holds no sessions sees "empty" even when the org-wide cache
-            // does not.
-            status: (stats?.totals.sessions ?? 0) === 0 ? 'empty' : 'ok',
-            reason: telemetryFailure?.reason ?? null,
-            fetchedAt: new Date(entry.fetchedAt).toISOString(),
-            ageSeconds: Math.floor((now() - entry.fetchedAt) / 1000),
-            stale: cache.isStale(),
-        };
-    }
-
     return {
         current(range = ALL_TIME, scope: StatsScope = 'org', orgMeta?: OrganizationMeta) {
             const entry = cache.peek();
@@ -266,7 +283,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
                 tasks,
                 meta: {
                     fetchedAt: new Date(entry.fetchedAt).toISOString(),
-                    ageSeconds: Math.floor((now() - entry.fetchedAt) / 1000),
+                    ageSeconds: Math.floor((now() - entry.fetchedAt) / MS_PER_SECOND),
                     stale: cache.isStale(),
                     organization:
                         orgMeta ??
@@ -282,7 +299,15 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
                     range,
                     scope: scope === 'org' ? 'org' : 'mine',
                     scopeLogin: scope === 'org' ? null : scope.login,
-                    telemetry: telemetryMeta(entry, telemetry, all),
+                    telemetry: telemetryMeta({
+                        telemetrySource: config.telemetrySource,
+                        telemetryFailure,
+                        stale: cache.isStale(),
+                        entry,
+                        stats: telemetry,
+                        scopedNames: all,
+                        now,
+                    }),
                 },
             };
         },

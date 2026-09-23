@@ -20,8 +20,12 @@ export function niceMax(value: number): number {
     return Math.ceil(value / magnitude) * magnitude;
 }
 
+const TICK_KILO_THRESHOLD = 1000;
+/** Rounds to the nearest tenth of a thousand — `12345` renders as `12.3k`. */
+const TICK_KILO_ROUNDING_STEP = 100;
+
 export function formatTick(value: number): string {
-    if (value >= 1000) return `${Math.round(value / 100) / 10}k`;
+    if (value >= TICK_KILO_THRESHOLD) return `${Math.round(value / TICK_KILO_ROUNDING_STEP) / 10}k`;
     if (Number.isInteger(value)) return String(value);
     return value.toFixed(1);
 }

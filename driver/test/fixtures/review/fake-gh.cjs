@@ -12,6 +12,9 @@
 
 const fs = require('node:fs');
 
+const NO_CREDENTIAL_EXIT_CODE = 3;
+const UNKNOWN_PATH_EXIT_CODE = 127;
+
 const argv = process.argv.slice(2);
 const env = process.env;
 
@@ -19,7 +22,7 @@ if (env.GH_ARGV_LOG) fs.appendFileSync(env.GH_ARGV_LOG, `${JSON.stringify(argv)}
 
 if (!(env.GH_TOKEN || env.GITHUB_TOKEN)) {
     process.stderr.write('gh: no credential env\n');
-    process.exit(3);
+    process.exit(NO_CREDENTIAL_EXIT_CODE);
 }
 
 if (env.GH_HTTP_STATUS) {
@@ -52,7 +55,7 @@ if (/pulls\/\d+\/comments(\s|$)/.test(joined)) key = 'inline';
 
 if (key === null) {
     process.stderr.write(`gh: no fixture for ${joined}\n`);
-    process.exit(127);
+    process.exit(UNKNOWN_PATH_EXIT_CODE);
 }
 
 const data = JSON.stringify(fixtures[key]);

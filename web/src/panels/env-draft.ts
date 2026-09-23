@@ -27,7 +27,7 @@ export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const NAME_LIMIT = 255;
 
 /** Mirrors VALUE_LIMIT in server/src/routes/env.ts. */
-export const VALUE_LIMIT = 32 * 1024;
+export const VALUE_LIMIT = 32_768;
 
 /** Mirrors MAX_ENV_VARS_PER_SCOPE in server/src/routes/env.ts. */
 export const MAX_ENV_VARS_PER_SCOPE = 100;
@@ -109,6 +109,31 @@ export function countActive(rows: readonly EnvRowState[], isSecret: boolean): nu
     return rows.filter((row) => row.isSecret === isSecret && !row.pendingRemove).length;
 }
 
+/** The name-level rules: required, length, shape, reserved, unique within the active rows. */
+function nameErrors(name: string, nameCounts: ReadonlyMap<string, number>): string[] {
+    if (name === '') return ['Name is required.'];
+    const list: string[] = [];
+    if (name.length > NAME_LIMIT) list.push(`Name exceeds ${NAME_LIMIT} characters.`);
+    if (!ENV_NAME.test(name)) list.push(`"${name}" is not a legal environment variable name.`);
+    if (RESERVED_ENV_NAMES.includes(name)) list.push(`"${name}" is reserved by the runner.`);
+    if ((nameCounts.get(name) ?? 0) > 1) {
+        list.push(`Duplicate name "${name}" — names must be unique in this scope.`);
+    }
+    return list;
+}
+
+/** The value-level rules: a new secret needs a value, no newlines, within the size bound. */
+function valueErrors(row: EnvRowState): string[] {
+    const value = row.value ?? '';
+    const list: string[] = [];
+    if (row.isSecret && row.isNew && (row.value === '' || row.value === null)) {
+        list.push('Enter a value or remove the row.');
+    }
+    if (value.includes('\n') || value.includes('\r')) list.push('Value contains a newline.');
+    if (value.length > VALUE_LIMIT) list.push(`Value exceeds ${VALUE_LIMIT} characters.`);
+    return list;
+}
+
 /**
  * One message per broken rule, keyed by row id. Pending-removed rows are never flagged — they
  * are on their way out and a red error under a row the user is deleting reads as a second
@@ -121,26 +146,8 @@ export function rowErrors(rows: readonly EnvRowState[]): Map<string, string[]> {
 
     const errors = new Map<string, string[]>();
     for (const row of active) {
-        const rowId = row.id;
-        const name = row.name.trim();
-        const list: string[] = [];
-        if (name === '') {
-            list.push('Name is required.');
-        } else {
-            if (name.length > NAME_LIMIT) list.push(`Name exceeds ${NAME_LIMIT} characters.`);
-            if (!ENV_NAME.test(name)) list.push(`"${name}" is not a legal environment variable name.`);
-            if (RESERVED_ENV_NAMES.includes(name)) list.push(`"${name}" is reserved by the runner.`);
-            if ((nameCounts.get(name) ?? 0) > 1) {
-                list.push(`Duplicate name "${name}" — names must be unique in this scope.`);
-            }
-        }
-        const value = row.value ?? '';
-        if (row.isSecret && row.isNew && (row.value === '' || row.value === null)) {
-            list.push('Enter a value or remove the row.');
-        }
-        if (value.includes('\n') || value.includes('\r')) list.push('Value contains a newline.');
-        if (value.length > VALUE_LIMIT) list.push(`Value exceeds ${VALUE_LIMIT} characters.`);
-        if (list.length > 0) errors.set(rowId, list);
+        const list = [...nameErrors(row.name.trim(), nameCounts), ...valueErrors(row)];
+        if (list.length > 0) errors.set(row.id, list);
     }
     return errors;
 }

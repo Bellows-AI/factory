@@ -83,6 +83,11 @@ interface Bucket {
 }
 
 const DAY_MS = 86_400_000;
+// The width at which a fixed-width chart of daily bars stops being information and starts
+// being hairlines.
+const MAX_DAILY_SERIES_DAYS = 92;
+const DAYS_PER_WEEK = 7;
+const MS_PER_SECOND = 1000;
 
 /**
  * Day buckets when the window (or, unbounded, the coverage span) is at most 92 days — the
@@ -96,7 +101,7 @@ export function seriesGranularity(range: DateRange | undefined, input: Telemetry
     // coverage span, and an empty store answers a zero span (day, with no points) honestly.
     if (from === null) from = input.coverage.from !== null ? Date.parse(input.coverage.from) : (to ?? now.getTime());
     if (to === null) to = input.coverage.to !== null ? Date.parse(input.coverage.to) : now.getTime();
-    return to - from <= 92 * DAY_MS ? 'day' : 'week';
+    return to - from <= MAX_DAILY_SERIES_DAYS * DAY_MS ? 'day' : 'week';
 }
 
 function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', now: Date): TelemetryPoint[] {
@@ -104,7 +109,7 @@ function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', no
     const daily = granularity === 'day';
     const keyOf = daily ? dayKey : isoWeekKey;
     const startOf = daily ? dayStart : weekStart;
-    const stepDays = daily ? 1 : 7;
+    const stepDays = daily ? 1 : DAYS_PER_WEEK;
 
     const buckets = new Map<string, Bucket>();
     const emptyBucket = (iso: string): Bucket => ({
@@ -153,6 +158,49 @@ function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', no
 }
 
 /**
+ * Splits sessions by repo scope: in-scope sessions to aggregate, and the two setup-failure
+ * counts that must stay distinguishable from them and from each other.
+ */
+function scopeByRepo(
+    sessions: readonly SessionRollup[],
+    inRepoScope: (name: string) => boolean
+): { repoScoped: SessionRollup[]; otherRepoSessions: number; sessionsWithoutHook: number } {
+    const repoScoped: SessionRollup[] = [];
+    let otherRepoSessions = 0;
+    let sessionsWithoutHook = 0;
+    for (const session of sessions) {
+        if (session.repo === null) sessionsWithoutHook += 1;
+        else if (!inRepoScope(session.repo)) otherRepoSessions += 1;
+        else repoScoped.push(session);
+    }
+    return { repoScoped, otherRepoSessions, sessionsWithoutHook };
+}
+
+/**
+ * Groups repo-scoped sessions by the user's id, not the object: two rows resolved from the
+ * same app_user must land in one bucket. Sessions with no user are counted, never dropped —
+ * the same honesty rule as sessionsWithoutHook.
+ */
+function groupByUser(
+    sessions: readonly SessionRollup[],
+    user: { id: string } | undefined
+): { byUser: Map<string, { user: UserRef; sessions: SessionRollup[] }>; unattributedSessions: number } {
+    const byUser = new Map<string, { user: UserRef; sessions: SessionRollup[] }>();
+    let unattributedSessions = 0;
+    for (const session of sessions) {
+        if (session.user === null) {
+            unattributedSessions += 1;
+            continue;
+        }
+        if (user && session.user.id !== user.id) continue;
+        const bucket = byUser.get(session.user.id);
+        if (bucket) bucket.sessions.push(session);
+        else byUser.set(session.user.id, { user: session.user, sessions: [session] });
+    }
+    return { byUser, unattributedSessions };
+}
+
+/**
  * Aggregates agent telemetry into the figures the dashboard renders.
  *
  * Pure, like every aggregation in core. The fetch lives in the server; only the arithmetic
@@ -164,14 +212,7 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
     const { repos, now = new Date(), user } = options;
     const inRepoScope = (name: string) => repos === undefined || repos.includes(name);
 
-    const repoScoped: SessionRollup[] = [];
-    let otherRepoSessions = 0;
-    let sessionsWithoutHook = 0;
-    for (const session of input.sessions) {
-        if (session.repo === null) sessionsWithoutHook += 1;
-        else if (!inRepoScope(session.repo)) otherRepoSessions += 1;
-        else repoScoped.push(session);
-    }
+    const { repoScoped, otherRepoSessions, sessionsWithoutHook } = scopeByRepo(input.sessions, inRepoScope);
 
     // Caller scope is a filter, applied after the repo filter and before every figure below:
     // a session the join attributed to someone else is out of "mine" entirely. Unattributed
@@ -183,22 +224,9 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
     const totalRejected = sum(inScope.map((s) => s.editsRejected));
     const totalActive = sum(inScope.map((s) => s.activeSeconds));
 
-    // Group by the user's id, not the object: two rows resolved from the same app_user must
-    // land in one bucket. Sessions with no user are counted, never dropped — the same honesty
-    // rule as sessionsWithoutHook. The count runs over the repo-scoped set, so the
-    // unattributed figure means the same thing under both scopes.
-    const byUser = new Map<string, { user: UserRef; sessions: SessionRollup[] }>();
-    let unattributedSessions = 0;
-    for (const session of repoScoped) {
-        if (session.user === null) {
-            unattributedSessions += 1;
-            continue;
-        }
-        if (user && session.user.id !== user.id) continue;
-        const bucket = byUser.get(session.user.id);
-        if (bucket) bucket.sessions.push(session);
-        else byUser.set(session.user.id, { user: session.user, sessions: [session] });
-    }
+    // The count runs over the repo-scoped set, so the unattributed figure means the same thing
+    // under both scopes.
+    const { byUser, unattributedSessions } = groupByUser(repoScoped, user);
 
     const granularity = seriesGranularity(options.range, input, now);
 
@@ -206,7 +234,7 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
         totals: {
             sessions: inScope.length,
             tokens: totalsTokens,
-            activeHours: totalActive === null ? null : (totalActive * 1000) / HOUR,
+            activeHours: totalActive === null ? null : (totalActive * MS_PER_SECOND) / HOUR,
             linesAdded: sum(inScope.map((s) => s.linesAdded)),
             linesRemoved: sum(inScope.map((s) => s.linesRemoved)),
             editAcceptance: editAcceptance(totalAccepted, totalRejected),

@@ -265,7 +265,8 @@ describe('RepositorySetupList', () => {
         const full = new Set(Array.from({ length: MAX_SELECTED_REPOS }, (_, i) => `other/r${i}`));
         const html = list({ chosen: full });
         expect(html).toMatch(/<input[^>]*aria-label="Enable acme\/web in my workspace"[^>]*disabled/);
-        const checked = list({ chosen: new Set([...full].slice(0, 19).concat('acme/web')) });
+        const ROOM_FOR_THIS_ROW = MAX_SELECTED_REPOS - 1;
+        const checked = list({ chosen: new Set([...full].slice(0, ROOM_FOR_THIS_ROW).concat('acme/web')) });
         expect(checked).not.toMatch(/aria-label="Enable acme\/web in my workspace"[^>]*disabled/);
     });
 

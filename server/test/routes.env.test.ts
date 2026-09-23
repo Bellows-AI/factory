@@ -24,6 +24,11 @@ const REPOS = [
     { owner: 'acme', name: 'api' },
 ];
 
+const HTTP_OK = 200;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
@@ -57,7 +62,7 @@ async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
 describe('GET /api/env', () => {
     it('needs a session', async () => {
         const { app } = await boot();
-        expect((await app.inject({ method: 'GET', url: '/api/env' })).statusCode).toBe(401);
+        expect((await app.inject({ method: 'GET', url: '/api/env' })).statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('answers the three scopes, with every secret value nulled', async () => {
@@ -67,7 +72,7 @@ describe('GET /api/env', () => {
         await envVars.replaceRepo('acme', 'web', [{ name: 'REPO_SECRET', value: 'r', isSecret: true }]);
 
         const response = await app.inject({ method: 'GET', url: '/api/env', headers: { cookie: adminCookie } });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({
             org: [{ name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: expect.any(String) }],
             workspace: [{ name: 'MINE', value: 'visible', isSecret: false, updatedAt: expect.any(String) }],
@@ -84,7 +89,7 @@ describe('GET /api/env', () => {
     it('answers empty scopes, still 200, when nothing is configured', async () => {
         const { app, adminCookie } = await boot();
         const response = await app.inject({ method: 'GET', url: '/api/env', headers: { cookie: adminCookie } });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({ org: [], workspace: [], repos: [] });
     });
 });
@@ -96,7 +101,7 @@ describe('PUT /api/env/workspace', () => {
         expect(
             (await app.inject({ method: 'PUT', url: '/api/env/workspace', headers: { cookie: memberCookie }, payload }))
                 .statusCode
-        ).toBe(200);
+        ).toBe(HTTP_OK);
         await app.inject({
             method: 'PUT',
             url: '/api/env/workspace',
@@ -141,7 +146,7 @@ describe('PUT /api/env/workspace', () => {
     it('needs a session', async () => {
         const { app } = await boot();
         expect((await app.inject({ method: 'PUT', url: '/api/env/workspace', payload: { vars: [] } })).statusCode).toBe(
-            401
+            HTTP_UNAUTHORIZED
         );
     });
 });
@@ -157,7 +162,7 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             headers: { cookie: memberCookie },
             payload: { vars: [{ name: 'CORE', value: '1', isSecret: false }] },
         });
-        expect(memberPut.statusCode).toBe(200);
+        expect(memberPut.statusCode).toBe(HTTP_OK);
     });
 
     it('accepts a member for a repository scope too', async () => {
@@ -168,7 +173,7 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             headers: { cookie: memberCookie },
             payload: { repo: { owner: 'acme', name: 'web' }, vars: [{ name: 'R', value: '1', isSecret: false }] },
         });
-        expect(memberPut.statusCode).toBe(200);
+        expect(memberPut.statusCode).toBe(HTTP_OK);
     });
 
     it('refuses a repository outside the installation', async () => {
@@ -179,7 +184,7 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             headers: { cookie: adminCookie },
             payload: { repo: { owner: 'acme', name: 'not-installed' }, vars: [] },
         });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('UNKNOWN_REPO');
     });
 
@@ -211,12 +216,14 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             headers: { cookie: await signedIn(auth, admin) },
             payload: { repo: { owner: 'acme', name: 'web' }, vars: [] },
         });
-        expect(response.statusCode).toBe(503);
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(response.json().code).toBe('UNAVAILABLE');
     });
 });
 
 describe('env var validation', () => {
+    const OVERSIZED_ENV_NAME_LENGTH = 256;
+
     it.each([
         ['a bad name', { vars: [{ name: 'not a name', value: '1', isSecret: false }] }, 'BAD_ENV_NAME'],
         ['a reserved name', { vars: [{ name: 'WORKDIR', value: '/etc', isSecret: false }] }, 'RESERVED_ENV_NAME'],
@@ -276,7 +283,11 @@ describe('env var validation', () => {
             { vars: [{ name: 'MULTI', value: 'line1\nline2', isSecret: false }] },
             'BAD_ENV_VALUE',
         ],
-        ['an oversized name', { vars: [{ name: 'X'.repeat(256), value: '1', isSecret: false }] }, 'BAD_ENV_NAME'],
+        [
+            'an oversized name',
+            { vars: [{ name: 'X'.repeat(OVERSIZED_ENV_NAME_LENGTH), value: '1', isSecret: false }] },
+            'BAD_ENV_NAME',
+        ],
         [
             'a duplicated name',
             {
@@ -295,7 +306,7 @@ describe('env var validation', () => {
             headers: { cookie: memberCookie },
             payload,
         });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe(code);
     });
 
@@ -308,7 +319,7 @@ describe('env var validation', () => {
             headers: { cookie: memberCookie },
             payload: { vars },
         });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('TOO_MANY_ENV_VARS');
     });
 
@@ -320,7 +331,7 @@ describe('env var validation', () => {
             headers: { cookie: memberCookie },
             payload: { vars: 'nope' },
         });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_BODY');
     });
 });
@@ -336,6 +347,6 @@ describe('a broken store', () => {
             headers: { cookie: memberCookie },
             payload: { vars: [{ name: 'X', value: '1', isSecret: false }] },
         });
-        expect(response.statusCode).toBe(503);
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
     });
 });

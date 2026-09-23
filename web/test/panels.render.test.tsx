@@ -189,7 +189,9 @@ describe('telemetry panels render', () => {
         const html = renderToStaticMarkup(<ByUserPanel telemetry={empty} meta={telemetryMeta()} />);
         expect(html).toContain('No attributed sessions in the coverage window yet.');
     });
+});
 
+describe('telemetry panels render — usage summary panel', () => {
     it('renders four groups and five measures, hierarchy first', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
         // Four visual groups, five measures: Sessions and Token usage lead, then the two
@@ -233,8 +235,10 @@ describe('telemetry panels render', () => {
 
     it('renders billions as B rather than thousands of M', () => {
         // A real run reported 4.5e9 cache-read tokens, which rendered as "4543.89M".
-        expect(tokens(4_543_894_453)).toBe('4.54B');
-        expect(tokens(20_300_494)).toBe('20.3M');
+        const BILLIONS_OF_TOKENS = 4_543_894_453;
+        expect(tokens(BILLIONS_OF_TOKENS)).toBe('4.54B');
+        const MILLIONS_OF_TOKENS = 20_300_494;
+        expect(tokens(MILLIONS_OF_TOKENS)).toBe('20.3M');
         expect(tokens(null)).toBe('—');
     });
 
@@ -272,7 +276,9 @@ describe('edit acceptance rendering', () => {
         renderToStaticMarkup(<UsageSummaryPanel telemetry={withEdits(accepted, rejected)} meta={meta()} />);
 
     it('shows the measured denominator: A of D measured edit decisions accepted', () => {
-        const html = summary(2, 1);
+        const ACCEPTED = 2;
+        const REJECTED = 1;
+        const html = summary(ACCEPTED, REJECTED);
         expect(html).toContain('67%');
         expect(html).toContain('2 of 3 measured edit decisions accepted');
     });
@@ -286,7 +292,8 @@ describe('edit acceptance rendering', () => {
     it('names the partial measurement instead of fabricating an acceptance count', () => {
         // Rejections measured, acceptances not: a denominator exists but the ratio must not
         // pretend to one.
-        const html = summary(null, 3);
+        const REJECTED = 3;
+        const html = summary(null, REJECTED);
         expect(html).toContain('3 edit decisions measured');
         expect(html).toContain('not recorded');
         expect(html).not.toContain('of 3 measured');
@@ -300,11 +307,24 @@ describe('edit acceptance rendering', () => {
 
 describe('per-task usage panel', () => {
     const dist = (avg: number, p50: number, p95: number, tasks: number) => ({ avg, p50, p95, tasks });
+    const MEASURED_TASKS = 7;
+    const TOKENS_AVG = 51_200;
+    const TOKENS_P50 = 43_000;
+    const TOKENS_P95 = 96_000;
+    const JOB_TURNS_AVG = 1.9;
+    const JOB_TURNS_P50 = 1;
+    const JOB_TURNS_P95 = 4;
+    const AGENT_TURNS_AVG = 18.3;
+    const AGENT_TURNS_P50 = 12;
+    const AGENT_TURNS_P95 = 44;
+    const WALL_CLOCK_AVG_MS = 4_212_000;
+    const WALL_CLOCK_P50_MS = 3_600_000;
+    const WALL_CLOCK_P95_MS = 10_800_000;
     const populated: TaskUsageStats = {
-        tokensPerTask: dist(51_200, 43_000, 96_000, 7),
-        jobTurnsPerTask: dist(1.9, 1, 4, 7),
-        agentTurnsPerTask: dist(18.3, 12, 44, 7),
-        wallClockPerTask: dist(4_212_000, 3_600_000, 10_800_000, 7),
+        tokensPerTask: dist(TOKENS_AVG, TOKENS_P50, TOKENS_P95, MEASURED_TASKS),
+        jobTurnsPerTask: dist(JOB_TURNS_AVG, JOB_TURNS_P50, JOB_TURNS_P95, MEASURED_TASKS),
+        agentTurnsPerTask: dist(AGENT_TURNS_AVG, AGENT_TURNS_P50, AGENT_TURNS_P95, MEASURED_TASKS),
+        wallClockPerTask: dist(WALL_CLOCK_AVG_MS, WALL_CLOCK_P50_MS, WALL_CLOCK_P95_MS, MEASURED_TASKS),
     };
     const emptyStats: TaskUsageStats = {
         tokensPerTask: dist(0, 0, 0, 0),
@@ -327,7 +347,8 @@ describe('per-task usage panel', () => {
         }
         expect(html).not.toContain('p50');
         // Every distribution renders beside its N — seven in each row here.
-        expect(html.match(/>7</g)?.length).toBe(4);
+        const DISTRIBUTION_ROW_COUNT = 4;
+        expect(html.match(/>7</g)?.length).toBe(DISTRIBUTION_ROW_COUNT);
         // Nulls and averages format, never NaN.
         expect(html).not.toContain('NaN');
         expect(html).toContain('51.2k');
@@ -360,13 +381,15 @@ describe('per-task usage panel', () => {
     });
 
     it('keeps each measured count even when the distributions have different denominators', () => {
+        const FEWER_MEASURED_TASKS = 5;
         const mixed: TaskUsageStats = {
             ...populated,
-            agentTurnsPerTask: dist(18.3, 12, 44, 5),
+            agentTurnsPerTask: dist(AGENT_TURNS_AVG, AGENT_TURNS_P50, AGENT_TURNS_P95, FEWER_MEASURED_TASKS),
         };
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={mixed} meta={meta()} />);
         // Seven rows carry tokens, runs and wall clock; only five measured agent turns.
-        expect(html.match(/>7</g)?.length).toBe(3);
+        const REMAINING_SEVEN_COUNT = 3;
+        expect(html.match(/>7</g)?.length).toBe(REMAINING_SEVEN_COUNT);
         expect(html).toContain('>5<');
     });
 });
@@ -395,7 +418,8 @@ describe('token usage series granularity', () => {
 
     it('toggles series from accessible legend buttons', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
-        expect(html.match(/aria-pressed="true"/g)).toHaveLength(3);
+        const PRESSED_LEGEND_COUNT = 3;
+        expect(html.match(/aria-pressed="true"/g)).toHaveLength(PRESSED_LEGEND_COUNT);
         for (const name of ['Input', 'Output', 'Sessions']) {
             expect(html).toContain(`>${name}</button>`);
         }
@@ -452,8 +476,10 @@ describe('token usage series granularity', () => {
         };
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={one} meta={telemetryMeta()} />);
         const [, width, height] = html.match(/viewBox="0 0 (\d+) (\d+)"/)!.map(Number);
-        expect(width).toBeLessThan(900);
-        expect(height).toBeLessThan(280);
+        const COMPACT_WIDTH_CEILING = 900;
+        const COMPACT_HEIGHT_CEILING = 280;
+        expect(width).toBeLessThan(COMPACT_WIDTH_CEILING);
+        expect(height).toBeLessThan(COMPACT_HEIGHT_CEILING);
         // A real bar, never a filled panel: no bar mark exceeds a quarter of the compact plot
         // (the old behavior stretched one bar across the whole band). The hatch is a band-wide
         // rect by design, so only `bar <series-class>` marks count here.
@@ -462,7 +488,8 @@ describe('token usage series granularity', () => {
             .filter((t) => /^bar[\s"]/.test(t.match(/\bclass="([^"]*)"/)?.[1] ?? ''))
             .map((t) => Number(t.match(/\bwidth="([\d.]+)"/)?.[1]));
         expect(widths.length).toBeGreaterThan(0);
-        expect(Math.max(...widths)).toBeLessThanOrEqual((width - PAD.left - PAD.right) / 4);
+        const QUARTER_PLOT_DIVISOR = 4;
+        expect(Math.max(...widths)).toBeLessThanOrEqual((width - PAD.left - PAD.right) / QUARTER_PLOT_DIVISOR);
         expect(html).toMatch(/aria-label="[^"]*Input 12,345/);
         expect(html).toContain('The hatched bucket is a partial period.');
     });
@@ -471,16 +498,20 @@ describe('token usage series granularity', () => {
         // A 92-day window is the widest range that still renders daily bars: 92 points with
         // labels every ceil(92/12) bars. Counting the rendered ticks pins the label thinning —
         // a regression to labelEvery=1 renders 92 tick texts and a hairline wall of numbers.
-        const from = new Date(NOW.getTime() - 92 * 86_400_000).toISOString();
+        const WIDE_WINDOW_DAYS = 92;
+        const MS_PER_DAY = 86_400_000;
+        const from = new Date(NOW.getTime() - WIDE_WINDOW_DAYS * MS_PER_DAY).toISOString();
         const wide = telemetryStats(input, {
             repos: [REPO],
             now: NOW,
             range: { preset: 'custom', from, to: NOW.toISOString() },
         });
         const points = wide.series.points.length;
-        expect(points).toBeGreaterThan(80);
+        const MIN_WIDE_POINTS = 80;
+        expect(points).toBeGreaterThan(MIN_WIDE_POINTS);
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={wide} meta={telemetryMeta()} />);
-        const every = Math.ceil(points / 12);
+        const LABEL_TARGET_COUNT = 12;
+        const every = Math.ceil(points / LABEL_TARGET_COUNT);
         // X ticks: every `every`-th point plus the last. The bars' left axis and the line's
         // right axis render 5 ticks each, so ten of the rendered ticks are never x labels.
         const xTicks = Math.floor((points - 1) / every) + 1 + (points % every === 0 ? 0 : 1);

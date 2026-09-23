@@ -1,27 +1,9 @@
-import { execFile, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBellowsSections } from './services.js';
-import type { ServiceSpec } from './services.js';
-import {
-    CREDENTIAL_HELPER,
-    gitWorktreeRemoveScript,
-    gitWorktreeScript,
-    publishCheckout,
-    publishFailed,
-    repoPath,
-    withPublishToken,
-    worktreeBranch,
-    worktreeDir,
-    type PublishResult,
-    type ReclaimResult,
-    type SyncResult,
-} from './publish.js';
+import { worktreeDir, type PublishResult, type ReclaimResult, type SyncResult } from './publish.js';
 
 /**
  * The container scripts this module ships: real files under `driver/src/scripts/`, read at load
@@ -52,8 +34,6 @@ export const CLOSE_READ_DEADLINE_MS = 120_000;
 
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
 export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
-
-const run = promisify(execFile);
 
 /**
  * What the board is told afterwards. `timedOut` is reported as a failure, with a reason; `idled` is
@@ -224,7 +204,7 @@ export interface Runner {
     releaseFence?(job: BoardJob): Promise<void>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * What an agent session id may look like before it is interpolated into runner argv — claude's
@@ -271,7 +251,7 @@ const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a
  * import this module (one direction only), the same copied-regex rule the workspace path
  * assertions already follow.
  */
-const workspacesMountArgs = (config: DriverConfig, subPath: string, readOnly = false): string[] => [
+export const workspacesMountArgs = (config: DriverConfig, subPath: string, readOnly = false): string[] => [
     '--mount',
     `type=volume,src=${config.workspaceVolume},volume-subpath=${subPath},target=${config.workspaceMount}/${subPath}${
         readOnly ? ',readonly' : ''
@@ -315,7 +295,9 @@ export function parseRemoteSessionId(line: string): string | null {
  * is about not holding an unbounded string in the first place. Exported because the kubernetes
  * runner's transport uses it as its sliding-window bound.
  */
-export const OUTPUT_LIMIT = 64 * 1024;
+const BYTES_PER_KIB = 1024;
+const OUTPUT_LIMIT_KIB = 64;
+export const OUTPUT_LIMIT = OUTPUT_LIMIT_KIB * BYTES_PER_KIB;
 
 /**
  * The tail of a runner's output that is safe to put on a complete POST. The board refuses a body
@@ -326,7 +308,8 @@ export const OUTPUT_LIMIT = 64 * 1024;
  * characters, and the refused report would leave the job to its lease and re-run finished work:
  * the one outcome worse than a short log.
  */
-const REPORT_BYTE_LIMIT = 16 * 1024;
+const REPORT_LIMIT_KIB = 16;
+const REPORT_BYTE_LIMIT = REPORT_LIMIT_KIB * BYTES_PER_KIB;
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder('utf-8');
@@ -410,11 +393,12 @@ const PERCENT = /^([0-9.]+)%/;
 const MEMORY = /^([0-9.]+)\s*([A-Za-z]+)/;
 
 /** Docker's stats units, to MiB. Both the binary and the decimal spellings are seen in the wild. */
+const BYTES_PER_MIB = 1_048_576;
 const TO_MIB: Record<string, number> = {
-    B: 1 / 1048576,
+    B: 1 / BYTES_PER_MIB,
     kB: 1e-3,
     KB: 1e-3,
-    KiB: 1 / 1024,
+    KiB: 1 / BYTES_PER_KIB,
     MB: 1,
     MiB: 1,
     GB: 1e3,
@@ -723,239 +707,22 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
     ];
 }
 
-/** What the readout answers: the session the run used, how it ended, and the context it reached. */
-export interface OpencodeRunOutcome {
-    sessionId: string | null;
-    finishReason: string | null;
-    contextTokens: number | null;
-    costUsd: number | null;
-    /**
-     * The agent turns the root conversation took. Null when the readout answered no count —
-     * unmeasured, never zero.
-     */
-    agentTurns: number | null;
-    /** The run's last assistant text, or null when the read answered none — unmeasured, never empty. */
-    summary: string | null;
-    /**
-     * What the readout says went wrong, when it says anything. The script prints one on every
-     * failure it can name; a readout that answers nothing at all parses with this null.
-     */
-    error: string | null;
-}
-
-/** Pulls the session id, finish reason and context stats out of the readout, tolerating anything else. */
-export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    const nothing = {
-        sessionId: null,
-        finishReason: null,
-        contextTokens: null,
-        costUsd: null,
-        agentTurns: null,
-        summary: null,
-        error: null,
-    };
-    try {
-        const parsed = JSON.parse(line) as {
-            id?: unknown;
-            finish?: unknown;
-            tokens?: unknown;
-            cost?: unknown;
-            turns?: unknown;
-            summary?: unknown;
-            error?: unknown;
-        };
-        const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
-        const finishReason = typeof parsed.finish === 'string' && parsed.finish ? parsed.finish : null;
-        const contextTokens =
-            typeof parsed.tokens === 'number' && Number.isFinite(parsed.tokens) && parsed.tokens >= 0
-                ? Math.round(parsed.tokens)
-                : null;
-        const costUsd =
-            typeof parsed.cost === 'number' && Number.isFinite(parsed.cost) && parsed.cost >= 0 ? parsed.cost : null;
-        const agentTurns =
-            typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
-                ? parsed.turns
-                : null;
-        const summary = typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : null;
-        const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
-        return { sessionId, finishReason, contextTokens, costUsd, agentTurns, summary, error };
-    } catch {
-        return nothing;
-    }
-}
-
-/**
- * The full `docker run` argv that counts the agent turns a finished claude-code run banked —
- * pure, and exported, because it is the part worth pinning. The same throwaway shape the
- * opencode readout runs: a container over the workspaces volume, entrypoint swapped for node,
- * reading the transcript the CLI wrote onto the volume under FACTORY_TRANSCRIPT_DIR (its
- * CLAUDE_CONFIG_DIR). It runs AFTER the job container exits; the volume outlives the container,
- * so there is no teardown to race and a killed run's transcript is still readable.
- */
-export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: string, startedAt: string): string[] {
-    if (!UUID.test(sessionId)) {
-        throw new Error(`refusing to count turns for a session id that is not a uuid: ${sessionId}`);
-    }
-    return [
-        'run',
-        '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
-        // Both travel as env VALUES — the script (claude-turns.cjs) is static, so nothing
-        // board-derived is ever part of its text.
-        '-e',
-        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
-        '-e',
-        `CLAUDE_SESSION_ID=${sessionId}`,
-        // The run's start as an ISO instant: the transcript carries every cycle the resumed
-        // conversation ever had, so the count is bounded to the entries written at or after
-        // this run began — its own delta, never the earlier runs' turns again.
-        '-e',
-        `RUN_STARTED_AT=${startedAt}`,
-        '--entrypoint',
-        'node',
-        executorImage(config, job.executorType),
-        '-e',
-        claudeTurnsScript,
-    ];
-}
-
-/** What the claude close-time read answered: the turn count and the run's last words, or nulls. */
-export function parseClaudeCloseRead(stdout: string): { turns: number | null; summary: string | null } {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        const parsed = JSON.parse(line) as { turns?: unknown; summary?: unknown };
-        return {
-            turns:
-                typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
-                    ? parsed.turns
-                    : null,
-            summary: typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : null,
-        };
-    } catch {
-        return { turns: null, summary: null };
-    }
-}
-
-/**
- * Whether this run gets a close-time agent-turn read at all. Opencode's count rides its own
- * readout; claude-code's needs the session id the runner minted and a HEADLESS run — Remote
- * Control keeps an interactive conversation that continues after any single read, so its count
- * stays unmeasured rather than freezing a mid-conversation number (the design's null posture).
- */
-export function readsAgentTurns(
-    config: DriverConfig,
-    job: Pick<BoardJob, 'executorType'>,
-    session: RunSession | null
-): boolean {
-    return job.executorType === 'claude-code' && !config.remoteControl && session !== null && UUID.test(session.id);
-}
-
-/*
- * The cache watch. A model provider that silently stops serving prompt-cache hits mid-run turns
- * every following turn into a full re-ingestion of the context at a fraction of the speed — the
- * first observed case went from ~25s turns to 2.5-4.5 minute turns and ground into the job
- * timeout having explored and edited nothing. The watch reads the same session database the
- * close-time readout does, but WHILE the run is live, and kills the job when enough turns have
- * completed with no cache reads over a real context and each of them itself slow — the point
- * where "no cache" has become "no progress". Killing early reports the cause; the timeout
- * reports only a corpse.
- */
-
-/** Completed assistant turns the watch inspects, as the session database records them. */
-export interface OpencodeCacheTurn {
-    /** Input tokens that were NOT served from cache — the whole context, when the cache is dead. */
-    input: number;
-    /** Input tokens served from cache. Zero on every turn is the signature of a dead cache. */
-    cacheRead: number;
-    /** How long the turn took, wall clock. A dead cache is only a problem when it costs time. */
-    ms: number;
-}
-
-/** The numbers the trigger fires on, each named for the test that pins it. */
-export const CACHE_WATCH_TURNS = 3;
-export const CACHE_WATCH_MIN_INPUT_TOKENS = 20_000;
-export const CACHE_WATCH_MIN_TURN_MS = 60_000;
-
-/**
- * The cache watch's verdict over the newest completed turns: a human-readable reason when they
- * show a provider that has stopped caching, null otherwise. Every turn must fail on all three
- * axes — no cached input, a real context, and a slow turn — so a provider that never cached but
- * answers quickly is left alone, and one fluke turn cannot kill a job. The reason carries the
- * observed numbers, because "failed" alone would send its reader down the wrong path.
- */
-export function cacheCollapse(turns: OpencodeCacheTurn[]): string | null {
-    if (turns.length < CACHE_WATCH_TURNS) return null;
-    const dead = turns.every(
-        (t) => t.cacheRead === 0 && t.input >= CACHE_WATCH_MIN_INPUT_TOKENS && t.ms >= CACHE_WATCH_MIN_TURN_MS
-    );
-    if (!dead) return null;
-    const inputs = turns.map((t) => `${Math.round(t.input / 1000)}k`).join('/');
-    const seconds = turns.map((t) => Math.round(t.ms / 1000));
-    const span =
-        Math.min(...seconds) === Math.max(...seconds)
-            ? `${Math.min(...seconds)}s`
-            : `${Math.min(...seconds)}-${Math.max(...seconds)}s`;
-    return `${turns.length} consecutive turns with no prompt-cache reads ` + `(input ${inputs} tokens, ${span} each)`;
-}
-
-/** What the probe answers: the session it found, its newest completed turns, and any failure. */
-export interface OpencodeCacheProbe {
-    sessionId: string | null;
-    turns: OpencodeCacheTurn[];
-    error: string | null;
-}
-
-const isTurn = (value: unknown): value is OpencodeCacheTurn => {
-    if (typeof value !== 'object' || value === null) return false;
-    const t = value as Record<string, unknown>;
-    const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
-    return num(t.input) && num(t.cacheRead) && num(t.ms);
-};
-
-/**
- * The full `docker run` argv that reads the cache health of a LIVE run — pure, and exported,
- * because it is the part worth pinning: one throwaway container over the workspaces volume,
- * entrypoint swapped for node, read-only query for the newest root session's newest completed
- * assistant turns. Runs every CACHE_WATCH_POLL_MS of the run's life; the same
- * concurrent-reader-with-a-live-writer property the close-time readout relies on, and the same
- * one-error-line rule — an answer that parses to no session is "not yet", not a verdict.
- */
-export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): string[] {
-    const db = opencodeDbPath(config, job);
-    return [
-        'run',
-        '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
-        // The database path and the turn count travel as env VALUES — the script
-        // (opencode-cache-probe.cjs) is static, and the count comes from this module's constant,
-        // so the trigger cannot drift between the probe and the code that judges the turns.
-        '-e',
-        `OPENCODE_DB=${db}`,
-        '-e',
-        `CACHE_WATCH_TURNS=${CACHE_WATCH_TURNS}`,
-        '--entrypoint',
-        'node',
-        executorImage(config, job.executorType),
-        '-e',
-        opencodeCacheProbeScript,
-    ];
-}
-
-/** Pulls the session id and turns out of the probe's answer, tolerating anything else. */
-export function parseOpencodeCacheProbe(stdout: string): OpencodeCacheProbe {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    const nothing = { sessionId: null, turns: [], error: null };
-    try {
-        const parsed = JSON.parse(line) as { id?: unknown; turns?: unknown; error?: unknown };
-        const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
-        const turns = Array.isArray(parsed.turns) ? parsed.turns.filter(isTurn).slice(0, CACHE_WATCH_TURNS) : [];
-        const error = typeof parsed.error === 'string' && parsed.error ? parsed.error : null;
-        return { sessionId, turns, error };
-    } catch {
-        return nothing;
-    }
-}
+// The opencode/claude-code close-time reads and the live cache probe: moved to
+// docker-close-read.ts (AGENTS.md's file-length budget), re-exported here so every existing
+// import of `./docker.js` keeps resolving the same names.
+export {
+    cacheCollapse,
+    CACHE_WATCH_MIN_INPUT_TOKENS,
+    CACHE_WATCH_MIN_TURN_MS,
+    CACHE_WATCH_TURNS,
+    claudeTurnsArgs,
+    opencodeCacheProbeArgs,
+    parseClaudeCloseRead,
+    parseOpencodeCacheProbe,
+    parseOpencodeRunOutcome,
+    readsAgentTurns,
+} from './docker-close-read.js';
+export type { OpencodeCacheProbe, OpencodeCacheTurn, OpencodeRunOutcome } from './docker-close-read.js';
 
 /**
  * Where the image sets CLAUDE_CONFIG_DIR. The login lives under it, so that whole directory is what
@@ -980,7 +747,7 @@ export function workspacePathOf(job: BoardJob): string | null {
     return job.workspacePath && WORKSPACE_PATH.test(job.workspacePath) ? job.workspacePath : null;
 }
 
-function workspacePath(job: BoardJob): string {
+export function workspacePath(job: BoardJob): string {
     const path = workspacePathOf(job);
     if (!path) {
         throw new Error(
@@ -1127,13 +894,64 @@ export const envFilePath = (job: BoardJob): string => {
     return join(tmpdir(), `factory-env-${job.id}${token}.env`);
 };
 
+/**
+ * Pushes the runner's credential onto the argv: the auth volume under Remote Control, or the
+ * driver's passEnv names plus the claim's `--env-file` for a headless run.
+ */
+function pushRunnerCredentialArgs(args: string[], config: DriverConfig, job: BoardJob, envFile?: string): void {
+    if (config.remoteControl) {
+        // `-t` alone, and NOT `-i -t`. Remote Control is an interactive session and will not start
+        // one without a tty — but the driver's own stdin is not a terminal, and `docker run -i`
+        // from a process whose stdin is not a tty fails outright with "the input device is not a
+        // TTY". With `-t` by itself the daemon allocates the pty anyway and never attaches the
+        // client's stdin to it, so the container gets a terminal that simply never delivers input
+        // or EOF — which is exactly what a session waiting to be driven from elsewhere needs.
+        args.push('-t');
+        // Deliberately NOT passEnv. Remote Control requires a claude.ai subscription login, and
+        // forwarding a token instead degrades it in silence: `--remote-control` still starts a
+        // perfectly ordinary local session, and the only symptom is that it never appears at
+        // claude.ai/code. So the volume is the only credential a Remote Control runner gets.
+        args.push('-v', `${config.authVolume}:${AUTH_MOUNT}`);
+        // The trust dialog is a real prompt, and an interactive session started by a driver has
+        // nobody to answer it. See docker/claude-executor/README.md for what accepting it implies
+        // when the checkout ships a .claude/settings.local.json.
+        args.push('-e', 'TRUST_WORKDIR=1');
+        return;
+    }
+    // The driver's own credentials ride as before: `-e NAME` without a value, docker reads it
+    // from THIS process's environment. `-e NAME=value` would put the credential in an argv
+    // every `ps` on the host can read — the same distinction the workspace reconcile makes for
+    // the git token.
+    //
+    // The claim's env does NOT ride as `-e NAME`. Its names are member-controlled, and `-e
+    // NAME` reads the value from this process's own environment — a member-configured PATH,
+    // DOCKER_HOST or HOME there steers the docker CLI the driver executes on the host, which
+    // is host code execution rather than a runner environment. So the claim travels in a
+    // --env-file (written and removed by createDockerRunner), the values never touching this
+    // process's environment at all. Reserved names are already gone (claimEnv); docker gives
+    // `-e` precedence over `--env-file`, so a name the claim also carries is dropped from
+    // passEnv — the claim must win.
+    const claim = claimEnv(job);
+    // The file is not optional any more, even for a claim that resolves to nothing: the
+    // runner's own branch-ingest credential — this attempt's job id + lease token pair —
+    // rides it (envFileBody appends it after the claim's and gate lines), and a runner
+    // without its file would report 401s into silence.
+    if (!envFile) {
+        throw new Error(`refusing to run job ${job.id}: no env file was given`);
+    }
+    for (const name of config.passEnv.filter((n) => !Object.prototype.hasOwnProperty.call(claim, n))) {
+        args.push('-e', name);
+    }
+    args.push('--env-file', envFile);
+}
+
 export function dockerArgs(
     config: DriverConfig,
     job: BoardJob,
     session: RunSession | null,
-    servicesNetwork: string | null = null,
-    envFile?: string
+    options: { servicesNetwork?: string | null; envFile?: string } = {}
 ): string[] {
+    const { servicesNetwork = null, envFile } = options;
     /*
      * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
      * the remote default — when the job names a repository, and at the member root when it does
@@ -1185,50 +1003,7 @@ export function dockerArgs(
         args.push('--add-host', 'host.docker.internal:host-gateway');
     }
 
-    if (config.remoteControl) {
-        // `-t` alone, and NOT `-i -t`. Remote Control is an interactive session and will not start
-        // one without a tty — but the driver's own stdin is not a terminal, and `docker run -i`
-        // from a process whose stdin is not a tty fails outright with "the input device is not a
-        // TTY". With `-t` by itself the daemon allocates the pty anyway and never attaches the
-        // client's stdin to it, so the container gets a terminal that simply never delivers input
-        // or EOF — which is exactly what a session waiting to be driven from elsewhere needs.
-        args.push('-t');
-        // Deliberately NOT passEnv. Remote Control requires a claude.ai subscription login, and
-        // forwarding a token instead degrades it in silence: `--remote-control` still starts a
-        // perfectly ordinary local session, and the only symptom is that it never appears at
-        // claude.ai/code. So the volume is the only credential a Remote Control runner gets.
-        args.push('-v', `${config.authVolume}:${AUTH_MOUNT}`);
-        // The trust dialog is a real prompt, and an interactive session started by a driver has
-        // nobody to answer it. See docker/claude-executor/README.md for what accepting it implies
-        // when the checkout ships a .claude/settings.local.json.
-        args.push('-e', 'TRUST_WORKDIR=1');
-    } else {
-        // The driver's own credentials ride as before: `-e NAME` without a value, docker reads it
-        // from THIS process's environment. `-e NAME=value` would put the credential in an argv
-        // every `ps` on the host can read — the same distinction the workspace reconcile makes for
-        // the git token.
-        //
-        // The claim's env does NOT ride as `-e NAME`. Its names are member-controlled, and `-e
-        // NAME` reads the value from this process's own environment — a member-configured PATH,
-        // DOCKER_HOST or HOME there steers the docker CLI the driver executes on the host, which
-        // is host code execution rather than a runner environment. So the claim travels in a
-        // --env-file (written and removed by createDockerRunner), the values never touching this
-        // process's environment at all. Reserved names are already gone (claimEnv); docker gives
-        // `-e` precedence over `--env-file`, so a name the claim also carries is dropped from
-        // passEnv — the claim must win.
-        const claim = claimEnv(job);
-        // The file is not optional any more, even for a claim that resolves to nothing: the
-        // runner's own branch-ingest credential — this attempt's job id + lease token pair —
-        // rides it (envFileBody appends it after the claim's and gate lines), and a runner
-        // without its file would report 401s into silence.
-        if (!envFile) {
-            throw new Error(`refusing to run job ${job.id}: no env file was given`);
-        }
-        for (const name of config.passEnv.filter((n) => !Object.prototype.hasOwnProperty.call(claim, n))) {
-            args.push('-e', name);
-        }
-        args.push('--env-file', envFile);
-    }
+    pushRunnerCredentialArgs(args, config, job, envFile);
 
     if (config.network) args.push('--network', config.network);
 
@@ -1253,50 +1028,59 @@ export function dockerArgs(
     // config would have refused at boot; the default names the board JOB_BOARD_URL names.
     args.push('-e', `FACTORY_STATS_URL=${config.statsUrl}`);
 
-    // opencode: headless only — Remote Control is refused in the config, so there is no RC branch
-    // here and no permissions flag either (the image's baked opencode.json decides them).
-    //
-    // Sessions: opencode mints its own (`ses_…`) and cannot adopt one minted in advance, so a
-    // fresh run is given none — the runner scrapes the id the run actually used after it ends and
-    // the loop reports it. A follow-up is the exception to "cannot adopt": its claim carries the
-    // session opencode ITSELF created (persisted via XDG_DATA_HOME below), and `run --session
-    // <id> <command>` continues that conversation with the new adjustment. A resume claim with
-    // nothing to deliver is a parked claude-code session — standby is a Remote Control feature —
-    // and is refused by loop.ts before it gets here.
     if (job.executorType === 'opencode') {
-        if (session && !session.resume) {
-            throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
-        }
-        if (session && !job.followUp) {
-            // Unreachable through the loop, which refuses this state first — this is the runner
-            // asserting it too, because `run --session <id>` with nothing to deliver would idle a
-            // headless run to its deadline. Standby is a Remote Control feature; opencode has none.
-            throw new Error(
-                `refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`
-            );
-        }
-        // The session database has to outlive the container or there is nothing to resume into:
-        // a fresh container starts with an empty one. Pointing XDG_DATA_HOME at the member's own
-        // tree on the workspaces volume persists it per member, next to their checkouts — a
-        // dot-directory the workspace reconcile never mistakes for a checkout (it clones only
-        // rows it selected, and its naming rules refuse a leading dot).
-        args.push('-e', `XDG_DATA_HOME=${config.workspaceMount}/${workspacePath(job)}/.opencode`);
-        // Only a follow-up has a session here, and the reporter must name it: the follow-up's
-        // tokens belong to the SAME conversation the parent ran. A fresh run is discovered live
-        // by the reporter from the session database this argv's XDG_DATA_HOME keeps. BEFORE the
-        // image name — docker stops option parsing there, and an `-e` past it is the CLI's argv.
-        if (session) {
-            if (!SESSION_ID.test(session.id)) {
-                throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
-            }
-            args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
-        }
-        args.push(executorImage(config, job.executorType), 'run');
-        if (session) args.push('--session', session.id);
-        args.push(job.command);
-        return args;
+        return pushOpencodeArgs(args, config, job, session);
     }
+    return pushClaudeCodeArgs(args, config, job, session);
+}
 
+/**
+ * Appends the opencode invocation to the argv, and answers it. Headless only — Remote Control is
+ * refused in the config, so there is no RC branch here and no permissions flag either (the
+ * image's baked opencode.json decides them).
+ *
+ * Sessions: opencode mints its own (`ses_…`) and cannot adopt one minted in advance, so a fresh
+ * run is given none — the runner scrapes the id the run actually used after it ends and the loop
+ * reports it. A follow-up is the exception to "cannot adopt": its claim carries the session
+ * opencode ITSELF created (persisted via XDG_DATA_HOME below), and `run --session <id> <command>`
+ * continues that conversation with the new adjustment. A resume claim with nothing to deliver is
+ * a parked claude-code session — standby is a Remote Control feature — and is refused by loop.ts
+ * before it gets here.
+ */
+function pushOpencodeArgs(args: string[], config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
+    if (session && !session.resume) {
+        throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
+    }
+    if (session && !job.followUp) {
+        // Unreachable through the loop, which refuses this state first — this is the runner
+        // asserting it too, because `run --session <id>` with nothing to deliver would idle a
+        // headless run to its deadline. Standby is a Remote Control feature; opencode has none.
+        throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
+    }
+    // The session database has to outlive the container or there is nothing to resume into:
+    // a fresh container starts with an empty one. Pointing XDG_DATA_HOME at the member's own
+    // tree on the workspaces volume persists it per member, next to their checkouts — a
+    // dot-directory the workspace reconcile never mistakes for a checkout (it clones only
+    // rows it selected, and its naming rules refuse a leading dot).
+    args.push('-e', `XDG_DATA_HOME=${config.workspaceMount}/${workspacePath(job)}/.opencode`);
+    // Only a follow-up has a session here, and the reporter must name it: the follow-up's
+    // tokens belong to the SAME conversation the parent ran. A fresh run is discovered live
+    // by the reporter from the session database this argv's XDG_DATA_HOME keeps. BEFORE the
+    // image name — docker stops option parsing there, and an `-e` past it is the CLI's argv.
+    if (session) {
+        if (!SESSION_ID.test(session.id)) {
+            throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
+        }
+        args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
+    }
+    args.push(executorImage(config, job.executorType), 'run');
+    if (session) args.push('--session', session.id);
+    args.push(job.command);
+    return args;
+}
+
+/** Appends the claude-code invocation to the argv, and answers it. Every job runs as a session. */
+function pushClaudeCodeArgs(args: string[], config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
     if (!session) {
         throw new Error(`refusing to run job ${job.id}: the claude-code runner runs every job as a session`);
     }
@@ -1331,856 +1115,4 @@ export function dockerArgs(
     return args;
 }
 
-type Spawn = typeof spawn;
-
-/**
- * Everything the runner does through the daemon other than the `docker run` itself — the fence,
- * the post-run inspect and the cleanup — goes through this one seam, so a test can stand in for
- * the daemon instead of shelling out to it.
- */
-/**
- * One `docker` invocation off the hot paths. `timeout` (ms) bounds the whole exec — the process
- * is killed and the promise rejects — which is what keeps a close-time read from holding a
- * runner's verdict open forever when the daemon stalls.
- */
-type ExecDocker = (args: string[], options?: { timeout?: number }) => Promise<{ stdout: string }>;
-
-/** The fs verbs the runner's env files need — injectable for the same reason spawn is. */
-export interface RunnerFiles {
-    writeFile: typeof writeFile;
-    rm: typeof rm;
-}
-
-export function createDockerRunner(
-    config: DriverConfig,
-    spawnFn: Spawn = spawn,
-    execDocker: ExecDocker = (args, options) => run('docker', args, { ...options, encoding: 'utf8' }),
-    files: RunnerFiles = { writeFile, rm }
-): Runner {
-    /*
-     * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
-     * services setup. Keyed by LEASE TOKEN, not job id: the token is the per-attempt identity —
-     * one driver process can hold two attempts of the same id at once (the poll loop re-claims an
-     * expired-lease job while the first attempt's setup is still in flight), and the loop's kill
-     * names the one attempt it killed. Keyed by id, the two attempts would share one marker: the
-     * sibling claim would either be aborted by a kill meant for the other, or — wiping the marker
-     * on entry, as this once did — revive the killed attempt to compete for the same network and
-     * containers. Tokens never repeat, so the set only ever grows, by one entry per lost lease.
-     *
-     * This set is EFFICIENCY and early abort, not correctness: every daemon call any path issues
-     * is scoped to its own attempt — by the lease label in its filters and the token in its
-     * names — so a dying setup could issue every call it has and still never touch a sibling
-     * attempt's resources. What the checks buy is that a dying setup stops CREATING: it does not
-     * go on building a network, starting services and spawning a runner over a lease that is
-     * already gone.
-     */
-    const killed = new Set<BoardJob['leaseToken']>();
-    /**
-     * Tears down THIS attempt's services and network — and, by construction, nothing else. The
-     * `ps` filters carry this attempt's lease token beside the job id, and the network it removes
-     * is named after the token too, so every call here resolves only to resources this attempt
-     * created. That is what makes it safe to run UNCONDITIONALLY, from every closing path: a
-     * close that lands late, a kill that lands after a replacement claim stood its own fleet up,
-     * a spawn error racing a newer attempt's setup — none of them can NAME anything but this
-     * attempt's own fleet, so none of them needs an ownership gate. Daemon calls are arbitrarily
-     * slow and attempts can supersede each other mid-call; attempt scoping is what holds at
-     * execution time, because it is not a snapshot but a property of the argv itself.
-     *
-     * Every removal tolerates the thing already being gone, which makes the whole teardown
-     * idempotent — it runs twice per attempt by design, as the fence's service half before the
-     * run and as the teardown after it.
-     */
-    const serviceTeardown = async (job: BoardJob): Promise<void> => {
-        if (!config.servicesEnabled) return;
-        const found = await execDocker([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            `label=factory.lease=${job.leaseToken}`,
-            '--filter',
-            'label=factory.service',
-        ]).catch(() => ({ stdout: '' }));
-        const ids = found.stdout
-            .split('\n')
-            .map((id) => id.trim())
-            .filter(Boolean);
-        for (const id of ids) {
-            await execDocker(['rm', '-f', id]).catch(() => undefined);
-        }
-        await execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
-    };
-
-    const kill = async (job: BoardJob): Promise<void> => {
-        // Recorded before anything is torn down: this attempt, sitting in its services setup,
-        // reads this between awaited steps and aborts instead of creating more resources or
-        // spawning the runner over a lease that is already gone. The token, not the id, is what
-        // is recorded — a sibling attempt of the same job carries a different token and must
-        // not read this one's cancellation.
-        killed.add(job.leaseToken);
-        // Killing the `docker run` process would only detach the CLI; the container keeps running
-        // and the workspace keeps being written to. The daemon has to be told — by ID, resolved
-        // through this attempt's own lease label, never by name: a kill that resolved a
-        // job-derived name would address whatever owns that name at daemon-execution time, and
-        // names are attempt-scoped now precisely so no such ambiguity exists. The label pair
-        // (job, lease) resolves to this attempt's containers alone; a stale kill that finds
-        // nothing has nothing of its own left to kill.
-        const found = await execDocker([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=factory.job=${job.id}`,
-            '--filter',
-            `label=factory.lease=${job.leaseToken}`,
-        ]).catch(() => ({ stdout: '' }));
-        for (const id of found.stdout
-            .split('\n')
-            .map((id) => id.trim())
-            .filter(Boolean)) {
-            await execDocker(['kill', id]).catch(() => undefined);
-        }
-        // The declared services go with the runner: a killed job's database has no reason to
-        // outlive the job, and the close handler's teardown would catch them anyway — this is so
-        // a kill while nothing is reading the outcome (lost lease, shutdown) still reclaims them.
-        // Attempt-scoped, like every teardown: whatever a replacement attempt is running is
-        // invisible to these filters.
-        await serviceTeardown(job);
-    };
-
-    /*
-     * The re-claim fence — the only JOB-scoped sweep this runner performs, and the one component
-     * allowed to be job-scoped: it runs BEFORE this attempt creates anything, so whatever it
-     * finds is by construction a previous attempt's leftover. Names are attempt-scoped now, so
-     * no name can find a previous attempt's leftovers — the `factory.job` label is the one
-     * identifier every attempt of the job shares, and the sweep is by label: every leftover
-     * container (runners and services alike), then every leftover network. This claim exists
-     * only because those attempts' leases are gone, so removing them delivers the same verdict
-     * their heartbeats would have, had the driver survived to receive it — and the alternative
-     * to leaving a live leftover runner running is two writers on one checkout, which is the
-     * thing actually worth preventing.
-     *
-     * It runs TWICE per attempt by design: once in syncCheckout — the loop calls the sync
-     * before run(), and the sync is the first writer on the task worktree, so the previous
-     * attempt's runner must be off the daemon before the worktree script starts, not only
-     * before the runner does — and once in run(), which keeps its own call so the guarantee
-     * never depends on the loop's ordering. The sweep is idempotent; removing twice what was
-     * removed once removes nothing.
-     *
-     * Failures PROPAGATE, and for one reason: a swallowed daemon refusal would be
-     * indistinguishable from "nothing left", and the sync would start while the leftover
-     * runner still writes the worktree. A refusal here is INFRASTRUCTURE — syncCheckout lets
-     * it throw (the loop leaves the job to its lease), and run()'s own call propagates the
-     * same way — never the command's verdict. The one tolerated shape is docker's already-gone
-     * answer on a removal: a container exiting between the ps and its rm is the fence
-     * succeeding, not failing. The transitional unlabelled-network rm below keeps tolerating
-     * absent outright — it removes by a NAME that may never have existed.
-     */
-
-    /**
-     * Docker's already-gone answer, in either of its spellings, on stderr or the execFile
-     * message. Read from the removal's own error only — never from a LIST, where "not found"
-     * could never mean anything.
-     */
-    const alreadyGone = (e: unknown): boolean => {
-        const err = e as { stderr?: string | Buffer; message?: string };
-        const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
-        return /no such (container|network)|not found/i.test(`${stderr} ${err.message ?? ''}`);
-    };
-
-    const reclaimFence = async (job: BoardJob): Promise<void> => {
-        let leftovers: { stdout: string };
-        try {
-            leftovers = await execDocker(['ps', '-aq', '--filter', `label=factory.job=${job.id}`]);
-        } catch (e) {
-            throw new Error(
-                `the re-claim fence could not list the leftover containers of job ${job.id}: ${(e as Error).message}`
-            );
-        }
-        for (const id of leftovers.stdout
-            .split('\n')
-            .map((id) => id.trim())
-            .filter(Boolean)) {
-            try {
-                await execDocker(['rm', '-f', id]);
-            } catch (e) {
-                if (alreadyGone(e)) continue;
-                throw new Error(
-                    `the re-claim fence could not remove the leftover container ${id} of job ${job.id}: ${(e as Error).message}`
-                );
-            }
-        }
-        let staleNetworks: { stdout: string };
-        try {
-            staleNetworks = await execDocker([
-                'network',
-                'ls',
-                '--filter',
-                `label=factory.job=${job.id}`,
-                '--format',
-                '{{.Name}}',
-            ]);
-        } catch (e) {
-            throw new Error(
-                `the re-claim fence could not list the leftover networks of job ${job.id}: ${(e as Error).message}`
-            );
-        }
-        for (const name of staleNetworks.stdout
-            .split('\n')
-            .map((name) => name.trim())
-            .filter(Boolean)) {
-            try {
-                await execDocker(['network', 'rm', name]);
-            } catch (e) {
-                if (alreadyGone(e)) continue;
-                throw new Error(
-                    `the re-claim fence could not remove the leftover network ${name} of job ${job.id}: ${(e as Error).message}`
-                );
-            }
-        }
-        // TRANSITIONAL: networks created before the lease token joined the name carry no
-        // labels at all, so the sweep above cannot see them. Remove the pre-redesign name
-        // outright; tolerated absent. This line may be dropped once no pre-redesign leftover
-        // can exist any more.
-        await execDocker(['network', 'rm', `factory-job-${job.id}-services`]).catch(() => undefined);
-    };
-
-    return {
-        kill,
-
-        /*
-         * The startup sync (or, for a claim that continues a session, the restore): one
-         * container, one script. A starting claim gets fetch + create-or-rebase; a continuing
-         * claim gets RESTORE=1 — no fetch, no rebase, nothing that touches the remote (issue
-         * #58) — so its env file is not written at all and the credential helper is absent even
-         * when the claim carries a token. The env names the three paths the script needs — the
-         * clone (where origin lives), the worktree, the branch — literal values, not
-         * credentials. A conflicting rebase aborts itself in the script and answers
-         * { ok: false } with the reason — the loop fails the run before it starts rather than
-         * leaving the worktree mid-rebase for every later turn to trip over.
-         */
-        async syncCheckout(job: BoardJob): Promise<SyncResult> {
-            const clone = repoPath(config, job);
-            const worktree = worktreeDir(config, job);
-            if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
-
-            /*
-             * The fence BEFORE the sync: the loop calls syncCheckout before run(), so without
-             * this the worktree script would start while a previous attempt's runner was still
-             * writing the same shared task worktree — mixed edits, or a rebase conflict nobody
-             * is awake to resolve. The sweep is idempotent, and run() keeps its own: twice per
-             * attempt is already the fence's documented shape, the same way the service
-             * teardown half runs twice.
-             */
-            await reclaimFence(job);
-            const restore = claimContinuesSession(job);
-            let file: string | null = null;
-            if (!restore) {
-                try {
-                    file = envFilePath(job);
-                    await files.writeFile(file, envFileBody(job), { mode: 0o600 });
-                } catch (e) {
-                    return { ok: false, reason: `could not write the sync env file: ${(e as Error).message}` };
-                }
-            }
-            try {
-                // 'run' and '--rm' INCLUDED — every execDocker argv here is a full `docker run`:
-                // this exact call once shipped as `docker -v ... -w ...`, which is not a command
-                // docker knows, and the sync failed on every job while the compile and the flow
-                // tests (which match argv by shape, not by head) stayed green.
-                const out = await execDocker([
-                    'run',
-                    '--rm',
-                    ...workspacesMountArgs(config, workspacePath(job)),
-                    ...(file ? (['--env-file', file] as string[]) : []),
-                    '-e',
-                    `REPO=${clone}`,
-                    '-e',
-                    `WORKTREE=${worktree}`,
-                    '-e',
-                    `BRANCH=${worktreeBranch(job)}`,
-                    // Restore mode, as a literal: the script's "keep the tree as the task left
-                    // it, remote untouched" switch (issue #58).
-                    ...(restore ? ['-e', 'RESTORE=1'] : []),
-                    // The fetch's credential helper, as CODE in an env VALUE — the same class
-                    // of value as the three paths above, and the same mechanism as the push's
-                    // `-c credential.helper=`. Only when the claim env carries the token the
-                    // helper reads; the token itself travels the env file, never argv. A
-                    // restore fetches nothing, so it never carries one.
-                    ...(!restore && claimCarriesGithubToken(job) ? ['-e', `CRED_HELPER=${CREDENTIAL_HELPER}`] : []),
-                    '--entrypoint',
-                    'node',
-                    executorImage(config, job.executorType),
-                    '-e',
-                    gitWorktreeScript,
-                ]);
-                const line = out.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-                try {
-                    return JSON.parse(line) as SyncResult;
-                } catch {
-                    return { ok: false, reason: 'the worktree sync answered nothing readable' };
-                }
-            } catch (e) {
-                const err = e as { stderr?: string | Buffer; message?: string };
-                const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
-                const detail =
-                    stderr.trim() ||
-                    (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
-                    (err.message ?? 'failed');
-                return { ok: false, reason: `the worktree sync container failed: ${detail.slice(0, 300)}` };
-            } finally {
-                if (file) await files.rm(file).catch(() => undefined);
-            }
-        },
-
-        /*
-         * The terminal reclaim, one container one script like the sync it undoes: the clone (whose
-         * admin dir registers the worktree) and the worktree, by env, nothing else — no env file,
-         * no credential. Removing the tree needs nothing the claim held; a `docker run` with no
-         * --env-file is simpler and leaves nothing to clean on either side. A job that names no
-         * repository never had a tree, so the answer is "reclaimed, nothing was there".
-         */
-        async reclaimWorktree(job: BoardJob): Promise<ReclaimResult> {
-            const clone = repoPath(config, job);
-            const worktree = worktreeDir(config, job);
-            if (!clone || !worktree) return { ok: true, removed: false, reason: null };
-            try {
-                const out = await execDocker([
-                    'run',
-                    '--rm',
-                    ...workspacesMountArgs(config, workspacePath(job)),
-                    '-e',
-                    `REPO=${clone}`,
-                    '-e',
-                    `WORKTREE=${worktree}`,
-                    '--entrypoint',
-                    'node',
-                    executorImage(config, job.executorType),
-                    '-e',
-                    gitWorktreeRemoveScript,
-                ]);
-                const line = out.stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-                try {
-                    return JSON.parse(line) as ReclaimResult;
-                } catch {
-                    return { ok: false, removed: false, reason: 'the worktree reclaim answered nothing readable' };
-                }
-            } catch (e) {
-                const err = e as { stderr?: string | Buffer; message?: string };
-                const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
-                const detail =
-                    stderr.trim() ||
-                    (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
-                    (err.message ?? 'failed');
-                return {
-                    ok: false,
-                    removed: false,
-                    reason: `the worktree reclaim container failed: ${detail.slice(0, 300)}`,
-                };
-            }
-        },
-
-        /*
-         * Publishing is attempt-scoped like everything else here: the env file is named after the
-         * lease token, and the credential travels by --env-file — GITHUB_TOKEN from the claim
-         * env is in no argv anywhere, only inside the container's environment where the
-         * credential helper reads it. The steps themselves — probe, branch, commit, push, PR —
-         * live in publishCheckout (publish.ts), shared with the kubernetes runner so the two
-         * executors cannot drift on what a publish decides; this is only the docker transport:
-         * one `docker run --rm` per step, entrypoint swapped for the tool, over the workspaces
-         * volume (this process has no host path into it).
-         *
-         * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
-         */
-        async publishGit(job: BoardJob, publishToken?: string): Promise<PublishResult> {
-            let file: string | null = null;
-            try {
-                file = envFilePath(job);
-                await files.writeFile(file, envFileBody(withPublishToken(job, publishToken)), { mode: 0o600 });
-            } catch (e) {
-                return publishFailed(`could not write the publish env file: ${(e as Error).message}`);
-            }
-            const envFile = file;
-            const repo = worktreeDir(config, job);
-            try {
-                return await publishCheckout(config, job, async (publish) => {
-                    const args = ['run', '--rm', ...workspacesMountArgs(config, workspacePath(job))];
-                    if (publish.inRepo && repo) args.push('-w', repo);
-                    // Literal env values are paths and code (the probe's REPO) — the same class
-                    // as the sync's three path literals, never a credential.
-                    for (const [name, value] of Object.entries(publish.envLiterals ?? {})) {
-                        args.push('-e', `${name}=${value}`);
-                    }
-                    if (publish.env) args.push('--env-file', envFile);
-                    args.push(
-                        '--entrypoint',
-                        publish.entrypoint,
-                        executorImage(config, job.executorType),
-                        ...publish.args
-                    );
-                    try {
-                        return await execDocker(args);
-                    } catch (e) {
-                        /*
-                         * The tool's own output, never the echoed command: the execFile message is
-                         * "Command failed: <the whole docker run argv>" — 400 characters of that
-                         * leaves no room for the one line a human can act on ("remote: Permission
-                         * to ... denied to bellows-ai[bot]" lives in git's stderr), which is
-                         * exactly how a credential problem once shipped as an unreadable verdict.
-                         * The step's name is added by the workflow; this is the detail under it.
-                         */
-                        const err = e as { stderr?: string | Buffer; message?: string };
-                        const stderr =
-                            typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
-                        const detail =
-                            stderr.trim() ||
-                            (err.message ?? '').split('\n').slice(1).join('\n').trim() ||
-                            (err.message ?? 'failed');
-                        throw new Error(detail);
-                    }
-                });
-            } finally {
-                if (file) await files.rm(file).catch(() => undefined);
-            }
-        },
-
-        async remoteSessionId(job, sessionId) {
-            // Every failure here is the ordinary case, not an error: the container may have exited,
-            // the transcript may not exist yet, or the bridge may simply not have connected.
-            const read = await run('docker', remoteSessionArgs(job, sessionId)).catch(() => null);
-            return read ? parseRemoteSessionId(read.stdout) : null;
-        },
-
-        // The container is named by this attempt's lease token, so a sample can only ever resolve
-        // its own attempt's runner — the same attempt-scoping every per-attempt operation here
-        // leans on. A refused read (the container exited between the ask and the stats round-trip,
-        // the daemon is busy) answers null, which the loop reads as "report no vitals this round".
-        // The service fleet is read in the same sampling round, scoped by the same label pair the
-        // teardown tears down with and requiring the `factory.service` key, so the runner and
-        // gate containers never answer it; a failed read costs the fleet, not the sample.
-        async sampleRuntime(job) {
-            const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
-                () => null
-            );
-            const vitals = read ? parseDockerStats(read.stdout) : null;
-            const services = config.servicesEnabled
-                ? await execDocker([
-                      'ps',
-                      '-a',
-                      '--filter',
-                      `label=factory.job=${job.id}`,
-                      '--filter',
-                      `label=factory.lease=${job.leaseToken}`,
-                      '--filter',
-                      'label=factory.service',
-                      '--format',
-                      '{{json .}}',
-                  ])
-                      .then((found) => parseDockerServicePs(found.stdout))
-                      .catch(() => null)
-                : undefined;
-            return composeRuntimeSample(vitals, services);
-        },
-
-        async run(job, session, onOutput) {
-            // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
-            // token that was never recorded, so nothing recorded for an earlier attempt can
-            // reach this one — and clearing by id would revive exactly the dead attempt the
-            // token keying exists to keep down. See the killed set above.
-
-            /*
-             * The fence before anything this attempt creates — the job-scoped sweep documented
-             * on reclaimFence above. It already ran once, in syncCheckout; run() keeps its own
-             * call so the guarantee never depends on the loop's ordering.
-             */
-            await reclaimFence(job);
-
-            /*
-             * Auxiliary services (issue #6): read the checkouts' .bellows.yaml, then network and
-             * containers, each step with its own verdict.
-             *
-             * A refused read and a refused service start are INFRASTRUCTURE — the daemon said no
-             * to a container this process spawned, the same class as a refused runner spawn — so
-             * they throw, and the loop leaves the job to its lease instead of blaming the command.
-             * A partial fleet is torn down on the way out. A parse refusal, by contrast, is the
-             * AUTHOR's: deterministic, and fully said by the message, so it is returned as a
-             * failed run rather than thrown — retrying a file that cannot change would burn
-             * attempts on an error no retry fixes. (`started: true` there means "this verdict is
-             * final", not "a container ran"; the loop reads it only to decide between reporting
-             * and leaving the job to its lease.)
-             */
-            let servicesNetwork: string | null = null;
-            let refusal: string | null = null;
-            /*
-             * A kill that lands while this setup is awaiting the daemon must stop the attempt.
-             * Throwing loses nothing: the loop discards a lost-lease outcome, and the next
-             * attempt's fence removes whatever was already created. Correctness does not depend
-             * on these checks — every daemon call this setup could go on to issue is scoped to
-             * this attempt's own lease, so running to completion could not touch a sibling
-             * attempt's resources. What they buy is that a dying attempt stops CREATING: it does
-             * not go on to the network, the services and the runner spawn over a lease this
-             * driver no longer holds. So the flag is checked after every awaited step below, and
-             * once more after the claim-env file write — the last await before the spawn — so
-             * the gap between that final check and spawnFn is synchronous, and nothing can land
-             * inside it unobserved.
-             *
-             * The abort is deliberately teardown-FREE. kill() ran the attempt-scoped teardown
-             * when the lease was lost; anything THIS attempt created after that point is a
-             * leftover, and leftovers belong to the NEXT attempt's fence — the one sweep that
-             * runs BEFORE the newer attempt creates anything, so it can tell a dead attempt's
-             * leftovers from a live fleet. A teardown fired from this dying attempt would be
-             * harmless (attempt-scoped) but redundant, and it would only hold up the rejection
-             * the loop is waiting for.
-             */
-            const assertNotKilled = async (): Promise<void> => {
-                if (!killed.has(job.leaseToken)) return;
-                throw new Error(`job ${job.id}: killed while setting up services`);
-            };
-            if (config.servicesEnabled) {
-                // The fence's service half. Everything job-scoped is already gone, and this
-                // attempt has created nothing yet, so this is a no-op by construction — kept
-                // because it makes "the fleet starts clean" hold by the same attempt-scoped code
-                // that enforces it at teardown, not by the fence's special-casing.
-                await serviceTeardown(job);
-                let raw: string;
-                try {
-                    raw = (await execDocker(readBellowsArgs(config, job))).stdout;
-                } catch (e) {
-                    throw new Error(`could not read .bellows.yaml: ${(e as Error).message}`);
-                }
-                await assertNotKilled();
-                let specs: ServiceSpec[];
-                try {
-                    specs = collectServices(splitBellowsSections(raw));
-                } catch (e) {
-                    refusal = (e as Error).message;
-                    specs = [];
-                }
-                if (specs.length) {
-                    servicesNetwork = networkName(job);
-                    // The fence already swept the job's stale networks, and this name carries
-                    // this attempt's own token — a create here cannot collide with anything.
-                    try {
-                        // Labeled like everything else the attempt creates: factory.job is
-                        // what the next attempt's fence sweeps networks by, factory.lease
-                        // what scopes the teardown's removal to this attempt's own.
-                        await execDocker([
-                            'network',
-                            'create',
-                            '--label',
-                            `factory.job=${job.id}`,
-                            '--label',
-                            `factory.lease=${job.leaseToken}`,
-                            servicesNetwork,
-                        ]);
-                    } catch (e) {
-                        throw new Error(`could not create the services network: ${(e as Error).message}`);
-                    }
-                    await assertNotKilled();
-                    for (const spec of specs) {
-                        try {
-                            await execDocker(serviceRunArgs(job, spec));
-                        } catch (e) {
-                            await serviceTeardown(job);
-                            throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
-                        }
-                        await assertNotKilled();
-                    }
-                }
-            }
-            if (refusal !== null) {
-                return { exitCode: null, output: refusal, timedOut: false, idled: false, started: true };
-            }
-
-            // The runner container is the last resource this attempt creates, and the spawn is
-            // what a killed setup must never reach — see assertNotKilled for why a throw is the
-            // right verdict here.
-            await assertNotKilled();
-
-            /*
-             * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
-             * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
-             * in argv and never in this process's environment. The body is the claim env PLUS the
-             * loop's minted gate credentials PLUS the runner's own attempt pair, so a gated job whose
-             * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN and the credential
-             * its attribution reports authenticate with. Skipped under Remote Control, exactly like
-             * every other forwarded credential.
-             */
-            const body = config.remoteControl ? '' : envFileBody(job, config);
-            const file = body ? envFilePath(job) : null;
-            if (file) await files.writeFile(file, body, { mode: 0o600 });
-            // The write above is an await, so the kill-check must run once more: a lease lost
-            // while the write was pending would otherwise reach spawnFn — a runner started over
-            // a dead lease, its job-derived container name colliding with the replacement's.
-            // On this abort the just-written file is removed by hand: the cleanup below only
-            // wraps a settled outcome, and this throw precedes it.
-            try {
-                await assertNotKilled();
-            } catch (abort) {
-                if (file) await files.rm(file).catch(() => undefined);
-                throw abort;
-            }
-
-            const outcome = new Promise<RunOutcome>((resolve, reject) => {
-                // The verdict for a close, decided after the process is gone. An exit 125 is
-                // ambiguous on the shared stderr — the daemon's refusal and a command that
-                // genuinely exited 125 are printed onto the same stream — so the daemon is asked
-                // instead: a container that exists ran, and its State is the truth; "no such
-                // container" means `docker run` never got one accepted, and nothing ran. Any
-                // other exit code unambiguously belongs to the attached container.
-                const verdict = async (code: number | null): Promise<RunOutcome> => {
-                    let started = true;
-                    if (code === 125) {
-                        try {
-                            const state = JSON.parse(
-                                (await execDocker(['inspect', '--format', '{{json .State}}', containerName(job)]))
-                                    .stdout
-                            ) as { Status?: string };
-                            started = state.Status === 'exited';
-                        } catch {
-                            started = false;
-                        }
-                    }
-                    // Cleanup is explicit (--rm is gone, precisely so the inspect above can see
-                    // the container): the fence on the next claim would catch it anyway, but
-                    // leaving one daemon round-trip of litter behind is not tidiness worth
-                    // keeping. Failed removals are the fence's business.
-                    await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
-                    // The services outlive the runner by one teardown: the author's tests may
-                    // have left their database mid-write, and nothing reads the workspace after
-                    // the runner is gone, so nothing needs them anymore. UNCONDITIONAL, and safe
-                    // unconditionally: the teardown is scoped to this attempt's lease, so a
-                    // close that lands arbitrarily late — after a kill, after a replacement
-                    // claim stood its own fleet up — can only ever name and remove what THIS
-                    // attempt created. No knowledge of who claimed what in between is needed,
-                    // and none would be reliable anyway: daemon calls are arbitrarily slow, and
-                    // any snapshot of "who is current" is stale by the time it is checked.
-                    await serviceTeardown(job);
-                    return { exitCode: code, output, timedOut, idled, started, cacheLost };
-                };
-
-                // The run's start instant, captured here because both close-time turn reads key
-                // on it: a follow-up resumes its session's conversation, so the delta each read
-                // reports is bounded to what THIS run wrote.
-                const startedAt = new Date().toISOString();
-                const child = spawnFn('docker', dockerArgs(config, job, session, servicesNetwork, file ?? undefined), {
-                    stdio: ['ignore', 'pipe', 'pipe'],
-                });
-                let timedOut = false;
-                let idled = false;
-                let cacheLost: string | null = null;
-
-                // Armed only under Remote Control, where a session sits waiting for a human and
-                // silence means nobody is driving it. A headless run has nobody to come back to
-                // it, so parking one would strand it.
-                let idleTimer: NodeJS.Timeout | null = null;
-                const idle = () => {
-                    if (!config.remoteControl) return;
-                    if (idleTimer) clearTimeout(idleTimer);
-                    idleTimer = setTimeout(() => {
-                        idled = true;
-                        void kill(job);
-                    }, config.idleMs);
-                };
-                idle();
-
-                let output = '';
-                const collect = (chunk: Buffer | string) => {
-                    output += String(chunk);
-                    // Keep the tail: a run that fails says why at the end, and the head is banner.
-                    // Byte-true, because the report has to fit the board's body limit whatever the
-                    // log contained — see reportTail.
-                    output = reportTail(output);
-                    // The same tail a complete report would carry, handed over as it grows. Every
-                    // chunk calls back; throttling is the loop's business, not this runner's.
-                    onOutput?.(output);
-                    idle();
-                };
-                child.stdout?.on('data', collect);
-                child.stderr?.on('data', collect);
-
-                // Armed only under Remote Control: with both running the shorter one always wins, so
-                // a drivable job would be killed and reported failed before it could ever be
-                // parked. There, silence is the bound.
-                const timer = config.remoteControl
-                    ? null
-                    : setTimeout(() => {
-                          timedOut = true;
-                          void kill(job);
-                      }, config.jobTimeoutMs);
-
-                /*
-                 * The cache watch polls on a period while the run is live. Each tick is one
-                 * throwaway probe container; a probe that fails once (the daemon is busy, the
-                 * session is not there yet) just waits for the next tick, and the trigger itself
-                 * needs three consecutive damning turns, so no single answer — or no single fluke —
-                 * kills anything. The kill is this attempt's own, label-scoped like every other;
-                 * the task-type check below keeps it on opencode, and config keeps it docker-only.
-                 */
-                let cacheTimer: NodeJS.Timeout | null = null;
-                if (config.cacheWatch && job.executorType === 'opencode') {
-                    cacheTimer = setInterval(() => {
-                        void (async () => {
-                            const probe = await execDocker(opencodeCacheProbeArgs(config, job))
-                                .then((read) => parseOpencodeCacheProbe(read.stdout))
-                                .catch(() => null);
-                            if (!probe || !probe.sessionId || cacheLost) return;
-                            const collapse = cacheCollapse(probe.turns);
-                            if (collapse) {
-                                cacheLost = collapse;
-                                void kill(job);
-                            }
-                        })();
-                    }, config.cacheWatchPollMs);
-                }
-
-                const done = () => {
-                    if (timer) clearTimeout(timer);
-                    if (idleTimer) clearTimeout(idleTimer);
-                    if (cacheTimer) clearInterval(cacheTimer);
-                };
-
-                /*
-                 * A spawn failure makes Node deliver 'error' and then 'close' with a null code.
-                 * The flag keeps the two apart: once it is set, close must not settle the
-                 * promise, because verdict(null) would read as a started run with no exit code —
-                 * terminally reported as a failed job — when the truth is infrastructure the
-                 * loop should leave to its lease for retry.
-                 */
-                let spawnFailed = false;
-                child.on('error', (error) => {
-                    spawnFailed = true;
-                    done();
-                    // The spawn itself failed (docker missing, exec blew up). Whatever services
-                    // were started before it are torn down BEFORE the rejection lands — teardown
-                    // tolerates absence, so either way a rejection means cleanup is as done as
-                    // it gets, and the rejection waits for the teardown's verdict. The teardown
-                    // is attempt-scoped, so no supersession check is needed: even if a
-                    // replacement claim landed while this attempt was failing, the filters carry
-                    // this attempt's lease and the network is named after it — the teardown
-                    // cannot reach the replacement's fleet.
-                    serviceTeardown(job).then(
-                        () => reject(error),
-                        () => reject(error)
-                    );
-                });
-                child.on('close', (code) => {
-                    // The error handler owns this failure and its rejection is already deferred
-                    // behind the service teardown; a close here carries only the null code of a
-                    // process that never ran, and settling verdict(null) over the pending
-                    // rejection would turn infrastructure into a terminal verdict.
-                    if (spawnFailed) return;
-                    done();
-                    void verdict(code)
-                        .then(async (outcome) => {
-                            /*
-                             * opencode mints its own session id, so the loop had none to report at
-                             * spawn — this is where it comes from instead: one throwaway container
-                             * over the workspaces volume, one read-only query against the
-                             * database the run just closed. The same read answers HOW the run's
-                             * last message ended — a zero exit code with a finish reason that is
-                             * not `stop` is the model's context limit (or an abort) cutting a
-                             * task short, which only the session database knows. A failed read is
-                             * not a failed run: it costs the task its follow-ups and this
-                             * verdict-check, not its verdict.
-                             */
-                            if (job.executorType === 'opencode') {
-                                /*
-                                 * NOT single-shot, and not only when the container fails. The CLI
-                                 * exited a moment ago, and its session database may still be
-                                 * mid-checkpoint — a read-only open of a WAL that needs recovery
-                                 * fails outright, then succeeds milliseconds later. The readout
-                                 * script answers one of three ways — a session line, an error
-                                 * line, or nothing — and ALL but the first read as "no session
-                                 * yet", so the retries fire on the session being missing,
-                                 * whatever the reason. One failed readout silently cost a run its
-                                 * session, its finish reason and its context stats: a task that
-                                 * could never be followed up, with nothing in any log saying why.
-                                 * Three tries, half a second apart; a failed read is still not a
-                                 * failed run.
-                                 */
-                                let scraped: OpencodeRunOutcome = {
-                                    sessionId: null,
-                                    finishReason: null,
-                                    contextTokens: null,
-                                    costUsd: null,
-                                    agentTurns: null,
-                                    summary: null,
-                                    error: null,
-                                };
-                                let reason: string | null = null;
-                                for (let attempt = 0; attempt < 3 && !scraped.sessionId; attempt += 1) {
-                                    if (attempt > 0) await new Promise((r) => setTimeout(r, 500));
-                                    scraped = await execDocker(opencodeSessionReadoutArgs(config, job, startedAt)).then(
-                                        (read) => parseOpencodeRunOutcome(read.stdout),
-                                        (err: Error): OpencodeRunOutcome => ({
-                                            sessionId: null,
-                                            finishReason: null,
-                                            contextTokens: null,
-                                            costUsd: null,
-                                            agentTurns: null,
-                                            summary: null,
-                                            error: `the readout container failed: ${err.message}`,
-                                        })
-                                    );
-                                    reason = scraped.error ?? reason;
-                                }
-                                if (scraped.sessionId) {
-                                    outcome.sessionId = scraped.sessionId;
-                                    if (scraped.finishReason) outcome.finishReason = scraped.finishReason;
-                                    if (scraped.contextTokens !== null) outcome.contextTokens = scraped.contextTokens;
-                                    if (scraped.costUsd !== null) outcome.costUsd = scraped.costUsd;
-                                    // The readout's turn count rides the same line: assistant
-                                    // response cycles of the root session, already scoped by the
-                                    // parent_id-is-null selection the script makes.
-                                    if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
-                                    if (scraped.summary) outcome.summary = scraped.summary;
-                                    // With a session scraped, the line's error is the RUN's last
-                                    // provider error, not the read's failure — carried as its own
-                                    // field so the verdict can name the cause of a premature stop.
-                                    if (scraped.error) outcome.providerError = scraped.error;
-                                } else {
-                                    outcome.readoutError =
-                                        reason ?? 'the readout answered nothing (no session in the database)';
-                                }
-                            }
-
-                            /*
-                             * The claude-code turn count: one throwaway container over the
-                             * workspaces volume, reading the transcript the CLI wrote onto it
-                             * while it lived. Best-effort like every close-time read — a failed
-                             * read costs the task its agent-turn figure, never its verdict, and
-                             * a missing transcript answers null rather than zero. Remote
-                             * Control is excluded by readsAgentTurns: its conversation continues
-                             * after this read would run, so its count stays unmeasured.
-                             */
-                            if (readsAgentTurns(config, job, session)) {
-                                const read = await execDocker(
-                                    claudeTurnsArgs(config, job, (session as RunSession).id, startedAt),
-                                    { timeout: CLOSE_READ_DEADLINE_MS }
-                                ).then(
-                                    (out) => parseClaudeCloseRead(out.stdout),
-                                    (): { turns: number | null; summary: string | null } => ({
-                                        turns: null,
-                                        summary: null,
-                                    })
-                                );
-                                outcome.agentTurns = read.turns;
-                                if (read.summary) outcome.summary = read.summary;
-                            }
-                            return outcome;
-                        })
-                        .then(resolve, reject);
-                });
-            });
-
-            // The file dies with the run — verdict read or not, resolved or thrown. The CLI has
-            // long since read it; the daemon has the values in the container's config.
-            try {
-                return await outcome;
-            } finally {
-                if (file) await files.rm(file).catch(() => undefined);
-            }
-        },
-    };
-}
+export { createDockerRunner, type RunnerFiles } from './docker-runner.js';

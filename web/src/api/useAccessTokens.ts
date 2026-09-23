@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /** A list-row view of an access token. A token's secret — or its hash — is never in a list. */
 export interface AccessTokenView {
@@ -39,7 +39,7 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
         async (signal: AbortSignal) => {
             try {
                 const response = await fetch(base, { signal });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     // Handed to the gate rather than rendered as a banner — every later request
                     // would 401 too, so a banner would never clear.
                     reportUnauthenticated();
@@ -85,7 +85,7 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ label }),
                 });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return { ok: false, error: 'Your session expired' };
                 }
@@ -107,7 +107,7 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
         async (id: string): Promise<string | null> => {
             try {
                 const response = await fetch(`${base}/${id}/revoke`, { method: 'POST' });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return 'Your session expired';
                 }

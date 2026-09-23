@@ -21,6 +21,12 @@ import { MAX_EXECUTORS_PER_USER } from '../src/routes/workspace.js';
  * queue, which this app is built without, and which has its own suite.
  */
 
+const HTTP_OK = 200;
+const HTTP_ACCEPTED = 202;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_CONFLICT = 409;
+
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
@@ -70,7 +76,7 @@ describe('GET /api/workspace', () => {
         const { app, caller, cookie } = await boot();
         const response = await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().root).toBe(join(root, 'test-org', caller.user.id));
         expect(existsSync(join(root, 'test-org', caller.user.id))).toBe(true);
     });
@@ -92,13 +98,13 @@ describe('GET /api/workspace', () => {
         const { app, cookie } = await boot({ withRoot: false });
         const response = await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({ root: null, repos: [], orphaned: [], executors: [] });
     });
 
     it('needs a session', async () => {
         const { app } = await boot();
-        expect((await app.inject({ method: 'GET', url: '/api/workspace' })).statusCode).toBe(401);
+        expect((await app.inject({ method: 'GET', url: '/api/workspace' })).statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('reports a queued repo with no on-disk facts, never with zeroes', async () => {
@@ -150,7 +156,7 @@ describe('PUT /api/workspace/repos', () => {
         const { app, cookie } = await boot();
         const response = await put(app, cookie, [{ owner: 'acme', name: 'web' }]);
 
-        expect(response.statusCode).toBe(202);
+        expect(response.statusCode).toBe(HTTP_ACCEPTED);
         expect(response.json().repos).toEqual([{ owner: 'acme', name: 'web' }]);
     });
 
@@ -170,7 +176,7 @@ describe('PUT /api/workspace/repos', () => {
         const { app, cookie } = await boot();
         const response = await put(app, cookie, [{ owner: 'stranger', name: 'private-thing' }]);
 
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('UNKNOWN_REPO');
     });
 
@@ -184,7 +190,7 @@ describe('PUT /api/workspace/repos', () => {
         const { app, cookie } = await boot();
         for (const name of ['-x', '.', '..', 'a/b']) {
             const response = await put(app, cookie, [{ owner: 'acme', name }]);
-            expect(response.statusCode, name).toBe(400);
+            expect(response.statusCode, name).toBe(HTTP_BAD_REQUEST);
             expect(response.json().code, name).toBe('BAD_REPO_NAME');
         }
     });
@@ -198,7 +204,7 @@ describe('PUT /api/workspace/repos', () => {
             { owner: 'other-owner', name: 'api' },
         ]);
 
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('REPO_NAME_CONFLICT');
         expect(response.json().error).toMatch(/share the checkout directory "api"/);
     });
@@ -210,21 +216,21 @@ describe('PUT /api/workspace/repos', () => {
         const many = Array.from({ length: MAX_REPOS_PER_USER + 1 }, (_, i) => ({ owner: 'acme', name: `r${i}` }));
         const response = await put(app, cookie, many);
 
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('TOO_MANY_REPOS');
     });
 
     it('rejects a body that is not a list of { owner, name }', async () => {
         const { app, cookie } = await boot();
-        expect((await put(app, cookie, 'web')).statusCode).toBe(400);
-        expect((await put(app, cookie, [{ owner: 'acme' }])).statusCode).toBe(400);
+        expect((await put(app, cookie, 'web')).statusCode).toBe(HTTP_BAD_REQUEST);
+        expect((await put(app, cookie, [{ owner: 'acme' }])).statusCode).toBe(HTTP_BAD_REQUEST);
     });
 
     it('answers 409 rather than writing rows when workspaces are switched off', async () => {
         const { app, cookie } = await boot({ withRoot: false });
         const response = await put(app, cookie, [{ owner: 'acme', name: 'web' }]);
 
-        expect(response.statusCode).toBe(409);
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('WORKSPACE_DISABLED');
         expect(store.rows()).toEqual([]);
     });
@@ -236,21 +242,21 @@ describe('PUT /api/workspace/repos', () => {
             url: '/api/workspace/repos',
             payload: { repos: [] },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });
 
-describe('executors', () => {
-    const putExecutors = (app: FastifyInstance, cookie: string, executors: unknown) =>
-        app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors',
-            headers: { cookie },
-            payload: { executors },
-        });
+const putExecutors = (app: FastifyInstance, cookie: string, executors: unknown) =>
+    app.inject({
+        method: 'PUT',
+        url: '/api/workspace/executors',
+        headers: { cookie },
+        payload: { executors },
+    });
 
-    const CLAUDE_CODE = { name: 'main', type: 'claude-code', config: { model: 'sonnet' } };
+const CLAUDE_CODE = { name: 'main', type: 'claude-code', config: { model: 'sonnet' } };
 
+describe('executors: listing and replacing', () => {
     it('lists executors in the GET payload, without their config', async () => {
         // The config may hold credentials the member pasted, and this payload is a poll that can
         // run every two seconds.
@@ -292,12 +298,14 @@ describe('executors', () => {
 
         expect(executors.rows().map((row) => row.userId)).toEqual([a.user.id]);
     });
+});
 
+describe('executors: validation', () => {
     it('refuses an unknown type', async () => {
         const { app, cookie } = await boot();
         const response = await putExecutors(app, cookie, [{ name: 'x', type: 'codex', config: {} }]);
 
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_EXECUTOR_TYPE');
     });
 
@@ -305,15 +313,16 @@ describe('executors', () => {
         const { app, cookie, executors } = await boot();
         const response = await putExecutors(app, cookie, [{ name: 'oc', type: 'opencode', config: {} }]);
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(executors.rows()).toEqual([expect.objectContaining({ name: 'oc', type: 'opencode' })]);
     });
 
     it('refuses a config that is not a JSON object', async () => {
         const { app, cookie } = await boot();
-        for (const config of [[], 'text', 7, null]) {
+        const NON_OBJECT_NUMBER = 7;
+        for (const config of [[], 'text', NON_OBJECT_NUMBER, null]) {
             const response = await putExecutors(app, cookie, [{ name: 'x', type: 'claude-code', config }]);
-            expect(response.statusCode, String(config)).toBe(400);
+            expect(response.statusCode, String(config)).toBe(HTTP_BAD_REQUEST);
         }
     });
 
@@ -324,7 +333,7 @@ describe('executors', () => {
             { name: 'main', type: 'claude-code', config: {} },
         ]);
 
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('EXECUTOR_NAME_CONFLICT');
     });
 
@@ -332,7 +341,7 @@ describe('executors', () => {
         const { app, cookie } = await boot();
         for (const name of ['-x', '.', '..', 'a/b', '']) {
             const response = await putExecutors(app, cookie, [{ name, type: 'claude-code', config: {} }]);
-            expect(response.statusCode, name).toBe(400);
+            expect(response.statusCode, name).toBe(HTTP_BAD_REQUEST);
             expect(response.json().code, name).toBe('BAD_EXECUTOR_NAME');
         }
     });
@@ -346,21 +355,25 @@ describe('executors', () => {
         }));
         const response = await putExecutors(app, cookie, many);
 
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('TOO_MANY_EXECUTORS');
     });
 
     it('rejects a body that is not a list of { name, type, config }', async () => {
         const { app, cookie } = await boot();
-        expect((await putExecutors(app, cookie, 'main')).statusCode).toBe(400);
-        expect((await putExecutors(app, cookie, [{ name: 'x', type: 'claude-code' }])).statusCode).toBe(400);
+        expect((await putExecutors(app, cookie, 'main')).statusCode).toBe(HTTP_BAD_REQUEST);
+        expect((await putExecutors(app, cookie, [{ name: 'x', type: 'claude-code' }])).statusCode).toBe(
+            HTTP_BAD_REQUEST
+        );
     });
+});
 
+describe('executors: PUT lifecycle', () => {
     it('answers 409 rather than writing rows when workspaces are switched off', async () => {
         const { app, cookie, executors } = await boot({ withRoot: false });
         const response = await putExecutors(app, cookie, [CLAUDE_CODE]);
 
-        expect(response.statusCode).toBe(409);
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('WORKSPACE_DISABLED');
         expect(executors.rows()).toEqual([]);
     });
@@ -371,7 +384,7 @@ describe('executors', () => {
         const { app, cookie } = await boot();
         const response = await putExecutors(app, cookie, [CLAUDE_CODE]);
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().executors[0]).toMatchObject({ name: 'main', type: 'claude-code' });
     });
 
@@ -382,9 +395,11 @@ describe('executors', () => {
             url: '/api/workspace/executors',
             payload: { executors: [] },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
+});
 
+describe('executors: GET /api/workspace/executors', () => {
     it('reads the whole list back with configs, for the edit dialog', async () => {
         // The on-demand read the dialog opens with: the member's own rows, config included — the
         // poll never carries it, but an edit cannot pre-fill without it.
@@ -392,7 +407,7 @@ describe('executors', () => {
         await putExecutors(app, cookie, [CLAUDE_CODE]);
 
         const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().executors).toEqual([
             expect.objectContaining({ name: 'main', type: 'claude-code', config: { model: 'sonnet' } }),
         ]);
@@ -423,7 +438,7 @@ describe('executors', () => {
             headers: { cookie: cookieB },
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().executors).toEqual([]);
     });
 
@@ -431,13 +446,13 @@ describe('executors', () => {
         const { app, cookie } = await boot({ withRoot: false });
         const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
 
-        expect(response.statusCode).toBe(409);
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('WORKSPACE_DISABLED');
     });
 
     it('needs a session for the config read', async () => {
         const { app } = await boot();
         const response = await app.inject({ method: 'GET', url: '/api/workspace/executors' });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });

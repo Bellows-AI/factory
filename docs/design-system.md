@@ -194,6 +194,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
+| Toggle | `settings-toggle` | A labelled checkbox row — the design system's one boolean-control primitive (no dedicated switch family exists): the default-workflow settings panel's two switches and the composer's matching pair of optional-step checkboxes (issue 208) |
 | Popover | `popover`, `popover-option` | The shared floating surface for the anchored Headless UI panels — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
 | Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166): label above control, read-only values sunken like the inputs they echo |
 | Range | `range-presets`, `range-option.active`, `range-picker`, `range-popover-root`, `range-popover`, `range-draft`, `range-draft-actions` | The date-range presets and the Custom trigger; the dates live in the anchored popover (`--line-strong` edge, z-index 30), whose draft form commits only through Apply or Clear |
@@ -323,11 +324,12 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | --- | --- |
 | `AccessTokensPanel.tsx` | panel, status |
 | `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
+| `DefaultWorkflowPanel.tsx` | panel, panel-head, panel-actions, muted, status, settings-toggle |
 | `EnvVarsPanel.tsx` | panel, env |
 | `IdentityPanel.tsx` | identity, avatar |
 | `TrackedOrgsPanel.tsx` | panel, login-button |
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
-| `TaskComposer.tsx` | panel, composer, composer-field, composer-grid, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, kbd, chat-resume, task-compose |
+| `TaskComposer.tsx` | panel, composer, composer-field, composer-grid, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, settings-toggle, kbd, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, task-conversation, panel-head, panel, composer, status, muted |
 | `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done, muted |
 | `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
@@ -339,6 +341,8 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 | `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |
+| `env-vars-panel-parts.tsx` | presentational helper `EnvVarsPanel.tsx` imports (tablist, table, banner, tab panels) — no primitives beyond `env` |
+| `default-workflow-draft.ts` | helper — no markup |
 
 Pages:
 
@@ -352,6 +356,7 @@ Pages:
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
 | `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |
 | `SettingsRepositoriesPage.tsx` | page-header, repo-columns, scope-context, status, muted |
+| `SettingsWorkflowsPage.tsx` | page-header, status |
 | `SettingsWorkspacePage.tsx` | page-header, scope-context, panel, status, muted |
 | `TaskComposerPage.tsx` | page-header, status |
 | `TaskDetailPage.tsx` | page-header, status |

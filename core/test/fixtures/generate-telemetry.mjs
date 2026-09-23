@@ -54,12 +54,14 @@ function session(id, opts) {
     });
 }
 
-const T = (input, output, cacheRead, cacheCreation) => ({ input, output, cacheRead, cacheCreation });
+// Named fields rather than positional args: each token count is then an object property value,
+// which is its own name — the point of this file is the numbers being reviewable as intent.
+const T = ({ input, output, cacheRead, cacheCreation }) => ({ input, output, cacheRead, cacheCreation });
 
 session('s01-token-heavy', {
     from: '2026-08-21T06:20:00Z',
     to: '2026-08-21T06:45:00Z',
-    tokens: T(74000, 12000, 410000, 31000),
+    tokens: T({ input: 74000, output: 12000, cacheRead: 410000, cacheCreation: 31000 }),
     linesAdded: 380,
     linesRemoved: 116,
     editsAccepted: 18,
@@ -73,7 +75,7 @@ session('s01-token-heavy', {
 session('s02-mid-a', {
     from: '2026-08-17T08:20:00Z',
     to: '2026-08-17T08:45:00Z',
-    tokens: T(51000, 9000, 288000, 17000),
+    tokens: T({ input: 51000, output: 9000, cacheRead: 288000, cacheCreation: 17000 }),
     linesAdded: 240,
     linesRemoved: 90,
     editsAccepted: 11,
@@ -87,7 +89,7 @@ session('s02-mid-a', {
 session('s03-mid-b', {
     from: '2026-08-17T08:46:00Z',
     to: '2026-08-17T09:02:00Z',
-    tokens: T(33000, 6000, 190000, 8000),
+    tokens: T({ input: 33000, output: 6000, cacheRead: 190000, cacheCreation: 8000 }),
     linesAdded: 300,
     linesRemoved: 44,
     editsAccepted: 7,
@@ -101,7 +103,7 @@ session('s03-mid-b', {
 session('s04-april', {
     from: '2026-04-20T14:30:00Z',
     to: '2026-04-20T16:00:00Z',
-    tokens: T(60000, 10000, 300000, 20000),
+    tokens: T({ input: 60000, output: 10000, cacheRead: 300000, cacheCreation: 20000 }),
     linesAdded: 200,
     linesRemoved: 50,
     editsAccepted: 10,
@@ -116,7 +118,7 @@ session('s04-april', {
 session('s05-april-earliest', {
     from: '2026-04-15T12:00:00Z',
     to: '2026-04-15T14:00:00Z',
-    tokens: T(48000, 8000, 260000, 14000),
+    tokens: T({ input: 48000, output: 8000, cacheRead: 260000, cacheCreation: 14000 }),
     linesAdded: 150,
     linesRemoved: 30,
     editsAccepted: 9,
@@ -130,7 +132,7 @@ session('s05-april-earliest', {
 session('s06-may', {
     from: '2026-05-12T09:50:00Z',
     to: '2026-05-12T11:00:00Z',
-    tokens: T(29000, 5000, 150000, 9000),
+    tokens: T({ input: 29000, output: 5000, cacheRead: 150000, cacheCreation: 9000 }),
     linesAdded: 120,
     linesRemoved: 60,
     editsAccepted: 6,
@@ -144,7 +146,7 @@ session('s06-may', {
 session('s07-july-a', {
     from: '2026-07-10T09:00:00Z',
     to: '2026-07-10T09:30:00Z',
-    tokens: T(12000, 2000, 60000, 3000),
+    tokens: T({ input: 12000, output: 2000, cacheRead: 60000, cacheCreation: 3000 }),
     linesAdded: 40,
     linesRemoved: 10,
     editsAccepted: 3,
@@ -155,7 +157,7 @@ session('s07-july-a', {
 session('s08-july-b', {
     from: '2026-07-11T09:00:00Z',
     to: '2026-07-11T09:20:00Z',
-    tokens: T(7000, 1200, 30000, 1500),
+    tokens: T({ input: 7000, output: 1200, cacheRead: 30000, cacheCreation: 1500 }),
     linesAdded: 12,
     linesRemoved: 4,
     editsAccepted: 1,
@@ -170,7 +172,7 @@ session('s09-other-repo', {
     repo: 'Bellows-AI/other-service',
     from: '2026-07-12T09:00:00Z',
     to: '2026-07-12T10:00:00Z',
-    tokens: T(90000, 15000, 500000, 40000),
+    tokens: T({ input: 90000, output: 15000, cacheRead: 500000, cacheCreation: 40000 }),
     linesAdded: 900,
     linesRemoved: 300,
     editsAccepted: 40,
@@ -186,7 +188,7 @@ session('s10-no-hook', {
     repo: null,
     from: '2026-07-13T09:00:00Z',
     to: '2026-07-13T09:40:00Z',
-    tokens: T(20000, 4000, 100000, 6000),
+    tokens: T({ input: 20000, output: 4000, cacheRead: 100000, cacheCreation: 6000 }),
     linesAdded: 70,
     linesRemoved: 20,
     editsAccepted: 5,
@@ -198,7 +200,7 @@ session('s10-no-hook', {
 session('s11-july-c', {
     from: '2026-07-21T06:00:00Z',
     to: '2026-07-21T06:30:00Z',
-    tokens: T(18000, 3000, 95000, 5000),
+    tokens: T({ input: 18000, output: 3000, cacheRead: 95000, cacheCreation: 5000 }),
     linesAdded: 100,
     linesRemoved: 25,
     editsAccepted: 4,
@@ -210,7 +212,7 @@ session('s11-july-c', {
 session('s12-june', {
     from: '2026-06-01T09:00:00Z',
     to: '2026-06-01T09:25:00Z',
-    tokens: T(9000, 1500, 40000, 2000),
+    tokens: T({ input: 9000, output: 1500, cacheRead: 40000, cacheCreation: 2000 }),
     linesAdded: 25,
     linesRemoved: 8,
     editsAccepted: 2,
@@ -223,7 +225,7 @@ session('s12-june', {
 session('s13-august', {
     from: '2026-08-20T10:00:00Z',
     to: '2026-08-20T10:50:00Z',
-    tokens: T(41000, 7000, 220000, 12000),
+    tokens: T({ input: 41000, output: 7000, cacheRead: 220000, cacheCreation: 12000 }),
     linesAdded: 160,
     linesRemoved: 55,
     editsAccepted: 8,
@@ -237,7 +239,7 @@ session('s13-august', {
 session('s14-july-d', {
     from: '2026-07-02T21:05:00Z',
     to: '2026-07-02T21:20:00Z',
-    tokens: T(37000, 6500, 180000, 11000),
+    tokens: T({ input: 37000, output: 6500, cacheRead: 180000, cacheCreation: 11000 }),
     linesAdded: 140,
     linesRemoved: 35,
     editsAccepted: 9,
@@ -249,7 +251,7 @@ session('s14-july-d', {
 session('s15-june-b', {
     from: '2026-06-29T20:58:00Z',
     to: '2026-06-29T21:06:00Z',
-    tokens: T(22000, 4000, 110000, 7000),
+    tokens: T({ input: 22000, output: 4000, cacheRead: 110000, cacheCreation: 7000 }),
     linesAdded: 80,
     linesRemoved: 20,
     editsAccepted: 5,

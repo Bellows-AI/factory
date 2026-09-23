@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 export interface InstallationRepo {
     owner: string;
@@ -41,7 +41,7 @@ export function useRepos(enabled: boolean): UseRepos {
         setLoading(true);
         try {
             const response = await fetch('/api/repos', { signal });
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 reportUnauthenticated();
                 return;
             }

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Job } from './useJobs.js';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 const LIST_LIMIT = 8;
+const VISIBLE_POLL_DELAY_MS = 30_000;
+const HIDDEN_POLL_DELAY_MS = 60_000;
 
 /**
  * One round of the board poll, exported pure for the offline suite: the suite has no DOM, so
@@ -16,11 +18,16 @@ export async function pollCompletedJobs(
     fail: (error: string) => void,
     rearm: (ms: number) => void
 ): Promise<void> {
-    const hiddenDelay = () => (typeof document === 'undefined' ? 30_000 : document.hidden ? 60_000 : 30_000);
+    const hiddenDelay = () =>
+        typeof document === 'undefined'
+            ? VISIBLE_POLL_DELAY_MS
+            : document.hidden
+              ? HIDDEN_POLL_DELAY_MS
+              : VISIBLE_POLL_DELAY_MS;
     if (signal.aborted) return;
     try {
         const response = await fetch(`/api/jobs?status=terminal&limit=${LIST_LIMIT}`, { signal });
-        if (response.status === 401) {
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
             return;
         }

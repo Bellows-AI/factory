@@ -49,17 +49,23 @@ describe('listExecutorConfigs', () => {
 
     it('hands a 401 to the session gate instead of rendering an error', async () => {
         const report = vi.spyOn(useSession, 'reportUnauthenticated').mockImplementation(() => {});
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, 401)));
+        const HTTP_STATUS_UNAUTHORIZED = 401;
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_STATUS_UNAUTHORIZED)));
         const result = await listExecutorConfigs();
         expect(report).toHaveBeenCalled();
         expect(result).toEqual({ ok: false, error: 'Your session expired' });
     });
 
     it('prefers the server error message and falls back to the status line', async () => {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ error: 'Workspace is disabled' }, 409)));
+        const HTTP_STATUS_CONFLICT = 409;
+        vi.stubGlobal(
+            'fetch',
+            vi.fn().mockResolvedValue(json({ error: 'Workspace is disabled' }, HTTP_STATUS_CONFLICT))
+        );
         expect(await listExecutorConfigs()).toEqual({ ok: false, error: 'Workspace is disabled' });
 
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, 500)));
+        const HTTP_INTERNAL_SERVER_ERROR = 500;
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_INTERNAL_SERVER_ERROR)));
         expect(await listExecutorConfigs()).toEqual({ ok: false, error: 'Could not load the executors (500)' });
     });
 

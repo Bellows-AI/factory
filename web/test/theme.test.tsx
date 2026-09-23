@@ -226,7 +226,9 @@ describe('the theme controller', () => {
         expect(storage.value()).toBeNull();
         expect(controller.snapshot()).toEqual({ preference: 'system', resolved: 'light' });
     });
+});
 
+describe('the theme controller — cross-tab and disposal', () => {
     it('follows OS changes only while the preference is System', () => {
         const system = fakeSystem(false);
         const controller = createThemeController({
@@ -409,7 +411,8 @@ describe('the provider', () => {
 describe('the appearance control', () => {
     it('renders exactly three named options with the contract values', () => {
         const html = renderSelector();
-        expect((html.match(/<option /g) ?? []).length).toBe(3);
+        const EXPECTED_OPTION_COUNT = 3;
+        expect((html.match(/<option /g) ?? []).length).toBe(EXPECTED_OPTION_COUNT);
         for (const [value, name] of [
             ['system', 'System'],
             ['light', 'Light'],

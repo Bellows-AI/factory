@@ -288,14 +288,18 @@ describe('reconciling a rejected submission (#135 review)', () => {
     });
 });
 
+const EXPLICIT_MODE_LISTING: RepoListing = { repos: ['acme/web', 'acme/other'], source: 'app' };
+const EXPLICIT_MODE_INSTALLATIONS = [
+    { id: '888888', account: 'other-org', tracked: null },
+    { id: '999999', account: 'acme', tracked: ['acme/gone', 'acme/web'] },
+];
+const oneDraft = (installation: { id: string; account: string; tracked: string[] | null }, listing?: RepoListing) =>
+    initialDrafts([installation], listing ? { [installation.id]: listing } : undefined).get(installation.id)!;
+
 describe('explicit repository mode (issue 187)', () => {
-    const LISTING: RepoListing = { repos: ['acme/web', 'acme/other'], source: 'app' };
-    const INSTALLATIONS = [
-        { id: '888888', account: 'other-org', tracked: null },
-        { id: '999999', account: 'acme', tracked: ['acme/gone', 'acme/web'] },
-    ];
-    const one = (installation: { id: string; account: string; tracked: string[] | null }, listing?: RepoListing) =>
-        initialDrafts([installation], listing ? { [installation.id]: listing } : undefined).get(installation.id)!;
+    const LISTING = EXPLICIT_MODE_LISTING;
+    const INSTALLATIONS = EXPLICIT_MODE_INSTALLATIONS;
+    const one = oneDraft;
 
     it('null tracking initializes all mode; a stored array initializes specific with its raw set', () => {
         const all = one({ id: '888888', account: 'other-org', tracked: null });
@@ -393,6 +397,12 @@ describe('explicit repository mode (issue 187)', () => {
             buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', all]])).repos
         ).toEqual({});
     });
+});
+
+describe('explicit repository mode (issue 187) — completion payload and summary', () => {
+    const LISTING = EXPLICIT_MODE_LISTING;
+    const INSTALLATIONS = EXPLICIT_MODE_INSTALLATIONS;
+    const one = oneDraft;
 
     it('a deselected organization contributes no org and no repo key, whatever its draft says', () => {
         const widened = withMode(one(INSTALLATIONS[1]!, LISTING), 'all');

@@ -1,6 +1,9 @@
 import { ChartRoot, YAxis } from './Axes.js';
 import { PAD, linearScale, logScale, niceMax } from './scale.js';
 
+/** The X-axis label's gap above the chart's bottom edge. */
+const X_LABEL_GAP_PX = 6;
+
 export interface ScatterPoint {
     x: number;
     y: number;
@@ -35,7 +38,7 @@ export function Scatter({
                     {point.title ? <title>{point.title}</title> : null}
                 </circle>
             ))}
-            <text x={width - PAD.right} y={height - 6} className="axis-label" textAnchor="end">
+            <text x={width - PAD.right} y={height - X_LABEL_GAP_PX} className="axis-label" textAnchor="end">
                 {xLabel}
             </text>
         </ChartRoot>

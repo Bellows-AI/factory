@@ -123,7 +123,8 @@ describe('the clone queue', () => {
 
         queue.kick();
         // Long enough for several passes to come and go while `aslow` is still running.
-        await new Promise((r) => setTimeout(r, 100));
+        const QUEUE_DRAIN_DELAY_MS = 100;
+        await new Promise((r) => setTimeout(r, QUEUE_DRAIN_DELAY_MS));
         expect(cloned.filter((name) => name !== 'aslow').sort()).toEqual(['b', 'c', 'd']);
 
         const done = settled();

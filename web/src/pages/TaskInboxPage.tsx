@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { useTasksPage } from './TasksLayout.js';
-import type { InboxFilters, TaskSummary } from '../api/useTasks.js';
+import type { InboxFilters, TaskSummary, UseTasks } from '../api/useTasks.js';
 import { taskDotClass, taskStatusLabel, taskTitleFromCommand } from '../task-tree.js';
 
 /**
@@ -43,6 +43,92 @@ const filtersUrl = (filters: InboxFilters): string => {
     return query === '' ? '/tasks' : `/tasks?${query}`;
 };
 
+/** The URL-search field's character cap — mirrors `QUERY_MAX` in `useTasks.ts`. */
+const SEARCH_QUERY_MAX = 200;
+
+/** The workspace's selected repositories, plus the currently filtered one if it has since
+ * disappeared from the configuration — a linkable URL must keep rendering its own filter. */
+function repoOptionsFor(
+    workspaceRepos: readonly { owner: string; name: string }[],
+    filterRepo: string | null
+): { owner: string; name: string }[] {
+    const options = workspaceRepos.map((repo) => ({ owner: repo.owner, name: repo.name }));
+    if (filterRepo !== null && !options.some((r) => `${r.owner}/${r.name}` === filterRepo)) {
+        const [owner, name] = filterRepo.split('/');
+        options.push({ owner: owner ?? filterRepo, name: name ?? '' });
+    }
+    return options;
+}
+
+/** The page header's org-wide motion summary: "3 running · 1 need review", or "Nothing moving". */
+function navMetaSummary(counts: { running: number; review: number; past: number } | null): string {
+    if (counts === null) return 'Nothing moving';
+    const clauses: string[] = [];
+    if (counts.running > 0) clauses.push(`${counts.running} running`);
+    if (counts.review > 0) clauses.push(`${counts.review} need review`);
+    return clauses.length === 0 ? 'Nothing moving' : clauses.join(' · ');
+}
+
+/**
+ * The state tabs, search form and sort links. Split out of `TaskInboxPage` so its own render
+ * tree does not add to the page's cognitive complexity.
+ */
+function InboxFilterBar({
+    filters,
+    repoOptions,
+    onSubmit,
+}: {
+    filters: InboxFilters;
+    repoOptions: readonly { owner: string; name: string }[];
+    onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+    return (
+        <div className="inbox-filters">
+            <nav className="inbox-tabs" aria-label="Task state">
+                {STATES.map((state) => (
+                    <Link
+                        key={state.value}
+                        to={filtersUrl({ ...filters, state: state.value })}
+                        className={filters.state === state.value ? 'inbox-tab is-active' : 'inbox-tab'}
+                        aria-current={filters.state === state.value ? 'page' : undefined}
+                    >
+                        {state.label}
+                    </Link>
+                ))}
+            </nav>
+            <form className="inbox-search" onSubmit={onSubmit}>
+                <label htmlFor="inbox-q">Search</label>
+                <input id="inbox-q" name="q" defaultValue={filters.q ?? ''} type="text" />
+                <label htmlFor="inbox-repo">Repository</label>
+                <select id="inbox-repo" name="repo" defaultValue={filters.repo ?? ''}>
+                    <option value="">All repositories</option>
+                    {repoOptions.map((repo) => (
+                        <option key={`${repo.owner}/${repo.name}`} value={`${repo.owner}/${repo.name}`}>
+                            {repo.owner}/{repo.name}
+                        </option>
+                    ))}
+                </select>
+                <label htmlFor="inbox-author">Author</label>
+                <input id="inbox-author" name="author" defaultValue={filters.author ?? ''} type="text" />
+                <button type="submit">Filter</button>
+            </form>
+            <div className="inbox-sort">
+                <span className="muted">Sort</span>
+                {SORTS.map((sort) => (
+                    <Link
+                        key={sort.value}
+                        to={filtersUrl({ ...filters, sort: sort.value })}
+                        className={filters.sort === sort.value ? 'inbox-tab is-active' : 'inbox-tab'}
+                        aria-current={filters.sort === sort.value ? 'page' : undefined}
+                    >
+                        {sort.label}
+                    </Link>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 function Row({ task }: { task: TaskSummary }) {
     const status: Parameters<typeof taskDotClass>[0] = {
         status: task.status,
@@ -70,6 +156,99 @@ function Row({ task }: { task: TaskSummary }) {
                 <RelativeTime at={task.activityAt} />
             </span>
         </li>
+    );
+}
+
+/**
+ * Exactly one of: loading, one of two empty states, or the loaded rows with their own
+ * load-more error and action. Split out of `InboxTaskList` so its own 4-way state chain does not
+ * add to that component's cognitive complexity — each branch is an early return rather than a
+ * nested ternary.
+ */
+function InboxTaskListBody({
+    tasks,
+    noTasksAtAll,
+    appendNote,
+}: {
+    tasks: UseTasks;
+    noTasksAtAll: boolean;
+    appendNote: string | null;
+}) {
+    if (tasks.initial) return <p className="muted">Loading tasks…</p>;
+    if (noTasksAtAll) {
+        return (
+            <div className="inbox-empty">
+                <p>No tasks yet</p>
+                <Link to="/tasks/new">Start your first task</Link>
+            </div>
+        );
+    }
+    if (tasks.items === null) return null;
+    if (tasks.items.length === 0) {
+        return (
+            <div className="inbox-empty">
+                <p>No tasks match these filters</p>
+                <Link to="/tasks">Clear filters</Link>
+            </div>
+        );
+    }
+    return (
+        <>
+            <ul className="inbox-rows">
+                {tasks.items.map((task) => (
+                    <Row key={task.id} task={task} />
+                ))}
+            </ul>
+            {tasks.loadMoreError !== null ? (
+                <div className="inbox-error" role="alert">
+                    <p>Couldn't load more tasks — {tasks.loadMoreError}</p>
+                    <button type="button" onClick={tasks.loadMore}>
+                        Retry
+                    </button>
+                </div>
+            ) : null}
+            {tasks.nextCursor !== null ? (
+                <button type="button" onClick={tasks.loadMore} disabled={tasks.loadingMore}>
+                    {tasks.loadingMore ? 'Loading…' : 'Load more'}
+                </button>
+            ) : null}
+            <p className="inbox-note" role="status">
+                {appendNote ?? ''}
+            </p>
+        </>
+    );
+}
+
+/**
+ * The inbox's content area: the load/refresh errors, then the body's one active state. Split out
+ * of `TaskInboxPage` so its own render tree does not add to the page's cognitive complexity.
+ */
+function InboxTaskList({
+    tasks,
+    noTasksAtAll,
+    appendNote,
+}: {
+    tasks: UseTasks;
+    noTasksAtAll: boolean;
+    appendNote: string | null;
+}) {
+    return (
+        <>
+            {tasks.error !== null ? (
+                <div className="inbox-error" role="alert">
+                    <p>Couldn't load tasks — {tasks.error}</p>
+                    <button type="button" onClick={tasks.retry}>
+                        Retry
+                    </button>
+                </div>
+            ) : null}
+            {tasks.refreshError !== null ? (
+                <p className="inbox-error" role="status">
+                    Couldn't refresh tasks; showing the last successful update.
+                </p>
+            ) : null}
+            <InboxTaskListBody tasks={tasks} noTasksAtAll={noTasksAtAll} appendNote={appendNote} />
+        </>
     );
 }
 
@@ -108,7 +287,7 @@ export function TaskInboxPage() {
         const fields = new FormData(event.currentTarget);
         const q = String(fields.get('q') ?? '')
             .trim()
-            .slice(0, 200);
+            .slice(0, SEARCH_QUERY_MAX);
         const repo = String(fields.get('repo') ?? '');
         const author = String(fields.get('author') ?? '').trim();
         applyFilters({
@@ -120,21 +299,10 @@ export function TaskInboxPage() {
         });
     };
 
-    // The workspace's selected repositories, plus the currently filtered one if it has since
-    // disappeared from the configuration — a linkable URL must keep rendering its own filter.
-    const repoOptions = (workspace.data?.repos ?? []).map((repo) => ({ owner: repo.owner, name: repo.name }));
-    if (filters.repo !== null && !repoOptions.some((r) => `${r.owner}/${r.name}` === filters.repo)) {
-        const [owner, name] = filters.repo.split('/');
-        repoOptions.push({ owner: owner ?? filters.repo, name: name ?? '' });
-    }
-
+    const repoOptions = repoOptionsFor(workspace.data?.repos ?? [], filters.repo);
     const counts = tasks.navigation?.counts ?? null;
-    const metaClauses: string[] = [];
-    if (counts !== null && counts.running > 0) metaClauses.push(`${counts.running} running`);
-    if (counts !== null && counts.review > 0) metaClauses.push(`${counts.review} need review`);
-
-    const loaded = tasks.items !== null;
-    const noTasksAtAll = loaded && counts !== null && counts.running === 0 && counts.review === 0 && counts.past === 0;
+    const noTasksAtAll =
+        tasks.items !== null && counts !== null && counts.running === 0 && counts.review === 0 && counts.past === 0;
 
     return (
         <section className="inbox">
@@ -143,11 +311,7 @@ export function TaskInboxPage() {
                 and New task as the page's one action. */}
             <PageHeader
                 title="Tasks"
-                meta={
-                    <span className="muted">
-                        {metaClauses.length === 0 ? 'Nothing moving' : metaClauses.join(' · ')}
-                    </span>
-                }
+                meta={<span className="muted">{navMetaSummary(counts)}</span>}
                 actions={
                     <Link to="/tasks/new" className="inbox-new">
                         New task
@@ -155,101 +319,9 @@ export function TaskInboxPage() {
                 }
             />
 
-            <div className="inbox-filters">
-                <nav className="inbox-tabs" aria-label="Task state">
-                    {STATES.map((state) => (
-                        <Link
-                            key={state.value}
-                            to={filtersUrl({ ...filters, state: state.value })}
-                            className={filters.state === state.value ? 'inbox-tab is-active' : 'inbox-tab'}
-                            aria-current={filters.state === state.value ? 'page' : undefined}
-                        >
-                            {state.label}
-                        </Link>
-                    ))}
-                </nav>
-                <form className="inbox-search" onSubmit={submit}>
-                    <label htmlFor="inbox-q">Search</label>
-                    <input id="inbox-q" name="q" defaultValue={filters.q ?? ''} type="text" />
-                    <label htmlFor="inbox-repo">Repository</label>
-                    <select id="inbox-repo" name="repo" defaultValue={filters.repo ?? ''}>
-                        <option value="">All repositories</option>
-                        {repoOptions.map((repo) => (
-                            <option key={`${repo.owner}/${repo.name}`} value={`${repo.owner}/${repo.name}`}>
-                                {repo.owner}/{repo.name}
-                            </option>
-                        ))}
-                    </select>
-                    <label htmlFor="inbox-author">Author</label>
-                    <input id="inbox-author" name="author" defaultValue={filters.author ?? ''} type="text" />
-                    <button type="submit">Filter</button>
-                </form>
-                <div className="inbox-sort">
-                    <span className="muted">Sort</span>
-                    {SORTS.map((sort) => (
-                        <Link
-                            key={sort.value}
-                            to={filtersUrl({ ...filters, sort: sort.value })}
-                            className={filters.sort === sort.value ? 'inbox-tab is-active' : 'inbox-tab'}
-                            aria-current={filters.sort === sort.value ? 'page' : undefined}
-                        >
-                            {sort.label}
-                        </Link>
-                    ))}
-                </div>
-            </div>
+            <InboxFilterBar filters={filters} repoOptions={repoOptions} onSubmit={submit} />
 
-            {tasks.error !== null ? (
-                <div className="inbox-error" role="alert">
-                    <p>Couldn't load tasks — {tasks.error}</p>
-                    <button type="button" onClick={tasks.retry}>
-                        Retry
-                    </button>
-                </div>
-            ) : null}
-            {tasks.refreshError !== null ? (
-                <p className="inbox-error" role="status">
-                    Couldn't refresh tasks; showing the last successful update.
-                </p>
-            ) : null}
-
-            {tasks.initial ? (
-                <p className="muted">Loading tasks…</p>
-            ) : noTasksAtAll ? (
-                <div className="inbox-empty">
-                    <p>No tasks yet</p>
-                    <Link to="/tasks/new">Start your first task</Link>
-                </div>
-            ) : loaded && tasks.items!.length === 0 ? (
-                <div className="inbox-empty">
-                    <p>No tasks match these filters</p>
-                    <Link to="/tasks">Clear filters</Link>
-                </div>
-            ) : loaded ? (
-                <>
-                    <ul className="inbox-rows">
-                        {tasks.items!.map((task) => (
-                            <Row key={task.id} task={task} />
-                        ))}
-                    </ul>
-                    {tasks.loadMoreError !== null ? (
-                        <div className="inbox-error" role="alert">
-                            <p>Couldn't load more tasks — {tasks.loadMoreError}</p>
-                            <button type="button" onClick={tasks.loadMore}>
-                                Retry
-                            </button>
-                        </div>
-                    ) : null}
-                    {tasks.nextCursor !== null ? (
-                        <button type="button" onClick={tasks.loadMore} disabled={tasks.loadingMore}>
-                            {tasks.loadingMore ? 'Loading…' : 'Load more'}
-                        </button>
-                    ) : null}
-                    <p className="inbox-note" role="status">
-                        {appendNote ?? ''}
-                    </p>
-                </>
-            ) : null}
+            <InboxTaskList tasks={tasks} noTasksAtAll={noTasksAtAll} appendNote={appendNote} />
         </section>
     );
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /** What a list read echoes. A secret's `value` is null for every caller — the write-only contract. */
 export interface EnvVarView {
@@ -65,7 +65,7 @@ export function useEnv(): UseEnv {
     const load = useCallback(async (signal: AbortSignal) => {
         try {
             const response = await fetch('/api/env', { signal });
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 // Handed to the gate rather than rendered as a banner — every later request would
                 // 401 too, so a banner would never clear.
                 reportUnauthenticated();
@@ -108,7 +108,7 @@ export function useEnv(): UseEnv {
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(body),
             });
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 reportUnauthenticated();
                 return { error: 'Your session expired', vars: [] };
             }

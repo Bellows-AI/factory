@@ -50,7 +50,7 @@ export function executorTypeLabel(type: string): string {
 }
 
 /** Half the 64 KiB body budget, so the serialized envelope cannot blow the server limit. */
-export const MAX_CONFIG_BYTES = 32 * 1024;
+export const MAX_CONFIG_BYTES = 32_768;
 
 export type ValidExecutor = {
     name: string;

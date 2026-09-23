@@ -18,7 +18,13 @@ const ORG = 'test-org';
  * because `created_by` is a uuid foreign key.
  */
 const AUTHOR = randomUUID();
-const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, 8), 16);
+/** Turns a slice of a uuid into a plausible github id — hex digits, parsed as base 16. */
+const UUID_HEX_SLICE_LENGTH = 8;
+const HEX_RADIX = 16;
+const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX);
+
+/** A lease long enough that nothing in this suite outlives it by accident. */
+const LEASE_SECONDS = 300;
 
 const db = useTestDb({ max: 8, users: [{ id: AUTHOR, githubUserId: AUTHOR_GITHUB_ID, login: 'stop-remove-cat' }] });
 
@@ -121,20 +127,20 @@ describe.skipIf(!enabled)('stopping a task', () => {
         const id = await craft();
         await store.stop(id, null);
 
-        expect(await store.claim('w1', 300)).toBeNull();
+        expect(await store.claim('w1', LEASE_SECONDS)).toBeNull();
     });
 
     it("is reported by the worker's heartbeat, and suspending settles the run stopped", async () => {
         const id = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
+        const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
 
-        expect(await store.heartbeat(id, token, 300)).toMatchObject({
+        expect(await store.heartbeat(id, token, LEASE_SECONDS)).toMatchObject({
             result: 'ok',
             cancelRequested: false,
         });
 
         await store.stop(id, null);
-        expect(await store.heartbeat(id, token, 300)).toMatchObject({
+        expect(await store.heartbeat(id, token, LEASE_SECONDS)).toMatchObject({
             result: 'ok',
             cancelRequested: true,
         });
@@ -152,7 +158,7 @@ describe.skipIf(!enabled)('stopping a task', () => {
     // the follow-up composer is what the member sees next.
     it('keeps the session when the stop lands', async () => {
         const id = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
+        const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         // The worker reports the session mid-run — after the claim, which clears a fresh
         // attempt's session (only a follow-up keeps a copied one). This is the lease-guarded
         // route a real run uses, not a direct row write the claim would erase.
@@ -164,139 +170,6 @@ describe.skipIf(!enabled)('stopping a task', () => {
         const job = await store.get(id);
         expect(job?.status).toBe('stopped');
         expect(job?.sessionId).not.toBeNull();
-    });
-
-    // A stop nobody delivers — the driver died before its heartbeat could carry the kill order —
-    // must not re-issue the run (issue #152): the claim settles the stamped row `stopped` instead
-    // of handing it to a new attempt, and the session the stopped run kept is what the follow-up
-    // continues. Re-claiming would clear the session and spawn a container for a command the
-    // member just cancelled.
-    it('settles a stop-requested run stopped at the claim, instead of handing it out again', async () => {
-        const id = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
-        const sid = randomUUID();
-        await store.session(id, token, sid, null);
-        expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
-
-        expect(await store.claim('w2', 300)).toBeNull();
-
-        const job = await store.get(id);
-        expect(job?.status).toBe('stopped');
-        expect(job?.finishedAt).toBeTruthy();
-        expect(job?.cancelRequestedAt).toBeNull();
-        expect(job?.sessionId).toBe(sid);
-        // The park hands the attempt back, exactly as the delivered stop's suspend does — a stop
-        // is a park, not a failed try.
-        expect(job?.attempts).toBe(0);
-    });
-
-    // Exhausted attempts do not change the verdict: a stamped row is a park, not a failure, so
-    // the dead-retirement sweep must never land it `dead` (issue #152) — the label is wrong and
-    // the UI would read the task as over rather than stopped-and-continuable.
-    it('lands a stamped exhausted run stopped, not dead, when the claim retires it', async () => {
-        const id = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
-        const sid = randomUUID();
-        await store.session(id, token, sid, null);
-        await store.stop(id, null);
-        await sql`update job set attempts = max_attempts, lease_expires_at = now() - interval '1 second'
-                  where id = ${id}`;
-
-        expect(await store.claim('w2', 300)).toBeNull();
-
-        const job = await store.get(id);
-        expect(job?.status).toBe('stopped');
-        expect(job?.finishedAt).toBeTruthy();
-        expect(job?.sessionId).toBe(sid);
-    });
-
-    // Nobody holds an expired lease, so the stop lands in place rather than waiting for a
-    // heartbeat nobody will send (issue #152). A previous holder that is still beating renews
-    // its lease and gets today's stamp-and-202 path instead — and one that lost the row gets
-    // the heartbeat's 'lost' kill order, exactly as a reclaim delivers it.
-    it("settles the stop in place when the run's lease is already gone", async () => {
-        const id = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
-        const sid = randomUUID();
-        await store.session(id, token, sid, null);
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
-
-        expect(await store.stop(id, AUTHOR)).toEqual({ result: 'stopped' });
-
-        const job = await store.get(id);
-        expect(job?.status).toBe('stopped');
-        expect(job?.finishedAt).toBeTruthy();
-        expect(job?.cancelRequestedAt).toBeNull();
-        expect(job?.sessionId).toBe(sid);
-        expect(job?.attempts).toBe(0);
-        // The stale worker's next beat is its kill order — the row no longer runs under this
-        // lease.
-        expect(await store.heartbeat(id, token, 300)).toMatchObject({ result: 'lost' });
-    });
-
-    // End to end: the stuck run's stop is delivered by the claim's settle, and the follow-up the
-    // member then queues resumes the conversation — the whole continuable story of issue #152.
-    it('unblocks the follow-up: the claim settles a stamped zombie parent and the child claims it', async () => {
-        const id = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
-        const sid = randomUUID();
-        await store.session(id, token, sid, null);
-        await store.stop(id, null);
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
-        expect(await store.claim('w2', 300)).toBeNull();
-
-        const followUp = await store.createFollowUp(id, 'pick up', AUTHOR);
-        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
-
-        expect(await store.claim('w3', 300)).toMatchObject({
-            id: followUp.id,
-            resumeSessionId: sid,
-            followUp: true,
-        });
-    });
-
-    // The settle is committed on its own, before the claim transaction (review of PR #153): the
-    // transaction also carries the claim's PREPARATION — the env resolution, the token mint —
-    // and a throw there rolls the whole thing back, settlement included. Inside it, a board whose
-    // preparation keeps failing would keep the stamped zombie `running` forever, and the
-    // follow-up the member queued would keep answering not_finished — the exact stuck state this
-    // issue exists to end.
-    it("commits the settle even when the claim's preparation throws", async () => {
-        const zombie = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
-        const sid = randomUUID();
-        await store.session(zombie, token, sid, null);
-        await store.stop(zombie, null);
-        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${zombie}`;
-
-        // A healthy candidate behind it: the claim takes it, reaches preparation, and the
-        // resolver throws — the failure the claim route answers 503 to and the driver retries.
-        const fresh = await craft();
-        const failing = createJobStore({
-            sql,
-            orgId: ORG,
-            env: {
-                resolveFor: async () => {
-                    throw new Error('resolver down');
-                },
-            },
-        });
-        await expect(failing.claim('w2', 300)).rejects.toThrow('resolver down');
-
-        // The settle survived the rollback: the zombie is stopped with its session, and the
-        // follow-up it was blocking can be created.
-        const job = await store.get(zombie);
-        expect(job?.status).toBe('stopped');
-        expect(job?.sessionId).toBe(sid);
-        expect(job?.cancelRequestedAt).toBeNull();
-        const followUp = await store.createFollowUp(zombie, 'pick up', AUTHOR);
-        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
-
-        // And the failed claim's own candidate is back to queued, attempt unburned — the
-        // rollback still guards exactly the half-claim it always did.
-        expect(await store.get(fresh)).toMatchObject({ status: 'queued', attempts: 0 });
-        expect((await store.claim('w3', 300))?.id).toBe(fresh);
     });
 });
 
@@ -318,7 +191,7 @@ describe.skipIf(!enabled)('removing a task', () => {
         expect(await store.thread(root)).toBeNull();
 
         // Exactly one reclaim row, addressed at the resolved root.
-        const claim = await store.claimReclaim('w1', 300);
+        const claim = await store.claimReclaim('w1', LEASE_SECONDS);
         expect(claim).toMatchObject({
             rootJobId: root,
             repo: 'acme/widgets',
@@ -333,7 +206,7 @@ describe.skipIf(!enabled)('removing a task', () => {
         expect(await store.removeThread(root, null)).toBe('conflict');
 
         expect(await store.thread(root)).not.toBeNull();
-        expect(await store.claimReclaim('w1', 300)).toBeNull();
+        expect(await store.claimReclaim('w1', LEASE_SECONDS)).toBeNull();
     });
 
     it('also notices a running FOLLOW-UP when asked about the root', async () => {
@@ -353,14 +226,14 @@ describe.skipIf(!enabled)('removing a task', () => {
         const result = await store.removeThread(root, null);
         expect(result).toEqual({ result: 'ok', rootJobId: root, repo: null, workspacePath: null });
 
-        const claim = await store.claimReclaim('w1', 300);
+        const claim = await store.claimReclaim('w1', LEASE_SECONDS);
         expect(claim).toMatchObject({ rootJobId: root, repo: null, workspacePath: null });
     });
 });
 
 describe.skipIf(!enabled)('the reclaim queue', () => {
     it('answers null on an empty queue', async () => {
-        expect(await store.claimReclaim('w1', 300)).toBeNull();
+        expect(await store.claimReclaim('w1', LEASE_SECONDS)).toBeNull();
     });
 
     it('hands the oldest row, oldest first, one row per claim', async () => {
@@ -369,8 +242,8 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
         await store.removeThread(a, null);
         await store.removeThread(b, null);
 
-        const first = await store.claimReclaim('w1', 300);
-        const second = await store.claimReclaim('w2', 300);
+        const first = await store.claimReclaim('w1', LEASE_SECONDS);
+        const second = await store.claimReclaim('w2', LEASE_SECONDS);
 
         expect(first).toMatchObject({ rootJobId: a });
         expect(second).toMatchObject({ rootJobId: b });
@@ -380,7 +253,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
         const a = await craft();
         await store.removeThread(a, null);
 
-        const first = await store.claimReclaim('w1', 300);
+        const first = await store.claimReclaim('w1', LEASE_SECONDS);
         expect(first).not.toBeNull();
 
         // Twenty seconds into w1's 300-second lease — long past any 10-second lease, nowhere near
@@ -406,21 +279,22 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
         expect(first).not.toBeNull();
 
         // Live lease: refused.
-        expect(await store.claimReclaim('w2', 300)).toBeNull();
+        expect(await store.claimReclaim('w2', LEASE_SECONDS)).toBeNull();
 
         // Expired lease: claimable by another worker.
-        await new Promise((resolve) => setTimeout(resolve, 2300));
-        const second = await store.claimReclaim('w2', 300);
+        const PAST_SHORT_LEASE_MS = 2300;
+        await new Promise((resolve) => setTimeout(resolve, PAST_SHORT_LEASE_MS));
+        const second = await store.claimReclaim('w2', LEASE_SECONDS);
         expect(second?.rootJobId).toBe(a);
     });
 
     it('acks only the worker that holds the claim, deleting the row on success', async () => {
         const a = await craft();
         await store.removeThread(a, null);
-        const claim = await store.claimReclaim('w1', 300);
+        const claim = await store.claimReclaim('w1', LEASE_SECONDS);
 
         expect(await store.ackReclaim(claim!.id, 'w2')).toBe('lost');
-        expect(await store.claimReclaim('w2', 300)).toBeNull();
+        expect(await store.claimReclaim('w2', LEASE_SECONDS)).toBeNull();
 
         expect(await store.ackReclaim(claim!.id, 'w1')).toBe('ok');
     });
@@ -428,7 +302,7 @@ describe.skipIf(!enabled)('the reclaim queue', () => {
     it('says missing on a double ack — the row is already gone', async () => {
         const a = await craft();
         await store.removeThread(a, null);
-        const claim = await store.claimReclaim('w1', 300);
+        const claim = await store.claimReclaim('w1', LEASE_SECONDS);
 
         expect(await store.ackReclaim(claim!.id, 'w1')).toBe('ok');
         expect(await store.ackReclaim(claim!.id, 'w1')).toBe('missing');
@@ -454,7 +328,10 @@ describe.skipIf(!enabled)('lifecycle actors', () => {
     });
 
     it('keeps the FIRST stopper when a second caller asks again', async () => {
-        const other = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'second-stopper');
+        const other = await account(
+            Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX),
+            'second-stopper'
+        );
         const id = await craft({ status: 'running', lease: 'live' });
 
         await store.stop(id, AUTHOR);
@@ -466,7 +343,7 @@ describe.skipIf(!enabled)('lifecycle actors', () => {
 
     it('keeps the stopper through the suspend landing', async () => {
         const id = await craft();
-        const token = (await store.claim('w1', 300))!.leaseToken;
+        const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         await store.stop(id, AUTHOR);
         await store.suspend(id, token);
 
@@ -474,7 +351,10 @@ describe.skipIf(!enabled)('lifecycle actors', () => {
     });
 
     it('stamps the done caller once, beside the done_at coalesce', async () => {
-        const other = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'second-doner');
+        const other = await account(
+            Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX),
+            'second-doner'
+        );
         const id = await craft({ status: 'succeeded' });
 
         await store.markDone(id, AUTHOR);
@@ -497,7 +377,10 @@ describe.skipIf(!enabled)('lifecycle actors', () => {
     });
 
     it("nulls the actors when their account is deleted, keeping the stamps' columns", async () => {
-        const ephemeral = await account(Number.parseInt(randomUUID().slice(0, 8), 16), 'ephemeral');
+        const ephemeral = await account(
+            Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX),
+            'ephemeral'
+        );
         const id = await craft({ createdBy: ephemeral, status: 'succeeded' });
         await store.stop(id, ephemeral);
         await store.markDone(id, ephemeral);

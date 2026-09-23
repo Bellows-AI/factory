@@ -16,6 +16,10 @@ import type { TokenProvider } from './token.js';
  * and a library would own them while bringing a dependency tree for the rest.
  */
 
+const MS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 3600;
+
 /** GitHub's ceiling on a App JWT is 10 minutes. Nine leaves room for a slow clock. */
 const JWT_TTL_SECONDS = 540;
 
@@ -36,7 +40,8 @@ const JWT_CLOCK_SKEW_SECONDS = 60;
  * surfaces as a rejected credential rather than as an expired one, and sends the reader to the App's
  * settings page instead of to this constant.
  */
-const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+const REFRESH_MARGIN_MINUTES = 5;
+const REFRESH_MARGIN_MS = REFRESH_MARGIN_MINUTES * SECONDS_PER_MINUTE * MS_PER_SECOND;
 
 /**
  * How long a mint request may run before it is abandoned.
@@ -57,7 +62,7 @@ const base64url = (value: string | Buffer): string => Buffer.from(value).toStrin
  * numeric form and accepts either here, so this must not coerce to a number.
  */
 function appJwt(appId: string, key: KeyObject, nowMs: number): string {
-    const issued = Math.floor(nowMs / 1000) - JWT_CLOCK_SKEW_SECONDS;
+    const issued = Math.floor(nowMs / MS_PER_SECOND) - JWT_CLOCK_SKEW_SECONDS;
     const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
     const payload = base64url(JSON.stringify({ iat: issued, exp: issued + JWT_TTL_SECONDS, iss: appId }));
     const signature = createSign('RSA-SHA256').update(`${header}.${payload}`).end().sign(key);
@@ -79,11 +84,14 @@ export interface AppTokenOptions {
 
 export class GitHubAppError extends Error {}
 
+/** How much of a remote error body is worth quoting — enough for GitHub's reason, not a dump. */
+const ERROR_DETAIL_LIMIT = 200;
+
 async function json(response: Response, what: string): Promise<unknown> {
     if (!response.ok) {
         // The body carries GitHub's own reason ("integration not found", "expired") and is the
         // difference between a fixable error and a mystery. Bounded, because it is a remote body.
-        const detail = (await response.text().catch(() => '')).slice(0, 200);
+        const detail = (await response.text().catch(() => '')).slice(0, ERROR_DETAIL_LIMIT);
         throw new GitHubAppError(`${what} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
     }
     return response.json();
@@ -148,7 +156,7 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         const expiresAt = body.expires_at ? Date.parse(body.expires_at) : NaN;
         cached = {
             token: body.token,
-            expiresAt: Number.isFinite(expiresAt) ? expiresAt : now() + 3600 * 1000,
+            expiresAt: Number.isFinite(expiresAt) ? expiresAt : now() + SECONDS_PER_HOUR * MS_PER_SECOND,
         };
         return body.token;
     };

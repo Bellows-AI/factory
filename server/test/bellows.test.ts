@@ -20,7 +20,7 @@ const EXAMPLE = [
     '           command: "npm test"',
 ].join('\n');
 
-describe('parseBellows', () => {
+describe('parseBellows: valid documents', () => {
     it('parses the issue example', () => {
         expect(parseBellows(EXAMPLE)).toEqual({
             image: 'node:24',
@@ -90,6 +90,16 @@ describe('parseBellows', () => {
         });
     });
 
+    it('accepts gates: with a trailing space, as environment: is accepted', () => {
+        expect(
+            parseBellows(
+                'environment: \n    image: node:24\n    gates: \n        - name: test\n          command: npm test\n'
+            )
+        ).toEqual({ image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
+    });
+});
+
+describe('parseBellows: services block', () => {
     it("skips a top-level services block — the services half is the driver parser's grammar", () => {
         // One file may carry both halves: the driver reads `services:`, this parser reads
         // `environment:`, and each skips the other's block wholesale rather than judging its
@@ -131,15 +141,9 @@ describe('parseBellows', () => {
             /services takes a list, not a value/
         );
     });
+});
 
-    it('accepts gates: with a trailing space, as environment: is accepted', () => {
-        expect(
-            parseBellows(
-                'environment: \n    image: node:24\n    gates: \n        - name: test\n          command: npm test\n'
-            )
-        ).toEqual({ image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
-    });
-
+describe('parseBellows: rejects malformed structure', () => {
     it('rejects a gate whose command is empty — a vacuously-green check', () => {
         expect(() =>
             parseBellows("environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ''\n")
@@ -184,17 +188,22 @@ describe('parseBellows', () => {
     it('rejects an empty environment block', () => {
         expect(() => parseBellows('environment:\n')).toThrow(/environment/);
     });
+});
+
+describe('parseBellows: rejects invalid gates and limits', () => {
+    const MAX_GATES = 16;
 
     it('rejects more than 16 gates', () => {
         const lines = ['environment:', '    image: node:24', '    gates:'];
-        for (let i = 0; i < 17; i++) {
+        for (let i = 0; i < MAX_GATES + 1; i++) {
             lines.push(`        - name: gate-${i}`, `          command: echo ${i}`);
         }
         expect(() => parseBellows(lines.join('\n'))).toThrow(/16/);
     });
 
     it('rejects a command longer than 4096 characters', () => {
-        const long = 'echo ' + 'x'.repeat(4100);
+        const OVER_COMMAND_LIMIT_LENGTH = 4100;
+        const long = 'echo ' + 'x'.repeat(OVER_COMMAND_LIMIT_LENGTH);
         expect(() =>
             parseBellows(
                 `environment:\n    image: node:24\n    gates:\n        - name: test\n          command: ${long}\n`
@@ -238,7 +247,7 @@ describe('parseBellows', () => {
     });
 });
 
-describe('readGatesFile', () => {
+describe('readGatesFile: repo tree resolution', () => {
     const USER = '0b9e6c50-8d13-4b8e-9dfb-2fa2d1ba4c71';
     const seam = (content: string | Error) => (path: string) =>
         content instanceof Error ? Promise.reject(content) : Promise.resolve(content);
@@ -322,13 +331,16 @@ describe('readGatesFile', () => {
         expect(result.config).toBeNull();
         expect(result.error).toMatch(/workspace path is not <orgId>\/<userId>/);
     });
+});
 
-    /*
-     * The per-task worktree (issue #35): the run edits `<ws>/.worktrees/<root id>`, and the
-     * gates it must satisfy live THERE. The read prefers the worktree's file and falls back to
-     * the clone — at claim time the worktree does not exist yet, so the clone's file is the
-     * claim's answer, and the post-sync re-read finds the worktree's.
-     */
+/*
+ * The per-task worktree (issue #35): the run edits `<ws>/.worktrees/<root id>`, and the
+ * gates it must satisfy live THERE. The read prefers the worktree's file and falls back to
+ * the clone — at claim time the worktree does not exist yet, so the clone's file is the
+ * claim's answer, and the post-sync re-read finds the worktree's.
+ */
+describe('readGatesFile: worktree precedence', () => {
+    const USER = '0b9e6c50-8d13-4b8e-9dfb-2fa2d1ba4c71';
     const ROOT = '55555555-5555-4555-8555-555555555555';
 
     it('reads the worktree first and falls back to the clone when the worktree has none', async () => {
@@ -437,7 +449,10 @@ describe('readGatesFile against a real checkout', () => {
     });
 
     it('refuses an oversized .bellows.yaml with the size-limit error', async () => {
-        await checkoutWith(async (checkout) => writeFile(join(checkout, '.bellows.yaml'), 'x'.repeat(64 * 1024 + 1)));
+        const OVER_BELLOWS_LIMIT_BYTES = 65537;
+        await checkoutWith(async (checkout) =>
+            writeFile(join(checkout, '.bellows.yaml'), 'x'.repeat(OVER_BELLOWS_LIMIT_BYTES))
+        );
         const result = await read();
         expect(result.config).toBeNull();
         expect(result.error).toMatch(/larger than 65536 bytes/);

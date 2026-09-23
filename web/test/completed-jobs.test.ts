@@ -60,7 +60,8 @@ describe('pollCompletedJobs', () => {
         const rearm = vi.fn();
         await pollCompletedJobs(new AbortController().signal, vi.fn(), vi.fn(), rearm);
         expect(fetch).toHaveBeenCalledWith('/api/jobs?status=terminal&limit=8', expect.anything());
-        expect(rearm).toHaveBeenCalledWith(30_000);
+        const VISIBLE_POLL_DELAY_MS = 30_000;
+        expect(rearm).toHaveBeenCalledWith(VISIBLE_POLL_DELAY_MS);
     });
 
     it('lands the rows and clears no error it was not given', async () => {
@@ -75,7 +76,11 @@ describe('pollCompletedJobs', () => {
     it('keeps the last good rows when a later tick fails', async () => {
         // Two rounds over the SAME land/fail accumulators: the hook holds `jobs` across ticks,
         // so a failure must ADD an error without taking the rows away.
-        const responses = [json({ jobs: [job('good')] }), json({ error: 'board exploded' }, 500)];
+        const HTTP_INTERNAL_SERVER_ERROR = 500;
+        const responses = [
+            json({ jobs: [job('good')] }),
+            json({ error: 'board exploded' }, HTTP_INTERNAL_SERVER_ERROR),
+        ];
         vi.stubGlobal(
             'fetch',
             vi.fn().mockImplementation(() => Promise.resolve(responses.shift() ?? json({ jobs: [] })))
@@ -101,10 +106,11 @@ describe('pollCompletedJobs', () => {
     });
 
     it('falls back to the status line when the body names no error', async () => {
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, 503)));
+        const HTTP_SERVICE_UNAVAILABLE = 503;
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_SERVICE_UNAVAILABLE)));
         const fail = vi.fn();
         await pollCompletedJobs(new AbortController().signal, vi.fn(), fail, vi.fn());
-        expect(fail).toHaveBeenCalledWith('Request failed (503)');
+        expect(fail).toHaveBeenCalledWith(`Request failed (${HTTP_SERVICE_UNAVAILABLE})`);
     });
 
     it('does nothing when the signal is already aborted', async () => {
@@ -120,7 +126,8 @@ describe('pollCompletedJobs', () => {
         // An expired session is not a board failure: the gate takes over, and the poll must
         // NOT rearm — a dead session must not become an infinite re-auth loop.
         const report = vi.spyOn(useSession, 'reportUnauthenticated').mockImplementation(() => {});
-        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, 401)));
+        const HTTP_STATUS_UNAUTHORIZED = 401;
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({}, HTTP_STATUS_UNAUTHORIZED)));
         const rearm = vi.fn();
         await pollCompletedJobs(new AbortController().signal, vi.fn(), vi.fn(), rearm);
         expect(report).toHaveBeenCalled();
