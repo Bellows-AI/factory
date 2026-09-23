@@ -3,6 +3,7 @@ import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import type { WorkflowStore, WorkflowSummary } from '../db/workflow-store.js';
 import type { Caller } from '../auth/store.js';
+import { blockCatalog } from '../db/workflow-blocks/index.js';
 import { UUID, bad, badSegment, body } from './helpers.js';
 
 export interface WorkflowRouteDeps {
@@ -64,7 +65,13 @@ function noStore(reply: FastifyReply) {
  * - `GET /api/workflows?repo=owner/name` — the caller-visible list (the org's, their own, the
  *   named repository's), the composer's dropdown feed.
  * - `POST /api/workflows` — create; org-level is an admin's move, user- and repo-level are any
- *   member's.
+ *   member's. A `kind: "block"` node is compiled (registry lookup, availability, config, expansion)
+ *   before storage — an unknown/unavailable/misconfigured block refuses the same way a schema
+ *   error does (issue #204, docs/workflows.md "Built-in blocks").
+ * - `GET /api/workflow-blocks` — the board-owned catalog every `uses` may reference: id,
+ *   description, config schema, availability. Never a prompt or script body — those stay inside
+ *   the registry, unserialized. Static, org-independent metadata; gated the same as the other
+ *   routes here because block selection is the same human authoring surface.
  * - `DELETE /api/workflows/:id` — an admin, the owning member, or any member within repo scope.
  *
  * Refusals carry named codes: a pasted foreign pipeline fails loudly (UNKNOWN_KEY, UNKNOWN_NODE,
@@ -87,6 +94,16 @@ function validateRepoQuery(repoField: unknown): { ok: true; value: string | null
     const reason = repoReason(repoField);
     if (reason) return { ok: false, message: reason };
     return { ok: true, value: repoField };
+}
+
+/**
+ * Board-owned, org-independent metadata — no `storeOf` gate. Auth-gated anyway: block selection
+ * is part of the same human workflow-authoring surface as the routes below.
+ */
+function handleWorkflowBlocks(request: FastifyRequest, reply: FastifyReply) {
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+    return reply.code(HTTP_OK).send({ blocks: blockCatalog() });
 }
 
 async function handleListWorkflows(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
@@ -190,6 +207,11 @@ export const workflowRoutes =
     async (app) => {
         app.get('/api/workflows', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleListWorkflows(orgs, request, reply)
+        );
+        // Board-owned, org-independent metadata — no `storeOf` gate. Auth-gated anyway: block
+        // selection is part of the same human workflow-authoring surface as the routes below.
+        app.get('/api/workflow-blocks', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleWorkflowBlocks(request, reply)
         );
         app.post('/api/workflows', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleCreateWorkflow(orgs, request, reply)

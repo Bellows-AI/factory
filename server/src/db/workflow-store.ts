@@ -1,12 +1,13 @@
 import type { Sql, TransactionSql } from 'postgres';
 import {
-    type DefinitionRefusal,
     type WorkflowDefinition,
     type WorkflowParam,
     WORKFLOW_NAME,
     SCOPE_SEGMENT,
     validateDefinition,
 } from './workflow-schema.js';
+import { compileDefinition } from './workflow-blocks/index.js';
+import type { CompileRefusal } from './workflow-blocks/types.js';
 import { BASE_WORKFLOW } from './workflow-templates.js';
 
 /**
@@ -50,7 +51,9 @@ export interface WorkflowTarget {
 
 /** Why a create was refused. Every code is named — a bad definition is diagnosable from the answer. */
 export interface WorkflowRefusal {
-    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | DefinitionRefusal['code'];
+    // CompileRefusal['code'] already includes every DefinitionRefusal code — validateDefinition's
+    // own refusal is surfaced through compileDefinition's re-validation pass either way.
+    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | CompileRefusal['code'];
     message: string;
 }
 
@@ -174,6 +177,13 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
             if (refusal) return { refused: true, ...refusal };
             const check = validateDefinition(definition);
             if (!check.ok) return { refused: true, code: check.refusal.code, message: check.refusal.message };
+            // A `kind: "block"` node never reaches storage: compileDefinition expands every block
+            // reference into its low-level agent-node subgraph and re-validates the result BEFORE
+            // this row exists, so what lands in `definition` — and later, unchanged, on a root
+            // job's frozen snapshot — is always the ordinary agent-only shape workflow-engine.ts
+            // and routes/jobs.ts already depend on (docs/workflows.md, "Built-in blocks").
+            const compiled = compileDefinition(check.definition);
+            if (!compiled.ok) return { refused: true, code: compiled.refusal.code, message: compiled.refusal.message };
 
             const values = {
                 org_id: orgId,
@@ -181,7 +191,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
                 user_id: scope.kind === 'user' ? scope.userId : null,
                 repo_owner: scope.kind === 'repo' ? scope.owner : null,
                 repo_name: scope.kind === 'repo' ? scope.name : null,
-                definition: check.definition as never,
+                definition: compiled.definition as never,
                 created_by: createdBy,
             };
             try {

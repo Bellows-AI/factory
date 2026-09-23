@@ -61,6 +61,27 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(await store.listVisible({ userId: null, repo: null })).toEqual([]);
     });
 
+    it('compiles a block node before storage, and refuses one that is not yet available, storing nothing', async () => {
+        // Both reserved ids ship `available: false` until their own implementation issues land
+        // (issue #204) — a block-referencing definition can never be stored, so it can never be
+        // launched. This exercises the real, wired registry through workflow-store.ts's create(),
+        // beyond workflow-block-compiler.test.ts's pure, dependency-injected coverage of the same
+        // refusal.
+        const created = await store.create({
+            name: 'wants-a-block',
+            scope: { kind: 'org' },
+            definition: {
+                entry: 'review',
+                params: [],
+                nodes: [{ name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' }],
+                edges: [],
+            },
+            createdBy: ALICE,
+        });
+        expect(created).toMatchObject({ refused: true, code: 'BLOCK_UNAVAILABLE' });
+        expect(await store.listVisible({ userId: null, repo: null })).toEqual([]);
+    });
+
     it('refuses an edge naming an undeclared node, and a template referencing one', async () => {
         const badEdge = await store.create({
             name: 'dangling',
