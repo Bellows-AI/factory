@@ -3,25 +3,21 @@ import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
-import { deleteJob, deleteSecret, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import { readVerdict } from './k8s-poll.js';
+import { deleteJob, deleteSecret, jobPodsPath, podLogPath } from './k8s-auxspec.js';
+import { readJobStatus, readVerdict, timedOutOf } from './k8s-poll.js';
+import type { JobStatusResult } from './k8s-poll.js';
 import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath } from './k8s-podspec.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import {
     ERROR_PREVIEW_CHARS,
     HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
-    HTTP_NOT_FOUND,
-    HTTP_SERVER_ERROR_STATUS,
-    HTTP_TOO_MANY_REQUESTS,
     livePod,
-    parse,
-    POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
     TIMEOUT_EXIT_CODE,
     wait,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sRequest, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 
 /**
  * The kubernetes gate manager: the second `GateManager`, the way `createKubernetesRunner` is the
@@ -89,81 +85,35 @@ async function checkGateImagePullable(deps: K8sDeps, jobName: string, image: str
     return container !== undefined;
 }
 
-/** One gate Job status read's answer: retry (transport hiccup or 429/5xx within budget), still running, or terminal. */
-type GateJobPoll =
-    | { kind: 'retry' }
-    | { kind: 'pending' }
-    | { kind: 'terminal'; succeeded: boolean; timedOut: boolean };
-
-/** Bumps the shared failure counter and throws `buildError()` once the bound is spent — otherwise answers `'retry'`. */
-function retryOrThrow(failures: { count: number }, buildError: () => Error): 'retry' {
-    if (++failures.count > POLL_MAX_CONSECUTIVE_FAILURES) throw buildError();
-    return 'retry';
-}
-
-/** The terminal `GateJobPoll` a status body carries, once its Job has succeeded or failed. */
-function gateJobTerminal(status: K8sJobStatus): { kind: 'terminal'; succeeded: boolean; timedOut: boolean } {
-    const succeeded = (status.succeeded ?? 0) >= 1;
-    const timedOut = (status.conditions ?? []).some(
-        (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded'
-    );
-    return { kind: 'terminal', succeeded, timedOut };
-}
-
-/**
- * One read of the gate Job's status, translated to a `GateJobPoll` — pulled out of
- * `pollGateJobToTerminal` purely to keep that function's complexity readable: the loop it wraps
- * no longer nests every status branch inside its own `for(;;)`.
- */
-async function readGateJobStatus(deps: K8sDeps, jobName: string, failures: { count: number }): Promise<GateJobPoll> {
-    let response: K8sResponse;
-    try {
-        response = await deps.request('GET', jobPath(deps.config.k8sNamespace, jobName));
-    } catch (e) {
-        return { kind: retryOrThrow(failures, () => gateHarness((e as Error).message)) };
-    }
-    if (response.status === HTTP_NOT_FOUND) {
-        throw gateHarness(`the gate job ${jobName} no longer exists`);
-    }
-    if (response.status === HTTP_TOO_MANY_REQUESTS || response.status >= HTTP_SERVER_ERROR_STATUS) {
-        return {
-            kind: retryOrThrow(failures, () =>
-                gateHarness(
-                    `reading the gate job answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`
-                )
-            ),
-        };
-    }
-    if (response.status >= HTTP_ERROR_STATUS) {
-        throw gateHarness(
-            `reading the gate job answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
-    failures.count = 0;
-    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
-    if ((status.succeeded ?? 0) >= 1 || (status.failed ?? 0) >= 1) return gateJobTerminal(status);
-    return { kind: 'pending' };
-}
-
 /**
  * Poll the gate Job to a terminal status. The kubelet's activeDeadlineSeconds guarantees the Job
- * reaches one; the read of it gets the same bounded patience the runner's poll has, because an
- * apiserver blink is not a gate verdict. Pulled out of `runGate` purely to keep that method's
- * complexity readable.
+ * reaches one; the read of it gets the same bounded patience every verdict-carrying read shares
+ * (`readJobStatus`, the same core the runner and aux polls share), because an apiserver blink is
+ * not a gate verdict — every give-up shape it can answer becomes a `gateHarness` failure here.
  */
 async function pollGateJobToTerminal(
     deps: K8sDeps,
     jobName: string,
     image: string
 ): Promise<{ succeeded: boolean; timedOut: boolean }> {
-    const failures = { count: 0 };
     let imageCleared = false;
     for (;;) {
-        const result = await readGateJobStatus(deps, jobName, failures);
-        if (result.kind === 'terminal') return { succeeded: result.succeeded, timedOut: result.timedOut };
-        if (result.kind === 'pending' && !imageCleared) {
-            imageCleared = await checkGateImagePullable(deps, jobName, image);
+        let result: JobStatusResult;
+        try {
+            result = await readJobStatus(deps, jobName, 'reading the gate job');
+        } catch (e) {
+            throw gateHarness((e as Error).message);
         }
+        if (result.kind === 'notFound') throw gateHarness(`the gate job ${jobName} no longer exists`);
+        if (result.kind === 'error') {
+            throw gateHarness(
+                `reading the gate job answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
+            );
+        }
+        if (result.kind === 'terminal') {
+            return { succeeded: result.outcome === 'succeeded', timedOut: timedOutOf(result.status) };
+        }
+        if (!imageCleared) imageCleared = await checkGateImagePullable(deps, jobName, image);
         await deps.sleep(POLL_MS);
     }
 }

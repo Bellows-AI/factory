@@ -68,17 +68,34 @@ export async function readVerdict(deps: K8sDeps, path: string, what: string, fai
     return readVerdict(deps, path, what, failures + 1);
 }
 
-/** `readVerdict`'s own answer, or the message its bounded retries gave up with. */
-async function readJobOrGiveUp(
-    deps: K8sDeps,
-    jobName: string,
-    what: string
-): Promise<K8sResponse | { giveUp: string }> {
-    try {
-        return await readVerdict(deps, jobPath(deps.config.k8sNamespace, jobName), what);
-    } catch (e) {
-        return { giveUp: (e as Error).message };
-    }
+/** Whether a terminal Job's own conditions show the kubelet's `activeDeadlineSeconds` fired. */
+export function timedOutOf(status: K8sJobStatus): boolean {
+    return (status.conditions ?? []).some(
+        (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded'
+    );
+}
+
+/**
+ * One verdict-carrying read of a Job's status, translated to the four shapes every caller below
+ * branches on: gone, an unexpected status, still running, or a terminal outcome. `readVerdict`
+ * owns the transport/429/5xx retry bound and can still throw once it is exhausted — a caller that
+ * must never throw (`pollJobToTerminal`) catches that itself; one that must (`auxVerdict`,
+ * `pollRunnerJobUntilTerminal`, the gate poll) lets it propagate, wrapping it in its own shape
+ * when it needs to.
+ */
+export type JobStatusResult =
+    | { kind: 'notFound' }
+    | { kind: 'error'; status: number; body: string }
+    | { kind: 'pending' }
+    | { kind: 'terminal'; outcome: 'succeeded' | 'failed'; status: K8sJobStatus };
+
+export async function readJobStatus(deps: K8sDeps, jobName: string, what: string): Promise<JobStatusResult> {
+    const response = await readVerdict(deps, jobPath(deps.config.k8sNamespace, jobName), what);
+    if (response.status === HTTP_NOT_FOUND) return { kind: 'notFound' };
+    if (response.status >= HTTP_ERROR_STATUS) return { kind: 'error', status: response.status, body: response.body };
+    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+    const outcome = jobOutcome(status);
+    return outcome === 'pending' ? { kind: 'pending' } : { kind: 'terminal', outcome, status };
 }
 
 /**
@@ -106,15 +123,20 @@ export async function pollJobToTerminal(
     jobName: string,
     messages: PollToTerminalMessages
 ): Promise<string | null> {
-    const result = await readJobOrGiveUp(deps, jobName, messages.what);
-    if ('giveUp' in result) return result.giveUp;
-    if (result.status === HTTP_NOT_FOUND) return messages.notFound(jobName);
-    if (result.status >= HTTP_ERROR_STATUS) return messages.errorStatus(result.status);
-    const outcome = jobOutcome(parse<{ status?: K8sJobStatus }>(result.body).status ?? {});
-    if (outcome === 'failed' && messages.failed !== null) return messages.failed;
-    if (outcome !== 'pending') return null;
-    await deps.sleep(POLL_MS);
-    return pollJobToTerminal(deps, jobName, messages);
+    let result: JobStatusResult;
+    try {
+        result = await readJobStatus(deps, jobName, messages.what);
+    } catch (e) {
+        return (e as Error).message;
+    }
+    if (result.kind === 'notFound') return messages.notFound(jobName);
+    if (result.kind === 'error') return messages.errorStatus(result.status);
+    if (result.kind === 'pending') {
+        await deps.sleep(POLL_MS);
+        return pollJobToTerminal(deps, jobName, messages);
+    }
+    if (result.outcome === 'failed' && messages.failed !== null) return messages.failed;
+    return null;
 }
 
 /** The exit code and log tail off an aux Job's own pod, once its status has gone terminal. */
@@ -147,21 +169,20 @@ async function readAuxVerdictOutput(
  * steps and the claude-turns close read, whose every container is exactly this shape.
  */
 export async function auxVerdict(deps: K8sDeps, jobName: string): Promise<{ exitCode: number | null; output: string }> {
-    const response = await readVerdict(deps, jobPath(deps.config.k8sNamespace, jobName), `reading the job ${jobName}`);
-    if (response.status === HTTP_NOT_FOUND) {
+    const result = await readJobStatus(deps, jobName, `reading the job ${jobName}`);
+    if (result.kind === 'notFound') {
         throw new Error(`the job ${jobName} no longer exists`);
     }
-    if (response.status >= HTTP_ERROR_STATUS) {
+    if (result.kind === 'error') {
         throw new Error(
-            `reading the job ${jobName} answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
+            `reading the job ${jobName} answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
         );
     }
-    const outcome = jobOutcome(parse<{ status?: K8sJobStatus }>(response.body).status ?? {});
-    if (outcome === 'pending') {
+    if (result.kind === 'pending') {
         await deps.sleep(POLL_MS);
         return auxVerdict(deps, jobName);
     }
-    return readAuxVerdictOutput(deps, jobName, outcome === 'succeeded');
+    return readAuxVerdictOutput(deps, jobName, result.outcome === 'succeeded');
 }
 
 /**
@@ -210,28 +231,19 @@ export async function pollRunnerJobUntilTerminal(
     onOutput: ((tail: string) => void) | undefined,
     podName: string | null = null
 ): Promise<{ timedOut: boolean; jobSucceeded: boolean }> {
-    const response = await readVerdict(
-        deps,
-        jobPath(deps.config.k8sNamespace, runnerName(job)),
-        'reading the runner job'
-    );
-    if (response.status === HTTP_NOT_FOUND) {
+    const result = await readJobStatus(deps, runnerName(job), 'reading the runner job');
+    if (result.kind === 'notFound') {
         // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
         // never arrive, so waiting longer is holding a slot for nothing.
         throw new Error(`the runner job ${runnerName(job)} no longer exists`);
     }
-    if (response.status >= HTTP_ERROR_STATUS) {
+    if (result.kind === 'error') {
         throw new Error(
-            `reading the runner job answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
+            `reading the runner job answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
         );
     }
-    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
-    const outcome = jobOutcome(status);
-    if (outcome !== 'pending') {
-        const timedOut = (status.conditions ?? []).some(
-            (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded'
-        );
-        return { timedOut, jobSucceeded: outcome === 'succeeded' };
+    if (result.kind === 'terminal') {
+        return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
     }
     const nextPodName = onOutput ? await tailRunnerOutput(deps, job, podName, onOutput) : podName;
     await deps.sleep(POLL_MS);
