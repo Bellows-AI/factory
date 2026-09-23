@@ -128,6 +128,13 @@ recorded PR publication (`job_pr`, issue #202's `pr-lifecycle-store.ts`), when i
 that declares none carries no `helperPlans` on its claim — unchanged from before this field
 existed, and still true of every plain `agent` node outside a block's own expansion today.
 
+Issue #230 extends that same generic, block-agnostic transport, entirely on the driver side (docs/jobs.md,
+"Conclude control and composite helper programs"): a successful pre-helper may answer `control:
+'conclude'` to complete the job without an agent turn, and a `helperId` may name an allowlisted
+composite that sequences several registered script helpers with pure planning between them. Both
+are transparent to `helperId` itself — a block's `expand()` still just names an id, exactly as
+before.
+
 ### The merge-conflict-autofix block
 
 `builtin/merge-conflict-autofix` (issue #122, `server/src/db/workflow-blocks/merge-conflict-autofix.ts`)

@@ -2558,4 +2558,225 @@ describe('block-helper steps (issue #207)', () => {
 
         expect(released).toEqual([job(1).id]);
     });
+
+    describe('pre-helper conclude and composite helper programs (issue #230)', () => {
+        it('completes the job succeeded exactly once when a pre-helper concludes, never launching the agent', async () => {
+            const runCalls: string[] = [];
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+            const { runner, calls } = runnerWithHelper(
+                async (helperJob) => {
+                    runCalls.push(helperJob.id);
+                    return ok();
+                },
+                [{ ok: true, output: { decided: 'up-to-date' }, control: 'conclude' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(runCalls).toEqual([]);
+            expect(board.board.completed).toEqual([
+                {
+                    id: job(1).id,
+                    status: 'succeeded',
+                    exitCode: 0,
+                    output: JSON.stringify({ decided: 'up-to-date' }),
+                },
+            ]);
+        });
+
+        it('a pre-helper answering control: "continue" explicitly runs the agent, same as answering none at all', async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: true, output: null, control: 'continue' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', exitCode: 0 });
+        });
+
+        it('a concluding pre-helper skips every later declared pre-plan', async () => {
+            const board = stubBoard([
+                { ...job(1), helperPlans: [helperPlan({ input: 'first' }), helperPlan({ input: 'second' })] },
+            ]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: true, output: null, control: 'conclude' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        });
+
+        it('a post-helper reporting "conclude" fails the verdict with invalid_control and skips publish', async () => {
+            const board = stubBoard([
+                { ...job(1), repo: 'Bellows-AI/factory', helperPlans: [helperPlan({ phase: 'post' })] },
+            ]);
+            const { runner } = runnerWithHelper(async () => ok(), [{ ok: true, output: null, control: 'conclude' }]);
+            runner.publishGit = async (publishedJob) => {
+                runner.published.push(publishedJob);
+                return {
+                    ok: true,
+                    published: true,
+                    branch: 'fix/1',
+                    prUrl: 'https://github.com/o/r/pull/1',
+                    reason: null,
+                    repository: 'o/r',
+                    baseBranch: 'main',
+                    prNumber: 1,
+                };
+            };
+
+            await drive({ ...board, runner });
+
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+            expect(board.board.completed[0]!.output).toContain('only valid for a pre-run helper');
+            expect(runner.published).toEqual([]);
+        });
+
+        it('sequences a declared composite plan over its child script steps, propagating output between them', async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [
+                    { ok: true, output: { echoed: 'first' } },
+                    { ok: true, output: { echoed: 'second' } },
+                ]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(2);
+            expect(calls[0]!.plan.helperId).toBe('noop');
+            expect(calls[0]!.plan.input).toEqual({ step: 0, seed: null });
+            expect(calls[1]!.plan.helperId).toBe('noop');
+            expect(calls[1]!.plan.input).toEqual({ step: 1, receivedFromStep0: { echoed: 'first' } });
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        });
+
+        it("a composite's own finalize decides conclude vs. continue from its declared input", async () => {
+            const concludingBoard = stubBoard([
+                { ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture', input: { conclude: true } })] },
+            ]);
+            const { runner: concludingRunner } = runnerWithHelper(
+                async () => ok(),
+                [
+                    { ok: true, output: null },
+                    { ok: true, output: null },
+                ]
+            );
+            await drive({ ...concludingBoard, runner: concludingRunner });
+            expect(concludingBoard.board.completed[0]).toMatchObject({ status: 'succeeded', exitCode: 0 });
+
+            const continuingBoard = stubBoard([
+                { ...job(2), helperPlans: [helperPlan({ helperId: 'sequence-fixture', input: { conclude: false } })] },
+            ]);
+            const runCalls: string[] = [];
+            const { runner: continuingRunner } = runnerWithHelper(
+                async (helperJob) => {
+                    runCalls.push(helperJob.id);
+                    return ok();
+                },
+                [
+                    { ok: true, output: null },
+                    { ok: true, output: null },
+                ]
+            );
+            await drive({ ...continuingBoard, runner: continuingRunner });
+            expect(runCalls).toEqual([job(2).id]);
+        });
+
+        it("propagates a composite child's own failure reason unchanged, and never runs the following child", async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: false, reason: 'timeout', message: 'the child ran out of time' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+            expect(board.board.completed[0]!.output).toContain('timeout');
+            expect(board.board.completed[0]!.output).toContain('the child ran out of time');
+        });
+
+        it('stands the job down between composite child steps, without ever running the second child or the agent', async () => {
+            const options: { cancelRequested?: boolean } = {};
+            const board = stubBoard(
+                [{ ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }],
+                options
+            );
+            const runCalls: string[] = [];
+            const runner = stubRunner(async (helperJob) => {
+                runCalls.push(helperJob.id);
+                throw new Error('the agent must not launch');
+            });
+            const released: string[] = [];
+            runner.releaseFence = async (fencedJob) => {
+                released.push(fencedJob.id);
+            };
+            const childCalls: HelperPlan[] = [];
+            runner.runHelper = async (_helperJob, plan) => {
+                childCalls.push(plan);
+                // The stop lands while the FIRST child is in flight.
+                options.cancelRequested = true;
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                return { ok: true, output: null };
+            };
+
+            const started = drive({ ...board, runner });
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            await started;
+
+            expect(childCalls).toHaveLength(1);
+            expect(runCalls).toEqual([]);
+            expect(released).toEqual([job(1).id]);
+            expect(board.board.suspended).toEqual([job(1).id]);
+            expect(board.board.completed).toEqual([]);
+        });
+
+        it('fails closed as invalid_composite_plan when the declared plan itself claims githubWriting, before any child runs', async () => {
+            const board = stubBoard([
+                { ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture', githubWriting: true })] },
+            ]);
+            const { runner, calls } = runnerWithHelper(async () => ok(), []);
+
+            await drive({ ...board, runner });
+
+            expect(calls).toEqual([]);
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+            expect(board.board.completed[0]!.output).toContain('invalid_composite_plan');
+        });
+
+        it("asks the board for no token at all when neither of a composite's declared steps writes to GitHub", async () => {
+            // sequence-fixture's own two steps both declare githubWriting: false — each child call
+            // still goes through the SAME per-child token-minting closure a plain plan's single call
+            // does (pinned by "asks the board for a fresh install token…" above), so a composite whose
+            // steps are all read-only asks the board for nothing, exactly like a read-only plain plan.
+            const board = stubBoard(
+                [{ ...job(1), publish: false, helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }],
+                {
+                    publishToken: 'fresh-install-token',
+                }
+            );
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [
+                    { ok: true, output: null },
+                    { ok: true, output: null },
+                ]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(board.board.publishTokenAsks).toEqual([]);
+            expect(calls.map((c) => c.token)).toEqual([undefined, undefined]);
+        });
+    });
 });

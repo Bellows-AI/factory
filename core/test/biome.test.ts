@@ -69,6 +69,9 @@ describe('biome', () => {
         expect(`${result.stdout}${result.stderr}`).not.toBe('');
     });
 
+    // A tree-wide check is the heaviest spawn in the suite (vitest.config.ts), and the global 30s
+    // testTimeout is not always enough headroom under worker contention — this one test gets its
+    // own, larger budget rather than raising the timeout for every test.
     it('passes biome check on the repository', () => {
         // A vacuous pass (mis-shaped includes checking nothing) must fail, not pass.
         const MIN_FILES_CHECKED = 50;
@@ -77,5 +80,5 @@ describe('biome', () => {
         const checked = /Checked (\d+) files/.exec(result.stdout)?.[1];
         expect(checked, `biome check output:\n${result.stdout}${result.stderr}`).toBeDefined();
         expect(Number(checked)).toBeGreaterThan(MIN_FILES_CHECKED);
-    });
+    }, 90_000);
 });
